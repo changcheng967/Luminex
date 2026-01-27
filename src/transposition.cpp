@@ -36,6 +36,12 @@ void TranspositionTable::new_search() {
 }
 
 TTEntry* TranspositionTable::probe(uint64_t key, bool& found) {
+    if (table.empty()) {
+        static TTEntry dummy;
+        found = false;
+        return &dummy;
+    }
+
     TTEntry* entry = &table[(size_t)key % table.size()].entry[0];
 
     for (int i = 0; i < 3; ++i, ++entry) {
@@ -63,6 +69,8 @@ TTEntry* TranspositionTable::probe(uint64_t key, bool& found) {
 }
 
 void TranspositionTable::write(uint64_t key, Value v, bool pv, Bound b, Depth d, Move m, Value ev) {
+    if (table.empty()) return;
+
     TTEntry* entry = &table[(size_t)key % table.size()].entry[0];
 
     // Find an entry to replace
