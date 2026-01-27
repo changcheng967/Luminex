@@ -66,8 +66,7 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
     for (ExtMove* it = moves; it != end; ++it) {
         if (!pos.legal(it->move)) continue;
 
-        StateInfo st;
-        pos.do_move(it->move, st);
+        pos.do_move(it->move);
         Value value = -qsearch(pos, ss + 1, -beta, -alpha, depth - 1);
         pos.undo_move(it->move);
 
@@ -134,8 +133,7 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
 
     // Null move pruning
     if (!pv_node && !pos.is_check() && depth >= 3 && eval >= beta) {
-        StateInfo st;
-        pos.do_null_move(st);
+        pos.do_null_move();
 
         Value null_value = -search_worker(pos, ss + 1, -beta, -beta + 1, depth - 3, !cut_node);
 
@@ -185,8 +183,7 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
     Value best_value = -VALUE_INFINITE;
 
     for (ExtMove* it = moves; it != end; ++it) {
-        StateInfo st;
-        pos.do_move(it->move, st);
+        pos.do_move(it->move);
 
         Value value = -search_worker(pos, ss + 1, -beta, -alpha, depth - 1, !cut_node);
 
@@ -241,19 +238,40 @@ Move search(Position& pos, Limits& lim) {
     TT.new_search();
 
     // Iterative deepening
-    for (root_depth = 1; root_depth <= std::min(limits.depth, 1); ++root_depth) {
-        // Simplified: just return first move for now
+    for (root_depth = 1; root_depth <= limits.depth; ++root_depth) {
+        // Search at current depth
         ExtMove moves[MAX_MOVES];
         ExtMove* end = generate<GEN_LEGAL>(pos, moves);
 
-        if (moves != end) {
-            best_move = moves[0].move;
-            best_value = VALUE_ZERO;
+        Value alpha = -VALUE_INFINITE;
+        Value beta = VALUE_INFINITE;
+
+        for (ExtMove* it = moves; it != end; ++it) {
+            if (stop.load(std::memory_order_relaxed)) break;
+
+            pos.do_move(it->move);
+            Value value = -search_worker(pos, stack + 1, -beta, -alpha, root_depth - 1, false);
+            pos.undo_move(it->move);
+
+            if (value > best_value) {
+                best_value = value;
+                best_move = it->move;
+                root_score = best_value;
+            }
+
+            if (value > alpha) {
+                alpha = value;
+            }
+
+            if (value >= beta) {
+                break; // Beta cutoff
+            }
         }
 
         // Send UCI info
         uci_info(pos, root_depth, best_value, nodes.load(), 0);
-        break;
+
+        if (stop.load(std::memory_order_relaxed)) break;
     }
 
     return best_move;

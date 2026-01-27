@@ -99,16 +99,16 @@ void Position::set(const std::string& fen) {
 
     // Piece placement
     ss >> token;
-    Square sq = A8;
+    int sq = 56; // A8
 
     for (char c : token) {
         if (c == '/') {
-            sq = Square(sq - 16);
+            sq -= 16; // Move to start of next rank
             continue;
         }
 
         if (std::isdigit(c)) {
-            sq = Square(sq + (c - '0'));
+            sq += (c - '0'); // Skip empty squares
             continue;
         }
 
@@ -124,8 +124,8 @@ void Position::set(const std::string& fen) {
             case 'K': pt = KING; break;
         }
 
-        put_piece(color, pt, sq);
-        sq = Square(sq + 1);
+        put_piece(color, pt, Square(sq));
+        sq++;
     }
 
     // Side to move
@@ -134,11 +134,12 @@ void Position::set(const std::string& fen) {
 
     // Castling rights
     ss >> token;
-    for (char c : token) {
-        Color color = islower(c) ? BLACK : WHITE;
-        switch (toupper(c)) {
-            case 'K': castling_rights_[color] |= WHITE_KINGSIDE; break;
-            case 'Q': castling_rights_[color] |= WHITE_QUEENSIDE; break;
+    for (char ch : token) {
+        switch (ch) {
+            case 'K': castling_rights_[WHITE] |= WHITE_KINGSIDE; break;
+            case 'Q': castling_rights_[WHITE] |= WHITE_QUEENSIDE; break;
+            case 'k': castling_rights_[BLACK] |= BLACK_KINGSIDE; break;
+            case 'q': castling_rights_[BLACK] |= BLACK_QUEENSIDE; break;
         }
     }
 
@@ -153,30 +154,42 @@ void Position::set(const std::string& fen) {
     castling_path_[BLACK][0] = 0;
     castling_path_[BLACK][1] = 0;
 
+    // Initialize state stack
+    st_ply = 0;
+    st_ = &state_stack[0];
+    st_->key = 0;
+    st_->ply = 0;
+    st_->ep_square = SQUARE_NONE;
+    st_->castling_rights = 0;
+    st_->checkers = 0;
+    st_->pinned = 0;
+    st_->block_checkers = 0;
+    st_->move = MOVE_NONE;
+    st_->captured_piece = PT_NONE;
+
     // En passant square
     ss >> token;
-    st_->ep_square = (token == "-") ? SQUARE_NONE : Square(token[1] - '1' * 8 + token[0] - 'a');
+    st_->ep_square = (token == "-") ? SQUARE_NONE : Square((token[1] - '1') * 8 + (token[0] - 'a'));
 
     // Game ply
     ss >> token; // halfmove clock (ignored for now)
     ss >> token; // fullmove number (ignored for now)
 
-    // Set initial state
-    st_ = new_state_info();
-    st_->previous = nullptr;
-    st_->key = 0;
-    st_->ply = 0;
+    st_->castling_rights = 0;
+    for (Color c : {WHITE, BLACK}) {
+        st_->castling_rights |= castling_rights_[c];
+    }
 
     set_check_info(st_);
 
-    // Compute position key
-    Key k = Zobrist::side;
+    // Compute position key (start with 0, add side key only if BLACK to move)
+    Key k = (side_to_move_ == BLACK) ? Zobrist::side : 0;
 
     Bitboard b = pieces();
     while (b) {
         Square s = pop_lsb(b);
         Piece pc = board[s];
-        Color c = Color(pc >> 3);
+        Color c = Color(pc / 6);
         PieceType pt = piece_type_of(pc);
         k ^= Zobrist::psq[int(c)][int(pt)][int(s)];
     }
@@ -215,7 +228,7 @@ std::string Position::fen() const {
                     ss << empty;
                     empty = 0;
                 }
-                Color c = Color(pc >> 3);
+                Color c = Color(pc / 6);
                 PieceType pt = piece_type_of(pc);
                 ss << piece_char(c, pt);
             }
@@ -236,8 +249,8 @@ std::string Position::fen() const {
     bool any_castle = false;
     if (castling_rights_[WHITE] & WHITE_KINGSIDE) { ss << 'K'; any_castle = true; }
     if (castling_rights_[WHITE] & WHITE_QUEENSIDE) { ss << 'Q'; any_castle = true; }
-    if (castling_rights_[BLACK] & WHITE_KINGSIDE) { ss << 'k'; any_castle = true; }
-    if (castling_rights_[BLACK] & WHITE_QUEENSIDE) { ss << 'q'; any_castle = true; }
+    if (castling_rights_[BLACK] & BLACK_KINGSIDE) { ss << 'k'; any_castle = true; }
+    if (castling_rights_[BLACK] & BLACK_QUEENSIDE) { ss << 'q'; any_castle = true; }
     if (!any_castle) ss << '-';
 
     // En passant
@@ -266,7 +279,7 @@ void Position::put_piece(Color c, PieceType pt, Square s) {
 
 void Position::remove_piece(Square s) {
     Piece pc = board[s];
-    Color c = Color(pc >> 3);
+    Color c = Color(pc / 6);
     PieceType pt = piece_type_of(pc);
 
     pieces_by_type[pt] ^= square_bb(s);
@@ -287,7 +300,7 @@ void Position::remove_piece(Square s) {
 
 void Position::move_piece(Square from, Square to) {
     Piece pc = board[from];
-    Color c = Color(pc >> 3);
+    Color c = Color(pc / 6);
     PieceType pt = piece_type_of(pc);
 
     pieces_by_color[c] ^= square_bb(from) | square_bb(to);
@@ -388,21 +401,30 @@ void Position::set_check_info(StateInfo* si) {
     // King checks (adjacent kings not possible in legal chess)
 }
 
-void Position::do_move(Move m, StateInfo& new_st) {
+void Position::do_move(Move m) {
     Square from = m.from();
     Square to = m.to();
     Piece pc = board[from];
-    Color us = Color(pc >> 3);
+    Color us = Color(pc / 6);
     Color them = ~us;
+    PieceType pt = piece_type_of(pc);
 
-    // Save state for undo
-    new_st = *st_;
-    new_st.previous = st_;
-    new_st.move = m;
-    new_st.captured_piece = piece_type_on(to);
-    new_st.ply = st_->ply + 1;
+    // Increment state stack index
+    st_ply = std::min(st_ply + 1, MAX_STATES - 1);
+    StateInfo& next_st = state_stack[st_ply];
 
-    st_ = &new_st;
+    // Save state for undo - copy current state to next slot in state_stack
+    next_st.key = st_->key;
+    next_st.checkers = st_->checkers;
+    next_st.pinned = st_->pinned;
+    next_st.block_checkers = st_->block_checkers;
+    next_st.ep_square = st_->ep_square;
+    next_st.castling_rights = st_->castling_rights;
+    next_st.ply = st_->ply;
+    next_st.move = m;
+    next_st.captured_piece = piece_type_on(to);
+
+    st_ = &next_st;
     ++game_ply_;
 
     // Handle capture
@@ -412,15 +434,15 @@ void Position::do_move(Move m, StateInfo& new_st) {
         st_->key ^= Zobrist::psq[int(them)][int(captured)][int(to)];
     }
 
-    // Move the piece
-    move_piece(from, to);
-
     // Handle promotion
     if (m.is_promotion()) {
-        remove_piece(to);
+        remove_piece(from);
         PieceType promoted = m.promotion_type();
         put_piece(us, promoted, to);
         st_->key ^= Zobrist::psq[int(us)][int(promoted)][int(to)];
+    } else {
+        // Move the piece
+        move_piece(from, to);
     }
 
     // Handle castling
@@ -443,15 +465,24 @@ void Position::do_move(Move m, StateInfo& new_st) {
         st_->key ^= Zobrist::psq[int(them)][int(PAWN)][int(cap_sq)];
     }
 
-    // Update en passant square
+    // Update en passant square (check piece type before move)
     st_->ep_square = SQUARE_NONE;
-    if (piece_type_on(to) == PAWN && std::abs(int(rank_of(to)) - int(rank_of(from))) == 2) {
+    if (pt == PAWN && std::abs(int(rank_of(to)) - int(rank_of(from))) == 2) {
         st_->ep_square = Square((from + to) / 2);
         st_->key ^= Zobrist::en_passant[file_of(st_->ep_square)];
     }
 
     // Update castling rights
-    st_->castling_rights = st_->castling_rights;  // TODO: implement properly
+    // Remove castling rights if rook moves or is captured
+    if (pt == KING) {
+        st_->castling_rights &= ~(us == WHITE ? (WHITE_KINGSIDE | WHITE_QUEENSIDE) : (BLACK_KINGSIDE | BLACK_QUEENSIDE));
+    }
+    if (from == (us == WHITE ? H1 : H8) || to == (us == WHITE ? H1 : H8)) {
+        st_->castling_rights &= ~(us == WHITE ? WHITE_KINGSIDE : BLACK_KINGSIDE);
+    }
+    if (from == (us == WHITE ? A1 : A8) || to == (us == WHITE ? A1 : A8)) {
+        st_->castling_rights &= ~(us == WHITE ? WHITE_QUEENSIDE : BLACK_QUEENSIDE);
+    }
 
     // Switch side
     st_->key ^= Zobrist::side;
@@ -464,12 +495,11 @@ void Position::do_move(Move m, StateInfo& new_st) {
 void Position::undo_move(Move m) {
     Square from = m.from();
     Square to = m.to();
-    Piece pc = board[to];
-    Color us = Color(pc >> 3);
-    Color them = ~us;  // side to move before the move
+    Color us = ~side_to_move_;  // side that made the move (opposite of current side)
+    Color them = side_to_move_;
 
     // Restore side to move
-    side_to_move_ = them;
+    side_to_move_ = us;
 
     // Handle promotion
     if (m.is_promotion()) {
@@ -504,14 +534,29 @@ void Position::undo_move(Move m) {
         put_piece(them, captured, to);
     }
 
-    // Restore state
-    st_ = st_->previous;
+    // Decrement state stack index and restore state pointer
+    st_ply = std::max(st_ply - 1, 0);
+    st_ = &state_stack[st_ply];
     --game_ply_;
 }
 
-void Position::do_null_move(StateInfo& new_st) {
-    new_st.previous = st_;
-    st_ = &new_st;
+void Position::do_null_move() {
+    // Increment state stack index
+    st_ply = std::min(st_ply + 1, MAX_STATES - 1);
+    StateInfo& next_st = state_stack[st_ply];
+
+    // Copy current state
+    next_st.key = st_->key;
+    next_st.checkers = st_->checkers;
+    next_st.pinned = st_->pinned;
+    next_st.block_checkers = st_->block_checkers;
+    next_st.ep_square = st_->ep_square;
+    next_st.castling_rights = st_->castling_rights;
+    next_st.ply = st_->ply;
+    next_st.move = MOVE_NONE;
+    next_st.captured_piece = PT_NONE;
+
+    st_ = &next_st;
 
     if (st_->ep_square != SQUARE_NONE) {
         st_->key ^= Zobrist::en_passant[file_of(st_->ep_square)];
@@ -528,7 +573,9 @@ void Position::do_null_move(StateInfo& new_st) {
 }
 
 void Position::undo_null_move() {
-    st_ = st_->previous;
+    // Decrement state stack index and restore state pointer
+    st_ply = std::max(st_ply - 1, 0);
+    st_ = &state_stack[st_ply];
     side_to_move_ = ~side_to_move_;
     --game_ply_;
 }
@@ -597,7 +644,7 @@ bool Position::pseudo_legal(const Move m) const {
     PieceType pt = piece_type_on(from);
 
     if (pt == PT_NONE) return false;
-    if (Color(board[from] >> 3) != side_to_move_) return false;
+    if (Color(board[from] / 6) != side_to_move_) return false;
     if (pieces(side_to_move_) & square_bb(to)) return false;
 
     // Castling
@@ -641,7 +688,7 @@ bool Position::pseudo_legal(const Move m) const {
         // Pawn capture
         if (to == Square(from + d + WEST) || to == Square(from + d + EAST)) {
             if (piece_on(to) != NO_PIECE) {
-                return Color(piece_on(to) >> 3) == ~side_to_move_;
+                return Color(piece_on(to) / 6) == ~side_to_move_;
             }
             return false;
         }

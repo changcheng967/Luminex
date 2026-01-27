@@ -203,12 +203,14 @@ ExtMove* generate_moves(const Position& pos, ExtMove* moveList) {
     if constexpr (T == GEN_QUIET || T == GEN_ALL || T == GEN_LEGAL || T == GEN_NON_EVASION) {
         if (!checkers) {
             // Kingside
-            if (pos.castling_allowed(us, WHITE_KINGSIDE)) {
+            CastlingRight king_side = us == WHITE ? WHITE_KINGSIDE : BLACK_KINGSIDE;
+            if (pos.castling_allowed(us, king_side)) {
                 Square to = Square(us == WHITE ? G1 : G8);
                 *moveList++ = Move(ksq, to, MF_CASTLING_KING);
             }
             // Queenside
-            if (pos.castling_allowed(us, WHITE_QUEENSIDE)) {
+            CastlingRight queen_side = us == WHITE ? WHITE_QUEENSIDE : BLACK_QUEENSIDE;
+            if (pos.castling_allowed(us, queen_side)) {
                 Square to = Square(us == WHITE ? C1 : C8);
                 *moveList++ = Move(ksq, to, MF_CASTLING_QUEEN);
             }
@@ -221,16 +223,17 @@ ExtMove* generate_moves(const Position& pos, ExtMove* moveList) {
 template<GenType T>
 ExtMove* generate(const Position& pos, ExtMove* moveList) {
     if constexpr (T == GEN_LEGAL) {
-        moveList = generate_moves<GEN_NON_EVASION>(pos, moveList);
+        ExtMove* start = moveList;
+        ExtMove* end = generate_moves<GEN_NON_EVASION>(pos, moveList);
 
         // Filter for legal moves
-        ExtMove* end = moveList;
-        for (ExtMove* it = end - Position::MAX_MOVES; it != end; ++it) {
+        ExtMove* legal_end = start;
+        for (ExtMove* it = start; it != end; ++it) {
             if (pos.legal(it->move)) {
-                *(moveList++) = *it;
+                *(legal_end++) = *it;
             }
         }
-        return moveList;
+        return legal_end;
     } else {
         return generate_moves<T>(pos, moveList);
     }

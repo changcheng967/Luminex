@@ -89,9 +89,9 @@ enum Piece : uint8_t {
     NO_PIECE = 12
 };
 
-inline Piece make_piece(Color c, PieceType pt) { return static_cast<Piece>((c << 3) | pt); }
-inline PieceType piece_type_of(Piece p) { return p == NO_PIECE ? PT_NONE : static_cast<PieceType>(p & 7); }
-inline Color color_of_piece(Piece p) { return p == NO_PIECE ? NO_COLOR : static_cast<Color>(p >> 3); }
+inline Piece make_piece(Color c, PieceType pt) { return static_cast<Piece>((c * 6) + pt); }
+inline PieceType piece_type_of(Piece p) { return p == NO_PIECE ? PT_NONE : static_cast<PieceType>(p % 6); }
+inline Color color_of_piece(Piece p) { return p == NO_PIECE ? NO_COLOR : static_cast<Color>(p / 6); }
 
 // Move flags
 enum MoveFlag : uint16_t {
@@ -123,16 +123,16 @@ public:
     constexpr uint16_t flags() const { return data_ & 0xF000; }
     constexpr uint16_t raw() const { return data_; }
 
-    constexpr bool is_capture() const { return data_ & MF_CAPTURE; }
-    constexpr bool is_promotion() const { return data_ & MF_PROMOTION; }
-    constexpr bool is_castling() const { return data_ & (MF_CASTLING_KING | MF_CASTLING_QUEEN); }
-    constexpr bool is_en_passant() const { return data_ & MF_EN_PASSANT; }
+    constexpr bool is_capture() const { return flags() & MF_CAPTURE; }
+    constexpr bool is_promotion() const { return flags() & MF_PROMOTION; }
+    constexpr bool is_castling() const { return flags() & (MF_CASTLING_KING | MF_CASTLING_QUEEN); }
+    constexpr bool is_en_passant() const { return flags() & MF_EN_PASSANT; }
 
     constexpr PieceType promotion_type() const {
-        if (data_ & MF_KNIGHT_PROMO) return KNIGHT;
-        if (data_ & MF_BISHOP_PROMO) return BISHOP;
-        if (data_ & MF_ROOK_PROMO) return ROOK;
-        if (data_ & MF_QUEEN_PROMO) return QUEEN;
+        if (flags() & MF_KNIGHT_PROMO) return KNIGHT;
+        if (flags() & MF_BISHOP_PROMO) return BISHOP;
+        if (flags() & MF_ROOK_PROMO) return ROOK;
+        if (flags() & MF_QUEEN_PROMO) return QUEEN;
         return PT_NONE;
     }
 

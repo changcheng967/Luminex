@@ -8,22 +8,20 @@ namespace luminex {
 
 // Position state for undo
 struct StateInfo {
-    Key key;
-    Bitboard checkers;
-    Bitboard pinned;
-    Bitboard block_checkers;
-    Square ep_square;
-    int castling_rights;
-    int ply;
-    Move move;
-    PieceType captured_piece;
-    StateInfo* previous;
+    Key key = 0;
+    Bitboard checkers = 0;
+    Bitboard pinned = 0;
+    Bitboard block_checkers = 0;
+    Square ep_square = SQUARE_NONE;
+    int castling_rights = 0;
+    int ply = 0;
+    Move move = MOVE_NONE;
+    PieceType captured_piece = PT_NONE;
 };
 
 class Position {
 public:
-    Position() : st_(&dummy_state) {
-        dummy_state.previous = nullptr;
+    Position() : st_(&dummy_state), st_ply(0) {
         dummy_state.key = 0;
         dummy_state.checkers = 0;
         dummy_state.pinned = 0;
@@ -63,10 +61,10 @@ public:
     bool is_draw() const;
     bool is_check() const;
 
-    void do_move(Move m, StateInfo& st);
+    void do_move(Move m);
     void undo_move(Move m);
 
-    void do_null_move(StateInfo& st);
+    void do_null_move();
     void undo_null_move();
 
     bool see_ge(Move m, Value threshold = VALUE_ZERO) const;
@@ -107,7 +105,10 @@ private:
     Color side_to_move_ = WHITE;
     StateInfo* st_ = nullptr;
     int game_ply_ = 0;
+    int st_ply = 0;  // Index into state_stack
 
+    static constexpr int MAX_STATES = MAX_PLY + 10;
+    StateInfo state_stack[MAX_STATES];
     StateInfo dummy_state;  // For default initialization
 
     int castling_rights_[NO_COLOR] = {};
@@ -123,7 +124,7 @@ inline Bitboard Position::pieces(Color c, PieceType pt1, PieceType pt2) const { 
 
 inline Piece Position::piece_on(Square s) const { return is_ok(s) ? board[s] : NO_PIECE; }
 inline PieceType Position::piece_type_on(Square s) const { return piece_type_of(board[s]); }
-inline Color Position::color_of_piece(Piece p) const { return p == NO_PIECE ? NO_COLOR : static_cast<Color>(p >> 3); }
+inline Color Position::color_of_piece(Piece p) const { return p == NO_PIECE ? NO_COLOR : static_cast<Color>(p / 6); }
 inline Color Position::side_to_move() const { return side_to_move_; }
 
 inline Bitboard Position::checkers() const { return st_->checkers; }

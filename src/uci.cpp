@@ -38,8 +38,14 @@ void handle_position(Position& pos, const std::string& cmd) {
         fen = cmd.substr(pos_idx + 8);
     }
 
+    // Trim leading/trailing whitespace
+    size_t start = fen.find_first_not_of(" \t");
+    if (start != std::string::npos) {
+        fen = fen.substr(start);
+    }
+
     // Remove "startpos" prefix
-    if (fen.find("startpos") == 0) {
+    if (fen == "startpos") {
         fen = "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1";
     }
 
@@ -91,8 +97,7 @@ void handle_position(Position& pos, const std::string& cmd) {
             Move m(from, to, flags);
 
             if (pos.legal(m)) {
-                StateInfo st;
-                pos.do_move(m, st);
+                pos.do_move(m);
             }
         }
     }

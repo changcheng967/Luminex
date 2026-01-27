@@ -20,8 +20,7 @@ uint64_t perft(Position& pos, Depth depth) {
 
     uint64_t count = 0;
     for (ExtMove* it = moves; it != end; ++it) {
-        StateInfo st;
-        pos.do_move(it->move, st);
+        pos.do_move(it->move);
         count += perft(pos, depth - 1);
         pos.undo_move(it->move);
     }
@@ -43,7 +42,7 @@ int main(int argc, char* argv[]) {
         pos.set("rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1");
 
         auto start = std::chrono::steady_clock::now();
-        uint64_t nodes = perft(pos, 5);
+        uint64_t nodes = perft(pos, 1);
         auto end = std::chrono::steady_clock::now();
 
         auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(end - start).count();
