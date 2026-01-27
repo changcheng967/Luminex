@@ -1,0 +1,284 @@
+#include "luminex.h"
+
+namespace luminex {
+
+// Piece-square tables for middle game
+Score PST_MG_TABLE[2][8][64] = {
+    // WHITE
+    {
+        // PAWN
+        {0, 0, 0, 0, 0, 0, 0, 0,
+         50, 50, 50, 50, 50, 50, 50, 50,
+         10, 10, 20, 30, 30, 20, 10, 10,
+         5,  5, 10, 25, 25, 10,  5,  5,
+         0,  0,  0, 20, 20,  0,  0,  0,
+         5, -5,-10,  0,  0,-10, -5,  5,
+         5, 10, 10,-20,-20, 10, 10,  5,
+         0,  0,  0,  0,  0,  0,  0,  0
+        },
+        // KNIGHT
+        {
+            -50,-40,-30,-30,-30,-30,-40,-50,
+            -40,-20,  0,  0,  0,  0,-20,-40,
+            -30,  0, 10, 15, 15, 10,  0,-30,
+            -30,  5, 15, 20, 20, 15,  5,-30,
+            -30,  0, 15, 20, 20, 15,  0,-30,
+            -30,  5, 10, 15, 15, 10,  5,-30,
+            -40,-20,  0,  5,  5,  0,-20,-40,
+            -50,-40,-30,-30,-30,-30,-40,-50
+        },
+        // BISHOP
+        {
+            -20,-10,-10,-10,-10,-10,-10,-20,
+            -10,  0,  0,  0,  0,  0,  0,-10,
+            -10,  0,  5, 10, 10,  5,  0,-10,
+            -10,  5,  5, 10, 10,  5,  5,-10,
+            -10,  0, 10, 10, 10, 10,  0,-10,
+            -10, 10, 10, 10, 10, 10, 10,-10,
+            -10,  5,  0,  0,  0,  0,  5,-10,
+            -20,-10,-10,-10,-10,-10,-10,-20
+        },
+        // ROOK
+        {
+            0,  0,  0,  0,  0,  0,  0,  0,
+            5, 10, 10, 10, 10, 10, 10,  5,
+            -5,  0,  0,  0,  0,  0,  0, -5,
+            -5,  0,  0,  0,  0,  0,  0, -5,
+            -5,  0,  0,  0,  0,  0,  0, -5,
+            -5,  0,  0,  0,  0,  0,  0, -5,
+            -5,  0,  0,  0,  0,  0,  0, -5,
+            0,  0,  0,  5,  5,  0,  0,  0
+        },
+        // QUEEN
+        {
+            -20,-10,-10, -5, -5,-10,-10,-20,
+            -10,  0,  0,  0,  0,  0,  0,-10,
+            -10,  0,  5,  5,  5,  5,  0,-10,
+            -5,  0,  5,  5,  5,  5,  0, -5,
+            0,  0,  5,  5,  5,  5,  0, -5,
+            -10,  5,  5,  5,  5,  5,  0,-10,
+            -10,  0,  5,  0,  0,  0,  0,-10,
+            -20,-10,-10, -5, -5,-10,-10,-20
+        },
+        // KING (middle game)
+        {
+            -30,-40,-40,-50,-50,-40,-40,-30,
+            -30,-40,-40,-50,-50,-40,-40,-30,
+            -30,-40,-40,-50,-50,-40,-40,-30,
+            -30,-40,-40,-50,-50,-40,-40,-30,
+            -20,-30,-30,-40,-40,-30,-30,-20,
+            -10,-20,-20,-20,-20,-20,-20,-10,
+            20, 20,  0,  0,  0,  0, 20, 20,
+            20, 30, 10,  0,  0, 10, 30, 20
+        },
+        // NONE
+        {0},
+        // ALL
+        {0}
+    },
+    // BLACK (mirrored at runtime)
+    {
+        {0}, {0}, {0}, {0}, {0}, {0}, {0}, {0}
+    }
+};
+
+// Piece-square tables for endgame
+Score PST_EG_TABLE[2][8][64] = {
+    // WHITE
+    {
+        // PAWN
+        {
+            0,  0,  0,  0,  0,  0,  0,  0,
+            100, 100, 100, 100, 100, 100, 100, 100,
+            90, 90, 90, 90, 90, 90, 90, 90,
+            70, 70, 70, 70, 70, 70, 70, 70,
+            50, 50, 50, 50, 50, 50, 50, 50,
+            30, 30, 30, 30, 30, 30, 30, 30,
+            10, 10, 10, 10, 10, 10, 10, 10,
+            0,  0,  0,  0,  0,  0,  0,  0
+        },
+        // KNIGHT
+        {
+            -50,-40,-30,-30,-30,-30,-40,-50,
+            -40,-20,  0,  5,  5,  0,-20,-40,
+            -30,  5, 15, 20, 20, 15,  5,-30,
+            -30,  5, 20, 25, 25, 20,  5,-30,
+            -30,  5, 20, 25, 25, 20,  5,-30,
+            -30,  5, 15, 20, 20, 15,  5,-30,
+            -40,-20,  0,  5,  5,  0,-20,-40,
+            -50,-40,-30,-30,-30,-30,-40,-50
+        },
+        // BISHOP
+        {
+            -20,-10,-10,-10,-10,-10,-10,-20,
+            -10,  0,  5, 10, 10,  5,  0,-10,
+            -10, 10, 15, 15, 15, 15, 10,-10,
+            -10, 10, 15, 20, 20, 15, 10,-10,
+            -10, 10, 15, 20, 20, 15, 10,-10,
+            -10, 10, 15, 15, 15, 15, 10,-10,
+            -10,  0, 10, 10, 10, 10,  0,-10,
+            -20,-10,-10,-10,-10,-10,-10,-20
+        },
+        // ROOK
+        {
+            0,  0,  0,  0,  0,  0,  0,  0,
+            5, 10, 10, 10, 10, 10, 10,  5,
+            -5,  0,  0,  0,  0,  0,  0, -5,
+            -5,  0,  0,  0,  0,  0,  0, -5,
+            -5,  0,  0,  0,  0,  0,  0, -5,
+            -5,  0,  0,  0,  0,  0,  0, -5,
+            -5,  0,  0,  0,  0,  0,  0, -5,
+            0,  0,  0,  5,  5,  0,  0,  0
+        },
+        // QUEEN
+        {
+            -20,-10,-10, -5, -5,-10,-10,-20,
+            -10,  0,  0,  0,  0,  0,  0,-10,
+            -10,  0,  5,  5,  5,  5,  0,-10,
+            -5,  0,  5,  5,  5,  5,  0, -5,
+            0,  0,  5,  5,  5,  5,  0, -5,
+            -10,  5,  5,  5,  5,  5,  0,-10,
+            -10,  0,  5,  0,  0,  0,  0,-10,
+            -20,-10,-10, -5, -5,-10,-10,-20
+        },
+        // KING (endgame - wants to be active)
+        {
+            -50,-40,-30,-20,-20,-30,-40,-50,
+            -30,-20,-10,  0,  0,-10,-20,-30,
+            -30,-10, 20, 30, 30, 20,-10,-30,
+            -30,-10, 30, 40, 40, 30,-10,-30,
+            -30,-10, 30, 40, 40, 30,-10,-30,
+            -30,-10, 20, 30, 30, 20,-10,-30,
+            -30,-30,  0,  0,  0,  0,-30,-30,
+            -50,-30,-30,-30,-30,-30,-30,-50
+        },
+        // NONE
+        {0},
+        // ALL
+        {0}
+    },
+    // BLACK (mirrored)
+    {
+        {0}, {0}, {0}, {0}, {0}, {0}, {0}, {0}
+    }
+};
+
+using Score = Value;
+
+Value evaluate(const Position& pos) {
+    Score mg_score = 0;
+    Score eg_score = 0;
+
+    // Material and position evaluation
+    for (int c_idx = 0; c_idx < 2; ++c_idx) {
+        Color c = Color(c_idx);
+        Sign sign = (c == WHITE) ? 1 : -1;
+
+        // Pawns
+        Bitboard pawns = pos.pieces(c, PAWN);
+        while (pawns) {
+            Square sq = pop_lsb(pawns);
+            if (sq >= SQUARE_NONE) continue;  // Bounds check
+            mg_score += sign * PAWN_VALUE;
+            eg_score += sign * PAWN_VALUE;
+            if (int(c) < 2 && int(PAWN) < 8 && int(sq) < 64) {
+                mg_score += sign * PST_MG_TABLE[int(c)][int(PAWN)][int(sq)];
+                eg_score += sign * PST_EG_TABLE[int(c)][int(PAWN)][int(sq)];
+            }
+        }
+
+        // Knights
+        Bitboard knights = pos.pieces(c, KNIGHT);
+        while (knights) {
+            Square sq = pop_lsb(knights);
+            if (sq >= SQUARE_NONE) continue;
+            mg_score += sign * KNIGHT_VALUE;
+            eg_score += sign * KNIGHT_VALUE;
+            if (int(c) < 2 && int(KNIGHT) < 8 && int(sq) < 64) {
+                mg_score += sign * PST_MG_TABLE[int(c)][int(KNIGHT)][int(sq)];
+                eg_score += sign * PST_EG_TABLE[int(c)][int(KNIGHT)][int(sq)];
+            }
+        }
+
+        // Bishops
+        Bitboard bishops = pos.pieces(c, BISHOP);
+        while (bishops) {
+            Square sq = pop_lsb(bishops);
+            if (sq >= SQUARE_NONE) continue;
+            mg_score += sign * BISHOP_VALUE;
+            eg_score += sign * BISHOP_VALUE;
+            if (int(c) < 2 && int(BISHOP) < 8 && int(sq) < 64) {
+                mg_score += sign * PST_MG_TABLE[int(c)][int(BISHOP)][int(sq)];
+                eg_score += sign * PST_EG_TABLE[int(c)][int(BISHOP)][int(sq)];
+            }
+        }
+
+        // Rooks
+        Bitboard rooks = pos.pieces(c, ROOK);
+        while (rooks) {
+            Square sq = pop_lsb(rooks);
+            if (sq >= SQUARE_NONE) continue;
+            mg_score += sign * ROOK_VALUE;
+            eg_score += sign * ROOK_VALUE;
+            if (int(c) < 2 && int(ROOK) < 8 && int(sq) < 64) {
+                mg_score += sign * PST_MG_TABLE[int(c)][int(ROOK)][int(sq)];
+                eg_score += sign * PST_EG_TABLE[int(c)][int(ROOK)][int(sq)];
+            }
+        }
+
+        // Queens
+        Bitboard queens = pos.pieces(c, QUEEN);
+        while (queens) {
+            Square sq = pop_lsb(queens);
+            if (sq >= SQUARE_NONE) continue;
+            mg_score += sign * QUEEN_VALUE;
+            eg_score += sign * QUEEN_VALUE;
+            if (int(c) < 2 && int(QUEEN) < 8 && int(sq) < 64) {
+                mg_score += sign * PST_MG_TABLE[int(c)][int(QUEEN)][int(sq)];
+                eg_score += sign * PST_EG_TABLE[int(c)][int(QUEEN)][int(sq)];
+            }
+        }
+
+        // King (position only, no material value)
+        Square ksq = pos.king_sq(c);
+        if (ksq < SQUARE_NONE && int(c) < 2 && int(KING) < 8 && int(ksq) < 64) {
+            mg_score += sign * PST_MG_TABLE[int(c)][int(KING)][int(ksq)];
+            eg_score += sign * PST_EG_TABLE[int(c)][int(KING)][int(ksq)];
+        }
+    }
+
+    // Game phase detection (simplified)
+    int material = 0;
+    Bitboard all = pos.pieces();
+    while (all) {
+        Square s = pop_lsb(all);
+        if (s >= SQUARE_NONE) continue;
+        PieceType pt = pos.piece_type_on(s);
+        if (pt != PAWN && pt != KING) {
+            material += PAWN_VALUE;
+        }
+    }
+
+    int phase = std::min(24, material / 200);
+
+    // Interpolate between middle game and endgame
+    Score score = (mg_score * phase + eg_score * (24 - phase)) / 24;
+
+    return pos.side_to_move() == WHITE ? score : -score;
+}
+
+int scale_factor(const Position&, Value) {
+    return 1;
+}
+
+void init_evaluation() {
+    // Initialize black PST as mirrored white PST
+    for (int pt = 0; pt < 8; ++pt) {
+        for (int s = 0; s < 64; ++s) {
+            PST_MG_TABLE[BLACK][pt][s] = PST_MG_TABLE[WHITE][pt][s ^ 56];
+            PST_EG_TABLE[BLACK][pt][s] = PST_EG_TABLE[WHITE][pt][s ^ 56];
+        }
+    }
+}
+
+} // namespace luminex
