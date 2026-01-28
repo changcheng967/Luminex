@@ -169,6 +169,9 @@ Value evaluate(const Position& pos) {
     Score mg_score = 0;
     Score eg_score = 0;
 
+    // Track bishop pairs
+    int bishop_count[2] = {0, 0};
+
     // Material and position evaluation
     for (int c_idx = 0; c_idx < 2; ++c_idx) {
         Color c = Color(c_idx);
@@ -176,6 +179,7 @@ Value evaluate(const Position& pos) {
 
         // Pawns
         Bitboard pawns = pos.pieces(c, PAWN);
+        // Check for doubled pawns
         while (pawns) {
             Square sq = pop_lsb(pawns);
             if (sq >= SQUARE_NONE) continue;  // Bounds check
@@ -184,6 +188,24 @@ Value evaluate(const Position& pos) {
             if (int(c) < 2 && int(PAWN) < 8 && int(sq) < 64) {
                 mg_score += sign * PST_MG_TABLE[int(c)][int(PAWN)][int(sq)];
                 eg_score += sign * PST_EG_TABLE[int(c)][int(PAWN)][int(sq)];
+            }
+
+            // Doubled pawn penalty
+            File f = file_of(sq);
+            Bitboard file_pawns = pos.pieces(c, PAWN) & file_bb(f);
+            if (popcount(file_pawns) > 1) {
+                mg_score -= sign * 10;
+                eg_score -= sign * 20;
+            }
+
+            // Isolated pawn penalty
+            Bitboard adjacent_files = 0;
+            if (f > FILE_A) adjacent_files |= file_bb(File(f - 1));
+            if (f < FILE_H) adjacent_files |= file_bb(File(f + 1));
+            Bitboard friendly_pawns_adjacent = pos.pieces(c, PAWN) & adjacent_files;
+            if (!friendly_pawns_adjacent) {
+                mg_score -= sign * 20;
+                eg_score -= sign * 20;
             }
         }
 
@@ -202,6 +224,7 @@ Value evaluate(const Position& pos) {
 
         // Bishops
         Bitboard bishops = pos.pieces(c, BISHOP);
+        bishop_count[int(c)] = popcount(bishops);
         while (bishops) {
             Square sq = pop_lsb(bishops);
             if (sq >= SQUARE_NONE) continue;
@@ -245,6 +268,16 @@ Value evaluate(const Position& pos) {
             mg_score += sign * PST_MG_TABLE[int(c)][int(KING)][int(ksq)];
             eg_score += sign * PST_EG_TABLE[int(c)][int(KING)][int(ksq)];
         }
+    }
+
+    // Bishop pair bonus
+    if (bishop_count[WHITE] >= 2) {
+        mg_score += 50;
+        eg_score += 70;
+    }
+    if (bishop_count[BLACK] >= 2) {
+        mg_score -= 50;
+        eg_score -= 70;
     }
 
     // Game phase detection (simplified)
