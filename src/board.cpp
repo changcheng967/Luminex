@@ -279,10 +279,6 @@ void Position::put_piece(Color c, PieceType pt, Square s) {
 
 void Position::remove_piece(Square s) {
     Piece pc = board[s];
-    if (pc == NO_PIECE) {
-        std::cerr << "ERROR: remove_piece called on empty square! s=" << int(s) << std::endl;
-        return;
-    }
     Color c = Color(pc / 6);
     PieceType pt = piece_type_of(pc);
 
@@ -290,12 +286,6 @@ void Position::remove_piece(Square s) {
     pieces_by_color[c] ^= square_bb(s);
 
     int& count = piece_count[int(c)][int(pt)];
-    if (count <= 0) {
-        std::cerr << "ERROR: remove_piece count <= 0! c=" << int(c) << " pt=" << int(pt) << " count=" << count << " s=" << int(s) << std::endl;
-        // Print board state for debugging
-        std::cerr << "  board[s]=" << int(board[s]) << " side_to_move=" << int(side_to_move_) << " game_ply=" << game_ply_ << std::endl;
-        return;
-    }
     int idx = index[s];
     Square last_sq = piece_list[int(c)][int(pt)][count - 1];
 
