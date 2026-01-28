@@ -189,11 +189,23 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
         else if (m.is_promotion()) {
             score = 900000 + m.promotion_type() * 10000;
         }
-        // Captures - use MVV-LVA
+        // Captures - use SEE for better ordering
         else if (m.is_capture()) {
-            PieceType captured = pos.piece_type_on(m.to());
-            PieceType attacker = pos.piece_type_on(m.from());
-            score = 100000 + mvv_lva(captured, attacker);
+            // Winning captures first, then losing captures
+            if (pos.see_ge(m, VALUE_ZERO)) {
+                // Winning capture: score by captured piece value
+                PieceType captured = pos.piece_type_on(m.to());
+                Value cap_value = 0;
+                if (captured == PAWN) cap_value = PAWN_VALUE;
+                else if (captured == KNIGHT) cap_value = KNIGHT_VALUE;
+                else if (captured == BISHOP) cap_value = BISHOP_VALUE;
+                else if (captured == ROOK) cap_value = ROOK_VALUE;
+                else if (captured == QUEEN) cap_value = QUEEN_VALUE;
+                score = 200000 + cap_value;
+            } else {
+                // Losing capture: lower priority
+                score = -100000;
+            }
         }
         // Killer moves
         else if (ss->ply < MAX_PLY) {
@@ -221,6 +233,14 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
 
     for (ExtMove* it = moves; it != end; ++it) {
         Move m = it->move;
+
+        // Capture pruning: skip losing captures at low depths
+        if (!pv_node && depth <= 4 && m.is_capture() && !m.is_promotion()) {
+            // Skip losing captures (negative SEE) when not at root
+            if (ss->ply > 0 && !pos.see_ge(m, VALUE_ZERO)) {
+                continue;
+            }
+        }
 
         // Late Move Reduction (LMR)
         Depth new_depth = depth - 1;
