@@ -32,10 +32,23 @@ constexpr int futility_margin(int depth, bool improving) {
     return depth * (150 + improving * 50);
 }
 
+// Search start time for time management
+static std::chrono::steady_clock::time_point search_start;
+
 // Check time
 void check_time() {
     if (limits.nodes && nodes >= uint64_t(limits.nodes)) {
         stop = true;
+        return;
+    }
+
+    // Check movetime limit
+    if (limits.movetime) {
+        auto now = std::chrono::steady_clock::now();
+        int elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(now - search_start).count();
+        if (elapsed >= limits.movetime) {
+            stop = true;
+        }
     }
 }
 
@@ -379,8 +392,8 @@ Move search(Position& pos, Limits& lim) {
     stop = false;
     nodes = 0;
 
-    // Track search start time for NPS calculation
-    auto search_start = std::chrono::steady_clock::now();
+    // Track search start time for time management
+    search_start = std::chrono::steady_clock::now();
 
     Move best_move = MOVE_NONE;
     Value best_value = -VALUE_INFINITE;
@@ -445,6 +458,9 @@ Move search(Position& pos, Limits& lim) {
                 if (stop.load(std::memory_order_relaxed)) {
                     break;
                 }
+
+                // Check time more frequently at root for movetime
+                check_time();
 
                 pos.do_move(it->move);
                 Value value = -search_worker(pos, stack + 1, -beta, -alpha, root_depth - 1, false);
