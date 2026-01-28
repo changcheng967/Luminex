@@ -242,6 +242,18 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
             }
         }
 
+        // Late move pruning (futility pruning): skip quiet moves that can't improve alpha
+        if (!pv_node && depth <= 3 && ss->ply > 0 && !pos.is_check() &&
+            !m.is_capture() && !m.is_promotion() && !m.is_castling()) {
+            // Futility margin: depth * 100 centipawns
+            int margin = depth * 100;
+
+            // Check if move is futile (eval + margin < alpha)
+            if (eval + margin < alpha) {
+                continue;
+            }
+        }
+
         // Late Move Reduction (LMR)
         Depth new_depth = depth - 1;
         bool do_lmr = !pv_node && depth >= 3 && moves_played >= 3 && !m.is_capture() && !m.is_promotion() && !m.is_castling();
