@@ -289,6 +289,69 @@ Value evaluate(const Position& pos) {
         Square ksq = pos.king_sq(c);
         mg_score += sign * PST_MG_TABLE[int(c)][int(KING)][int(ksq)];
         eg_score += sign * PST_EG_TABLE[int(c)][int(KING)][int(ksq)];
+
+        // King safety - pawn shield (middle game only)
+        Rank krank = rank_of(ksq);
+        File kfile = file_of(ksq);
+
+        // Only evaluate pawn shield when king is on ranks 1-2 (white) or 6-7 (black)
+        bool king_on_back_rank = (c == WHITE && krank <= RANK_2) || (c == BLACK && krank >= RANK_7);
+
+        if (king_on_back_rank) {
+            // Check pawn shield squares
+            // In front of king
+            Square front_sq = relative_square(c, make_square(kfile, RANK_2));
+            Bitboard shield_squares = square_bb(front_sq);
+
+            // Diagonally in front
+            if (kfile > FILE_A) {
+                shield_squares |= square_bb(relative_square(c, make_square(File(kfile - 1), RANK_2)));
+            }
+            if (kfile < FILE_H) {
+                shield_squares |= square_bb(relative_square(c, make_square(File(kfile + 1), RANK_2)));
+            }
+
+            // Bonus for pawn shield
+            int shield_count = popcount(pos.pieces(c, PAWN) & shield_squares);
+            mg_score += sign * shield_count * 15;
+
+            // Penalty for missing shield (especially in center files)
+            if (kfile >= FILE_C && kfile <= FILE_F) {
+                mg_score -= sign * (3 - shield_count) * 20;
+            }
+
+            // Second rank shield bonus
+            Square front_sq2 = relative_square(c, make_square(kfile, RANK_3));
+            Bitboard shield_squares2 = square_bb(front_sq2);
+            if (kfile > FILE_A) {
+                shield_squares2 |= square_bb(relative_square(c, make_square(File(kfile - 1), RANK_3)));
+            }
+            if (kfile < FILE_H) {
+                shield_squares2 |= square_bb(relative_square(c, make_square(File(kfile + 1), RANK_3)));
+            }
+
+            int shield_count2 = popcount(pos.pieces(c, PAWN) & shield_squares2);
+            mg_score += sign * shield_count2 * 5;
+        }
+
+        // Penalty for open files near king (files with no pawns)
+        Bitboard all_pawns = pos.pieces(PAWN);
+        int open_file_penalty = 0;
+
+        // Check king's file
+        if (!(all_pawns & file_bb(kfile))) {
+            open_file_penalty += 20;
+        }
+
+        // Check adjacent files
+        if (kfile > FILE_A && !(all_pawns & file_bb(File(kfile - 1)))) {
+            open_file_penalty += 15;
+        }
+        if (kfile < FILE_H && !(all_pawns & file_bb(File(kfile + 1)))) {
+            open_file_penalty += 15;
+        }
+
+        mg_score -= sign * open_file_penalty;
     }
 
     // Bishop pair bonus
