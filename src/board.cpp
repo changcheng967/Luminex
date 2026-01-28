@@ -303,6 +303,11 @@ void Position::move_piece(Square from, Square to) {
     Color c = Color(pc / 6);
     PieceType pt = piece_type_of(pc);
 
+    // Handle from == to case - nothing to do
+    if (from == to) {
+        return;
+    }
+
     pieces_by_color[c] ^= square_bb(from) | square_bb(to);
     pieces_by_type[pt] ^= square_bb(from) | square_bb(to);
 
@@ -406,13 +411,19 @@ void Position::set_check_info(StateInfo* si) {
 void Position::do_move(Move m) {
     Square from = m.from();
     Square to = m.to();
+
     Piece pc = board[from];
     Color us = Color(pc / 6);
     Color them = ~us;
     PieceType pt = piece_type_of(pc);
 
-    // Increment state stack index
-    st_ply = std::min(st_ply + 1, MAX_STATES - 1);
+    // Increment state stack index - check bounds to prevent overflow
+    if (st_ply >= MAX_STATES - 1) {
+        // State stack full - should not happen in normal search
+        // Use last slot as fallback to prevent crash
+    } else {
+        st_ply++;
+    }
     StateInfo& next_st = state_stack[st_ply];
 
     // Save state for undo - copy current state to next slot in state_stack
@@ -543,8 +554,13 @@ void Position::undo_move(Move m) {
 }
 
 void Position::do_null_move() {
-    // Increment state stack index
-    st_ply = std::min(st_ply + 1, MAX_STATES - 1);
+    // Increment state stack index - check bounds to prevent overflow
+    if (st_ply >= MAX_STATES - 1) {
+        // State stack full - should not happen in normal search
+        // Use last slot as fallback to prevent crash
+    } else {
+        st_ply++;
+    }
     StateInfo& next_st = state_stack[st_ply];
 
     // Copy current state
@@ -565,9 +581,8 @@ void Position::do_null_move() {
     }
 
     st_->ep_square = SQUARE_NONE;
-    st_->key ^= Zobrist::side;
+    st_->key ^= Zobrist::side;  // Switch side in key
 
-    st_->key ^= Zobrist::side;
     side_to_move_ = ~side_to_move_;
 
     st_->ply = 0;

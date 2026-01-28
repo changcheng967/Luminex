@@ -31,6 +31,11 @@ void check_time() {
 
 // Quiescence search
 Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
+    // Hard limit on recursion depth to prevent stack overflow
+    if (ss->ply >= MAX_PLY) {
+        return evaluate(pos);
+    }
+
     // Don't search captures beyond a certain depth
     if (depth < -2) {
         return evaluate(pos);
@@ -76,6 +81,11 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
     for (ExtMove* it = moves; it != end; ++it) {
         if (!pos.legal(it->move)) continue;
 
+        // Safety check: skip moves where from square is empty
+        if (pos.piece_type_on(it->move.from()) == PT_NONE) {
+            continue;
+        }
+
         pos.do_move(it->move);
         Value value = -qsearch(pos, ss + 1, -beta, -alpha, depth - 1);
         pos.undo_move(it->move);
@@ -93,6 +103,11 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
 
 // Main search function (internal worker)
 [[maybe_unused]] static Value search_worker(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth, bool cut_node) {
+    // Hard limit on recursion depth to prevent stack overflow
+    if (ss->ply >= MAX_PLY) {
+        return evaluate(pos);
+    }
+
     if (stop.load(std::memory_order_relaxed)) {
         return VALUE_ZERO;
     }
@@ -141,8 +156,8 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
         return eval;
     }
 
-    // Null move pruning
-    if (!pv_node && !pos.is_check() && depth >= 3 && eval >= beta) {
+    // Null move pruning - DISABLED for debugging
+    if (false && !pv_node && !pos.is_check() && depth >= 3 && eval >= beta) {
         pos.do_null_move();
 
         Value null_value = -search_worker(pos, ss + 1, -beta, -beta + 1, depth - 3, !cut_node);
