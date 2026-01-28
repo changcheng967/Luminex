@@ -16,6 +16,7 @@ public:
     Move excluded_move = MOVE_NONE;
     Value static_eval = VALUE_ZERO;
     int move_count = 0;
+    bool improving = false;
     Stack* previous = nullptr;
 };
 

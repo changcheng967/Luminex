@@ -145,9 +145,13 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
     if (!pos.is_check()) {
         eval = evaluate(pos);
     }
+    ss->static_eval = eval;
 
-    // Futility pruning
-    if (!pv_node && !pos.is_check() && depth <= 3 && eval - futility_margin(depth, false) >= beta) {
+    // Compute improving flag: position is improving if eval is better than 2 plies ago
+    ss->improving = (ss->ply >= 2 && eval > (ss - 2)->static_eval);
+
+    // Futility pruning - use improving for better pruning decisions
+    if (!pv_node && !pos.is_check() && depth <= 3 && eval - futility_margin(depth, ss->improving) >= beta) {
         return eval;
     }
 
@@ -259,7 +263,7 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
         bool do_lmr = !pv_node && depth >= 3 && moves_played >= 3 && !m.is_capture() && !m.is_promotion() && !m.is_castling();
 
         if (do_lmr) {
-            // More aggressive reduction formula
+            // More aggressive reduction formula using improving flag
             // Base reduction + additional reduction for late moves
             int reduction = 1 + (moves_played - 3) / 3;
 
@@ -268,6 +272,9 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
 
             // Increase reduction at higher depths
             if (depth >= 6) reduction += 1;
+
+            // Reduce more when position is not improving
+            if (!ss->improving) reduction += 1;
 
             // Limit reduction
             if (reduction > depth / 2) reduction = depth / 2;
