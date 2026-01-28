@@ -35,21 +35,26 @@ constexpr int futility_margin(int depth, bool improving) {
 // Search start time for time management
 static std::chrono::steady_clock::time_point search_start;
 
-// Check time
-void check_time() {
+// Check time - returns true if time limit exceeded
+bool check_time() {
     if (limits.nodes && nodes >= uint64_t(limits.nodes)) {
         stop = true;
-        return;
+        return true;
     }
 
-    // Check movetime limit
+    // Check movetime limit - use 50% as buffer for movetime to ensure we don't exceed
     if (limits.movetime) {
         auto now = std::chrono::steady_clock::now();
         int elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(now - search_start).count();
-        if (elapsed >= limits.movetime) {
+        // Use 50% as buffer - aggressive stop to account for time spent during current depth
+        int limit = (limits.movetime / 2);
+        if (elapsed >= limit) {
             stop = true;
+            return true;
         }
     }
+
+    return false;
 }
 
 // Quiescence search
@@ -136,8 +141,8 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
 
     const bool pv_node = (beta - alpha > 1);
 
-    // Check time every 1024 nodes
-    if ((nodes & 1023) == 0) {
+    // Check time every 512 nodes for better time management
+    if ((nodes & 511) == 0) {
         check_time();
     }
 
@@ -478,9 +483,19 @@ Move search(Position& pos, Limits& lim) {
                     break;
                 }
 
+                // Check time before each root move (especially for movetime)
+                if (check_time()) {
+                    break;  // Time limit exceeded
+                }
+
                 pos.do_move(it->move);
                 Value value = -search_worker(pos, stack + 1, -beta, -alpha, root_depth - 1, false);
                 pos.undo_move(it->move);
+
+                // Check time after each root move
+                if (check_time()) {
+                    break;  // Time limit exceeded
+                }
 
                 if (value > depth_best_value) {
                     depth_best_value = value;
@@ -496,6 +511,8 @@ Move search(Position& pos, Limits& lim) {
                 }
             }
 
+            // Check time after all moves searched (before re-search or next depth)
+            check_time();
             if (stop.load(std::memory_order_relaxed)) break;
 
             // Check if we failed high or low and need to re-search
@@ -513,8 +530,8 @@ Move search(Position& pos, Limits& lim) {
 
             // Search completed successfully
             // Update overall best with this depth's result
-            // Use >= so we update best_move even when score stays same (e.g., mate in 1)
-            if (depth_best_value >= best_value) {
+            // Only update if we found a valid move (not MOVE_NONE)
+            if (depth_best_move != MOVE_NONE && depth_best_value >= best_value) {
                 best_value = depth_best_value;
                 best_move = depth_best_move;
             }
