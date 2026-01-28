@@ -68,16 +68,12 @@ void handle_position(Position& pos, const std::string& cmd) {
 
             // Check for promotion
             if (move_str.length() > 4) {
+                bool isCapture = pos.piece_type_on(to) != PT_NONE;
                 switch (move_str[4]) {
-                    case 'n': flags = MF_KNIGHT_PROMO; break;
-                    case 'b': flags = MF_BISHOP_PROMO; break;
-                    case 'r': flags = MF_ROOK_PROMO; break;
-                    case 'q': flags = MF_QUEEN_PROMO; break;
-                }
-                // Promotions are also captures
-                PieceType captured = pos.piece_type_on(to);
-                if (captured != PT_NONE) {
-                    flags |= MF_CAPTURE;
+                    case 'n': flags = isCapture ? MF_CAPTURE_PROMO_KNIGHT : MF_PROMO_KNIGHT; break;
+                    case 'b': flags = isCapture ? MF_CAPTURE_PROMO_BISHOP : MF_PROMO_BISHOP; break;
+                    case 'r': flags = isCapture ? MF_CAPTURE_PROMO_ROOK : MF_PROMO_ROOK; break;
+                    case 'q': flags = isCapture ? MF_CAPTURE_PROMO_QUEEN : MF_PROMO_QUEEN; break;
                 }
             } else if (pos.piece_type_on(to) != PT_NONE) {
                 flags = MF_CAPTURE;
@@ -91,7 +87,7 @@ void handle_position(Position& pos, const std::string& cmd) {
             // Check for en passant
             if (pos.piece_type_on(from) == PAWN && pos.piece_type_on(to) == PT_NONE &&
                 file_of(from) != file_of(to)) {
-                flags = MF_EN_PASSANT | MF_CAPTURE;
+                flags = MF_EN_PASSANT;
             }
 
             Move m(from, to, flags);

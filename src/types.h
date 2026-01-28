@@ -38,7 +38,7 @@ enum PieceType : uint8_t {
     ROOK,
     QUEEN,
     KING,
-    PT_NONE = 6,
+    PT_NONE = 255,  // Changed from 6 to avoid conflict with piece values
     ALL_PIECES = 7
 };
 
@@ -93,19 +93,34 @@ inline Piece make_piece(Color c, PieceType pt) { return static_cast<Piece>((c * 
 inline PieceType piece_type_of(Piece p) { return p == NO_PIECE ? PT_NONE : static_cast<PieceType>(p % 6); }
 inline Color color_of_piece(Piece p) { return p == NO_PIECE ? NO_COLOR : static_cast<Color>(p / 6); }
 
-// Move flags
+// Move flags (16-bit move encoding: from(6) to(6) flags(4))
+// Bits 0-5: destination square
+// Bits 6-11: source square
+// Bits 12-15: flags (direct value, not bitmask)
 enum MoveFlag : uint16_t {
-    MF_QUIET = 0,
-    MF_DOUBLE_PAWN = 1 << 0,
-    MF_CASTLING_KING = 1 << 1,
-    MF_CASTLING_QUEEN = 1 << 2,
-    MF_CAPTURE = 1 << 3,
-    MF_EN_PASSANT = 1 << 4,
-    MF_KNIGHT_PROMO = 1 << 5,
-    MF_BISHOP_PROMO = 1 << 6,
-    MF_ROOK_PROMO = 1 << 7,
-    MF_QUEEN_PROMO = 1 << 8,
-    MF_PROMOTION = MF_KNIGHT_PROMO | MF_BISHOP_PROMO | MF_ROOK_PROMO | MF_QUEEN_PROMO
+    // Bits 15:14 layout
+    // 00xx: special quiet moves (00, 01, 02, 03)
+    // 01xx: captures (04, 05)
+    // 10xx: promotions (06, 07, 08, 09)
+    // 11xx: capture + promotions (10, 11, 12, 13)
+
+    MF_QUIET = 0x0000,
+    MF_DOUBLE_PAWN = 0x1000,
+    MF_CASTLING_KING = 0x2000,
+    MF_CASTLING_QUEEN = 0x3000,
+
+    MF_CAPTURE = 0x4000,
+    MF_EN_PASSANT = 0x5000,
+
+    MF_PROMO_KNIGHT = 0x8000,
+    MF_PROMO_BISHOP = 0x9000,
+    MF_PROMO_ROOK = 0xA000,
+    MF_PROMO_QUEEN = 0xB000,
+
+    MF_CAPTURE_PROMO_KNIGHT = 0xC000,
+    MF_CAPTURE_PROMO_BISHOP = 0xD000,
+    MF_CAPTURE_PROMO_ROOK = 0xE000,
+    MF_CAPTURE_PROMO_QUEEN = 0xF000
 };
 
 // Move representation (16 bits)
@@ -123,16 +138,41 @@ public:
     constexpr uint16_t flags() const { return data_ & 0xF000; }
     constexpr uint16_t raw() const { return data_; }
 
-    constexpr bool is_capture() const { return flags() & MF_CAPTURE; }
-    constexpr bool is_promotion() const { return flags() & MF_PROMOTION; }
-    constexpr bool is_castling() const { return flags() & (MF_CASTLING_KING | MF_CASTLING_QUEEN); }
-    constexpr bool is_en_passant() const { return flags() & MF_EN_PASSANT; }
+    static constexpr Move promotion(Square from, Square to, PieceType pt, bool isCapture = false) {
+        uint16_t promo_flag = isCapture ? 0xC000 : 0x8000;  // Base for knight promo
+        if (pt == KNIGHT) promo_flag += 0;
+        else if (pt == BISHOP) promo_flag += 0x1000;
+        else if (pt == ROOK) promo_flag += 0x2000;
+        else if (pt == QUEEN) promo_flag += 0x3000;
+        return Move(from, to, promo_flag);
+    }
+
+    constexpr bool is_capture() const {
+        uint16_t f = flags();
+        return (f & 0xC000) == 0x4000 || (f & 0xC000) == 0xC000;  // 0x4xxx or 0xCxxx-Fxxx
+    }
+
+    constexpr bool is_promotion() const {
+        return (flags() & 0xC000) >= 0x8000;  // 0x8xxx to 0xFxxx
+    }
+
+    constexpr bool is_castling() const {
+        uint16_t f = flags();
+        return f == MF_CASTLING_KING || f == MF_CASTLING_QUEEN;
+    }
+
+    constexpr bool is_en_passant() const { return flags() == MF_EN_PASSANT; }
 
     constexpr PieceType promotion_type() const {
-        if (flags() & MF_KNIGHT_PROMO) return KNIGHT;
-        if (flags() & MF_BISHOP_PROMO) return BISHOP;
-        if (flags() & MF_ROOK_PROMO) return ROOK;
-        if (flags() & MF_QUEEN_PROMO) return QUEEN;
+        uint16_t f = flags();
+        if ((f & 0xC000) < 0x8000) return PT_NONE;  // Not a promotion
+        uint16_t low_bits = f & 0x3000;  // Bits 12-13
+        switch (low_bits) {
+            case 0x0000: return KNIGHT;
+            case 0x1000: return BISHOP;
+            case 0x2000: return ROOK;
+            case 0x3000: return QUEEN;
+        }
         return PT_NONE;
     }
 

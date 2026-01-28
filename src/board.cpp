@@ -300,29 +300,27 @@ void Position::remove_piece(Square s) {
 
 void Position::move_piece(Square from, Square to) {
     Piece pc = board[from];
-
-    if (pc == NO_PIECE) {
-        return;  // Invalid move, skip
-    }
-
+    if (pc == NO_PIECE) return;
     Color c = Color(pc / 6);
     PieceType pt = piece_type_of(pc);
-
-    if (int(c) > 1) {
-        return;  // Invalid color, skip
-    }
-
+    if (int(c) > 1) return;
     pieces_by_color[c] ^= square_bb(from) | square_bb(to);
     pieces_by_type[pt] ^= square_bb(from) | square_bb(to);
-
     board[from] = NO_PIECE;
     board[to] = pc;
-
     int idx = index[from];
+    if (idx == 0) {
+        int count = piece_count[int(c)][int(pt)];
+        for (int i = 0; i < count; ++i) {
+            if (piece_list[int(c)][int(pt)][i] == from) {
+                idx = i;
+                break;
+            }
+        }
+    }
     piece_list[int(c)][int(pt)][idx] = to;
     index[to] = idx;
     index[from] = 0;
-
     if (pt == KING) {
         king_square[int(c)] = to;
     }
@@ -576,23 +574,11 @@ void Position::undo_move(Move m) {
     }
 
     // Handle capture - restore the captured piece at 'to'
-    if (is_capture) {
-        // Directly restore the captured piece at 'to' without using put_piece
-        // This avoids issues with piece_count and piece_list getting out of sync
-        Piece captured_pc = make_piece(them_color, captured);
-        board[to] = captured_pc;
-        pieces_by_type[captured] |= square_bb(to);
-        pieces_by_color[them_color] |= square_bb(to);
-
-        // Update piece_list and index
-        int count = piece_count[int(them_color)][int(captured)];
-        piece_list[int(them_color)][int(captured)][count] = to;
-        index[to] = count;
-        piece_count[int(them_color)][int(captured)]++;
-
-        if (captured == KING) {
-            king_square[int(them_color)] = to;
-        }
+    // Note: En passant is handled separately above, so skip it here
+    // At this point, square 'to' is empty (we moved the piece back to 'from'),
+    // so we can safely use put_piece to restore the captured piece
+    if (is_capture && !m.is_en_passant() && captured != PT_NONE) {
+        put_piece(them_color, captured, to);
     }
 
     // Decrement state stack index and restore state pointer
@@ -663,7 +649,25 @@ bool Position::legal(Move m) const {
     // except castling and en passant which need special handling
     if (!is_check()) {
         if (m.is_castling()) {
-            // TODO: Verify castling legality
+            // Verify castling legality
+            // Check if king passes through or ends in check
+            // For castling, verify the path is clear and not attacked
+            if (to == (us == WHITE ? G1 : G8)) {
+                // Kingside castling: check f1/g1 squares (f8/g8 for black)
+                Square s1 = Square((us == WHITE ? F1 : F8));
+                Square s2 = Square((us == WHITE ? G1 : G8));
+                if ((pieces() & (square_bb(s1) | square_bb(s2))) != 0) return false;
+                if ((attackers_to(s1) & pieces(them)) != 0) return false;
+                if ((attackers_to(s2) & pieces(them)) != 0) return false;
+            } else {
+                // Queenside castling: check b1/c1/d1 squares (b8/c8/d8 for black)
+                Square s1 = Square((us == WHITE ? C1 : C8));
+                Square s2 = Square((us == WHITE ? D1 : D8));
+                Square s3 = Square((us == WHITE ? B1 : B8));
+                if ((pieces() & (square_bb(s1) | square_bb(s2) | square_bb(s3))) != 0) return false;
+                if ((attackers_to(s1) & pieces(them)) != 0) return false;
+                if ((attackers_to(s2) & pieces(them)) != 0) return false;
+            }
             return true;
         }
         if (m.is_en_passant()) {

@@ -27,10 +27,10 @@ ExtMove* generate_moves(const Position& pos, ExtMove* moveList) {
             if (relative_rank(us, to) == RANK_8) {
                 // Promotion
                 if constexpr (T == GEN_QUIET || T == GEN_ALL || T == GEN_LEGAL || T == GEN_NON_EVASION) {
-                    *moveList++ = Move(from, to, MF_QUEEN_PROMO);
-                    *moveList++ = Move(from, to, MF_ROOK_PROMO);
-                    *moveList++ = Move(from, to, MF_BISHOP_PROMO);
-                    *moveList++ = Move(from, to, MF_KNIGHT_PROMO);
+                    *moveList++ = Move(from, to, MF_PROMO_QUEEN);
+                    *moveList++ = Move(from, to, MF_PROMO_ROOK);
+                    *moveList++ = Move(from, to, MF_PROMO_BISHOP);
+                    *moveList++ = Move(from, to, MF_PROMO_KNIGHT);
                 }
             } else {
                 if constexpr (T == GEN_QUIET || T == GEN_ALL || T == GEN_LEGAL || T == GEN_NON_EVASION) {
@@ -59,15 +59,15 @@ ExtMove* generate_moves(const Position& pos, ExtMove* moveList) {
             if (relative_rank(us, to) == RANK_8) {
                 // Promotion capture
                 if constexpr (T == GEN_CAPTURE || T == GEN_ALL || T == GEN_LEGAL || T == GEN_EVASION || T == GEN_NON_EVASION) {
-                    *moveList++ = Move(from, to, MF_QUEEN_PROMO | MF_CAPTURE);
-                    *moveList++ = Move(from, to, MF_ROOK_PROMO | MF_CAPTURE);
-                    *moveList++ = Move(from, to, MF_BISHOP_PROMO | MF_CAPTURE);
-                    *moveList++ = Move(from, to, MF_KNIGHT_PROMO | MF_CAPTURE);
+                    *moveList++ = Move(from, to, MF_CAPTURE_PROMO_QUEEN);
+                    *moveList++ = Move(from, to, MF_CAPTURE_PROMO_ROOK);
+                    *moveList++ = Move(from, to, MF_CAPTURE_PROMO_BISHOP);
+                    *moveList++ = Move(from, to, MF_CAPTURE_PROMO_KNIGHT);
                 }
             } else if (to == pos.ep_square()) {
                 // En passant
                 if constexpr (T == GEN_CAPTURE || T == GEN_ALL || T == GEN_LEGAL || T == GEN_NON_EVASION) {
-                    *moveList++ = Move(from, to, MF_EN_PASSANT | MF_CAPTURE);
+                    *moveList++ = Move(from, to, MF_EN_PASSANT);
                 }
             } else {
                 // Normal capture

@@ -1,0 +1,3 @@
+C:/Users/chang/Downloads/Luminex/build/CMakeFiles/luminex.dir
+C:/Users/chang/Downloads/Luminex/build/CMakeFiles/edit_cache.dir
+C:/Users/chang/Downloads/Luminex/build/CMakeFiles/rebuild_cache.dir

@@ -1,5 +1,6 @@
 #include "luminex.h"
 #include <algorithm>
+#include <chrono>
 
 namespace luminex {
 
@@ -77,12 +78,6 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
     // Generate and search captures
     ExtMove moves[MAX_MOVES];
     ExtMove* end = generate<GEN_CAPTURE>(pos, moves);
-
-    // Sort by MVV-LVA (simplified)
-    std::sort(moves, end, [&pos](const ExtMove& a, const ExtMove& b) {
-        return mvv_lva(pos.piece_type_on(b.move.to()), KNIGHT) >
-               mvv_lva(pos.piece_type_on(a.move.to()), KNIGHT);
-    });
 
     for (ExtMove* it = moves; it != end; ++it) {
         if (!pos.legal(it->move)) continue;
@@ -310,6 +305,9 @@ Move search(Position& pos, Limits& lim) {
     stop = false;
     nodes = 0;
 
+    // Track search start time for NPS calculation
+    auto search_start = std::chrono::steady_clock::now();
+
     Move best_move = MOVE_NONE;
     Value best_value = -VALUE_INFINITE;
     root_score = best_value;
@@ -344,6 +342,10 @@ Move search(Position& pos, Limits& lim) {
         Value alpha = -VALUE_INFINITE;
         Value beta = VALUE_INFINITE;
 
+        // Reset best value for each depth
+        Value depth_best_value = -VALUE_INFINITE;
+        Move depth_best_move = MOVE_NONE;
+
         int move_idx = 0;
         for (ExtMove* it = moves; it != end; ++it, ++move_idx) {
             if (stop.load(std::memory_order_relaxed)) {
@@ -354,10 +356,9 @@ Move search(Position& pos, Limits& lim) {
             Value value = -search_worker(pos, stack + 1, -beta, -alpha, root_depth - 1, false);
             pos.undo_move(it->move);
 
-            if (value > best_value) {
-                best_value = value;
-                best_move = it->move;
-                root_score = best_value;
+            if (value > depth_best_value) {
+                depth_best_value = value;
+                depth_best_move = it->move;
             }
 
             if (value > alpha) {
@@ -369,8 +370,19 @@ Move search(Position& pos, Limits& lim) {
             }
         }
 
+        // Update overall best with this depth's result
+        if (depth_best_value > best_value) {
+            best_value = depth_best_value;
+            best_move = depth_best_move;
+        }
+        root_score = depth_best_value;
+
+        // Calculate elapsed time for NPS
+        auto search_end = std::chrono::steady_clock::now();
+        int time_ms = std::chrono::duration_cast<std::chrono::milliseconds>(search_end - search_start).count();
+
         // Send UCI info
-        uci_info(pos, root_depth, best_value, nodes.load(), 0);
+        uci_info(pos, root_depth, depth_best_value, nodes.load(), time_ms);
 
         if (stop.load(std::memory_order_relaxed)) break;
     }

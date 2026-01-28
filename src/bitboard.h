@@ -74,7 +74,9 @@ constexpr Bitboard BB_DIAGONAL_H1A8 = 0x0102040810204080ULL;
 constexpr Bitboard BB_CORNERS = BB_SQUARES[A1] | BB_SQUARES[H1] | BB_SQUARES[A8] | BB_SQUARES[H8];
 
 // Bitboard utility functions
-constexpr Bitboard square_bb(Square s) { return BB_SQUARES[s]; }
+constexpr Bitboard square_bb(Square s) {
+    return (s >= 0 && s < 64) ? BB_SQUARES[s] : BB_EMPTY;
+}
 constexpr Square lsb(Bitboard b) { return static_cast<Square>(std::countr_zero(b)); }
 constexpr Square msb(Bitboard b) { return static_cast<Square>(63 - std::countl_zero(b)); }
 constexpr int popcount(Bitboard b) { return static_cast<int>(std::popcount(b)); }
