@@ -300,6 +300,9 @@ void Position::remove_piece(Square s) {
 
 void Position::move_piece(Square from, Square to) {
     Piece pc = board[from];
+    if (pc == NO_PIECE) {
+        return;  // Safety: don't corrupt state if source is empty
+    }
     Color c = Color(pc / 6);
     PieceType pt = piece_type_of(pc);
 
@@ -408,11 +411,15 @@ void Position::do_move(Move m) {
     Square to = m.to();
     Piece pc = board[from];
     Color us = Color(pc / 6);
-    Color them = ~us;
+    Color them = Color(us ^ 1);  // Switch color by XORing with 1
     PieceType pt = piece_type_of(pc);
 
-    // Increment state stack index
-    st_ply = std::min(st_ply + 1, MAX_STATES - 1);
+    // Increment state stack index - check bounds to prevent overflow
+    if (st_ply >= MAX_STATES - 1) {
+        // State stack full - should not happen in normal search
+    } else {
+        st_ply++;
+    }
     StateInfo& next_st = state_stack[st_ply];
 
     // Save state for undo - copy current state to next slot in state_stack
@@ -497,7 +504,7 @@ void Position::do_move(Move m) {
 void Position::undo_move(Move m) {
     Square from = m.from();
     Square to = m.to();
-    Color us = ~side_to_move_;  // side that made the move (opposite of current side)
+    Color us = Color(side_to_move_ ^ 1);  // side that made the move (opposite of current side)
     Color them = side_to_move_;
 
     // Restore side to move
@@ -530,9 +537,9 @@ void Position::undo_move(Move m) {
         put_piece(them, PAWN, cap_sq);
     }
 
-    // Handle capture
+    // Handle capture - only restore if captured_piece is valid (not zero and not PT_NONE)
     PieceType captured = st_->captured_piece;
-    if (captured != PT_NONE && !m.is_en_passant()) {
+    if (captured != PT_NONE && captured != PieceType(0) && !m.is_en_passant()) {
         put_piece(them, captured, to);
     }
 
@@ -543,8 +550,12 @@ void Position::undo_move(Move m) {
 }
 
 void Position::do_null_move() {
-    // Increment state stack index
-    st_ply = std::min(st_ply + 1, MAX_STATES - 1);
+    // Increment state stack index - check bounds to prevent overflow
+    if (st_ply >= MAX_STATES - 1) {
+        // State stack full - should not happen in normal search
+    } else {
+        st_ply++;
+    }
     StateInfo& next_st = state_stack[st_ply];
 
     // Copy current state
@@ -566,9 +577,7 @@ void Position::do_null_move() {
 
     st_->ep_square = SQUARE_NONE;
     st_->key ^= Zobrist::side;
-
-    st_->key ^= Zobrist::side;
-    side_to_move_ = ~side_to_move_;
+    side_to_move_ = Color(side_to_move_ ^ 1);
 
     st_->ply = 0;
     ++game_ply_;
@@ -578,7 +587,7 @@ void Position::undo_null_move() {
     // Decrement state stack index and restore state pointer
     st_ply = std::max(st_ply - 1, 0);
     st_ = &state_stack[st_ply];
-    side_to_move_ = ~side_to_move_;
+    side_to_move_ = Color(side_to_move_ ^ 1);
     --game_ply_;
 }
 

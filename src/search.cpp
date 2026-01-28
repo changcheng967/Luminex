@@ -31,6 +31,11 @@ void check_time() {
 
 // Quiescence search
 Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
+    // Check for max ply to prevent stack overflow
+    if (ss->ply >= MAX_PLY) {
+        return evaluate(pos);
+    }
+
     // Don't search captures beyond a certain depth
     if (depth < -2) {
         return evaluate(pos);
@@ -93,6 +98,11 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
 
 // Main search function (internal worker)
 [[maybe_unused]] static Value search_worker(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth, bool cut_node) {
+    // Check for max ply to prevent stack overflow
+    if (ss->ply >= MAX_PLY) {
+        return evaluate(pos);
+    }
+
     if (stop.load(std::memory_order_relaxed)) {
         return VALUE_ZERO;
     }

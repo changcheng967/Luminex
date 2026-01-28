@@ -7,7 +7,7 @@ namespace luminex {
 template<GenType T>
 ExtMove* generate_moves(const Position& pos, ExtMove* moveList) {
     Color us = pos.side_to_move();
-    Color them = ~us;
+    Color them = Color(us ^ 1);  // Switch color by XORing with 1
     Square ksq = pos.king_sq(us);
 
     [[maybe_unused]] const Bitboard pinned = pos.pinned();
