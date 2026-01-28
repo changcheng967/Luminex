@@ -259,11 +259,22 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
         bool do_lmr = !pv_node && depth >= 3 && moves_played >= 3 && !m.is_capture() && !m.is_promotion() && !m.is_castling();
 
         if (do_lmr) {
-            // Reduce depth based on moves played
-            int reduction = 1 + (moves_played - 3) / 8;
+            // More aggressive reduction formula
+            // Base reduction + additional reduction for late moves
+            int reduction = 1 + (moves_played - 3) / 3;
+
+            // Increase reduction for cut nodes
             if (cut_node) reduction += 1;
+
+            // Increase reduction at higher depths
+            if (depth >= 6) reduction += 1;
+
+            // Limit reduction
             if (reduction > depth / 2) reduction = depth / 2;
+            if (reduction > 4) reduction = 4;  // Maximum reduction
+
             new_depth = depth - 1 - reduction;
+            if (new_depth < 1) new_depth = 1;
         }
 
         pos.do_move(m);
