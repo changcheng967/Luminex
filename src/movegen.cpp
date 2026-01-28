@@ -50,7 +50,9 @@ ExtMove* generate_moves(const Position& pos, ExtMove* moveList) {
         }
 
         // Pawn captures
-        Bitboard targets = pos.pieces(them) | (T == GEN_EVASION ? 0 : square_bb(pos.ep_square()));
+        // Exclude enemy king from captures
+        Bitboard their_pieces = pos.pieces(them) & ~pos.pieces(them, KING);
+        Bitboard targets = their_pieces | (T == GEN_EVASION ? 0 : square_bb(pos.ep_square()));
         Bitboard attacks = pawn_attacks_bb(us, from) & targets;
 
         while (attacks) {
@@ -82,7 +84,10 @@ ExtMove* generate_moves(const Position& pos, ExtMove* moveList) {
     Bitboard knights = pos.pieces(us, KNIGHT);
     while (knights) {
         Square from = pop_lsb(knights);
-        Bitboard attacks = knight_attacks_bb(from) & pos.pieces(them);
+        // Captures: enemy pieces except king
+        Bitboard their_pieces = pos.pieces(them) & ~pos.pieces(them, KING);
+        Bitboard attacks = knight_attacks_bb(from) & their_pieces;
+        // Quiets: empty squares only
         Bitboard quiets = knight_attacks_bb(from) & ~pos.pieces();
 
         // Captures
@@ -107,7 +112,10 @@ ExtMove* generate_moves(const Position& pos, ExtMove* moveList) {
     Bitboard bishops = pos.pieces(us, BISHOP);
     while (bishops) {
         Square from = pop_lsb(bishops);
-        Bitboard attacks = bb_diag_attacks(from, pos.pieces()) & pos.pieces(them);
+        // Captures: enemy pieces except king
+        Bitboard their_pieces = pos.pieces(them) & ~pos.pieces(them, KING);
+        Bitboard attacks = bb_diag_attacks(from, pos.pieces()) & their_pieces;
+        // Quiets: empty squares only
         Bitboard quiets = bb_diag_attacks(from, pos.pieces()) & ~pos.pieces();
 
         // Captures
@@ -132,7 +140,10 @@ ExtMove* generate_moves(const Position& pos, ExtMove* moveList) {
     Bitboard rooks = pos.pieces(us, ROOK);
     while (rooks) {
         Square from = pop_lsb(rooks);
-        Bitboard attacks = (bb_rank_attacks(from, pos.pieces()) | bb_file_attacks(from, pos.pieces())) & pos.pieces(them);
+        // Captures: enemy pieces except king (kings cannot be captured)
+        Bitboard their_pieces = pos.pieces(them) & ~pos.pieces(them, KING);
+        Bitboard attacks = (bb_rank_attacks(from, pos.pieces()) | bb_file_attacks(from, pos.pieces())) & their_pieces;
+        // Quiets: empty squares only (king squares are NOT valid destinations)
         Bitboard quiets = (bb_rank_attacks(from, pos.pieces()) | bb_file_attacks(from, pos.pieces())) & ~pos.pieces();
 
         // Captures
@@ -157,7 +168,10 @@ ExtMove* generate_moves(const Position& pos, ExtMove* moveList) {
     Bitboard queens = pos.pieces(us, QUEEN);
     while (queens) {
         Square from = pop_lsb(queens);
-        Bitboard attacks = queen_attacks_bb(from, pos.pieces()) & pos.pieces(them);
+        // Captures: enemy pieces except king
+        Bitboard their_pieces = pos.pieces(them) & ~pos.pieces(them, KING);
+        Bitboard attacks = queen_attacks_bb(from, pos.pieces()) & their_pieces;
+        // Quiets: empty squares only
         Bitboard quiets = queen_attacks_bb(from, pos.pieces()) & ~pos.pieces();
 
         // Captures
@@ -179,7 +193,9 @@ ExtMove* generate_moves(const Position& pos, ExtMove* moveList) {
     }
 
     // King
-    Bitboard king_attacks = king_attacks_bb(ksq) & pos.pieces(them);
+    // Exclude enemy king from captures (king cannot capture enemy king)
+    Bitboard their_pieces = pos.pieces(them) & ~pos.pieces(them, KING);
+    Bitboard king_attacks = king_attacks_bb(ksq) & their_pieces;
     Bitboard king_quiets = king_attacks_bb(ksq) & ~pos.pieces();
 
     // King captures

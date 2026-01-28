@@ -459,8 +459,16 @@ void Position::do_move(Move m) {
     // Handle capture
     PieceType captured = piece_type_on(to);
     if (captured != PT_NONE) {
-        remove_piece(to);
-        st_->key ^= Zobrist::psq[int(them)][int(captured)][int(to)];
+        if (captured == KING) {
+            // "Capturing" the king means checkmate
+            // Remove the king from the board so the checkmate detection works
+            remove_piece(to);
+            st_->key ^= Zobrist::psq[int(them)][int(KING)][int(to)];
+        } else {
+            // Normal capture
+            remove_piece(to);
+            st_->key ^= Zobrist::psq[int(them)][int(captured)][int(to)];
+        }
     }
 
     // Handle promotion
@@ -718,11 +726,6 @@ bool Position::legal(Move m) const {
 
     Color us = side_to_move_;
     Color them = Color(us ^ 1);
-
-    // King cannot be captured
-    if (piece_type_on(to) == KING) {
-        return false;
-    }
 
     // If our king is not in check, all pseudo-legal moves are legal
     // except castling and en passant which need special handling

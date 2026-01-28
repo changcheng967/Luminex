@@ -1,0 +1,4 @@
+uci
+position fen 4k3/8/8/8/8/8/8/4R3 w - - 0 1
+go depth 2
+quit

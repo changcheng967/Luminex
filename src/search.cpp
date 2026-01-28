@@ -399,6 +399,21 @@ Move search(Position& pos, Limits& lim) {
     Value best_value = -VALUE_INFINITE;
     root_score = best_value;
 
+    // Check if we have any legal moves at all
+    ExtMove test_moves[MAX_MOVES];
+    ExtMove* test_end = generate<GEN_LEGAL>(pos, test_moves);
+    if (test_moves == test_end) {
+        // No legal moves - checkmate or stalemate
+        if (pos.is_check()) {
+            // Checkmate
+            std::cout << "info depth 1 score mate 0 nodes 0 nps 0" << std::endl;
+        } else {
+            // Stalemate
+            std::cout << "info depth 1 score cp 0 nodes 0 nps 0" << std::endl;
+        }
+        return MOVE_NONE;  // No move to make
+    }
+
     // Initialize search stack
     for (int i = 0; i < MAX_PLY_PLUS_6; ++i) {
         stack[i].ply = i;
@@ -498,7 +513,8 @@ Move search(Position& pos, Limits& lim) {
 
             // Search completed successfully
             // Update overall best with this depth's result
-            if (depth_best_value > best_value) {
+            // Use >= so we update best_move even when score stays same (e.g., mate in 1)
+            if (depth_best_value >= best_value) {
                 best_value = depth_best_value;
                 best_move = depth_best_move;
             }
@@ -524,14 +540,15 @@ void uci_info([[maybe_unused]] const Position& pos, int depth, Value score, uint
     std::cout << "info depth " << depth << " score ";
 
     // Handle mate scores
-    if (score >= VALUE_MATE_IN_MAX_PLY) {
+    // Note: -VALUE_INFINITE is not a mate score, it means no valid search result
+    if (score >= VALUE_MATE_IN_MAX_PLY && score < VALUE_INFINITE) {
         // Mate in N moves (convert plies to moves)
         int mate_in = (VALUE_MATE - score + 1) / 2;
         std::cout << "mate " << mate_in;
-    } else if (score <= -VALUE_MATE_IN_MAX_PLY) {
+    } else if (score <= -VALUE_MATE_IN_MAX_PLY && score > -VALUE_INFINITE) {
         // Being mated in N moves
-        int mate_in = (-VALUE_MATE - score + 1) / 2;
-        std::cout << "mate -" << mate_in;
+        int mate_in = -(VALUE_MATE + score + 1) / 2;
+        std::cout << "mate " << mate_in;
     } else {
         // Normal score in centipawns
         int score_cp = score * 100 / PAWN_VALUE;

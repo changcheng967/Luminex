@@ -48,6 +48,15 @@ void handle_position(Position& pos, const std::string& cmd) {
     if (fen == "startpos") {
         fen = "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1";
     }
+    // Remove "fen" prefix if present
+    else if (fen.size() >= 3 && fen.substr(0, 3) == "fen") {
+        size_t fen_start = fen.find_first_not_of(" \t", 3);
+        if (fen_start != std::string::npos) {
+            fen = fen.substr(fen_start);
+        } else {
+            fen = "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1";
+        }
+    }
 
     pos.set(fen);
 
