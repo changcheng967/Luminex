@@ -433,6 +433,10 @@ Move search(Position& pos, Limits& lim) {
 
     // Iterative deepening
     for (root_depth = 1; root_depth <= limits.depth; ++root_depth) {
+        // Check time before starting a new depth (for movetime)
+        check_time();
+        if (stop.load(std::memory_order_relaxed)) break;
+
         // Aspiration window: use narrow window after depth 4
         Value alpha, beta;
         Value delta = Value(PAWN_VALUE);  // Initial window size (one pawn)
@@ -458,9 +462,6 @@ Move search(Position& pos, Limits& lim) {
                 if (stop.load(std::memory_order_relaxed)) {
                     break;
                 }
-
-                // Check time more frequently at root for movetime
-                check_time();
 
                 pos.do_move(it->move);
                 Value value = -search_worker(pos, stack + 1, -beta, -alpha, root_depth - 1, false);
