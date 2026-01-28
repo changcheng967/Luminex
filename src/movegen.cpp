@@ -157,8 +157,8 @@ ExtMove* generate_moves(const Position& pos, ExtMove* moveList) {
     Bitboard queens = pos.pieces(us, QUEEN);
     while (queens) {
         Square from = pop_lsb(queens);
-        Bitboard attacks = queen_attacks_bb(from) & pos.pieces(them);
-        Bitboard quiets = queen_attacks_bb(from) & ~pos.pieces();
+        Bitboard attacks = queen_attacks_bb(from, pos.pieces()) & pos.pieces(them);
+        Bitboard quiets = queen_attacks_bb(from, pos.pieces()) & ~pos.pieces();
 
         // Captures
         if constexpr (T == GEN_CAPTURE || T == GEN_ALL || T == GEN_LEGAL || T == GEN_EVASION || T == GEN_NON_EVASION) {
@@ -229,8 +229,7 @@ ExtMove* generate(const Position& pos, ExtMove* moveList) {
         // Filter for legal moves
         ExtMove* legal_end = start;
         for (ExtMove* it = start; it != end; ++it) {
-            bool legal = pos.legal(it->move);
-            if (legal) {
+            if (pos.legal(it->move)) {
                 *(legal_end++) = *it;
             }
         }

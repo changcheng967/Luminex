@@ -189,7 +189,7 @@ inline Bitboard rook_attacks_bb(Square s) {
     return rank_bb(rank_of(s)) | file_bb(file_of(s));
 }
 
-// Queen attacks
+// Queen attacks (no blocking - for when you want all squares on rank/file/diag)
 inline Bitboard queen_attacks_bb(Square s) {
     return rook_attacks_bb(s) | bishop_attacks_bb(s);
 }

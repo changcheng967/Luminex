@@ -147,6 +147,11 @@ Bitboard bb_rank_attacks(Square s, Bitboard occupied);
 Bitboard bb_file_attacks(Square s, Bitboard occupied);
 Bitboard bb_diag_attacks(Square s, Bitboard occupied);
 
+// Queen attacks with blocking pieces
+inline Bitboard queen_attacks_bb(Square s, Bitboard occupied) {
+    return (bb_rank_attacks(s, occupied) | bb_file_attacks(s, occupied) | bb_diag_attacks(s, occupied));
+}
+
 // Zobrist initialization
 void init_zobrist();
 

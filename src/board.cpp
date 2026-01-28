@@ -344,10 +344,10 @@ Bitboard Position::slider_blockers([[maybe_unused]] Bitboard sliders, Bitboard& 
     // Snipers are sliders that attack our king when one piece is removed
     Bitboard snipers = 0;
 
-    snipers |= (pieces(~side_to_move_, BISHOP, QUEEN) & BB_DIAGONAL_A1H8) & line_bb(ksq, Square(ksq ^ 56));
-    snipers |= (pieces(~side_to_move_, BISHOP, QUEEN) & BB_DIAGONAL_H1A8) & line_bb(ksq, ksq);
-    snipers |= (pieces(~side_to_move_, ROOK, QUEEN) & rank_bb(rank_of(ksq))) & line_bb(ksq, ksq);
-    snipers |= (pieces(~side_to_move_, ROOK, QUEEN) & file_bb(file_of(ksq))) & line_bb(ksq, ksq);
+    snipers |= (pieces(Color(side_to_move_ ^ 1), BISHOP, QUEEN) & BB_DIAGONAL_A1H8) & line_bb(ksq, Square(ksq ^ 56));
+    snipers |= (pieces(Color(side_to_move_ ^ 1), BISHOP, QUEEN) & BB_DIAGONAL_H1A8) & line_bb(ksq, ksq);
+    snipers |= (pieces(Color(side_to_move_ ^ 1), ROOK, QUEEN) & rank_bb(rank_of(ksq))) & line_bb(ksq, ksq);
+    snipers |= (pieces(Color(side_to_move_ ^ 1), ROOK, QUEEN) & file_bb(file_of(ksq))) & line_bb(ksq, ksq);
 
     Bitboard occupancy = pieces() ^ snipers;
 
@@ -372,24 +372,24 @@ void Position::set_check_info(StateInfo* si) {
     si->block_checkers = 0;
 
     Square ksq = king_square[side_to_move_];
-    si->block_checkers = slider_blockers(pieces(~side_to_move_), si->pinned);
+    si->block_checkers = slider_blockers(pieces(Color(side_to_move_ ^ 1)), si->pinned);
 
     // Pawn checks
-    Bitboard pawns = pieces(~side_to_move_, PAWN);
+    Bitboard pawns = pieces(Color(side_to_move_ ^ 1), PAWN);
     if (pawns) {
-        Bitboard pawn_checks = pawn_attacks_bb(~side_to_move_, ksq) & pawns;
+        Bitboard pawn_checks = pawn_attacks_bb(Color(side_to_move_ ^ 1), ksq) & pawns;
         si->checkers |= pawn_checks;
     }
 
     // Knight checks
-    Bitboard knights = pieces(~side_to_move_, KNIGHT);
+    Bitboard knights = pieces(Color(side_to_move_ ^ 1), KNIGHT);
     if (knights) {
         Bitboard knight_checks = knight_attacks_bb(ksq) & knights;
         si->checkers |= knight_checks;
     }
 
     // Bishop/Queen diagonal checks
-    Color them = ~side_to_move_;
+    Color them = Color(side_to_move_ ^ 1);
     Bitboard bishop_queens = pieces(them, BISHOP, QUEEN);
     if (bishop_queens) {
         Bitboard diag_attacks = bb_diag_attacks(ksq, pieces());
@@ -397,7 +397,7 @@ void Position::set_check_info(StateInfo* si) {
     }
 
     // Rook/Queen straight checks
-    Bitboard rook_queens = pieces(~side_to_move_, ROOK, QUEEN);
+    Bitboard rook_queens = pieces(Color(side_to_move_ ^ 1), ROOK, QUEEN);
     if (rook_queens) {
         Bitboard straight_attacks = (bb_rank_attacks(ksq, pieces()) | bb_file_attacks(ksq, pieces()));
         si->checkers |= straight_attacks & rook_queens;
@@ -604,7 +604,7 @@ bool Position::legal(Move m) const {
     Square to = m.to();
 
     Color us = side_to_move_;
-    Color them = ~us;
+    Color them = Color(us ^ 1);
 
     // King cannot be captured
     if (piece_type_on(to) == KING) {
@@ -641,9 +641,10 @@ bool Position::legal(Move m) const {
         return true;
     }
 
-    // Normal move must be a blocking move or capture of checking piece
+    // If not aligned with king, can only be legal if it captures the checking piece
     if (!aligned(from, to, ksq)) {
-        return false;
+        // Check if this move captures a piece on the checking line
+        return (checkers() & square_bb(to));
     }
 
     return true;
@@ -699,7 +700,7 @@ bool Position::pseudo_legal(const Move m) const {
         // Pawn capture
         if (to == Square(from + d + WEST) || to == Square(from + d + EAST)) {
             if (piece_on(to) != NO_PIECE) {
-                return Color(piece_on(to) / 6) == ~side_to_move_;
+                return Color(piece_on(to) / 6) == Color(side_to_move_ ^ 1);
             }
             return false;
         }

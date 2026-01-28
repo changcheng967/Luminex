@@ -188,6 +188,7 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
     }
 
     std::sort(moves, end, [&pos, tt_move](const ExtMove& a, const ExtMove& b) {
+        if (a.move == b.move) return false;  // Equality check first
         if (a.move == tt_move) return true;
         if (b.move == tt_move) return false;
 
