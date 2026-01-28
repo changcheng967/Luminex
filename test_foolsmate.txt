@@ -1,4 +1,0 @@
-uci
-position startpos moves f2f3 e7e6 g2g4 d8h4
-d
-quit
