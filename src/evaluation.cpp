@@ -182,13 +182,10 @@ Value evaluate(const Position& pos) {
         // Check for doubled pawns
         while (pawns) {
             Square sq = pop_lsb(pawns);
-            if (sq >= SQUARE_NONE) continue;  // Bounds check
             mg_score += sign * PAWN_VALUE;
             eg_score += sign * PAWN_VALUE;
-            if (int(c) < 2 && int(PAWN) < 8 && int(sq) < 64) {
-                mg_score += sign * PST_MG_TABLE[int(c)][int(PAWN)][int(sq)];
-                eg_score += sign * PST_EG_TABLE[int(c)][int(PAWN)][int(sq)];
-            }
+            mg_score += sign * PST_MG_TABLE[int(c)][int(PAWN)][int(sq)];
+            eg_score += sign * PST_EG_TABLE[int(c)][int(PAWN)][int(sq)];
 
             // Doubled pawn penalty
             File f = file_of(sq);
@@ -207,19 +204,37 @@ Value evaluate(const Position& pos) {
                 mg_score -= sign * 20;
                 eg_score -= sign * 20;
             }
+
+            // Passed pawn bonus
+            Bitboard ahead = 0;
+            Rank r = relative_rank(c, sq);
+            if (r < RANK_7) {
+                // Squares ahead of this pawn
+                for (int rr = int(r) + 1; rr <= int(RANK_7); ++rr) {
+                    Square rank_sq = relative_square(c, make_square(file_of(sq), Rank(rr)));
+                    ahead |= square_bb(rank_sq);
+                }
+            }
+            // No enemy pawns ahead
+            if (!(ahead & pos.pieces(Color(c ^ 1), PAWN))) {
+                mg_score += sign * (20 + r * 10);
+                eg_score += sign * (50 + r * 20);
+            }
         }
 
         // Knights
         Bitboard knights = pos.pieces(c, KNIGHT);
         while (knights) {
             Square sq = pop_lsb(knights);
-            if (sq >= SQUARE_NONE) continue;
             mg_score += sign * KNIGHT_VALUE;
             eg_score += sign * KNIGHT_VALUE;
-            if (int(c) < 2 && int(KNIGHT) < 8 && int(sq) < 64) {
-                mg_score += sign * PST_MG_TABLE[int(c)][int(KNIGHT)][int(sq)];
-                eg_score += sign * PST_EG_TABLE[int(c)][int(KNIGHT)][int(sq)];
-            }
+            mg_score += sign * PST_MG_TABLE[int(c)][int(KNIGHT)][int(sq)];
+            eg_score += sign * PST_EG_TABLE[int(c)][int(KNIGHT)][int(sq)];
+
+            // Knight mobility
+            int mobility = popcount(knight_attacks_bb(sq) & ~pos.pieces(c));
+            mg_score += sign * mobility * 4;
+            eg_score += sign * mobility * 8;
         }
 
         // Bishops
@@ -227,47 +242,53 @@ Value evaluate(const Position& pos) {
         bishop_count[int(c)] = popcount(bishops);
         while (bishops) {
             Square sq = pop_lsb(bishops);
-            if (sq >= SQUARE_NONE) continue;
             mg_score += sign * BISHOP_VALUE;
             eg_score += sign * BISHOP_VALUE;
-            if (int(c) < 2 && int(BISHOP) < 8 && int(sq) < 64) {
-                mg_score += sign * PST_MG_TABLE[int(c)][int(BISHOP)][int(sq)];
-                eg_score += sign * PST_EG_TABLE[int(c)][int(BISHOP)][int(sq)];
-            }
+            mg_score += sign * PST_MG_TABLE[int(c)][int(BISHOP)][int(sq)];
+            eg_score += sign * PST_EG_TABLE[int(c)][int(BISHOP)][int(sq)];
+
+            // Bishop mobility
+            int mobility = popcount(bb_diag_attacks(sq, pos.pieces()) & ~pos.pieces(c));
+            mg_score += sign * mobility * 5;
+            eg_score += sign * mobility * 10;
         }
 
         // Rooks
         Bitboard rooks = pos.pieces(c, ROOK);
         while (rooks) {
             Square sq = pop_lsb(rooks);
-            if (sq >= SQUARE_NONE) continue;
             mg_score += sign * ROOK_VALUE;
             eg_score += sign * ROOK_VALUE;
-            if (int(c) < 2 && int(ROOK) < 8 && int(sq) < 64) {
-                mg_score += sign * PST_MG_TABLE[int(c)][int(ROOK)][int(sq)];
-                eg_score += sign * PST_EG_TABLE[int(c)][int(ROOK)][int(sq)];
-            }
+            mg_score += sign * PST_MG_TABLE[int(c)][int(ROOK)][int(sq)];
+            eg_score += sign * PST_EG_TABLE[int(c)][int(ROOK)][int(sq)];
+
+            // Rook mobility
+            Bitboard occupied = pos.pieces();
+            int mobility = popcount((bb_rank_attacks(sq, occupied) | bb_file_attacks(sq, occupied)) & ~pos.pieces(c));
+            mg_score += sign * mobility * 2;
+            eg_score += sign * mobility * 8;
         }
 
         // Queens
         Bitboard queens = pos.pieces(c, QUEEN);
         while (queens) {
             Square sq = pop_lsb(queens);
-            if (sq >= SQUARE_NONE) continue;
             mg_score += sign * QUEEN_VALUE;
             eg_score += sign * QUEEN_VALUE;
-            if (int(c) < 2 && int(QUEEN) < 8 && int(sq) < 64) {
-                mg_score += sign * PST_MG_TABLE[int(c)][int(QUEEN)][int(sq)];
-                eg_score += sign * PST_EG_TABLE[int(c)][int(QUEEN)][int(sq)];
-            }
+            mg_score += sign * PST_MG_TABLE[int(c)][int(QUEEN)][int(sq)];
+            eg_score += sign * PST_EG_TABLE[int(c)][int(QUEEN)][int(sq)];
+
+            // Queen mobility
+            Bitboard occupied = pos.pieces();
+            int mobility = popcount(queen_attacks_bb(sq, occupied) & ~pos.pieces(c));
+            mg_score += sign * mobility * 1;
+            eg_score += sign * mobility * 2;
         }
 
         // King (position only, no material value)
         Square ksq = pos.king_sq(c);
-        if (ksq < SQUARE_NONE && int(c) < 2 && int(KING) < 8 && int(ksq) < 64) {
-            mg_score += sign * PST_MG_TABLE[int(c)][int(KING)][int(ksq)];
-            eg_score += sign * PST_EG_TABLE[int(c)][int(KING)][int(ksq)];
-        }
+        mg_score += sign * PST_MG_TABLE[int(c)][int(KING)][int(ksq)];
+        eg_score += sign * PST_EG_TABLE[int(c)][int(KING)][int(ksq)];
     }
 
     // Bishop pair bonus
