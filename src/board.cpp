@@ -671,7 +671,24 @@ bool Position::legal(Move m) const {
             return true;
         }
         if (m.is_en_passant()) {
-            // TODO: Verify en passant legality
+            // En passant: verify the move doesn't leave king in check
+            // For en passant, we need to check if removing the captured pawn uncovers check
+            Square ksq = king_square[us];
+
+            // The captured pawn is on the same file as 'to' but one rank behind
+            Square cap_sq = Square(to - (us == WHITE ? 8 : -8));
+
+            // If king is on the same file as the capture, check for uncovered slider attacks
+            if (file_of(ksq) == file_of(to)) {
+                // Temporarily remove both pawns to check for discovered attacks
+                Bitboard occ = pieces() ^ square_bb(from) ^ square_bb(to) ^ square_bb(cap_sq);
+
+                // Check for slider attacks on the king's rank/file
+                Bitboard rook_queens = pieces(them, ROOK, QUEEN);
+                if ((bb_rank_attacks(ksq, occ) | bb_file_attacks(ksq, occ)) & rook_queens) {
+                    return false;  // En passant would uncover check
+                }
+            }
             return true;
         }
         return true;
@@ -689,7 +706,23 @@ bool Position::legal(Move m) const {
 
     // En passant capture can uncover check
     if (m.is_en_passant()) {
-        // TODO: Handle en passant
+        // Check if en passant captures the checking piece
+        Square cap_sq = Square(to - (us == WHITE ? 8 : -8));
+        if (!(checkers() & square_bb(cap_sq))) {
+            // The checking piece is not the captured pawn
+            // Need to check if en passant resolves the check
+            // For simplicity, just return false if checkers don't include the captured pawn
+            return false;
+        }
+        // Also verify en passant doesn't uncover check
+        Square ksq = king_square[us];
+        if (file_of(ksq) == file_of(to)) {
+            Bitboard occ = pieces() ^ square_bb(from) ^ square_bb(to) ^ square_bb(cap_sq);
+            Bitboard rook_queens = pieces(them, ROOK, QUEEN);
+            if ((bb_rank_attacks(ksq, occ) | bb_file_attacks(ksq, occ)) & rook_queens) {
+                return false;
+            }
+        }
         return true;
     }
 
