@@ -1,3 +1,0 @@
-position startpos
-go depth 5
-quit
