@@ -279,6 +279,10 @@ void Position::put_piece(Color c, PieceType pt, Square s) {
 
 void Position::remove_piece(Square s) {
     Piece pc = board[s];
+    if (pc == NO_PIECE) {
+        std::cerr << "ERROR: remove_piece called on empty square! s=" << int(s) << std::endl;
+        return;
+    }
     Color c = Color(pc / 6);
     PieceType pt = piece_type_of(pc);
 
@@ -286,6 +290,12 @@ void Position::remove_piece(Square s) {
     pieces_by_color[c] ^= square_bb(s);
 
     int& count = piece_count[int(c)][int(pt)];
+    if (count <= 0) {
+        std::cerr << "ERROR: remove_piece count <= 0! c=" << int(c) << " pt=" << int(pt) << " count=" << count << " s=" << int(s) << std::endl;
+        // Print board state for debugging
+        std::cerr << "  board[s]=" << int(board[s]) << " side_to_move=" << int(side_to_move_) << " game_ply=" << game_ply_ << std::endl;
+        return;
+    }
     int idx = index[s];
     Square last_sq = piece_list[int(c)][int(pt)][count - 1];
 
@@ -414,7 +424,7 @@ void Position::do_move(Move m) {
 
     Piece pc = board[from];
     Color us = Color(pc / 6);
-    Color them = ~us;
+    Color them = Color(us ^ 1);  // Switch color by XORing with 1 (was ~us which is wrong!)
     PieceType pt = piece_type_of(pc);
 
     // Increment state stack index - check bounds to prevent overflow
@@ -508,7 +518,7 @@ void Position::do_move(Move m) {
 void Position::undo_move(Move m) {
     Square from = m.from();
     Square to = m.to();
-    Color us = ~side_to_move_;  // side that made the move (opposite of current side)
+    Color us = Color(side_to_move_ ^ 1);  // side that made the move (opposite of current side)
     Color them = side_to_move_;
 
     // Restore side to move
