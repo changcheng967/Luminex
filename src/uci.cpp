@@ -143,8 +143,9 @@ void handle_go(Position& pos, const std::string& cmd) {
 
     int time_ms = std::chrono::duration_cast<std::chrono::milliseconds>(end - start).count();
 
-    // Send final info
-    uci_info(pos, root_depth, root_score, nodes.load(), time_ms);
+    // Send final info (use actual depth searched, not incremented root_depth)
+    int actual_depth = (root_depth > 1) ? root_depth - 1 : 1;
+    uci_info(pos, actual_depth, root_score, nodes.load(), time_ms);
 
     // Send best move
     if (best_move) {
