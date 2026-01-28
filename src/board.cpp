@@ -300,11 +300,33 @@ void Position::remove_piece(Square s) {
 
 void Position::move_piece(Square from, Square to) {
     Piece pc = board[from];
+
     if (pc == NO_PIECE) {
-        return;  // Safety: don't corrupt state if source is empty
+        std::cerr << "ERROR: move_piece from=" << from << " to=" << to << " but board[from] is NO_PIECE, board[to]=" << int(board[to]) << std::endl;
+        return;
     }
+
     Color c = Color(pc / 6);
     PieceType pt = piece_type_of(pc);
+
+    if (int(c) > 1) {
+        std::cerr << "ERROR: move_piece from=" << from << " to=" << to << " board[from]=" << int(pc) << " c=" << int(c) << std::endl;
+        return;
+    }
+
+    // Debug: check if we're about to write an invalid value
+    if (int(pc) >= 12) {
+        std::cerr << "ERROR: move_piece from=" << from << " to=" << to << " about to write INVALID pc=" << int(pc) << " to board[" << to << "]" << std::endl;
+        return;
+    }
+
+    // Check if board[to] is already occupied (corruption check)
+    if (board[to] != NO_PIECE) {
+        Color existing_color = Color(board[to] / 6);
+        if (int(existing_color) > 1 || int(board[to]) >= 12) {
+            std::cerr << "ERROR: move_piece from=" << from << " to=" << to << " board[to] is corrupted with value " << int(board[to]) << std::endl;
+        }
+    }
 
     pieces_by_color[c] ^= square_bb(from) | square_bb(to);
     pieces_by_type[pt] ^= square_bb(from) | square_bb(to);
@@ -407,19 +429,44 @@ void Position::set_check_info(StateInfo* si) {
 }
 
 void Position::do_move(Move m) {
+    static int do_count = 0;
+    int my_id = ++do_count;
+
     Square from = m.from();
     Square to = m.to();
     Piece pc = board[from];
+
+    // Flag to track if this move should be executed
+    bool valid_move = true;
+
+    if (pc == NO_PIECE) {
+        std::cerr << "ERROR: do #" << my_id << " board[from=" << from << "] is NO_PIECE!" << std::endl;
+        valid_move = false;
+        // Don't return - continue to save state so undo can run
+    }
+
     Color us = Color(pc / 6);
     Color them = Color(us ^ 1);  // Switch color by XORing with 1
     PieceType pt = piece_type_of(pc);
 
-    // Increment state stack index - check bounds to prevent overflow
-    if (st_ply >= MAX_STATES - 1) {
-        // State stack full - should not happen in normal search
-    } else {
-        st_ply++;
+    if (int(us) > 1) {
+        std::cerr << "ERROR: do #" << my_id << " board[from=" << from << "]=" << int(pc) << " gives us=" << int(us) << std::endl;
+        valid_move = false;
+        // Don't return - continue to save state so undo can run
     }
+
+    if (my_id >= 100) {
+        std::cerr << "do #" << my_id << " raw=" << m.raw() << " from=" << from << " to=" << to
+                  << " side_to_move_=" << int(side_to_move_) << " us=" << int(us) << " them=" << int(them) << std::endl;
+    }
+
+    if (side_to_move_ != us) {
+        std::cerr << "ERROR: do #" << my_id << " side_to_move_=" << int(side_to_move_) << " != us=" << int(us) << std::endl;
+    }
+
+    // ALWAYS increment state stack index and save state (even for invalid moves)
+    // This ensures undo_move can run without causing st_ply underflow
+    st_ply++;
     StateInfo& next_st = state_stack[st_ply];
 
     // Save state for undo - copy current state to next slot in state_stack
@@ -432,15 +479,32 @@ void Position::do_move(Move m) {
     next_st.ply = st_->ply;
     next_st.move = m;
     next_st.captured_piece = piece_type_on(to);
+    next_st.move_was_executed = valid_move;  // Track if move was actually executed
 
     st_ = &next_st;
     ++game_ply_;
 
+    // Only execute the move if it's valid
+    if (!valid_move) {
+        // Mark that move was not executed so undo knows to skip
+        next_st.move_was_executed = false;
+        return;  // State was saved, but no pieces were moved
+    }
+
     // Handle capture
     PieceType captured = piece_type_on(to);
     if (captured != PT_NONE) {
-        remove_piece(to);
-        st_->key ^= Zobrist::psq[int(them)][int(captured)][int(to)];
+        // Check if we're about to remove an invalid piece
+        Piece piece_at_to = board[to];
+        if (int(piece_at_to) >= 12 || int(piece_at_to) < 0) {
+            std::cerr << "ERROR: do #" << my_id << " board[to=" << to << "] is CORRUPTED with value " << int(piece_at_to) << " before capture!" << std::endl;
+            // Don't remove - would cause more corruption, also mark move as invalid
+            st_->move_was_executed = false;
+            return;
+        } else {
+            remove_piece(to);
+            st_->key ^= Zobrist::psq[int(them)][int(captured)][int(to)];
+        }
     }
 
     // Handle promotion
@@ -502,24 +566,62 @@ void Position::do_move(Move m) {
 }
 
 void Position::undo_move(Move m) {
+    if (st_ply <= 0) {
+        std::cerr << "ERROR: undo_move called with st_ply=" << st_ply << " - cannot undo!" << std::endl;
+        return;
+    }
+
+    // Check if the move was actually executed (vs. being invalid and returning early)
+    if (!st_->move_was_executed) {
+        // Move was not executed, just decrement st_ply and restore state
+        st_ply--;
+        st_ = &state_stack[st_ply];
+        --game_ply_;
+        return;
+    }
+
+    static int undo_count = 0;
+    int my_id = ++undo_count;
+    if (my_id >= 100) {
+        std::cerr << "undo #" << my_id << " raw=" << m.raw() << " from=" << m.from() << " to=" << m.to() << " st_ply=" << st_ply << " side_to_move_=" << int(side_to_move_) << std::endl;
+    }
+
     Square from = m.from();
     Square to = m.to();
     Color us = Color(side_to_move_ ^ 1);  // side that made the move (opposite of current side)
-    Color them = side_to_move_;
+    Color them_color = side_to_move_;  // Save this BEFORE changing side_to_move_
+    PieceType captured = st_->captured_piece;
+    bool is_capture = m.is_capture();
 
-    // Restore side to move
+    if (my_id >= 100 && int(side_to_move_) > 1) {
+        std::cerr << "ERROR: undo #" << my_id << " side_to_move_ already corrupted: " << int(side_to_move_) << std::endl;
+    }
+    if (int(us) > 1) {
+        std::cerr << "ERROR: undo #" << my_id << " us is invalid: " << int(us) << " (from side_to_move_=" << int(side_to_move_) << ")" << std::endl;
+    }
+
+    // Debug: print board state before undo
+    if (my_id >= 100 && is_capture) {
+        std::cerr << "  before undo: board[" << from << "]=" << int(board[from]) << " board[" << to << "]=" << int(board[to]) << std::endl;
+    }
+
+    // Restore side to move FIRST
     side_to_move_ = us;
 
     // Handle promotion
     if (m.is_promotion()) {
+        if (my_id >= 100) std::cerr << "  promotion" << std::endl;
         remove_piece(to);
         put_piece(us, PAWN, from);
     } else {
+        // For both captures and non-captures, move the piece back
+        if (my_id >= 100) std::cerr << "  move_piece" << std::endl;
         move_piece(to, from);
     }
 
     // Handle castling
     if (m.is_castling()) {
+        if (my_id >= 100) std::cerr << "  castling" << std::endl;
         Square rfrom, rto;
         if (to == (us == WHITE ? G1 : G8)) {
             rfrom = us == WHITE ? H1 : H8;
@@ -533,29 +635,53 @@ void Position::undo_move(Move m) {
 
     // Handle en passant
     if (m.is_en_passant()) {
+        if (my_id >= 100) std::cerr << "  enpassant" << std::endl;
         Square cap_sq = Square(to - (us == WHITE ? 8 : -8));
-        put_piece(them, PAWN, cap_sq);
+        put_piece(them_color, PAWN, cap_sq);
     }
 
-    // Handle capture - only restore if captured_piece is valid (not zero and not PT_NONE)
-    PieceType captured = st_->captured_piece;
-    if (captured != PT_NONE && captured != PieceType(0) && !m.is_en_passant()) {
-        put_piece(them, captured, to);
+    // Handle capture - restore the captured piece at 'to'
+    if (is_capture) {
+        if (my_id >= 100) std::cerr << "  restoring captured type=" << int(captured) << " color=" << int(them_color) << std::endl;
+        if (my_id >= 100) std::cerr << "  after move_piece: board[" << from << "]=" << int(board[from]) << " board[" << to << "]=" << int(board[to]) << std::endl;
+
+        // Validate captured value before restoring
+        if (int(captured) > 6 || int(them_color) > 1) {
+            std::cerr << "ERROR: undo #" << my_id << " invalid captured piece: type=" << int(captured) << " color=" << int(them_color) << " - skipping restore!" << std::endl;
+        } else {
+            // Directly restore the captured piece at 'to' without using put_piece
+            // This avoids issues with piece_count and piece_list getting out of sync
+            Piece captured_pc = make_piece(them_color, captured);
+            if (int(captured_pc) >= 12) {
+                std::cerr << "ERROR: undo #" << my_id << " about to write INVALID captured_pc=" << int(captured_pc) << " to board[" << to << "]" << std::endl;
+            }
+            board[to] = captured_pc;
+            pieces_by_type[captured] |= square_bb(to);
+            pieces_by_color[them_color] |= square_bb(to);
+
+            // Update piece_list and index
+            int count = piece_count[int(them_color)][int(captured)];
+            piece_list[int(them_color)][int(captured)][count] = to;
+            index[to] = count;
+            piece_count[int(them_color)][int(captured)]++;
+
+            if (captured == KING) {
+                king_square[int(them_color)] = to;
+            }
+        }
     }
 
     // Decrement state stack index and restore state pointer
-    st_ply = std::max(st_ply - 1, 0);
+    if (my_id >= 100) std::cerr << "  decrement st_ply from " << st_ply << std::endl;
+    st_ply--;
     st_ = &state_stack[st_ply];
     --game_ply_;
+    if (my_id >= 100) std::cerr << "  done, st_ply now=" << st_ply << std::endl;
 }
 
 void Position::do_null_move() {
-    // Increment state stack index - check bounds to prevent overflow
-    if (st_ply >= MAX_STATES - 1) {
-        // State stack full - should not happen in normal search
-    } else {
-        st_ply++;
-    }
+    // Increment state stack index
+    st_ply++;
     StateInfo& next_st = state_stack[st_ply];
 
     // Copy current state
@@ -585,7 +711,7 @@ void Position::do_null_move() {
 
 void Position::undo_null_move() {
     // Decrement state stack index and restore state pointer
-    st_ply = std::max(st_ply - 1, 0);
+    st_ply--;
     st_ = &state_stack[st_ply];
     side_to_move_ = Color(side_to_move_ ^ 1);
     --game_ply_;

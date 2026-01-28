@@ -17,6 +17,7 @@ struct StateInfo {
     int ply = 0;
     Move move = MOVE_NONE;
     PieceType captured_piece = PT_NONE;
+    bool move_was_executed = true;  // Tracks if do_move actually executed the move (vs. returning early)
 };
 
 class Position {

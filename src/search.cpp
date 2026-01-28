@@ -171,6 +171,10 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
     if (moves == end) {
         // No legal moves
         if (pos.is_check()) {
+            if (ss->ply < 5) {  // Only debug shallow plies
+                std::cerr << "CHECKMATE detected at ply=" << ss->ply << "!" << std::endl;
+                std::cerr << "  Position FEN: " << pos.fen() << std::endl;
+            }
             return -VALUE_MATE + ss->ply;
         }
         return VALUE_DRAW;
@@ -203,12 +207,27 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
 
     Value best_value = -VALUE_INFINITE;
 
+    static int loop_count = 0;
     for (ExtMove* it = moves; it != end; ++it) {
-        pos.do_move(it->move);
+        Move m = it->move;  // Copy the move to avoid issues
+        int loop_id = ++loop_count;
+        if (loop_id >= 400) {
+            std::cerr << "search loop id=" << loop_id << " ply=" << ss->ply << " raw=" << m.raw() << std::endl;
+        }
+
+        pos.do_move(m);
 
         Value value = -search_worker(pos, ss + 1, -beta, -alpha, depth - 1, !cut_node);
 
-        pos.undo_move(it->move);
+        if (loop_id >= 400) {
+            std::cerr << "search loop id=" << loop_id << " after search, about to undo" << std::endl;
+        }
+
+        pos.undo_move(m);
+
+        if (loop_id >= 400) {
+            std::cerr << "search loop id=" << loop_id << " after undo" << std::endl;
+        }
 
         if (value > best_value) {
             best_value = value;
