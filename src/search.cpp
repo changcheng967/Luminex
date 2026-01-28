@@ -17,6 +17,12 @@ namespace {
 constexpr int MAX_PLY_PLUS_6 = MAX_PLY + 6;
 Stack stack[MAX_PLY_PLUS_6];
 
+// Killer moves: moves that caused beta cutoffs at each ply
+Move killers[MAX_PLY][2];
+
+// History heuristic: [piece][to_square]
+int history[12][64];
+
 // Reduction constants
 constexpr int futility_margin(int depth, bool improving) {
     return depth * (150 + improving * 50);
@@ -115,7 +121,6 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
     ++nodes;
 
     const bool pv_node = (beta - alpha > 1);
-    const bool root_node = (ss->ply == 0);
 
     // Check time every 1024 nodes
     if ((nodes & 1023) == 0) {
@@ -176,29 +181,44 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
         return VALUE_DRAW;
     }
 
-    // Move ordering
-    // 1. TT move first
-    // 2. Captures
-    // 3. Quiet moves
+    // Score moves for ordering
+    for (ExtMove* it = moves; it != end; ++it) {
+        Move m = it->move;
+        int score = 0;
 
-    if (tt_move && root_node) {
-        std::rotate(moves, std::find_if(moves, end, [tt_move](const ExtMove& em) {
-            return em.move == tt_move;
-        }), end);
+        // TT move gets highest priority
+        if (m == tt_move) {
+            score = 1000000;
+        }
+        // Promotions
+        else if (m.is_promotion()) {
+            score = 900000 + m.promotion_type() * 10000;
+        }
+        // Captures - use MVV-LVA
+        else if (m.is_capture()) {
+            PieceType captured = pos.piece_type_on(m.to());
+            PieceType attacker = pos.piece_type_on(m.from());
+            score = 100000 + mvv_lva(captured, attacker);
+        }
+        // Killer moves
+        else if (ss->ply < MAX_PLY) {
+            if (m == killers[ss->ply][0]) score = 50000;
+            else if (m == killers[ss->ply][1]) score = 40000;
+            // History heuristic
+            else {
+                Piece pc = pos.piece_on(m.from());
+                if (pc != NO_PIECE) {
+                    score = history[int(pc)][int(m.to())];
+                }
+            }
+        }
+
+        it->value = score;
     }
 
-    std::sort(moves, end, [&pos, tt_move](const ExtMove& a, const ExtMove& b) {
-        if (a.move == b.move) return false;  // Equality check first
-        if (a.move == tt_move) return true;
-        if (b.move == tt_move) return false;
-
-        bool a_capture = pos.capture_or_promotion(a.move);
-        bool b_capture = pos.capture_or_promotion(b.move);
-
-        if (a_capture && !b_capture) return true;
-        if (!a_capture && b_capture) return false;
-
-        return a.move.raw() < b.move.raw();
+    // Sort by value (descending)
+    std::sort(moves, end, [](const ExtMove& a, const ExtMove& b) {
+        return a.value > b.value;
     });
 
     Value best_value = -VALUE_INFINITE;
@@ -224,7 +244,19 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
             }
 
             if (value >= beta) {
-                // Beta cutoff
+                // Beta cutoff - update killers and history
+                if (!m.is_capture() && ss->ply < MAX_PLY) {
+                    // Update killer moves
+                    if (m != killers[ss->ply][0]) {
+                        killers[ss->ply][1] = killers[ss->ply][0];
+                        killers[ss->ply][0] = m;
+                    }
+                    // Update history
+                    Piece pc = pos.piece_on(m.from());
+                    if (pc != NO_PIECE) {
+                        history[int(pc)][int(m.to())] += depth * depth;
+                    }
+                }
                 tte->save(pos.key(), value, false, BOUND_LOWER, depth, it->move, eval, TT.generation());
                 return beta;
             }
@@ -259,6 +291,17 @@ Move search(Position& pos, Limits& lim) {
     }
 
     TT.new_search();
+
+    // Initialize killers and history (clear for new search)
+    for (int i = 0; i < MAX_PLY; ++i) {
+        killers[i][0] = MOVE_NONE;
+        killers[i][1] = MOVE_NONE;
+    }
+    for (int i = 0; i < 12; ++i) {
+        for (int j = 0; j < 64; ++j) {
+            history[i][j] = 0;
+        }
+    }
 
     // Iterative deepening
     for (root_depth = 1; root_depth <= limits.depth; ++root_depth) {
