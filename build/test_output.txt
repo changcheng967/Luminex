@@ -1,3 +1,0 @@
-info depth 1 score cp 0 nodes 0 nps 0
-info depth 1 score cp -30000 nodes 0 nps 0
-bestmove f8f7

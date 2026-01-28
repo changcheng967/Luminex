@@ -1,3 +1,0 @@
-id name Luminex 0.1.0
-id author changcheng967
-uciok
