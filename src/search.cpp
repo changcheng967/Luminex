@@ -31,6 +31,11 @@ void check_time() {
 
 // Quiescence search
 Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
+    // Don't search captures beyond a certain depth
+    if (depth < -2) {
+        return evaluate(pos);
+    }
+
     if (stop.load(std::memory_order_relaxed)) {
         return VALUE_ZERO;
     }
@@ -51,6 +56,11 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
     }
     if (eval > alpha) {
         alpha = eval;
+    }
+
+    // Only generate captures at depth 0 or depth -1
+    if (depth < -1) {
+        return alpha;
     }
 
     // Generate and search captures
