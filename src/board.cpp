@@ -775,8 +775,8 @@ bool Position::legal(Move m) const {
         }
         // Check if moving a pinned piece
         if ((pinned() & square_bb(from))) {
-            // Pinned piece can only move along the pin line
-            if (!aligned(from, to, king_square[us])) {
+            // Pinned piece can only move along the pin line (from king through piece)
+            if (!aligned(king_square[us], from, to)) {
                 return false;
             }
         }
@@ -816,20 +816,26 @@ bool Position::legal(Move m) const {
     }
 
     // Non-king move in check: must either capture checker or block the check
-    if (!aligned(from, to, ksq)) {
-        // Not on king line - can only capture the checking piece
-        return (checkers() & square_bb(to));
-    }
-    // On king line - verify the move actually blocks toward the checker
-    // Find the checking piece
+    // Get the checking piece's square
     Bitboard checkers_b = checkers();
     Square checker_sq = pop_lsb(checkers_b);
-    // The move must be to a square between king and checker
-    if (!(between_bb(ksq, checker_sq) & square_bb(to))) {
-        return false;
+
+    // Check if the move captures the checking piece
+    if (checkers() & square_bb(to)) {
+        return true;  // Capturing the checker is always legal
     }
 
-    return true;
+    // Check if the move blocks the check (to is on line from king to checker)
+    if (aligned(ksq, checker_sq, to)) {
+        // The destination is on the line from king to checker
+        // Verify it's actually between them (closer to king than checker)
+        if (between_bb(ksq, checker_sq) & square_bb(to)) {
+            return true;  // Valid blocking move
+        }
+    }
+
+    // Not capturing checker and not blocking
+    return false;
 }
 
 bool Position::pseudo_legal(const Move m) const {

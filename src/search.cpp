@@ -403,12 +403,12 @@ Move search(Position& pos, Limits& lim) {
     ExtMove test_moves[MAX_MOVES];
     ExtMove* test_end = generate<GEN_LEGAL>(pos, test_moves);
     if (test_moves == test_end) {
-        // No legal moves - checkmate or stalemate
+        // No legal moves for us - we are checkmated or stalemated
         if (pos.is_check()) {
-            // Checkmate
+            // We are checkmated
             std::cout << "info depth 1 score mate 0 nodes 0 nps 0" << std::endl;
         } else {
-            // Stalemate
+            // We are stalemated
             std::cout << "info depth 1 score cp 0 nodes 0 nps 0" << std::endl;
         }
         return MOVE_NONE;  // No move to make
