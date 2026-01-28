@@ -33,6 +33,9 @@ uint64_t perft(Position& pos, Depth depth) {
 int main(int argc, char* argv[]) {
     using namespace luminex;
 
+    // Force unbuffered stdout for immediate UCI output
+    std::cout << std::unitbuf;
+
     // Initialize engine
     init();
 

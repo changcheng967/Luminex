@@ -521,11 +521,24 @@ Move search(Position& pos, Limits& lim) {
 }
 
 void uci_info([[maybe_unused]] const Position& pos, int depth, Value score, uint64_t node_count, int time_ms) {
-    int score_cp = score * 100 / PAWN_VALUE;
+    std::cout << "info depth " << depth << " score ";
 
-    std::cout << "info depth " << depth
-              << " score " << (score > 0 ? "cp " : "cp ") << score_cp
-              << " nodes " << node_count
+    // Handle mate scores
+    if (score >= VALUE_MATE_IN_MAX_PLY) {
+        // Mate in N moves (convert plies to moves)
+        int mate_in = (VALUE_MATE - score + 1) / 2;
+        std::cout << "mate " << mate_in;
+    } else if (score <= -VALUE_MATE_IN_MAX_PLY) {
+        // Being mated in N moves
+        int mate_in = (-VALUE_MATE - score + 1) / 2;
+        std::cout << "mate -" << mate_in;
+    } else {
+        // Normal score in centipawns
+        int score_cp = score * 100 / PAWN_VALUE;
+        std::cout << "cp " << score_cp;
+    }
+
+    std::cout << " nodes " << node_count
               << " nps " << (time_ms > 0 ? node_count * 1000 / time_ms : 0)
               << std::endl;
 }

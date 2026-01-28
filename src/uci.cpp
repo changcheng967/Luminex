@@ -144,11 +144,11 @@ void handle_go(Position& pos, const std::string& cmd) {
 
     // Send best move
     if (best_move) {
-        std::cout << "bestmove " << best_move;
-        // TODO: Add ponder move
-        std::cout << std::endl;
+        std::cout << "bestmove " << best_move << std::endl;
+        std::cout.flush();
     } else {
         std::cout << "bestmove 0000" << std::endl;
+        std::cout.flush();
     }
 }
 
