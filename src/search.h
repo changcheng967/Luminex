@@ -14,6 +14,7 @@ public:
     int ply = 0;
     Move current_move = MOVE_NONE;
     Move excluded_move = MOVE_NONE;
+    Piece moved_piece = NO_PIECE;  // Piece that moved at this ply
     Value static_eval = VALUE_ZERO;
     int move_count = 0;
     bool improving = false;

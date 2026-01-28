@@ -24,6 +24,9 @@ Move killers[MAX_PLY][2];
 // History heuristic: [piece][to_square]
 int history[12][64];
 
+// Counter-move history: [prev_piece][prev_to][piece][to]
+int counter_moves[12][64][12][64];
+
 // Reduction constants
 constexpr int futility_margin(int depth, bool improving) {
     return depth * (150 + improving * 50);
@@ -81,6 +84,9 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
 
     for (ExtMove* it = moves; it != end; ++it) {
         if (!pos.legal(it->move)) continue;
+
+        ss->current_move = it->move;
+        ss->moved_piece = pos.piece_on(it->move.from());
 
         pos.do_move(it->move);
         Value value = -qsearch(pos, ss + 1, -beta, -alpha, depth - 1);
@@ -215,11 +221,18 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
         else if (ss->ply < MAX_PLY) {
             if (m == killers[ss->ply][0]) score = 50000;
             else if (m == killers[ss->ply][1]) score = 40000;
-            // History heuristic
+            // Counter-move history and history heuristic
             else {
                 Piece pc = pos.piece_on(m.from());
                 if (pc != NO_PIECE) {
                     score = history[int(pc)][int(m.to())];
+
+                    // Add counter-move history bonus if we have a previous move
+                    if (ss->ply >= 2 && (ss - 1)->current_move != MOVE_NONE && (ss - 1)->moved_piece != NO_PIECE) {
+                        Move prev_move = (ss - 1)->current_move;
+                        Piece prev_pc = (ss - 1)->moved_piece;
+                        score += counter_moves[int(prev_pc)][int(prev_move.to())][int(pc)][int(m.to())];
+                    }
                 }
             }
         }
@@ -284,6 +297,10 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
             if (new_depth < 1) new_depth = 1;
         }
 
+        // Store current move and moved piece for counter-move history
+        ss->current_move = m;
+        ss->moved_piece = pos.piece_on(m.from());
+
         pos.do_move(m);
 
         Value value;
@@ -321,7 +338,7 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
             }
 
             if (value >= beta) {
-                // Beta cutoff - update killers and history
+                // Beta cutoff - update killers, history and counter-move history
                 if (!m.is_capture() && ss->ply < MAX_PLY) {
                     // Update killer moves
                     if (m != killers[ss->ply][0]) {
@@ -329,9 +346,16 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
                         killers[ss->ply][0] = m;
                     }
                     // Update history
-                    Piece pc = pos.piece_on(m.from());
+                    Piece pc = ss->moved_piece;
                     if (pc != NO_PIECE) {
                         history[int(pc)][int(m.to())] += depth * depth;
+
+                        // Update counter-move history
+                        if (ss->ply >= 1 && (ss - 1)->current_move != MOVE_NONE && (ss - 1)->moved_piece != NO_PIECE) {
+                            Move prev_move = (ss - 1)->current_move;
+                            Piece prev_pc = (ss - 1)->moved_piece;
+                            counter_moves[int(prev_pc)][int(prev_move.to())][int(pc)][int(m.to())] += depth * depth;
+                        }
                     }
                 }
                 tte->save(pos.key(), value, false, BOUND_LOWER, depth, it->move, eval, TT.generation());
@@ -366,6 +390,7 @@ Move search(Position& pos, Limits& lim) {
     for (int i = 0; i < MAX_PLY_PLUS_6; ++i) {
         stack[i].ply = i;
         stack[i].current_move = MOVE_NONE;
+        stack[i].moved_piece = NO_PIECE;
         stack[i].previous = i > 0 ? &stack[i - 1] : nullptr;
         stack[i].pv[0] = MOVE_NONE;
     }
@@ -380,6 +405,16 @@ Move search(Position& pos, Limits& lim) {
     for (int i = 0; i < 12; ++i) {
         for (int j = 0; j < 64; ++j) {
             history[i][j] = 0;
+        }
+    }
+    // Initialize counter-move history
+    for (int i = 0; i < 12; ++i) {
+        for (int j = 0; j < 64; ++j) {
+            for (int k = 0; k < 12; ++k) {
+                for (int l = 0; l < 64; ++l) {
+                    counter_moves[i][j][k][l] = 0;
+                }
+            }
         }
     }
 
