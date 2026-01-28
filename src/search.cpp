@@ -222,15 +222,47 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
     });
 
     Value best_value = -VALUE_INFINITE;
+    int moves_played = 0;
 
     for (ExtMove* it = moves; it != end; ++it) {
         Move m = it->move;
 
+        // Late Move Reduction (LMR)
+        Depth new_depth = depth - 1;
+        bool do_lmr = !pv_node && depth >= 3 && moves_played >= 3 && !m.is_capture() && !m.is_promotion() && !m.is_castling();
+
+        if (do_lmr) {
+            // Reduce depth based on moves played
+            int reduction = 1 + (moves_played - 3) / 8;
+            if (cut_node) reduction += 1;
+            if (reduction > depth / 2) reduction = depth / 2;
+            new_depth = depth - 1 - reduction;
+        }
+
         pos.do_move(m);
 
-        Value value = -search_worker(pos, ss + 1, -beta, -alpha, depth - 1, !cut_node);
+        Value value;
+        if (do_lmr && new_depth > 0) {
+            // Search with reduced depth first
+            value = -search_worker(pos, ss + 1, -alpha - 1, -alpha, new_depth, !cut_node);
+            if (value > alpha) {
+                // Failed high, re-search at full depth
+                value = -search_worker(pos, ss + 1, -beta, -alpha, depth - 1, !cut_node);
+            }
+        } else if (!pv_node && moves_played > 0 && depth >= 3 && best_value > -VALUE_MATE_IN_MAX_PLY) {
+            // Late moves with narrow window
+            value = -search_worker(pos, ss + 1, -alpha - 1, -alpha, depth - 1, !cut_node);
+            if (value > alpha) {
+                value = -search_worker(pos, ss + 1, -beta, -alpha, depth - 1, !cut_node);
+            }
+        } else {
+            // Full window search
+            value = -search_worker(pos, ss + 1, -beta, -alpha, depth - 1, !cut_node);
+        }
 
         pos.undo_move(m);
+
+        moves_played++;
 
         if (value > best_value) {
             best_value = value;
