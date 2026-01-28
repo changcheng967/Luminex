@@ -36,6 +36,19 @@ int main(int argc, char* argv[]) {
     // Initialize engine
     init();
 
+    // Check for debug mode
+    if (argc > 1 && std::string(argv[1]) == "debug") {
+        Position pos;
+        pos.set("rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1");
+
+        std::cout << "FEN: " << pos.fen() << std::endl;
+        std::cout << "piece_on(A1): " << int(pos.piece_on(A1)) << std::endl;
+        std::cout << "piece_on(A8): " << int(pos.piece_on(A8)) << std::endl;
+        std::cout << "piece_on(A2): " << int(pos.piece_on(A2)) << std::endl;
+        std::cout << "piece_on(H8): " << int(pos.piece_on(H8)) << std::endl;
+        return 0;
+    }
+
     // Check for bench mode
     if (argc > 1 && std::string(argv[1]) == "bench") {
         Position pos;

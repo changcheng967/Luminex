@@ -108,7 +108,7 @@ private:
     int st_ply = 0;  // Index into state_stack
 
     static constexpr int MAX_STATES = MAX_PLY + 10;
-    StateInfo state_stack[MAX_STATES];
+    StateInfo state_stack[MAX_STATES] = {};
     StateInfo dummy_state;  // For default initialization
 
     int castling_rights_[NO_COLOR] = {};

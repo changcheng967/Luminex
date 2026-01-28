@@ -246,8 +246,11 @@ Move search(Position& pos, Limits& lim) {
         Value alpha = -VALUE_INFINITE;
         Value beta = VALUE_INFINITE;
 
-        for (ExtMove* it = moves; it != end; ++it) {
-            if (stop.load(std::memory_order_relaxed)) break;
+        int move_idx = 0;
+        for (ExtMove* it = moves; it != end; ++it, ++move_idx) {
+            if (stop.load(std::memory_order_relaxed)) {
+                break;
+            }
 
             pos.do_move(it->move);
             Value value = -search_worker(pos, stack + 1, -beta, -alpha, root_depth - 1, false);

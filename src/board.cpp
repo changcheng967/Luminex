@@ -364,11 +364,12 @@ Bitboard Position::slider_blockers([[maybe_unused]] Bitboard sliders, Bitboard& 
 }
 
 void Position::set_check_info(StateInfo* si) {
-    si->block_checkers = slider_blockers(pieces(~side_to_move_), si->pinned);
+    si->checkers = 0;
+    si->pinned = 0;
+    si->block_checkers = 0;
 
     Square ksq = king_square[side_to_move_];
-
-    si->checkers = 0;
+    si->block_checkers = slider_blockers(pieces(~side_to_move_), si->pinned);
 
     // Pawn checks
     Bitboard pawns = pieces(~side_to_move_, PAWN);
@@ -385,7 +386,8 @@ void Position::set_check_info(StateInfo* si) {
     }
 
     // Bishop/Queen diagonal checks
-    Bitboard bishop_queens = pieces(~side_to_move_, BISHOP, QUEEN);
+    Color them = ~side_to_move_;
+    Bitboard bishop_queens = pieces(them, BISHOP, QUEEN);
     if (bishop_queens) {
         Bitboard diag_attacks = bb_diag_attacks(ksq, pieces());
         si->checkers |= diag_attacks & bishop_queens;
@@ -770,40 +772,40 @@ Bitboard bb_diag_attacks(Square s, Bitboard occupied) {
 
     // Scan northeast
     for (int d = 1; d <= 7; ++d) {
-        File ff = File(f + d);
-        Rank rr = Rank(r + d);
-        if (ff > FILE_H || rr > RANK_8) break;
-        Square sq = make_square(ff, rr);
+        int ff = int(f) + d;
+        int rr = int(r) + d;
+        if (ff > int(FILE_H) || rr > int(RANK_8)) break;
+        Square sq = make_square(File(ff), Rank(rr));
         attacks |= square_bb(sq);
         if (occupied & square_bb(sq)) break;
     }
 
     // Scan northwest
     for (int d = 1; d <= 7; ++d) {
-        File ff = File(f - d);
-        Rank rr = Rank(r + d);
-        if (ff < FILE_A || rr > RANK_8) break;
-        Square sq = make_square(ff, rr);
+        int ff = int(f) - d;
+        int rr = int(r) + d;
+        if (ff < int(FILE_A) || rr > int(RANK_8)) break;
+        Square sq = make_square(File(ff), Rank(rr));
         attacks |= square_bb(sq);
         if (occupied & square_bb(sq)) break;
     }
 
     // Scan southeast
     for (int d = 1; d <= 7; ++d) {
-        File ff = File(f + d);
-        Rank rr = Rank(r - d);
-        if (ff > FILE_H || rr < RANK_1) break;
-        Square sq = make_square(ff, rr);
+        int ff = int(f) + d;
+        int rr = int(r) - d;
+        if (ff > int(FILE_H) || rr < int(RANK_1)) break;
+        Square sq = make_square(File(ff), Rank(rr));
         attacks |= square_bb(sq);
         if (occupied & square_bb(sq)) break;
     }
 
     // Scan southwest
     for (int d = 1; d <= 7; ++d) {
-        File ff = File(f - d);
-        Rank rr = Rank(r - d);
-        if (ff < FILE_A || rr < RANK_1) break;
-        Square sq = make_square(ff, rr);
+        int ff = int(f) - d;
+        int rr = int(r) - d;
+        if (ff < int(FILE_A) || rr < int(RANK_1)) break;
+        Square sq = make_square(File(ff), Rank(rr));
         attacks |= square_bb(sq);
         if (occupied & square_bb(sq)) break;
     }

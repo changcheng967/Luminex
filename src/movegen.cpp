@@ -229,7 +229,8 @@ ExtMove* generate(const Position& pos, ExtMove* moveList) {
         // Filter for legal moves
         ExtMove* legal_end = start;
         for (ExtMove* it = start; it != end; ++it) {
-            if (pos.legal(it->move)) {
+            bool legal = pos.legal(it->move);
+            if (legal) {
                 *(legal_end++) = *it;
             }
         }
