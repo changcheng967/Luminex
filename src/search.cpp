@@ -373,6 +373,37 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
     Value best_value = -VALUE_INFINITE;
     int moves_played = 0;
 
+    // Singular extension: check if TT move is singular (much better than all alternatives)
+    bool tt_move_is_singular = false;
+    if (depth >= 6 && pv_node && tt_move != MOVE_NONE && found &&
+        (tte->bound() & BOUND_LOWER) && tt_depth >= depth - 3) {
+        Value tt_value = tte->value();
+        // Try to refute the TT move by searching other moves at reduced depth
+        Value singular_beta = tt_value - 50;  // Threshold for singularity
+        bool failed_high = false;
+
+        for (ExtMove* it = moves; it != end; ++it) {
+            if (it->move == tt_move) continue;
+
+            Move m = it->move;
+            // Skip illegal moves - do_move will handle this but we can skip obviously bad ones
+            if (!pos.pseudo_legal(m)) continue;
+
+            pos.do_move(m);
+            Value value = -search_worker(pos, ss + 1, -singular_beta - 1, -singular_beta, depth / 2 - 2, !cut_node);
+            pos.undo_move(m);
+
+            if (value > singular_beta) {
+                failed_high = true;  // Found a refutation, TT move is not singular
+                break;
+            }
+        }
+
+        if (!failed_high) {
+            tt_move_is_singular = true;  // TT move is singular
+        }
+    }
+
     for (ExtMove* it = moves; it != end; ++it) {
         // Check time very frequently during move loop
         if ((moves_played & 1) == 0) {
@@ -457,8 +488,14 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
             }
         }
 
-        // Extend for checks and important captures
+        // Extend for checks, important captures, and singular moves
         bool extension = gives_check;
+
+        // Singular extension: extend the TT move if it's singular
+        if (m == tt_move && tt_move_is_singular) {
+            extension = true;
+        }
+
         if (extension && depth < 6) {
             new_depth++;
         }
