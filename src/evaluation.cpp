@@ -252,6 +252,56 @@ Value evaluate(const Position& pos) {
             int mobility = popcount(knight_attacks_bb(sq) & ~pos.pieces(c));
             mg_score += sign * mobility * 4;
             eg_score += sign * mobility * 8;
+
+            // Knight outpost bonus: knight in enemy territory, supported by pawn, not attackable by enemy pawns
+            Rank r = rank_of(sq);
+            File f = file_of(sq);
+            bool in_enemy_territory = (c == WHITE && r >= RANK_4 && r <= RANK_6) || (c == BLACK && r >= RANK_3 && r <= RANK_5);
+
+            if (in_enemy_territory) {
+                // Check if supported by our pawn
+                bool pawn_support = false;
+                Bitboard supporting_pawns = pos.pieces(c, PAWN);
+                if (c == WHITE) {
+                    // White pawns on rank 3 can support knights on rank 4
+                    Bitboard rank3 = rank_bb(RANK_3);
+                    Bitboard support_squares = 0;
+                    if (f > FILE_A) support_squares |= shift_sw(rank3 & file_bb(File(f - 1)));
+                    if (f < FILE_H) support_squares |= shift_se(rank3 & file_bb(File(f + 1)));
+                    if (supporting_pawns & support_squares) pawn_support = true;
+                } else {
+                    // Black pawns on rank 6 can support knights on rank 5
+                    Bitboard rank6 = rank_bb(RANK_6);
+                    Bitboard support_squares = 0;
+                    if (f > FILE_A) support_squares |= shift_nw(rank6 & file_bb(File(f - 1)));
+                    if (f < FILE_H) support_squares |= shift_ne(rank6 & file_bb(File(f + 1)));
+                    if (supporting_pawns & support_squares) pawn_support = true;
+                }
+
+                // Check if enemy pawns can attack this square
+                Bitboard enemy_pawns = pos.pieces(Color(c ^ 1), PAWN);
+                Bitboard pawn_attacks = 0;
+                if (c == WHITE) {
+                    // Black pawns attack from ranks above
+                    if (f > FILE_A) pawn_attacks |= shift_ne(square_bb(sq));
+                    if (f < FILE_H) pawn_attacks |= shift_nw(square_bb(sq));
+                } else {
+                    // White pawns attack from ranks below
+                    if (f > FILE_A) pawn_attacks |= shift_se(square_bb(sq));
+                    if (f < FILE_H) pawn_attacks |= shift_sw(square_bb(sq));
+                }
+                bool safe_from_pawns = !(enemy_pawns & pawn_attacks);
+
+                if (pawn_support && safe_from_pawns) {
+                    // Outpost knight - very valuable
+                    mg_score += sign * 50;
+                    eg_score += sign * 30;
+                } else if (safe_from_pawns) {
+                    // Still a good square if safe from pawns
+                    mg_score += sign * 20;
+                    eg_score += sign * 15;
+                }
+            }
         }
 
         // Bishops
@@ -268,6 +318,34 @@ Value evaluate(const Position& pos) {
             int mobility = popcount(bb_diag_attacks(sq, pos.pieces()) & ~pos.pieces(c));
             mg_score += sign * mobility * 5;
             eg_score += sign * mobility * 10;
+        }
+
+        // Bad bishop penalty: bishop blocked by own pawns on same color
+        if (bishop_count[int(c)] == 1) {
+            // We have exactly one bishop
+            Square bishop_sq = lsb(pos.pieces(c, BISHOP));
+            bool bishop_on_light = ((int(bishop_sq) + int(rank_of(bishop_sq))) % 2) == 0;
+
+            // Count our pawns on the same color as our bishop
+            Bitboard our_pawns = pos.pieces(c, PAWN);
+            int blocking_pawns = 0;
+            while (our_pawns) {
+                Square pawn_sq = pop_lsb(our_pawns);
+                bool pawn_on_light = ((int(pawn_sq) + int(rank_of(pawn_sq))) % 2) == 0;
+                if (pawn_on_light == bishop_on_light) {
+                    blocking_pawns++;
+                }
+            }
+
+            if (blocking_pawns >= 4) {
+                // Bad bishop - many pawns on same color
+                mg_score -= sign * 50;
+                eg_score -= sign * 30;
+            } else if (blocking_pawns >= 3) {
+                // Slightly bad
+                mg_score -= sign * 25;
+                eg_score -= sign * 15;
+            }
         }
 
         // Rooks
