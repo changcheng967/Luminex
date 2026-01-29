@@ -29,20 +29,36 @@ int counter_moves[12][64][12][64];
 
 // Reduction constants
 constexpr int futility_margin(int depth, bool improving) {
-    // More aggressive futility margins based on depth and improving flag
-    // Improving positions get smaller margins (more conservative pruning)
-    // Non-improving positions get larger margins (more aggressive pruning)
+    // More aggressive futility margins for deeper search
+    // Based on Stockfish and other strong engines
     int base = 100;
-    if (depth == 1) base = 150;
-    else if (depth == 2) base = 200;
-    else if (depth == 3) base = 300;
-    else base = 400;  // depth >= 4
+    if (depth == 1) base = 120;
+    else if (depth == 2) base = 180;
+    else if (depth == 3) base = 250;
+    else base = 320;  // depth >= 4
 
     // Adjust based on improving flag
-    if (improving) base -= 50;
-    else base += 100;
+    if (improving) base -= 40;
+    else base += 80;
 
     return base * depth;
+}
+
+// LMR reduction computation
+inline int lmr_reduction(int depth, int moves_played, bool improving, bool pv_node) {
+    // More aggressive LMR for non-PV nodes and late moves
+    int reduction = 2 + (moves_played - 3) / 4;  // Base reduction
+
+    if (!pv_node) reduction += 1;
+    if (!improving) reduction += 1;
+    if (depth >= 6) reduction += 1;
+
+    // Limit reduction
+    if (reduction > depth / 2) reduction = depth / 2;
+    if (reduction > 5) reduction = 5;
+    if (reduction < 1) reduction = 1;
+
+    return reduction;
 }
 
 // Search start time for time management
@@ -514,18 +530,11 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
         bool do_lmr = !pv_node && depth >= 3 && moves_played >= 3 && !m.is_capture() && !m.is_promotion() && !m.is_castling();
 
         if (do_lmr) {
-            // Improved LMR formula using history scores
-            // Base reduction + additional reduction for late moves
-            int reduction = 1 + (moves_played - 3) / 3;
+            // Use unified LMR reduction function
+            int reduction = lmr_reduction(depth, moves_played, ss->improving, pv_node);
 
-            // Increase reduction for cut nodes
+            // Additional cut node reduction
             if (cut_node) reduction += 1;
-
-            // Increase reduction at higher depths
-            if (depth >= 6) reduction += 1;
-
-            // Reduce more when position is not improving
-            if (!ss->improving) reduction += 1;
 
             // History-based adjustment: reduce less for moves with good history
             Piece pc = pos.piece_on(m.from());
@@ -542,7 +551,7 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
             }
 
             // Adjust reduction based on history: good history = less reduction
-            if (history_score > 0) {
+            if (history_score > 2000) {
                 reduction -= 1;
             } else if (history_score < -1000) {
                 // Bad history = more reduction
@@ -551,7 +560,7 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
 
             // Limit reduction
             if (reduction > depth / 2) reduction = depth / 2;
-            if (reduction > 4) reduction = 4;  // Maximum reduction
+            if (reduction > 5) reduction = 5;  // Maximum reduction
             if (reduction < 1) reduction = 1;  // Minimum reduction
 
             new_depth = depth - 1 - reduction;
