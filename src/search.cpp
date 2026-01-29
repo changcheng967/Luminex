@@ -216,34 +216,93 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
 
         // TT move gets highest priority
         if (m == tt_move) {
-            score = 1000000;
+            score = 2000000;
         }
         // Promotions
         else if (m.is_promotion()) {
-            score = 900000 + m.promotion_type() * 10000;
+            score = 1800000 + m.promotion_type() * 10000;
         }
-        // Captures - use SEE for better ordering
+        // Captures - order by captured piece value
         else if (m.is_capture()) {
-            // Winning captures first, then losing captures
-            if (pos.see_ge(m, VALUE_ZERO)) {
-                // Winning capture: score by captured piece value
-                PieceType captured = pos.piece_type_on(m.to());
-                Value cap_value = 0;
-                if (captured == PAWN) cap_value = PAWN_VALUE;
-                else if (captured == KNIGHT) cap_value = KNIGHT_VALUE;
-                else if (captured == BISHOP) cap_value = BISHOP_VALUE;
-                else if (captured == ROOK) cap_value = ROOK_VALUE;
-                else if (captured == QUEEN) cap_value = QUEEN_VALUE;
-                score = 200000 + cap_value;
+            PieceType captured = pos.piece_type_on(m.to());
+            Value cap_value = 0;
+            if (captured == PAWN) cap_value = PAWN_VALUE;
+            else if (captured == KNIGHT) cap_value = KNIGHT_VALUE;
+            else if (captured == BISHOP) cap_value = BISHOP_VALUE;
+            else if (captured == ROOK) cap_value = ROOK_VALUE;
+            else if (captured == QUEEN) cap_value = QUEEN_VALUE;
+
+            // Check if this is a winning capture with SEE
+            bool good_capture = pos.see_ge(m, VALUE_ZERO);
+
+            if (good_capture) {
+                score = 1000000 + int(cap_value);
+                // Bonus for capturing with a less valuable piece
+                PieceType mover = pos.piece_type_on(m.from());
+                if (int(captured) > int(mover) && mover != PT_NONE) {
+                    score += 50000;
+                }
             } else {
-                // Losing capture: lower priority
-                score = -100000;
+                score = -100000 + int(cap_value);  // Losing captures get lower priority
+            }
+        }
+        // Checks - prioritize moves that give check (useful for tactical lines)
+        else if (ss->ply < MAX_PLY && !pos.is_check()) {
+            // Check if this move gives check without doing a full do_move
+            PieceType pt = pos.piece_type_on(m.from());
+            Square to = m.to();
+            Color opponent = Color(int(pos.side_to_move()) ^ 1);
+            Square king_sq = pos.king_sq(opponent);
+            bool gives_check = false;
+
+            if (pt == KNIGHT) {
+                gives_check = (knight_attacks_bb(to) & square_bb(king_sq)) != 0;
+            } else if (pt == BISHOP) {
+                gives_check = (bb_diag_attacks(to, pos.pieces()) & square_bb(king_sq)) != 0;
+            } else if (pt == ROOK) {
+                gives_check = ((bb_rank_attacks(to, pos.pieces()) | bb_file_attacks(to, pos.pieces())) & square_bb(king_sq)) != 0;
+            } else if (pt == QUEEN) {
+                gives_check = (queen_attacks_bb(to, pos.pieces()) & square_bb(king_sq)) != 0;
+            } else if (pt == PAWN) {
+                // Pawn checks: pawn attacks the king from its destination square
+                Bitboard pawn_attacks = 0;
+                Bitboard pb = square_bb(to);
+                if (pos.side_to_move() == WHITE) {
+                    if (file_of(to) > FILE_A) pawn_attacks |= shift_nw(pb);
+                    if (file_of(to) < FILE_H) pawn_attacks |= shift_ne(pb);
+                } else {
+                    if (file_of(to) > FILE_A) pawn_attacks |= shift_sw(pb);
+                    if (file_of(to) < FILE_H) pawn_attacks |= shift_se(pb);
+                }
+                gives_check = (pawn_attacks & square_bb(king_sq)) != 0;
+            }
+
+            if (gives_check) {
+                score = 800000;  // Checks get high priority
+            } else {
+                // Killer moves
+                if (m == killers[ss->ply][0]) score = 60000;
+                else if (m == killers[ss->ply][1]) score = 50000;
+                // Counter-move history and history heuristic
+                else {
+                    Piece pc = pos.piece_on(m.from());
+                    if (pc != NO_PIECE) {
+                        score = history[int(pc)][int(m.to())];
+
+                        // Add counter-move history bonus if we have a previous move
+                        if (ss->ply >= 2 && (ss - 1)->current_move != MOVE_NONE && (ss - 1)->moved_piece != NO_PIECE) {
+                            Move prev_move = (ss - 1)->current_move;
+                            Piece prev_pc = (ss - 1)->moved_piece;
+                            score += counter_moves[int(prev_pc)][int(prev_move.to())][int(pc)][int(m.to())];
+                        }
+                    }
+                }
             }
         }
         // Killer moves
         else if (ss->ply < MAX_PLY) {
-            if (m == killers[ss->ply][0]) score = 50000;
-            else if (m == killers[ss->ply][1]) score = 40000;
+            if (m == killers[ss->ply][0]) score = 60000;
+            else if (m == killers[ss->ply][1]) score = 50000;
             // Counter-move history and history heuristic
             else {
                 Piece pc = pos.piece_on(m.from());
