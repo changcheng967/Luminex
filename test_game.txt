@@ -1,9 +1,0 @@
-uci
-ucinewgame
-position startpos
-go movetime 500
-position startpos moves b1c3 c7c5
-go movetime 500
-position startpos moves b1c3 c7c5 g1f3 g8f6
-go movetime 500
-quit
