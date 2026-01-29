@@ -121,6 +121,11 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
     for (ExtMove* it = moves; it != end; ++it) {
         if (!pos.legal(it->move)) continue;
 
+        // Skip losing captures with negative SEE (but keep queen promotions)
+        if (!it->move.is_promotion() && !pos.see_ge(it->move, VALUE_ZERO)) {
+            continue;
+        }
+
         ss->current_move = it->move;
         ss->moved_piece = pos.piece_on(it->move.from());
 

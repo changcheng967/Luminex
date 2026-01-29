@@ -763,10 +763,12 @@ bool Position::legal(Move m) const {
     // For non-king moves, we need to verify that the move doesn't leave king in check
     // Calculate the occupancy after the move
     Bitboard occ_after = pieces();
-    occ_after ^= square_bb(from);  // Remove moving piece
-    occ_after |= square_bb(to);    // Place on destination square
+    // Use XOR for both: removes piece from 'from', places piece on 'to'
+    // If 'to' has an enemy piece (capture), it's also removed - perfect for our check calculation
+    occ_after ^= square_bb(from);
+    occ_after ^= square_bb(to);
 
-    // For en passant, also remove the captured pawn
+    // For en passant, also remove the captured pawn (different square)
     if (m.is_en_passant()) {
         Square cap_sq = Square(to - (us == WHITE ? 8 : -8));
         occ_after ^= square_bb(cap_sq);
@@ -917,7 +919,7 @@ bool Position::pseudo_legal(const Move m) const {
         case KNIGHT: attacks = knight_attacks_bb(from); break;
         case BISHOP: attacks = bb_diag_attacks(from, pieces()); break;
         case ROOK: attacks = bb_rank_attacks(from, pieces()) | bb_file_attacks(from, pieces()); break;
-        case QUEEN: attacks = queen_attacks_bb(from); break;
+        case QUEEN: attacks = queen_attacks_bb(from, pieces()); break;
         case KING: attacks = king_attacks_bb(from); break;
         default: break;
     }
