@@ -29,7 +29,20 @@ int counter_moves[12][64][12][64];
 
 // Reduction constants
 constexpr int futility_margin(int depth, bool improving) {
-    return depth * (150 + improving * 50);
+    // More aggressive futility margins based on depth and improving flag
+    // Improving positions get smaller margins (more conservative pruning)
+    // Non-improving positions get larger margins (more aggressive pruning)
+    int base = 100;
+    if (depth == 1) base = 150;
+    else if (depth == 2) base = 200;
+    else if (depth == 3) base = 300;
+    else base = 400;  // depth >= 4
+
+    // Adjust based on improving flag
+    if (improving) base -= 50;
+    else base += 100;
+
+    return base * depth;
 }
 
 // Search start time for time management
