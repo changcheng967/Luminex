@@ -692,16 +692,19 @@ Move search(Position& pos, Limits& lim) {
             if (stop.load(std::memory_order_relaxed)) break;
 
             // Check if we failed high or low and need to re-search
+            Value original_alpha = alpha - delta + Value(PAWN_VALUE);  // Reconstruct original alpha
             if (depth_best_value >= beta) {
                 // Failed high - widen window and re-search
                 beta += delta;
                 delta *= 2;
                 if (beta > VALUE_INFINITE) beta = VALUE_INFINITE;
                 continue;  // Re-search
-            } else if (depth_best_value <= alpha) {
-                // This shouldn't happen with the current structure, but handle it
-                // Actually, we update alpha during search, so this check needs to be against original bounds
-                // For now, just continue normally
+            } else if (depth_best_value <= original_alpha) {
+                // Failed low - widen window downward and re-search
+                alpha -= delta;
+                delta *= 2;
+                if (alpha < -VALUE_INFINITE) alpha = -VALUE_INFINITE;
+                continue;  // Re-search
             }
 
             // Search completed successfully
