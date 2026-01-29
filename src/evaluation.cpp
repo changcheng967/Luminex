@@ -180,6 +180,88 @@ inline Bitboard king_danger_zone(Square ksq) {
     return zone;
 }
 
+// Helper: evaluate pawn shield for king safety
+inline Score evaluate_pawn_shield(const Position& pos, Color c, Square ksq) {
+    Score shield_mg = 0;
+    Score shield_eg = 0;
+    Sign sign = (c == WHITE) ? 1 : -1;
+
+    // Only evaluate pawn shield when king is on ranks 1-3 (white) or 6-8 (black)
+    // i.e., when king hasn't castled or castled short/long
+    Rank kr = rank_of(ksq);
+    bool king_on_back_rank = (c == WHITE && kr <= RANK_3) || (c == BLACK && kr >= RANK_6);
+
+    if (!king_on_back_rank) return 0;
+
+    File kf = file_of(ksq);
+
+    // Get squares in front of king (pawn shield squares)
+    Bitboard shield_squares = 0;
+
+    if (c == WHITE) {
+        // For white, squares ahead are ranks 2 and 3 in front of king
+        if (kr < RANK_8) {
+            Square ahead1 = make_square(kf, Rank(kr + 1));
+            shield_squares |= square_bb(ahead1);
+            if (kf > FILE_A) shield_squares |= square_bb(make_square(File(kf - 1), Rank(kr + 1)));
+            if (kf < FILE_H) shield_squares |= square_bb(make_square(File(kf + 1), Rank(kr + 1)));
+
+            if (kr < RANK_7) {
+                Square ahead2 = make_square(kf, Rank(kr + 2));
+                shield_squares |= square_bb(ahead2);
+                if (kf > FILE_A) shield_squares |= square_bb(make_square(File(kf - 1), Rank(kr + 2)));
+                if (kf < FILE_H) shield_squares |= square_bb(make_square(File(kf + 1), Rank(kr + 2)));
+            }
+        }
+    } else {
+        // For black, squares ahead are ranks 1 and 2 in front (from black's perspective)
+        if (kr > RANK_1) {
+            Square ahead1 = make_square(kf, Rank(kr - 1));
+            shield_squares |= square_bb(ahead1);
+            if (kf > FILE_A) shield_squares |= square_bb(make_square(File(kf - 1), Rank(kr - 1)));
+            if (kf < FILE_H) shield_squares |= square_bb(make_square(File(kf + 1), Rank(kr - 1)));
+
+            if (kr > RANK_2) {
+                Square ahead2 = make_square(kf, Rank(kr - 2));
+                shield_squares |= square_bb(ahead2);
+                if (kf > FILE_A) shield_squares |= square_bb(make_square(File(kf - 1), Rank(kr - 2)));
+                if (kf < FILE_H) shield_squares |= square_bb(make_square(File(kf + 1), Rank(kr - 2)));
+            }
+        }
+    }
+
+    // Count how many shield squares are occupied by our pawns
+    Bitboard our_pawns = pos.pieces(c, PAWN);
+    Bitboard shield_pawns = shield_squares & our_pawns;
+    int pawn_count = popcount(shield_pawns);
+
+    // Bonus for pawn shield
+    shield_mg += sign * pawn_count * 15;
+    shield_eg += sign * pawn_count * 10;
+
+    // Penalty for missing pawns in front of king
+    int missing_shield = 6 - pawn_count;  // At most 6 shield squares
+    if (missing_shield > 0) {
+        shield_mg -= sign * missing_shield * 10;
+        shield_eg -= sign * missing_shield * 5;
+    }
+
+    // Penalty for open files near king (no friendly pawn, no enemy pawn)
+    Bitboard file_mask = 0;
+    if (kf > FILE_A) file_mask |= file_bb(File(kf - 1));
+    file_mask |= file_bb(kf);
+    if (kf < FILE_H) file_mask |= file_bb(File(kf + 1));
+
+    Bitboard pawns_on_files = our_pawns & file_mask;
+    if (pawns_on_files == 0) {
+        // No pawns on these files at all - very dangerous
+        shield_mg -= sign * 30;
+        shield_eg -= sign * 20;
+    }
+
+    return shield_mg + shield_eg;
+}
+
 Value evaluate(const Position& pos) {
     Score mg_score = 0;
     Score eg_score = 0;
@@ -681,6 +763,11 @@ Value evaluate(const Position& pos) {
         Color them = Color(us ^ 1);
         Square their_king = king_sq[int(them)];
         Square our_king = king_sq[int(us)];
+
+        // Pawn shield evaluation for our king
+        Score shield_bonus = evaluate_pawn_shield(pos, us, our_king);
+        mg_score += shield_bonus;
+        eg_score += shield_bonus;
 
         // Queen tropism: penalty when enemy queen is close to our king
         Bitboard their_queens = pos.pieces(them, QUEEN);
