@@ -798,12 +798,21 @@ bool Position::legal(Move m) const {
 
     // Check knight attacks
     Bitboard knight_attacks = knight_attacks_bb(ksq);
-    if (knight_attacks & pieces(them, KNIGHT)) {
+    Bitboard enemy_knights = pieces(them, KNIGHT);
+    // If capturing on 'to', exclude that piece from consideration
+    if (enemy_knights & square_bb(to)) {
+        enemy_knights &= ~square_bb(to);
+    }
+    if (knight_attacks & enemy_knights) {
         return false;  // Knight would attack our king
     }
 
     // Check pawn attacks
     Bitboard enemy_pawns = pieces(them, PAWN);
+    // If capturing a pawn on 'to', exclude it from consideration
+    if (enemy_pawns & square_bb(to)) {
+        enemy_pawns &= ~square_bb(to);
+    }
     Bitboard pawn_attacks = 0;
     while (enemy_pawns) {
         Square psq = pop_lsb(enemy_pawns);

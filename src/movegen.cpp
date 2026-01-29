@@ -33,7 +33,7 @@ ExtMove* generate_moves(const Position& pos, ExtMove* moveList) {
                     *moveList++ = Move(from, to, MF_PROMO_KNIGHT);
                 }
             } else {
-                if constexpr (T == GEN_QUIET || T == GEN_ALL || T == GEN_LEGAL || T == GEN_NON_EVASION) {
+                if constexpr (T == GEN_QUIET || T == GEN_ALL || T == GEN_LEGAL || T == GEN_EVASION || T == GEN_NON_EVASION) {
                     *moveList++ = Move(from, to, MF_QUIET);
                 }
 
@@ -41,7 +41,7 @@ ExtMove* generate_moves(const Position& pos, ExtMove* moveList) {
                 if (relative_rank(us, from) == RANK_2) {
                     Square to2 = Square(from + NORTH * 2);
                     if (!(pos.pieces() & square_bb(to2))) {
-                        if constexpr (T == GEN_QUIET || T == GEN_ALL || T == GEN_LEGAL || T == GEN_NON_EVASION) {
+                        if constexpr (T == GEN_QUIET || T == GEN_ALL || T == GEN_LEGAL || T == GEN_EVASION || T == GEN_NON_EVASION) {
                             *moveList++ = Move(from, to2, MF_DOUBLE_PAWN);
                         }
                     }
@@ -99,7 +99,7 @@ ExtMove* generate_moves(const Position& pos, ExtMove* moveList) {
         }
 
         // Quiets
-        if constexpr (T == GEN_QUIET || T == GEN_ALL || T == GEN_LEGAL || T == GEN_NON_EVASION) {
+        if constexpr (T == GEN_QUIET || T == GEN_ALL || T == GEN_LEGAL || T == GEN_EVASION || T == GEN_NON_EVASION) {
             quiets &= ~pos.pieces(us);
             while (quiets) {
                 Square to = pop_lsb(quiets);
@@ -127,7 +127,7 @@ ExtMove* generate_moves(const Position& pos, ExtMove* moveList) {
         }
 
         // Quiets
-        if constexpr (T == GEN_QUIET || T == GEN_ALL || T == GEN_LEGAL || T == GEN_NON_EVASION) {
+        if constexpr (T == GEN_QUIET || T == GEN_ALL || T == GEN_LEGAL || T == GEN_EVASION || T == GEN_NON_EVASION) {
             quiets &= ~pos.pieces(us);
             while (quiets) {
                 Square to = pop_lsb(quiets);
@@ -155,7 +155,7 @@ ExtMove* generate_moves(const Position& pos, ExtMove* moveList) {
         }
 
         // Quiets
-        if constexpr (T == GEN_QUIET || T == GEN_ALL || T == GEN_LEGAL || T == GEN_NON_EVASION) {
+        if constexpr (T == GEN_QUIET || T == GEN_ALL || T == GEN_LEGAL || T == GEN_EVASION || T == GEN_NON_EVASION) {
             quiets &= ~pos.pieces(us);
             while (quiets) {
                 Square to = pop_lsb(quiets);
@@ -183,7 +183,7 @@ ExtMove* generate_moves(const Position& pos, ExtMove* moveList) {
         }
 
         // Quiets
-        if constexpr (T == GEN_QUIET || T == GEN_ALL || T == GEN_LEGAL || T == GEN_NON_EVASION) {
+        if constexpr (T == GEN_QUIET || T == GEN_ALL || T == GEN_LEGAL || T == GEN_EVASION || T == GEN_NON_EVASION) {
             quiets &= ~pos.pieces(us);
             while (quiets) {
                 Square to = pop_lsb(quiets);
@@ -207,7 +207,7 @@ ExtMove* generate_moves(const Position& pos, ExtMove* moveList) {
     }
 
     // King quiets
-    if constexpr (T == GEN_QUIET || T == GEN_ALL || T == GEN_LEGAL || T == GEN_NON_EVASION) {
+    if constexpr (T == GEN_QUIET || T == GEN_ALL || T == GEN_LEGAL || T == GEN_EVASION || T == GEN_NON_EVASION) {
         king_quiets &= ~pos.pieces(us);
         while (king_quiets) {
             Square to = pop_lsb(king_quiets);
@@ -240,9 +240,16 @@ template<GenType T>
 ExtMove* generate(const Position& pos, ExtMove* moveList) {
     if constexpr (T == GEN_LEGAL) {
         ExtMove* start = moveList;
-        ExtMove* end = generate_moves<GEN_NON_EVASION>(pos, moveList);
+        ExtMove* end;
 
-        // Filter for legal moves
+        // When in check, use evasion generation; otherwise use non-evasion
+        if (pos.is_check()) {
+            end = generate_moves<GEN_EVASION>(pos, moveList);
+        } else {
+            end = generate_moves<GEN_NON_EVASION>(pos, moveList);
+        }
+
+        // Filter for legal moves (evasion moves should already be legal, but verify anyway)
         ExtMove* legal_end = start;
         for (ExtMove* it = start; it != end; ++it) {
             if (pos.legal(it->move)) {

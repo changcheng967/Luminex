@@ -45,3 +45,39 @@ build/
 
 # Ignore the CLAUDE.md file
 CLAUDE.md
+
+# Test games and analysis files
+game_log*.txt
+game_analysis.txt
+mate_test.txt
+*.sh
+*.bat
+*.py
+*.cpp
+test_*.txt
+*.txt
+!src/*.txt
+check_board.txt
+debug_moves.txt
+analyze_positions.sh
+play_game*.sh
+play_games.bat
+reproduce_game.txt
+run_game.cpp
+run_selfplay.py
+selfplay.bat
+selfplay.py
+verify.txt
+verify_knight_moves.cpp
+test_fen.cpp
+test_fen.txt
+test_gen.txt
+test_moves2.txt
+test_pseudo.txt
+test_queen.txt
+test_queen_vis.txt
+test_see.cpp
+test_check.txt
+test_positions.txt
+Luminex-v*.exe
+nul
