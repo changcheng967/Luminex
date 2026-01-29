@@ -420,6 +420,18 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
             new_depth++;
         }
 
+        // Capture extension at low depths: extend for captures that might win material
+        if (depth <= 4 && m.is_capture() && !pos.is_check()) {
+            PieceType captured = pos.piece_type_on(m.to());
+            PieceType mover = pos.piece_type_on(m.from());
+            // If we're capturing with a less valuable piece, or if capturing a major piece
+            if (int(captured) > int(mover) || captured == QUEEN || captured == ROOK) {
+                if (new_depth < depth) {  // Only if we haven't already extended
+                    new_depth++;
+                }
+            }
+        }
+
         // Store current move and moved piece for counter-move history
         ss->current_move = m;
         ss->moved_piece = pos.piece_on(m.from());
@@ -582,6 +594,65 @@ Move search(Position& pos, Limits& lim) {
             // Generate moves
             ExtMove moves[MAX_MOVES];
             ExtMove* end = generate<GEN_LEGAL>(pos, moves);
+
+            // Order moves at root for better efficiency
+            for (ExtMove* it = moves; it != end; ++it) {
+                Move m = it->move;
+                int score = 0;
+
+                // Prioritize winning captures
+                if (m.is_capture()) {
+                    PieceType captured = pos.piece_type_on(m.to());
+                    Value cap_value = 0;
+                    if (captured == PAWN) cap_value = PAWN_VALUE;
+                    else if (captured == KNIGHT) cap_value = KNIGHT_VALUE;
+                    else if (captured == BISHOP) cap_value = BISHOP_VALUE;
+                    else if (captured == ROOK) cap_value = ROOK_VALUE;
+                    else if (captured == QUEEN) cap_value = QUEEN_VALUE;
+
+                    score = 1000000 + int(cap_value);
+                }
+                // Checks
+                else if (!pos.is_check()) {
+                    PieceType pt = pos.piece_type_on(m.from());
+                    Square to = m.to();
+                    Color opponent = Color(int(pos.side_to_move()) ^ 1);
+                    Square king_sq = pos.king_sq(opponent);
+
+                    bool gives_check = false;
+                    if (pt == KNIGHT) {
+                        gives_check = (knight_attacks_bb(to) & square_bb(king_sq)) != 0;
+                    } else if (pt == BISHOP) {
+                        gives_check = (bb_diag_attacks(to, pos.pieces()) & square_bb(king_sq)) != 0;
+                    } else if (pt == ROOK) {
+                        gives_check = ((bb_rank_attacks(to, pos.pieces()) | bb_file_attacks(to, pos.pieces())) & square_bb(king_sq)) != 0;
+                    } else if (pt == QUEEN) {
+                        gives_check = (queen_attacks_bb(to, pos.pieces()) & square_bb(king_sq)) != 0;
+                    } else if (pt == PAWN) {
+                        Bitboard pawn_attacks = 0;
+                        Bitboard pb = square_bb(to);
+                        if (pos.side_to_move() == WHITE) {
+                            if (file_of(to) > FILE_A) pawn_attacks |= shift_nw(pb);
+                            if (file_of(to) < FILE_H) pawn_attacks |= shift_ne(pb);
+                        } else {
+                            if (file_of(to) > FILE_A) pawn_attacks |= shift_sw(pb);
+                            if (file_of(to) < FILE_H) pawn_attacks |= shift_se(pb);
+                        }
+                        gives_check = (pawn_attacks & square_bb(king_sq)) != 0;
+                    }
+
+                    if (gives_check) {
+                        score = 500000;
+                    }
+                }
+
+                it->value = score;
+            }
+
+            // Sort moves by score
+            std::sort(moves, end, [](const ExtMove& a, const ExtMove& b) {
+                return a.value > b.value;
+            });
 
             for (ExtMove* it = moves; it != end; ++it) {
                 if (stop.load(std::memory_order_relaxed)) {
