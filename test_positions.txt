@@ -1,6 +1,0 @@
-# Test positions for Luminex evaluation
-position fen rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1
-position fen r1bqk2r/pppp1ppp/2n2n2/2b1p3/2B1P3/3P1N2/PPP2PPP/RNBQK2R w KQkq - 0 1
-position fen 8/8/8/3k4/8/8/2B5/2K5 w - - 0 1
-position fen 6k1/5ppp/8/8/8/8/5PPP/4R1K1 w - - 0 1
-position fen r3k2r/p1ppqpb1/bpn2p1p/3p4/2PP4/P1N1PN2/P1BQ1PPP/R3K2R w KQkq - 0 1
