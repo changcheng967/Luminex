@@ -437,7 +437,7 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
         bool do_lmr = !pv_node && depth >= 3 && moves_played >= 3 && !m.is_capture() && !m.is_promotion() && !m.is_castling();
 
         if (do_lmr) {
-            // More aggressive reduction formula using improving flag
+            // Improved LMR formula using history scores
             // Base reduction + additional reduction for late moves
             int reduction = 1 + (moves_played - 3) / 3;
 
@@ -450,9 +450,32 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
             // Reduce more when position is not improving
             if (!ss->improving) reduction += 1;
 
+            // History-based adjustment: reduce less for moves with good history
+            Piece pc = pos.piece_on(m.from());
+            int history_score = 0;
+            if (pc != NO_PIECE) {
+                history_score = history[int(pc)][int(m.to())];
+
+                // Add counter-move history if available
+                if (ss->ply >= 2 && (ss - 1)->current_move != MOVE_NONE && (ss - 1)->moved_piece != NO_PIECE) {
+                    Move prev_move = (ss - 1)->current_move;
+                    Piece prev_pc = (ss - 1)->moved_piece;
+                    history_score += counter_moves[int(prev_pc)][int(prev_move.to())][int(pc)][int(m.to())];
+                }
+            }
+
+            // Adjust reduction based on history: good history = less reduction
+            if (history_score > 0) {
+                reduction -= 1;
+            } else if (history_score < -1000) {
+                // Bad history = more reduction
+                reduction += 1;
+            }
+
             // Limit reduction
             if (reduction > depth / 2) reduction = depth / 2;
             if (reduction > 4) reduction = 4;  // Maximum reduction
+            if (reduction < 1) reduction = 1;  // Minimum reduction
 
             new_depth = depth - 1 - reduction;
             if (new_depth < 1) new_depth = 1;
