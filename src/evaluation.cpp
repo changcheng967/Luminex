@@ -804,6 +804,161 @@ Value evaluate(const Position& pos) {
         eg_score += sign * (center_control_count * 5 + center_occupation_count * 10);
     }
 
+    // Development and opening principles evaluation
+    int game_ply = pos.game_ply();
+    for (int c_idx = 0; c_idx < 2; ++c_idx) {
+        Color us = Color(c_idx);
+        Sign sign = (us == WHITE) ? 1 : -1;
+
+        // Knights on rim penalty (a/h and b/g files are suboptimal in opening)
+        Bitboard our_knights = pos.pieces(us, KNIGHT);
+        while (our_knights) {
+            Square sq = pop_lsb(our_knights);
+            File f = file_of(sq);
+            Rank r = rank_of(sq);
+
+            // Heavy penalty for a/h files (rim)
+            if (f == FILE_A || f == FILE_H) {
+                mg_score -= sign * 30;
+                eg_score -= sign * 15;
+            }
+            // Lighter penalty for b/g files - discouraged in opening/middlegame
+            else if (f == FILE_B || f == FILE_G) {
+                // Strong penalty in early game when pieces should go to center
+                if (game_ply < 20) {  // Before move 10
+                    mg_score -= sign * 50;
+                    eg_score -= sign * 30;
+                } else if (game_ply < 40) {  // Before move 20
+                    mg_score -= sign * 30;
+                    eg_score -= sign * 15;
+                }
+            }
+
+            // Bonus for knights on center files (d/e) in center ranks
+            if ((f == FILE_D || f == FILE_E) && r >= RANK_3 && r <= RANK_6) {
+                mg_score += sign * 15;
+                eg_score += sign * 10;
+            }
+        }
+
+        // Bishop development penalty: bishops still on starting squares after move 6
+        if (game_ply > 12) {  // After move 6 (12 plies)
+            Bitboard our_bishops = pos.pieces(us, BISHOP);
+            while (our_bishops) {
+                Square sq = pop_lsb(our_bishops);
+                Rank r = rank_of(sq);
+                File f = file_of(sq);
+
+                // Check if bishop is on starting square
+                bool on_start = false;
+                if (us == WHITE && r == RANK_1) {
+                    if ((f == FILE_C) || (f == FILE_F)) on_start = true;
+                } else if (us == BLACK && r == RANK_8) {
+                    if ((f == FILE_C) || (f == FILE_F)) on_start = true;
+                }
+
+                if (on_start) {
+                    mg_score -= sign * 15;
+                    eg_score -= sign * 10;
+                }
+            }
+        }
+
+        // Undeveloped minor piece penalty after move 10
+        if (game_ply > 20) {  // After move 10 (20 plies)
+            int undeveloped_minors = 0;
+
+            // Check knights on back rank
+            our_knights = pos.pieces(us, KNIGHT);
+            while (our_knights) {
+                Square sq = pop_lsb(our_knights);
+                Rank r = rank_of(sq);
+                if ((us == WHITE && r == RANK_1) || (us == BLACK && r == RANK_8)) {
+                    undeveloped_minors++;
+                }
+            }
+
+            // Check bishops on back rank
+            Bitboard our_bishops = pos.pieces(us, BISHOP);
+            while (our_bishops) {
+                Square sq = pop_lsb(our_bishops);
+                Rank r = rank_of(sq);
+                if ((us == WHITE && r == RANK_1) || (us == BLACK && r == RANK_8)) {
+                    undeveloped_minors++;
+                }
+            }
+
+            if (undeveloped_minors > 0) {
+                mg_score -= sign * undeveloped_minors * 20;
+                eg_score -= sign * undeveloped_minors * 10;
+            }
+        }
+
+        // Castling bonus/penalty
+        Square ksq = king_sq[int(us)];
+        Rank krank = rank_of(ksq);
+        File kfile = file_of(ksq);
+
+        // Castled king bonus (king on g1/g8 or c1/c8 with rook nearby)
+        bool has_castled = false;
+        if (us == WHITE) {
+            if ((krank == RANK_1) && ((kfile == FILE_G) || (kfile == FILE_C))) {
+                has_castled = true;
+            }
+        } else {
+            if ((krank == RANK_8) && ((kfile == FILE_G) || (kfile == FILE_C))) {
+                has_castled = true;
+            }
+        }
+
+        if (has_castled) {
+            mg_score += sign * 50;
+            eg_score += sign * 20;
+        }
+
+        // Lost castling rights without castling penalty
+        CastlingRight kingside = us == WHITE ? WHITE_KINGSIDE : BLACK_KINGSIDE;
+        CastlingRight queenside = us == WHITE ? WHITE_QUEENSIDE : BLACK_QUEENSIDE;
+
+        bool can_kingside = pos.castling_allowed(us, kingside);
+        bool can_queenside = pos.castling_allowed(us, queenside);
+
+        if (!can_kingside && !can_queenside && !has_castled) {
+            // Lost all castling rights but didn't castle
+            mg_score -= sign * 40;
+            eg_score -= sign * 20;
+        }
+
+        // King in center penalty (after move 8)
+        if (game_ply > 16) {
+            bool king_in_center = (us == WHITE && krank >= RANK_3 && krank <= RANK_5) ||
+                                  (us == BLACK && krank >= RANK_4 && krank <= RANK_6);
+
+            if (king_in_center) {
+                // King in center is dangerous
+                mg_score -= sign * 80;
+                eg_score -= sign * 30;
+
+                // Extra penalty for open files near king
+                Bitboard all_pawns = pos.pieces(PAWN);
+                int open_files_near_king = 0;
+
+                if (kfile > FILE_A && !(all_pawns & file_bb(File(kfile - 1)))) {
+                    open_files_near_king++;
+                }
+                if (!(all_pawns & file_bb(kfile))) {
+                    open_files_near_king++;
+                }
+                if (kfile < FILE_H && !(all_pawns & file_bb(File(kfile + 1)))) {
+                    open_files_near_king++;
+                }
+
+                mg_score -= sign * open_files_near_king * 35;
+                eg_score -= sign * open_files_near_king * 15;
+            }
+        }
+    }
+
     // King danger and queen tropism evaluation
     for (int c_idx = 0; c_idx < 2; ++c_idx) {
         Color us = Color(c_idx);
