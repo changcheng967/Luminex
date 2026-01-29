@@ -179,6 +179,18 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
     // Compute improving flag: position is improving if eval is better than 2 plies ago
     ss->improving = (ss->ply >= 2 && eval > (ss - 2)->static_eval);
 
+    // Internal iterative deepening: if we don't have a TT move and depth is high enough,
+    // do a shallow search to find a good move for move ordering
+    if (tt_move == MOVE_NONE && depth >= 4 && !pv_node && !pos.is_check()) {
+        // Search at reduced depth to get a move for ordering
+        search_worker(pos, ss, alpha, beta, depth - 2, cut_node);
+        // Re-probe TT to get the move from the shallow search
+        tte = TT.probe(pos.key(), found);
+        if (found) {
+            tt_move = tte->move();
+        }
+    }
+
     // Futility pruning - use improving for better pruning decisions
     if (!pv_node && !pos.is_check() && depth <= 3 && eval - futility_margin(depth, ss->improving) >= beta) {
         return eval;
