@@ -210,6 +210,36 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
         }
     }
 
+    // ProbCut: if beta is high, try a shallow search with reduced threshold
+    // If we can't beat beta - margin with shallow search, we can prune
+    if (!pv_node && depth >= 5 && !pos.is_check() && ss->ply >= 2) {
+        Value probcut_beta = beta + 200;  // Threshold margin
+        if (eval >= probcut_beta) {
+            // Try captures that might beat the threshold
+            ExtMove probcut_moves[MAX_MOVES];
+            ExtMove* probcut_end = generate<GEN_LEGAL>(pos, probcut_moves);
+
+            for (ExtMove* it = probcut_moves; it != probcut_end; ++it) {
+                Move m = it->move;
+                if (m.is_capture()) {
+                    PieceType captured = pos.piece_type_on(m.to());
+                    if (captured == PT_NONE) continue;
+
+                    // Quick SEE check for promising captures
+                    if (!pos.see_ge(m, Value(probcut_beta - eval))) continue;
+
+                    pos.do_move(m);
+                    Value value = -search_worker(pos, ss + 1, -probcut_beta, -probcut_beta + 1, depth - 4, !cut_node);
+                    pos.undo_move(m);
+
+                    if (value >= probcut_beta) {
+                        return value;
+                    }
+                }
+            }
+        }
+    }
+
     // Generate moves
     ExtMove moves[MAX_MOVES];
     ExtMove* end = generate<GEN_LEGAL>(pos, moves);
