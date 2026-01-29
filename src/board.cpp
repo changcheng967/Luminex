@@ -718,7 +718,6 @@ bool Position::see_ge(Move m, Value threshold) const {
 }
 
 bool Position::legal(Move m) const {
-    // TODO: Implement full legality check
     if (!m) return false;
 
     Square from = m.from();
@@ -726,30 +725,30 @@ bool Position::legal(Move m) const {
 
     Color us = side_to_move_;
     Color them = Color(us ^ 1);
+    Square ksq = king_square[us];
 
-    // If our king is not in check, all pseudo-legal moves are legal
-    // except castling and en passant which need special handling
-    if (!is_check()) {
-        // King moves need to check distance from opponent king
-        if (piece_type_on(from) == KING) {
-            Square opp_king = king_square[them];
-            if (distance(to, opp_king) <= 1) {
-                return false;  // Kings cannot be adjacent
-            }
+    // King moves: check destination and distance to opponent king
+    if (piece_type_on(from) == KING) {
+        Square opp_king = king_square[them];
+        if (distance(to, opp_king) <= 1) {
+            return false;  // Kings cannot be adjacent
         }
+        // King cannot move to attacked square
+        Bitboard attacks = attackers_to(to, pieces() ^ square_bb(from));
+        if (attacks & pieces(them)) {
+            return false;
+        }
+        // Castling needs special handling
         if (m.is_castling()) {
-            // Verify castling legality
-            // Check if king passes through or ends in check
-            // For castling, verify the path is clear and not attacked
             if (to == (us == WHITE ? G1 : G8)) {
-                // Kingside castling: check f1/g1 squares (f8/g8 for black)
+                // Kingside castling: check f1/g1 squares
                 Square s1 = Square((us == WHITE ? F1 : F8));
                 Square s2 = Square((us == WHITE ? G1 : G8));
                 if ((pieces() & (square_bb(s1) | square_bb(s2))) != 0) return false;
                 if ((attackers_to(s1) & pieces(them)) != 0) return false;
                 if ((attackers_to(s2) & pieces(them)) != 0) return false;
             } else {
-                // Queenside castling: check b1/c1/d1 squares (b8/c8/d8 for black)
+                // Queenside castling: check b1/c1/d1 squares
                 Square s1 = Square((us == WHITE ? C1 : C8));
                 Square s2 = Square((us == WHITE ? D1 : D8));
                 Square s3 = Square((us == WHITE ? B1 : B8));
@@ -757,97 +756,101 @@ bool Position::legal(Move m) const {
                 if ((attackers_to(s1) & pieces(them)) != 0) return false;
                 if ((attackers_to(s2) & pieces(them)) != 0) return false;
             }
-            return true;
-        }
-        if (m.is_en_passant()) {
-            // En passant: verify the move doesn't leave king in check
-            // For en passant, we need to check if removing the captured pawn uncovers check
-            Square ksq = king_square[us];
-
-            // The captured pawn is on the same file as 'to' but one rank behind
-            Square cap_sq = Square(to - (us == WHITE ? 8 : -8));
-
-            // If king is on the same file as the capture, check for uncovered slider attacks
-            if (file_of(ksq) == file_of(to)) {
-                // Temporarily remove both pawns to check for discovered attacks
-                Bitboard occ = pieces() ^ square_bb(from) ^ square_bb(to) ^ square_bb(cap_sq);
-
-                // Check for slider attacks on the king's rank/file
-                Bitboard rook_queens = pieces(them, ROOK, QUEEN);
-                if ((bb_rank_attacks(ksq, occ) | bb_file_attacks(ksq, occ)) & rook_queens) {
-                    return false;  // En passant would uncover check
-                }
-            }
-            return true;
-        }
-        // Check if moving a pinned piece
-        if ((pinned() & square_bb(from))) {
-            // Pinned piece can only move along the pin line (from king through piece)
-            if (!aligned(king_square[us], from, to)) {
-                return false;
-            }
         }
         return true;
     }
 
-    // In check - only moves that escape check are legal
-    Square ksq = king_square[us];
+    // For non-king moves, we need to verify that the move doesn't leave king in check
+    // Calculate the occupancy after the move
+    Bitboard occ_after = pieces();
+    occ_after ^= square_bb(from);  // Remove moving piece
+    occ_after |= square_bb(to);    // Place on destination square
 
-    // King move
-    if (piece_type_on(from) == KING) {
-        // King cannot move to square adjacent to opponent king
-        Square opp_king = king_square[them];
-        if (distance(to, opp_king) <= 1) {
-            return false;  // Kings cannot be adjacent
-        }
-        // King cannot move to attacked square
-        Bitboard attacks = attackers_to(to, pieces() ^ square_bb(from));
-        return !(attacks & pieces(them));
-    }
-
-    // En passant capture can uncover check
+    // For en passant, also remove the captured pawn
     if (m.is_en_passant()) {
-        // Check if en passant captures the checking piece
         Square cap_sq = Square(to - (us == WHITE ? 8 : -8));
-        if (!(checkers() & square_bb(cap_sq))) {
-            // The checking piece is not the captured pawn
-            // Need to check if en passant resolves the check
-            // For simplicity, just return false if checkers don't include the captured pawn
-            return false;
+        occ_after ^= square_bb(cap_sq);
+    }
+
+    // Check if king is under attack after the move
+    // Slider attacks (queen, rook, bishop)
+    Bitboard enemy_sliders = pieces(them, QUEEN) | pieces(them, ROOK) | pieces(them, BISHOP);
+
+    // Check queen attacks (all directions)
+    Bitboard queen_attacks = queen_attacks_bb(ksq, occ_after);
+    if (queen_attacks & enemy_sliders & pieces(them, QUEEN)) {
+        return false;  // Queen would attack our king
+    }
+
+    // Check rook attacks (rank/file)
+    Bitboard rook_attacks = bb_rank_attacks(ksq, occ_after) | bb_file_attacks(ksq, occ_after);
+    if (rook_attacks & (pieces(them, ROOK) | pieces(them, QUEEN))) {
+        return false;  // Rook or queen would attack our king
+    }
+
+    // Check bishop attacks (diagonals)
+    Bitboard bishop_attacks = bb_diag_attacks(ksq, occ_after);
+    if (bishop_attacks & (pieces(them, BISHOP) | pieces(them, QUEEN))) {
+        return false;  // Bishop or queen would attack our king
+    }
+
+    // Check knight attacks
+    Bitboard knight_attacks = knight_attacks_bb(ksq);
+    if (knight_attacks & pieces(them, KNIGHT)) {
+        return false;  // Knight would attack our king
+    }
+
+    // Check pawn attacks
+    Bitboard enemy_pawns = pieces(them, PAWN);
+    Bitboard pawn_attacks = 0;
+    while (enemy_pawns) {
+        Square psq = pop_lsb(enemy_pawns);
+        Bitboard pb = square_bb(psq);
+        if (us == WHITE) {
+            // Black pawns attack diagonally upward (from white's perspective)
+            if (file_of(psq) > FILE_A) pawn_attacks |= shift_nw(pb);
+            if (file_of(psq) < FILE_H) pawn_attacks |= shift_ne(pb);
+        } else {
+            // White pawns attack diagonally downward (from black's perspective)
+            if (file_of(psq) > FILE_A) pawn_attacks |= shift_sw(pb);
+            if (file_of(psq) < FILE_H) pawn_attacks |= shift_se(pb);
         }
-        // Also verify en passant doesn't uncover check
-        Square ksq = king_square[us];
-        if (file_of(ksq) == file_of(to)) {
-            Bitboard occ = pieces() ^ square_bb(from) ^ square_bb(to) ^ square_bb(cap_sq);
-            Bitboard rook_queens = pieces(them, ROOK, QUEEN);
-            if ((bb_rank_attacks(ksq, occ) | bb_file_attacks(ksq, occ)) & rook_queens) {
+    }
+    if (pawn_attacks & square_bb(ksq)) {
+        return false;  // Pawn would attack our king
+    }
+
+    // If we were in check, verify the move actually escapes
+    if (is_check()) {
+        Bitboard checkers_b = checkers();
+
+        // If this is en passant, verify it captures the checking piece or resolves check
+        if (m.is_en_passant()) {
+            Square cap_sq = Square(to - (us == WHITE ? 8 : -8));
+            // If the checker is not the captured pawn, en passant doesn't help
+            if (!(checkers() & square_bb(cap_sq))) {
                 return false;
             }
         }
-        return true;
-    }
 
-    // Non-king move in check: must either capture checker or block the check
-    // Get the checking piece's square
-    Bitboard checkers_b = checkers();
-    Square checker_sq = pop_lsb(checkers_b);
-
-    // Check if the move captures the checking piece
-    if (checkers() & square_bb(to)) {
-        return true;  // Capturing the checker is always legal
-    }
-
-    // Check if the move blocks the check (to is on line from king to checker)
-    if (aligned(ksq, checker_sq, to)) {
-        // The destination is on the line from king to checker
-        // Verify it's actually between them (closer to king than checker)
-        if (between_bb(ksq, checker_sq) & square_bb(to)) {
-            return true;  // Valid blocking move
+        // If capturing a checker, that's fine
+        if (checkers_b & square_bb(to)) {
+            return true;
         }
+
+        // If single checker, verify we block it
+        if (popcount(checkers_b) == 1) {
+            Square checker_sq = pop_lsb(checkers_b);
+            if (between_bb(ksq, checker_sq) & square_bb(to)) {
+                return true;  // Valid blocking move
+            }
+        }
+
+        // Double check can only be resolved by king move
+        return false;
     }
 
-    // Not capturing checker and not blocking
-    return false;
+    return true;
 }
 
 bool Position::pseudo_legal(const Move m) const {
