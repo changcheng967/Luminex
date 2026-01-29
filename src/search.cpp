@@ -184,6 +184,18 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
         return eval;
     }
 
+    // Razoring: at very low depths, if eval is far below alpha, try qsearch to confirm
+    if (!pv_node && !pos.is_check() && depth <= 2) {
+        Value razor_margin = 300 + depth * 50;  // Margin increases with depth
+        if (eval + razor_margin < alpha) {
+            // Try quiescence search to confirm the position is really losing
+            Value qsearch_value = qsearch(pos, ss, alpha - 1, alpha, 0);
+            if (qsearch_value <= alpha) {
+                return qsearch_value;  // Confirmed losing, prune
+            }
+        }
+    }
+
     // Null move pruning - skip if we're in check, or if we have few pieces, or if eval is much worse than beta
     int piece_count = popcount(pos.pieces()) - popcount(pos.pieces(PAWN)) - 2;  // Exclude kings and pawns
     bool null_move_ok = !pv_node && !pos.is_check() && depth >= 3 && piece_count >= 3 &&
