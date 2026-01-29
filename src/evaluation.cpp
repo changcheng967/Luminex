@@ -900,6 +900,11 @@ Value evaluate(const Position& pos) {
         }
     }
 
+    // Tempo bonus: small advantage for having the move
+    // In middle game, tempo is more valuable; in endgame, less so
+    mg_score += 15;
+    eg_score += 5;
+
     // Interpolate between middle game and endgame
     Score score = (mg_score * phase + eg_score * (24 - phase)) / 24;
 
