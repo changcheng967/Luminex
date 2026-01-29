@@ -47,6 +47,8 @@ constexpr int futility_margin(int depth, bool improving) {
 
 // Search start time for time management
 static std::chrono::steady_clock::time_point search_start;
+static int ideal_time = 0;  // Ideal time to use for this search
+static int max_time = 0;    // Maximum time to use
 
 // Check time - returns true if time limit exceeded
 bool check_time() {
@@ -59,11 +61,44 @@ bool check_time() {
     if (limits.movetime) {
         auto now = std::chrono::steady_clock::now();
         int elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(now - search_start).count();
-        // Use 20% buffer - accounts for time check granularity and depth completion
-        int limit = (limits.movetime * 4) / 5;
+        // Use more aggressive buffer for better performance
+        int limit = (limits.movetime * 9) / 10;
         if (elapsed >= limit) {
             stop = true;
             return true;
+        }
+    }
+
+    // Check tournament time control (wtime/btime)
+    if (limits.use_time_management()) {
+        auto now = std::chrono::steady_clock::now();
+        int elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(now - search_start).count();
+
+        // Stop if we've used max time
+        if (elapsed >= max_time) {
+            stop = true;
+            return true;
+        }
+
+        // Consider stopping if we've used ideal time and depth is sufficient
+        if (elapsed >= ideal_time && root_depth >= 8 && !stop) {
+            // Check if we can safely stop (score is stable, not in tactical position)
+            // Use more time in complex positions (low root_depth or high score changes)
+            static Value last_root_score = -VALUE_INFINITE;
+            static int stable_depth_count = 0;
+
+            if (root_score == last_root_score || root_depth >= 12) {
+                stable_depth_count++;
+            } else {
+                stable_depth_count = 0;
+            }
+            last_root_score = root_score;
+
+            // Stop if score is stable for 2+ depths and we're past depth 10
+            if (stable_depth_count >= 2 && root_depth >= 10) {
+                stop = true;
+                return true;
+            }
         }
     }
 
@@ -691,6 +726,37 @@ Move search(Position& pos, Limits& lim) {
     }
 
     TT.new_search();
+
+    // Initialize time management for tournament time controls
+    if (limits.use_time_management()) {
+        Color us = pos.side_to_move();
+        int time_left = limits.time[int(us)];
+        int time_inc = limits.inc[int(us)];
+
+        // Use a fraction of remaining time based on game phase
+        // In middle game (more pieces), use more time
+        // In endgame (fewer pieces), use less time per move
+        int piece_count = popcount(pos.pieces());
+        double time_fraction = 0.02;  // Base: 2% of remaining time
+
+        if (piece_count > 28) {
+            time_fraction = 0.03;  // Opening: more time for important decisions
+        } else if (piece_count < 16) {
+            time_fraction = 0.015;  // Endgame: less time needed (simpler positions)
+        }
+
+        ideal_time = int(time_left * time_fraction) + time_inc / 2;
+        max_time = int(time_left * 0.15);  // Never use more than 15% at once
+
+        // Minimum time to ensure some thinking
+        if (ideal_time < 50) ideal_time = 50;
+        // Maximum time to avoid time forfeits
+        if (max_time > time_left - 500) max_time = time_left - 500;
+        if (ideal_time > max_time) ideal_time = max_time;
+    } else {
+        ideal_time = 0;
+        max_time = 0;
+    }
 
     // Initialize killers and history (clear for new search)
     for (int i = 0; i < MAX_PLY; ++i) {
