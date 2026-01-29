@@ -483,6 +483,113 @@ Value evaluate(const Position& pos) {
         eg_score -= 70;
     }
 
+    // Space evaluation: count squares we control in enemy territory
+    for (int c_idx = 0; c_idx < 2; ++c_idx) {
+        Color us = Color(c_idx);
+        Color them = Color(us ^ 1);
+        Sign sign = (us == WHITE) ? 1 : -1;
+
+        // Define the space area: ranks 2-5 for white, 3-6 for black
+        Bitboard space_area = 0;
+        for (int r = int(RANK_2); r <= int(RANK_5); ++r) {
+            for (int f = int(FILE_C); f <= int(FILE_F); ++f) {
+                Square sq = make_square(File(f), Rank(r));
+                if (us == BLACK) {
+                    // Mirror for black
+                    sq = Square(sq ^ 56);  // Mirror the square
+                }
+                space_area |= square_bb(sq);
+            }
+        }
+
+        // Count controlled squares in space area
+        int controlled_squares = 0;
+
+        // Pawn attacks
+        Bitboard our_pawns = pos.pieces(us, PAWN);
+        Bitboard pawn_attacks = 0;
+        while (our_pawns) {
+            Square psq = pop_lsb(our_pawns);
+            Bitboard pb = square_bb(psq);
+            if (us == WHITE) {
+                if (file_of(psq) > FILE_A) pawn_attacks |= shift_nw(pb);
+                if (file_of(psq) < FILE_H) pawn_attacks |= shift_ne(pb);
+            } else {
+                if (file_of(psq) > FILE_A) pawn_attacks |= shift_sw(pb);
+                if (file_of(psq) < FILE_H) pawn_attacks |= shift_se(pb);
+            }
+        }
+
+        // Knight attacks
+        Bitboard our_knights = pos.pieces(us, KNIGHT);
+        Bitboard knight_attacks = 0;
+        while (our_knights) {
+            Square ksq = pop_lsb(our_knights);
+            knight_attacks |= knight_attacks_bb(ksq);
+        }
+
+        // Total controlled squares in space area
+        Bitboard our_control = (pawn_attacks | knight_attacks) & space_area;
+
+        // Subtract squares occupied by enemy pawns (they block our control)
+        our_control &= ~pos.pieces(them, PAWN);
+
+        controlled_squares = popcount(our_control);
+
+        // Bonus for space advantage
+        if (controlled_squares >= 5) {
+            mg_score += sign * 30;
+            eg_score += sign * 10;
+        } else if (controlled_squares >= 3) {
+            mg_score += sign * 15;
+            eg_score += sign * 5;
+        }
+    }
+
+    // Center control bonus: extra value for controlling center squares (d4, d5, e4, e5)
+    Bitboard center_squares = 0;
+    center_squares |= square_bb(D4);
+    center_squares |= square_bb(D5);
+    center_squares |= square_bb(E4);
+    center_squares |= square_bb(E5);
+
+    for (int c_idx = 0; c_idx < 2; ++c_idx) {
+        Color us = Color(c_idx);
+        Sign sign = (us == WHITE) ? 1 : -1;
+
+        Bitboard our_center_control = 0;
+
+        // Check pawn attacks on center
+        Bitboard our_pawns = pos.pieces(us, PAWN);
+        while (our_pawns) {
+            Square psq = pop_lsb(our_pawns);
+            Bitboard pb = square_bb(psq);
+            if (us == WHITE) {
+                if (file_of(psq) > FILE_A) our_center_control |= shift_nw(pb);
+                if (file_of(psq) < FILE_H) our_center_control |= shift_ne(pb);
+            } else {
+                if (file_of(psq) > FILE_A) our_center_control |= shift_sw(pb);
+                if (file_of(psq) < FILE_H) our_center_control |= shift_se(pb);
+            }
+        }
+
+        // Check knight attacks on center
+        Bitboard our_knights = pos.pieces(us, KNIGHT);
+        while (our_knights) {
+            Square ksq = pop_lsb(our_knights);
+            our_center_control |= knight_attacks_bb(ksq);
+        }
+
+        // Check if we have pieces on center squares
+        Bitboard our_pieces_on_center = pos.pieces(us) & center_squares;
+
+        int center_control_count = popcount(our_center_control & center_squares);
+        int center_occupation_count = popcount(our_pieces_on_center);
+
+        mg_score += sign * (center_control_count * 10 + center_occupation_count * 20);
+        eg_score += sign * (center_control_count * 5 + center_occupation_count * 10);
+    }
+
     // King danger and queen tropism evaluation
     for (int c_idx = 0; c_idx < 2; ++c_idx) {
         Color us = Color(c_idx);
