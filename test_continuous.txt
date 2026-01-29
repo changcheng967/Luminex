@@ -1,0 +1,7 @@
+uci
+ucinewgame
+position startpos
+go movetime 500
+position startpos moves b1c3
+go movetime 500
+quit

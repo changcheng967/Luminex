@@ -730,6 +730,13 @@ bool Position::legal(Move m) const {
     // If our king is not in check, all pseudo-legal moves are legal
     // except castling and en passant which need special handling
     if (!is_check()) {
+        // King moves need to check distance from opponent king
+        if (piece_type_on(from) == KING) {
+            Square opp_king = king_square[them];
+            if (distance(to, opp_king) <= 1) {
+                return false;  // Kings cannot be adjacent
+            }
+        }
         if (m.is_castling()) {
             // Verify castling legality
             // Check if king passes through or ends in check
@@ -788,6 +795,11 @@ bool Position::legal(Move m) const {
 
     // King move
     if (piece_type_on(from) == KING) {
+        // King cannot move to square adjacent to opponent king
+        Square opp_king = king_square[them];
+        if (distance(to, opp_king) <= 1) {
+            return false;  // Kings cannot be adjacent
+        }
         // King cannot move to attacked square
         Bitboard attacks = attackers_to(to, pieces() ^ square_bb(from));
         return !(attacks & pieces(them));
