@@ -1272,6 +1272,49 @@ Value evaluate(const Position& pos) {
         }
     }
 
+    // Piece coordination: bonus when pieces support each other's attacks
+    for (int c_idx = 0; c_idx < 2; ++c_idx) {
+        Color us = Color(c_idx);
+        Sign sign = (us == WHITE) ? 1 : -1;
+
+        // Get all squares attacked by our pieces (excluding pawns and king)
+        Bitboard our_attacks = 0;
+
+        Bitboard our_knights = pos.pieces(us, KNIGHT);
+        while (our_knights) {
+            Square sq = pop_lsb(our_knights);
+            our_attacks |= knight_attacks_bb(sq);
+        }
+
+        Bitboard our_bishops = pos.pieces(us, BISHOP);
+        while (our_bishops) {
+            Square sq = pop_lsb(our_bishops);
+            our_attacks |= bb_diag_attacks(sq, pos.pieces());
+        }
+
+        Bitboard our_rooks = pos.pieces(us, ROOK);
+        Bitboard occupied = pos.pieces();
+        while (our_rooks) {
+            Square sq = pop_lsb(our_rooks);
+            our_attacks |= bb_rank_attacks(sq, occupied) | bb_file_attacks(sq, occupied);
+        }
+
+        Bitboard our_queens = pos.pieces(us, QUEEN);
+        while (our_queens) {
+            Square sq = pop_lsb(our_queens);
+            our_attacks |= queen_attacks_bb(sq, occupied);
+        }
+
+        // Count how many of our pieces are on attacked squares (supported)
+        Bitboard our_pieces = pos.pieces(us) & ~pos.pieces(PAWN) & ~pos.pieces(KING);
+        Bitboard supported_pieces = our_pieces & our_attacks;
+        int support_count = popcount(supported_pieces);
+
+        // Bonus for piece coordination
+        mg_score += sign * support_count * 5;
+        eg_score += sign * support_count * 8;
+    }
+
     // Tempo bonus: small advantage for having the move
     // In middle game, tempo is more valuable; in endgame, less so
     mg_score += 15;
