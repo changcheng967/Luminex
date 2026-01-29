@@ -1,0 +1,9 @@
+=== Luminex v2.2.0 Self-Play ===
+Time control: 500ms per move
+================================
+
+White: No move found
+
+=== Final Position ===
+Moves: 0
+PGN: 

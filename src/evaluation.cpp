@@ -841,6 +841,40 @@ Value evaluate(const Position& pos) {
                 mg_score -= sign * missing * (120 + game_ply * 30);
                 eg_score -= sign * missing * (60 + game_ply * 15);
             }
+
+            // Penalty for early e-pawn advance before castling - opens e-file against king
+            // This is a critical opening principle: don't open the e-file early if king is in center
+            Square ksq = pos.king_sq(us);
+            Rank krank = rank_of(ksq);
+            File kfile = file_of(ksq);
+
+            // Check if king has castled or is on safe back rank square
+            bool king_safe = (us == WHITE && krank == RANK_1 && (kfile == FILE_G || kfile == FILE_C)) ||
+                             (us == BLACK && krank == RANK_8 && (kfile == FILE_G || kfile == FILE_C));
+
+            // Also consider king still in center as unsafe
+            bool king_in_center = (us == WHITE && krank >= RANK_1 && krank <= RANK_2) ||
+                                  (us == BLACK && krank >= RANK_7 && krank <= RANK_8);
+
+            if (!king_safe && king_in_center) {
+                // Check if e-pawn has moved from starting square
+                bool e_pawn_advanced = false;
+                if (us == WHITE) {
+                    // White e-pawn starts on e2
+                    e_pawn_advanced = !(our_pawns & square_bb(E2)) && (our_pawns & (BB_RANK_3 | BB_RANK_4 | BB_RANK_5));
+                } else {
+                    // Black e-pawn starts on e7
+                    e_pawn_advanced = !(our_pawns & square_bb(E7)) && (our_pawns & (BB_RANK_3 | BB_RANK_4 | BB_RANK_5 | BB_RANK_6));
+                }
+
+                if (e_pawn_advanced) {
+                    // Penalty for opening e-file before king is safe
+                    // This is VERY dangerous - classic blunder
+                    int e_file_penalty = 150 + (game_ply * 20);
+                    mg_score -= sign * e_file_penalty;
+                    eg_score -= sign * (e_file_penalty / 2);
+                }
+            }
         }
     }
 
@@ -968,17 +1002,43 @@ Value evaluate(const Position& pos) {
             eg_score -= sign * 20;
         }
 
-        // King in center penalty (after move 8)
-        if (game_ply > 16) {
+        // King in center penalty - apply earlier and stronger
+        if (game_ply > 10) {  // After move 5 (earlier than before)
             bool king_in_center = (us == WHITE && krank >= RANK_3 && krank <= RANK_5) ||
                                   (us == BLACK && krank >= RANK_4 && krank <= RANK_6);
 
             if (king_in_center) {
-                // King in center is dangerous
-                mg_score -= sign * 80;
-                eg_score -= sign * 30;
+                // King in center is VERY dangerous - stronger penalty
+                int base_penalty = 120;
+                int extra_penalty = (game_ply - 10) * 5;  // Grows as game progresses
+                mg_score -= sign * (base_penalty + extra_penalty);
+                eg_score -= sign * (50 + extra_penalty / 2);
 
-                // Extra penalty for open files near king
+                // Extra penalty when enemy queen/rook is in our half
+                Color them = Color(us ^ 1);
+                Bitboard their_queens = pos.pieces(them, QUEEN);
+                Bitboard their_rooks = pos.pieces(them, ROOK);
+
+                // Check if enemy queen is in our half
+                if (us == WHITE) {
+                    // Our half is ranks 1-4
+                    if (their_queens & (BB_RANK_1 | BB_RANK_2 | BB_RANK_3 | BB_RANK_4)) {
+                        mg_score -= sign * 60;  // Enemy queen in our half = very bad
+                    }
+                    if (their_rooks & (BB_RANK_1 | BB_RANK_2 | BB_RANK_3 | BB_RANK_4)) {
+                        mg_score -= sign * 30;  // Enemy rooks in our half = bad
+                    }
+                } else {
+                    // Our half is ranks 5-8
+                    if (their_queens & (BB_RANK_5 | BB_RANK_6 | BB_RANK_7 | BB_RANK_8)) {
+                        mg_score -= sign * 60;
+                    }
+                    if (their_rooks & (BB_RANK_5 | BB_RANK_6 | BB_RANK_7 | BB_RANK_8)) {
+                        mg_score -= sign * 30;
+                    }
+                }
+
+                // Count open files near king (existing code)
                 Bitboard all_pawns = pos.pieces(PAWN);
                 int open_files_near_king = 0;
 
@@ -992,8 +1052,39 @@ Value evaluate(const Position& pos) {
                     open_files_near_king++;
                 }
 
-                mg_score -= sign * open_files_near_king * 35;
-                eg_score -= sign * open_files_near_king * 15;
+                mg_score -= sign * open_files_near_king * 40;
+                eg_score -= sign * open_files_near_king * 20;
+            }
+        }
+
+        // Unsafe king squares: d7/e7 for Black, d2/e2 for White
+        // These squares expose the king to central files without castling safety
+        if (!has_castled && game_ply > 8) {  // After move 4
+            bool on_unsafe_square = false;
+            if (us == WHITE) {
+                // d2 or e2 is dangerous - king blocks center pawns
+                if ((krank == RANK_2) && ((kfile == FILE_D) || (kfile == FILE_E))) {
+                    on_unsafe_square = true;
+                }
+            } else {
+                // d7 or e7 is dangerous - same issue for Black
+                if ((krank == RANK_7) && ((kfile == FILE_D) || (kfile == FILE_E))) {
+                    on_unsafe_square = true;
+                }
+            }
+
+            if (on_unsafe_square) {
+                // Check if enemy has developed pieces that can attack
+                Color them = Color(us ^ 1);
+                bool enemy_has_queen = pos.pieces(them, QUEEN) != 0;
+                bool enemy_has_rook = pos.pieces(them, ROOK) != 0;
+
+                int unsafe_penalty = 80;  // Base penalty for unsafe square
+                if (enemy_has_queen) unsafe_penalty += 60;
+                if (enemy_has_rook) unsafe_penalty += 30;
+
+                mg_score -= sign * unsafe_penalty;
+                eg_score -= sign * (unsafe_penalty / 2);
             }
         }
     }

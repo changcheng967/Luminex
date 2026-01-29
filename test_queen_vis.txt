@@ -1,0 +1,3 @@
+position fen rnbqkbnr/pp2pppp/3N4/2pp4/8/8/PPPPPPPP/R1BQKBNR b KQkq - 0 1
+go nodes 1 depth 1
+quit

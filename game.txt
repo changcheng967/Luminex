@@ -1,281 +1,482 @@
-<Luminex(0): id name Luminex 0.4.1
+<Luminex(1): id name Luminex 2.0.0
+<Luminex(1): id author changcheng967
+<Luminex(1): uciok
+>Luminex(1): isready
+<Luminex(1): readyok
+<Luminex(0): id name Luminex 2.0.0
 <Luminex(0): id author changcheng967
 <Luminex(0): uciok
 >Luminex(0): isready
 <Luminex(0): readyok
 >Luminex(0): ucinewgame
 >Luminex(0): position startpos
+>Luminex(1): ucinewgame
+>Luminex(1): position startpos
 >Luminex(0): isready
 <Luminex(0): readyok
 >Luminex(0): go movetime 1000
-<Luminex(0): info depth 1 score cp 80 nodes 40 nps 40000
-<Luminex(0): info depth 2 score cp 0 nodes 572 nps 572000
-<Luminex(0): info depth 3 score cp 80 nodes 2858 nps 2858000
-<Luminex(0): info depth 4 score cp 0 nodes 16056 nps 4014000
-<Luminex(0): info depth 5 score cp 29 nodes 71461 nps 5497000
-<Luminex(0): info depth 6 score cp 0 nodes 155321 nps 4568264
-<Luminex(0): info depth 7 score cp 67 nodes 1129022 nps 5561684
-<Luminex(0): info depth 8 score cp 67 nodes 3573591 nps 4466988
+<Luminex(0): info depth 1 score cp 119 nodes 80 nps 80000
+<Luminex(0): info depth 2 score cp 7 nodes 579 nps 579000
+<Luminex(0): info depth 3 score cp 139 nodes 4126 nps 1031500
+<Luminex(0): info depth 4 score cp -5 nodes 24399 nps 1161857
+<Luminex(0): info depth 5 score cp 225 nodes 176616 nps 1201469
+<Luminex(0): info depth 6 score cp 94 nodes 575665 nps 961043
+<Luminex(0): info depth 7 score cp 94 nodes 819644 nps 1024555
 <Luminex(0): bestmove b1c3
->Luminex(0): position startpos moves b1c3 c7c5
+>Luminex(1): position startpos moves b1c3
+>Luminex(1): isready
+<Luminex(1): readyok
+>Luminex(1): go movetime 1000
+<Luminex(1): info depth 1 score cp 10 nodes 80 nps 80000
+<Luminex(1): info depth 2 score cp -134 nodes 740 nps 740000
+<Luminex(1): info depth 3 score cp 12 nodes 4950 nps 1237500
+<Luminex(1): info depth 4 score cp -224 nodes 39399 nps 1231218
+<Luminex(1): info depth 5 score cp -94 nodes 274740 nps 1073203
+<Luminex(1): info depth 6 score cp -187 nodes 592765 nps 963845
+<Luminex(1): info depth 7 score cp -187 nodes 786569 nps 983211
+<Luminex(1): bestmove e7e6
+>Luminex(0): position startpos moves b1c3 e7e6
 >Luminex(0): isready
 <Luminex(0): readyok
 >Luminex(0): go movetime 1000
-<Luminex(0): info depth 1 score cp 188 nodes 44 nps 0
-<Luminex(0): info depth 2 score cp 108 nodes 491 nps 0
-<Luminex(0): info depth 3 score cp 175 nodes 2390 nps 0
-<Luminex(0): info depth 4 score cp 102 nodes 18306 nps 6102000
-<Luminex(0): info depth 5 score cp 138 nodes 80174 nps 5726714
-<Luminex(0): info depth 6 score cp 91 nodes 209827 nps 4371395
-<Luminex(0): info depth 7 score cp 147 nodes 2499645 nps 5009308
-<Luminex(0): info depth 8 score cp 147 nodes 3637230 nps 4546537
-<Luminex(0): bestmove g1f3
->Luminex(0): position startpos moves b1c3 c7c5 g1f3 b8c6
+<Luminex(0): info depth 1 score cp 134 nodes 89 nps 0
+<Luminex(0): info depth 2 score cp -12 nodes 796 nps 0
+<Luminex(0): info depth 3 score cp 256 nodes 6084 nps 1216800
+<Luminex(0): info depth 4 score cp 188 nodes 48373 nps 987204
+<Luminex(0): info depth 5 score cp 343 nodes 254497 nps 1121132
+<Luminex(0): info depth 6 score cp 343 nodes 701109 nps 876386
+<Luminex(0): bestmove c3b5
+>Luminex(1): position startpos moves b1c3 e7e6 c3b5
+>Luminex(1): isready
+<Luminex(1): readyok
+>Luminex(1): go movetime 1000
+<Luminex(1): info depth 1 score cp 365 nodes 127 nps 0
+<Luminex(1): info depth 2 score cp -256 nodes 2222 nps 2222000
+<Luminex(1): info depth 3 score cp -188 nodes 54112 nps 1002074
+<Luminex(1): info depth 4 score cp -343 nodes 194958 nps 1146811
+<Luminex(1): info depth 5 score cp 165 nodes 445670 nps 1128278
+<Luminex(1): info depth 6 score cp 165 nodes 770905 nps 963631
+<Luminex(1): bestmove c7c6
+>Luminex(0): position startpos moves b1c3 e7e6 c3b5 c7c6
 >Luminex(0): isready
 <Luminex(0): readyok
 >Luminex(0): go movetime 1000
-<Luminex(0): info depth 1 score cp 138 nodes 48 nps 0
-<Luminex(0): info depth 2 score cp 115 nodes 695 nps 0
-<Luminex(0): info depth 3 score cp 138 nodes 4192 nps 0
-<Luminex(0): info depth 4 score cp 90 nodes 21665 nps 5416250
-<Luminex(0): info depth 5 score cp 158 nodes 86300 nps 5753333
-<Luminex(0): info depth 6 score cp 64 nodes 343223 nps 4185646
-<Luminex(0): info depth 7 score cp 64 nodes 3413755 nps 4267193
-<Luminex(0): bestmove d2d4
->Luminex(0): position startpos moves b1c3 c7c5 g1f3 b8c6 d2d4 c5d4
+<Luminex(0): info depth 1 score cp 256 nodes 107 nps 0
+<Luminex(0): info depth 2 score cp 545 nodes 643 nps 0
+<Luminex(0): info depth 3 score cp 545 nodes 11622 nps 1291333
+<Luminex(0): info depth 4 score cp 392 nodes 54029 nps 947877
+<Luminex(0): info depth 5 score cp 493 nodes 118376 nps 1056928
+<Luminex(0): info depth 6 score cp 345 nodes 361317 nps 819312
+<Luminex(0): info depth 7 score cp 345 nodes 758964 nps 948705
+<Luminex(0): bestmove b5c7
+>Luminex(1): position startpos moves b1c3 e7e6 c3b5 c7c6 b5c7
+>Luminex(1): isready
+<Luminex(1): readyok
+>Luminex(1): go movetime 1000
+<Luminex(1): info depth 1 score cp -545 nodes 8 nps 0
+<Luminex(1): info depth 2 score cp -545 nodes 118 nps 0
+<Luminex(1): info depth 3 score cp -392 nodes 2323 nps 1161500
+<Luminex(1): info depth 4 score cp -493 nodes 12085 nps 1208500
+<Luminex(1): info depth 5 score cp -223 nodes 127592 nps 1226846
+<Luminex(1): info depth 6 score cp -223 nodes 834367 nps 1042958
+<Luminex(1): bestmove e8e7
+>Luminex(0): position startpos moves b1c3 e7e6 c3b5 c7c6 b5c7 e8e7
 >Luminex(0): isready
 <Luminex(0): readyok
 >Luminex(0): go movetime 1000
-<Luminex(0): info depth 1 score cp 127 nodes 99 nps 0
-<Luminex(0): info depth 2 score cp 47 nodes 822 nps 0
-<Luminex(0): info depth 3 score cp 158 nodes 5184 nps 5184000
-<Luminex(0): info depth 4 score cp 64 nodes 27844 nps 4640666
-<Luminex(0): info depth 5 score cp 146 nodes 111456 nps 6192000
-<Luminex(0): info depth 6 score cp 58 nodes 325882 nps 3745770
-<Luminex(0): info depth 7 score cp 125 nodes 4121161 nps 5653170
-<Luminex(0): info depth 8 score cp 125 nodes 4319135 nps 5398918
-<Luminex(0): bestmove f3d4
->Luminex(0): position startpos moves b1c3 c7c5 g1f3 b8c6 d2d4 c5d4 f3d4 g8f6
+<Luminex(0): info depth 1 score cp 545 nodes 102 nps 0
+<Luminex(0): info depth 2 score cp 392 nodes 2293 nps 1146500
+<Luminex(0): info depth 3 score cp 493 nodes 13328 nps 1332800
+<Luminex(0): info depth 4 score cp 223 nodes 118365 nps 1195606
+<Luminex(0): info depth 5 score cp 368 nodes 638773 nps 1142706
+<Luminex(0): info depth 6 score cp 368 nodes 845788 nps 1057235
+<Luminex(0): bestmove c7a8
+>Luminex(1): position startpos moves b1c3 e7e6 c3b5 c7c6 b5c7 e8e7 c7a8
+>Luminex(1): isready
+<Luminex(1): readyok
+>Luminex(1): go movetime 1000
+<Luminex(1): info depth 1 score cp -392 nodes 97 nps 0
+<Luminex(1): info depth 2 score cp -493 nodes 833 nps 0
+<Luminex(1): info depth 3 score cp -223 nodes 6649 nps 1662250
+<Luminex(1): info depth 4 score cp -368 nodes 31589 nps 1214961
+<Luminex(1): info depth 5 score cp -264 nodes 377024 nps 1412074
+<Luminex(1): info depth 6 score cp -423 nodes 678445 nps 1085512
+<Luminex(1): info depth 7 score cp -423 nodes 899576 nps 1124470
+<Luminex(1): bestmove b7b5
+>Luminex(0): position startpos moves b1c3 e7e6 c3b5 c7c6 b5c7 e8e7 c7a8 b7b5
 >Luminex(0): isready
 <Luminex(0): readyok
 >Luminex(0): go movetime 1000
-<Luminex(0): info depth 1 score cp 349 nodes 90 nps 0
-<Luminex(0): info depth 2 score cp 64 nodes 769 nps 0
-<Luminex(0): info depth 3 score cp 146 nodes 5470 nps 5470000
-<Luminex(0): info depth 4 score cp 60 nodes 34741 nps 4342625
-<Luminex(0): info depth 5 score cp 249 nodes 84346 nps 5623066
-<Luminex(0): info depth 6 score cp 249 nodes 241794 nps 3555794
-<Luminex(0): info depth 7 score cp 249 nodes 3064374 nps 5950240
-<Luminex(0): info depth 8 score cp 249 nodes 3886882 nps 4858602
-<Luminex(0): bestmove d4c6
->Luminex(0): position startpos moves b1c3 c7c5 g1f3 b8c6 d2d4 c5d4 f3d4 g8f6 d4c6 b7c6
+<Luminex(0): info depth 1 score cp 643 nodes 84 nps 0
+<Luminex(0): info depth 2 score cp 223 nodes 2583 nps 2583000
+<Luminex(0): info depth 3 score cp 368 nodes 27624 nps 1534666
+<Luminex(0): info depth 4 score cp 281 nodes 105915 nps 1412200
+<Luminex(0): info depth 5 score cp 506 nodes 385156 nps 1211182
+<Luminex(0): info depth 6 score cp 443 nodes 744384 nps 1049906
+<Luminex(0): info depth 7 score cp 443 nodes 848443 nps 1060553
+<Luminex(0): bestmove d2d3
+>Luminex(1): position startpos moves b1c3 e7e6 c3b5 c7c6 b5c7 e8e7 c7a8 b7b5 d2d3
+>Luminex(1): isready
+<Luminex(1): readyok
+>Luminex(1): go movetime 1000
+<Luminex(1): info depth 1 score cp -142 nodes 100 nps 0
+<Luminex(1): info depth 2 score cp -368 nodes 1205 nps 1205000
+<Luminex(1): info depth 3 score cp -281 nodes 33784 nps 1608761
+<Luminex(1): info depth 4 score cp -505 nodes 111758 nps 1330452
+<Luminex(1): info depth 5 score cp -342 nodes 269631 nps 1296302
+<Luminex(1): info depth 6 score cp -342 nodes 368410 nps 1140588
+<Luminex(1): info depth 7 score cp -342 nodes 943872 nps 1179840
+<Luminex(1): bestmove c8b7
+>Luminex(0): position startpos moves b1c3 e7e6 c3b5 c7c6 b5c7 e8e7 c7a8 b7b5 d2d3 c8b7
 >Luminex(0): isready
 <Luminex(0): readyok
 >Luminex(0): go movetime 1000
-<Luminex(0): info depth 1 score cp 134 nodes 67 nps 0
-<Luminex(0): info depth 2 score cp 74 nodes 619 nps 0
-<Luminex(0): info depth 3 score cp 157 nodes 7058 nps 7058000
-<Luminex(0): info depth 4 score cp 45 nodes 34085 nps 4260625
-<Luminex(0): info depth 5 score cp 123 nodes 251250 nps 5025000
-<Luminex(0): info depth 6 score cp 57 nodes 630493 nps 3602817
-<Luminex(0): info depth 7 score cp 57 nodes 3461610 nps 4327012
-<Luminex(0): bestmove c1g5
->Luminex(0): position startpos moves b1c3 c7c5 g1f3 b8c6 d2d4 c5d4 f3d4 g8f6 d4c6 b7c6 c1g5 d8b6
+<Luminex(0): info depth 1 score cp 368 nodes 116 nps 0
+<Luminex(0): info depth 2 score cp 304 nodes 959 nps 959000
+<Luminex(0): info depth 3 score cp 505 nodes 16834 nps 1294923
+<Luminex(0): info depth 4 score cp 390 nodes 57612 nps 1047490
+<Luminex(0): info depth 5 score cp 559 nodes 359595 nps 1086389
+<Luminex(0): info depth 6 score cp 559 nodes 767104 nps 958880
+<Luminex(0): bestmove a8c7
+>Luminex(1): position startpos moves b1c3 e7e6 c3b5 c7c6 b5c7 e8e7 c7a8 b7b5 d2d3 c8b7 a8c7
+>Luminex(1): isready
+<Luminex(1): readyok
+>Luminex(1): go movetime 1000
+<Luminex(1): info depth 1 score cp -304 nodes 162 nps 0
+<Luminex(1): info depth 2 score cp -505 nodes 2380 nps 1190000
+<Luminex(1): info depth 3 score cp -279 nodes 6027 nps 1205400
+<Luminex(1): info depth 4 score cp -559 nodes 19890 nps 947142
+<Luminex(1): info depth 5 score cp -256 nodes 103776 nps 1069855
+<Luminex(1): info depth 6 score cp -456 nodes 256557 nps 824942
+<Luminex(1): info depth 7 score cp -456 nodes 735082 nps 918852
+<Luminex(1): bestmove d8c7
+>Luminex(0): position startpos moves b1c3 e7e6 c3b5 c7c6 b5c7 e8e7 c7a8 b7b5 d2d3 c8b7 a8c7 d8c7
 >Luminex(0): isready
 <Luminex(0): readyok
 >Luminex(0): go movetime 1000
-<Luminex(0): info depth 1 score cp 365 nodes 104 nps 0
-<Luminex(0): info depth 2 score cp 57 nodes 690 nps 0
-<Luminex(0): info depth 3 score cp 127 nodes 5316 nps 5316000
-<Luminex(0): info depth 4 score cp 11 nodes 26274 nps 4379000
-<Luminex(0): info depth 5 score cp 265 nodes 122640 nps 5840000
-<Luminex(0): info depth 6 score cp 265 nodes 388560 nps 3665660
-<Luminex(0): info depth 7 score cp 265 nodes 4619583 nps 5774478
-<Luminex(0): bestmove g5f6
->Luminex(0): position startpos moves b1c3 c7c5 g1f3 b8c6 d2d4 c5d4 f3d4 g8f6 d4c6 b7c6 c1g5 d8b6 g5f6 e7f6
+<Luminex(0): info depth 1 score cp 530 nodes 108 nps 0
+<Luminex(0): info depth 2 score cp 279 nodes 1166 nps 1166000
+<Luminex(0): info depth 3 score cp 559 nodes 12575 nps 1143181
+<Luminex(0): info depth 4 score cp 256 nodes 63273 nps 1020532
+<Luminex(0): info depth 5 score cp 457 nodes 437867 nps 964464
+<Luminex(0): info depth 6 score cp 457 nodes 719658 nps 899572
+<Luminex(0): bestmove c1f4
+>Luminex(1): position startpos moves b1c3 e7e6 c3b5 c7c6 b5c7 e8e7 c7a8 b7b5 d2d3 c8b7 a8c7 d8c7 c1f4
+>Luminex(1): isready
+<Luminex(1): readyok
+>Luminex(1): go movetime 1000
+<Luminex(1): info depth 1 score cp 286 nodes 116 nps 0
+<Luminex(1): info depth 2 score cp -559 nodes 1313 nps 1313000
+<Luminex(1): info depth 3 score cp 376 nodes 3772 nps 1257333
+<Luminex(1): info depth 4 score cp 154 nodes 20475 nps 975000
+<Luminex(1): info depth 5 score cp 353 nodes 110569 nps 1228544
+<Luminex(1): info depth 6 score cp 206 nodes 653908 nps 924905
+<Luminex(1): info depth 7 score cp 206 nodes 771604 nps 964505
+<Luminex(1): bestmove c7f4
+>Luminex(0): position startpos moves b1c3 e7e6 c3b5 c7c6 b5c7 e8e7 c7a8 b7b5 d2d3 c8b7 a8c7 d8c7 c1f4 c7f4
 >Luminex(0): isready
 <Luminex(0): readyok
 >Luminex(0): go movetime 1000
-<Luminex(0): info depth 1 score cp 117 nodes 76 nps 0
-<Luminex(0): info depth 2 score cp 11 nodes 479 nps 0
-<Luminex(0): info depth 3 score cp 61 nodes 3693 nps 0
-<Luminex(0): info depth 4 score cp -67 nodes 21410 nps 5352500
-<Luminex(0): info depth 5 score cp 23 nodes 102047 nps 4436826
-<Luminex(0): info depth 6 score cp 18 nodes 270836 nps 3710082
-<Luminex(0): info depth 7 score cp 18 nodes 3542819 nps 4428523
-<Luminex(0): bestmove e2e3
->Luminex(0): position startpos moves b1c3 c7c5 g1f3 b8c6 d2d4 c5d4 f3d4 g8f6 d4c6 b7c6 c1g5 d8b6 g5f6 e7f6 e2e3 b6b2
+<Luminex(0): info depth 1 score cp 644 nodes 118 nps 0
+<Luminex(0): info depth 2 score cp -376 nodes 1572 nps 1572000
+<Luminex(0): info depth 3 score cp -154 nodes 12533 nps 1139363
+<Luminex(0): info depth 4 score cp -353 nodes 71619 nps 1234810
+<Luminex(0): info depth 5 score cp 444 nodes 114043 nps 1239597
+<Luminex(0): info depth 6 score cp 444 nodes 199812 nps 1110066
+<Luminex(0): info depth 7 score cp 444 nodes 984694 nps 1230867
+<Luminex(0): bestmove g1h3
+>Luminex(1): position startpos moves b1c3 e7e6 c3b5 c7c6 b5c7 e8e7 c7a8 b7b5 d2d3 c8b7 a8c7 d8c7 c1f4 c7f4 g1h3
+>Luminex(1): isready
+<Luminex(1): readyok
+>Luminex(1): go movetime 1000
+<Luminex(1): info depth 1 score cp 411 nodes 182 nps 0
+<Luminex(1): info depth 2 score cp 686 nodes 873 nps 873000
+<Luminex(1): info depth 3 score cp 686 nodes 15621 nps 1420090
+<Luminex(1): info depth 4 score cp 522 nodes 147074 nps 1014303
+<Luminex(1): info depth 5 score cp 486 nodes 814769 nps 1367062
+<Luminex(1): info depth 6 score cp 486 nodes 1004055 nps 1255068
+<Luminex(1): bestmove f4b4
+>Luminex(0): position startpos moves b1c3 e7e6 c3b5 c7c6 b5c7 e8e7 c7a8 b7b5 d2d3 c8b7 a8c7 d8c7 c1f4 c7f4 g1h3 f4b4
 >Luminex(0): isready
 <Luminex(0): readyok
 >Luminex(0): go movetime 1000
-<Luminex(0): info depth 1 score cp -160 nodes 203 nps 0
-<Luminex(0): info depth 2 score cp -218 nodes 822 nps 0
-<Luminex(0): info depth 3 score cp -211 nodes 5044 nps 5044000
-<Luminex(0): info depth 4 score cp -325 nodes 30301 nps 5050166
-<Luminex(0): info depth 5 score cp -254 nodes 125379 nps 4179300
-<Luminex(0): info depth 6 score cp -260 nodes 412590 nps 4343052
-<Luminex(0): info depth 7 score cp -260 nodes 2275733 nps 3799220
-<Luminex(0): info depth 8 score cp -260 nodes 2987677 nps 3734596
-<Luminex(0): bestmove c3e4
->Luminex(0): position startpos moves b1c3 c7c5 g1f3 b8c6 d2d4 c5d4 f3d4 g8f6 d4c6 b7c6 c1g5 d8b6 g5f6 e7f6 e2e3 b6b2 c3e4 d7d5
+<Luminex(0): info depth 1 score cp -686 nodes 14 nps 0
+<Luminex(0): info depth 2 score cp -686 nodes 172 nps 0
+<Luminex(0): info depth 3 score cp -522 nodes 1605 nps 1605000
+<Luminex(0): info depth 4 score cp -381 nodes 12894 nps 1289400
+<Luminex(0): info depth 5 score cp -169 nodes 88475 nps 951344
+<Luminex(0): info depth 6 score cp -369 nodes 97365 nps 964009
+<Luminex(0): info depth 7 score cp -369 nodes 682191 nps 852738
+<Luminex(0): bestmove d1d2
+>Luminex(1): position startpos moves b1c3 e7e6 c3b5 c7c6 b5c7 e8e7 c7a8 b7b5 d2d3 c8b7 a8c7 d8c7 c1f4 c7f4 g1h3 f4b4 d1d2
+>Luminex(1): isready
+<Luminex(1): readyok
+>Luminex(1): go movetime 1000
+<Luminex(1): info depth 1 score cp 1169 nodes 149 nps 0
+<Luminex(1): info depth 2 score cp 522 nodes 695 nps 0
+<Luminex(1): info depth 3 score cp 381 nodes 11417 nps 1268555
+<Luminex(1): info depth 4 score cp 169 nodes 129930 nps 921489
+<Luminex(1): info depth 5 score cp 969 nodes 229089 nps 1060597
+<Luminex(1): info depth 6 score cp 969 nodes 552007 nps 825122
+<Luminex(1): info depth 7 score cp 969 nodes 726431 nps 908038
+<Luminex(1): bestmove b4b2
+>Luminex(0): position startpos moves b1c3 e7e6 c3b5 c7c6 b5c7 e8e7 c7a8 b7b5 d2d3 c8b7 a8c7 d8c7 c1f4 c7f4 g1h3 f4b4 d1d2 b4b2
 >Luminex(0): isready
 <Luminex(0): readyok
 >Luminex(0): go movetime 1000
-<Luminex(0): info depth 1 score cp -153 nodes 105 nps 0
-<Luminex(0): info depth 2 score cp -325 nodes 763 nps 0
-<Luminex(0): info depth 3 score cp -254 nodes 6357 nps 6357000
-<Luminex(0): info depth 4 score cp -383 nodes 45235 nps 4523500
-<Luminex(0): info depth 5 score cp -253 nodes 107546 nps 5377300
-<Luminex(0): info depth 6 score cp -253 nodes 265746 nps 3796371
-<Luminex(0): info depth 7 score cp -253 nodes 1962511 nps 4930932
-<Luminex(0): info depth 8 score cp -253 nodes 3118938 nps 3898672
-<Luminex(0): bestmove e4f6
->Luminex(0): position startpos moves b1c3 c7c5 g1f3 b8c6 d2d4 c5d4 f3d4 g8f6 d4c6 b7c6 c1g5 d8b6 g5f6 e7f6 e2e3 b6b2 c3e4 d7d5 e4f6 b2f6
+<Luminex(0): info depth 1 score cp -522 nodes 147 nps 0
+<Luminex(0): info depth 2 score cp -271 nodes 1097 nps 1097000
+<Luminex(0): info depth 3 score cp 482 nodes 14485 nps 1114230
+<Luminex(0): info depth 4 score cp 408 nodes 51279 nps 1068312
+<Luminex(0): info depth 5 score cp 618 nodes 99176 nps 1114337
+<Luminex(0): info depth 6 score cp 418 nodes 184224 nps 939918
+<Luminex(0): info depth 7 score cp 418 nodes 907198 nps 1133997
+<Luminex(0): bestmove d2b4
+>Luminex(1): position startpos moves b1c3 e7e6 c3b5 c7c6 b5c7 e8e7 c7a8 b7b5 d2d3 c8b7 a8c7 d8c7 c1f4 c7f4 g1h3 f4b4 d1d2 b4b2 d2b4
+>Luminex(1): isready
+<Luminex(1): readyok
+>Luminex(1): go movetime 1000
+<Luminex(1): info depth 1 score cp 271 nodes 36 nps 0
+<Luminex(1): info depth 2 score cp -482 nodes 729 nps 0
+<Luminex(1): info depth 3 score cp -408 nodes 4532 nps 1133000
+<Luminex(1): info depth 4 score cp -618 nodes 20394 nps 1019700
+<Luminex(1): info depth 5 score cp 71 nodes 56806 nps 1014392
+<Luminex(1): info depth 6 score cp 71 nodes 112723 nps 955279
+<Luminex(1): info depth 7 score cp 71 nodes 773339 nps 1024290
+<Luminex(1): info depth 8 score cp 71 nodes 815700 nps 1019625
+<Luminex(1): bestmove c6c5
+>Luminex(0): position startpos moves b1c3 e7e6 c3b5 c7c6 b5c7 e8e7 c7a8 b7b5 d2d3 c8b7 a8c7 d8c7 c1f4 c7f4 g1h3 f4b4 d1d2 b4b2 d2b4 c6c5
 >Luminex(0): isready
 <Luminex(0): readyok
 >Luminex(0): go movetime 1000
-<Luminex(0): info depth 1 score cp -411 nodes 85 nps 0
-<Luminex(0): info depth 2 score cp -495 nodes 920 nps 0
-<Luminex(0): info depth 3 score cp -448 nodes 5847 nps 5847000
-<Luminex(0): info depth 4 score cp -505 nodes 50044 nps 5004400
-<Luminex(0): info depth 5 score cp -436 nodes 140647 nps 4395218
-<Luminex(0): info depth 6 score cp -511 nodes 494172 nps 4017658
-<Luminex(0): info depth 7 score cp -511 nodes 2699299 nps 3374123
-<Luminex(0): bestmove f1d3
->Luminex(0): position startpos moves b1c3 c7c5 g1f3 b8c6 d2d4 c5d4 f3d4 g8f6 d4c6 b7c6 c1g5 d8b6 g5f6 e7f6 e2e3 b6b2 c3e4 d7d5 e4f6 b2f6 f1d3 f8b4
+<Luminex(0): info depth 1 score cp 740 nodes 144 nps 0
+<Luminex(0): info depth 2 score cp 604 nodes 531 nps 0
+<Luminex(0): info depth 3 score cp 1180 nodes 4456 nps 1485333
+<Luminex(0): info depth 4 score cp 580 nodes 20655 nps 938863
+<Luminex(0): info depth 5 score cp 980 nodes 69380 nps 1156333
+<Luminex(0): info depth 6 score cp 980 nodes 219794 nps 835718
+<Luminex(0): info depth 7 score cp 980 nodes 939887 nps 1174858
+<Luminex(0): bestmove b4b2
+>Luminex(1): position startpos moves b1c3 e7e6 c3b5 c7c6 b5c7 e8e7 c7a8 b7b5 d2d3 c8b7 a8c7 d8c7 c1f4 c7f4 g1h3 f4b4 d1d2 b4b2 d2b4 c6c5 b4b2
+>Luminex(1): isready
+<Luminex(1): readyok
+>Luminex(1): go movetime 1000
+<Luminex(1): info depth 1 score cp -604 nodes 120 nps 0
+<Luminex(1): info depth 2 score cp -1180 nodes 2543 nps 1271500
+<Luminex(1): info depth 3 score cp -580 nodes 17158 nps 1143866
+<Luminex(1): info depth 4 score cp -778 nodes 70515 nps 1101796
+<Luminex(1): info depth 5 score cp -634 nodes 558591 nps 953226
+<Luminex(1): info depth 6 score cp -634 nodes 750483 nps 938103
+<Luminex(1): bestmove d7d6
+>Luminex(0): position startpos moves b1c3 e7e6 c3b5 c7c6 b5c7 e8e7 c7a8 b7b5 d2d3 c8b7 a8c7 d8c7 c1f4 c7f4 g1h3 f4b4 d1d2 b4b2 d2b4 c6c5 b4b2 d7d6
 >Luminex(0): isready
 <Luminex(0): readyok
 >Luminex(0): go movetime 1000
-<Luminex(0): info depth 1 score cp -469 nodes 24 nps 0
-<Luminex(0): info depth 2 score cp -511 nodes 358 nps 0
-<Luminex(0): info depth 3 score cp -508 nodes 1973 nps 0
-<Luminex(0): info depth 4 score cp -508 nodes 22112 nps 5528000
-<Luminex(0): info depth 5 score cp -441 nodes 82932 nps 3949142
-<Luminex(0): info depth 6 score cp -541 nodes 119205 nps 3845322
-<Luminex(0): info depth 7 score cp -541 nodes 2706061 nps 3382576
-<Luminex(0): bestmove e1f1
->Luminex(0): position startpos moves b1c3 c7c5 g1f3 b8c6 d2d4 c5d4 f3d4 g8f6 d4c6 b7c6 c1g5 d8b6 g5f6 e7f6 e2e3 b6b2 c3e4 d7d5 e4f6 b2f6 f1d3 f8b4 e1f1 b4c3
+<Luminex(0): info depth 1 score cp 1232 nodes 132 nps 0
+<Luminex(0): info depth 2 score cp 580 nodes 2205 nps 1102500
+<Luminex(0): info depth 3 score cp 1205 nodes 8727 nps 1454500
+<Luminex(0): info depth 4 score cp 1067 nodes 51208 nps 948296
+<Luminex(0): info depth 5 score cp 1247 nodes 233748 nps 1277311
+<Luminex(0): info depth 6 score cp 1247 nodes 766825 nps 958531
+<Luminex(0): bestmove b2b5
+>Luminex(1): position startpos moves b1c3 e7e6 c3b5 c7c6 b5c7 e8e7 c7a8 b7b5 d2d3 c8b7 a8c7 d8c7 c1f4 c7f4 g1h3 f4b4 d1d2 b4b2 d2b4 c6c5 b4b2 d7d6 b2b5
+>Luminex(1): isready
+<Luminex(1): readyok
+>Luminex(1): go movetime 1000
+<Luminex(1): info depth 1 score cp -224 nodes 179 nps 0
+<Luminex(1): info depth 2 score cp -1205 nodes 1981 nps 1981000
+<Luminex(1): info depth 3 score cp -1067 nodes 28024 nps 1037925
+<Luminex(1): info depth 4 score cp -1247 nodes 93260 nps 1165750
+<Luminex(1): info depth 5 score cp -424 nodes 132758 nps 1134683
+<Luminex(1): info depth 6 score cp -424 nodes 216580 nps 1041250
+<Luminex(1): info depth 7 score cp -424 nodes 813278 nps 1147077
+<Luminex(1): info depth 8 score cp -424 nodes 927176 nps 1158970
+<Luminex(1): bestmove b7c6
+>Luminex(0): position startpos moves b1c3 e7e6 c3b5 c7c6 b5c7 e8e7 c7a8 b7b5 d2d3 c8b7 a8c7 d8c7 c1f4 c7f4 g1h3 f4b4 d1d2 b4b2 d2b4 c6c5 b4b2 d7d6 b2b5 b7c6
 >Luminex(0): isready
 <Luminex(0): readyok
 >Luminex(0): go movetime 1000
-<Luminex(0): info depth 1 score cp -342 nodes 104 nps 0
-<Luminex(0): info depth 2 score cp -459 nodes 802 nps 0
-<Luminex(0): info depth 3 score cp -397 nodes 5232 nps 5232000
-<Luminex(0): info depth 4 score cp -490 nodes 47852 nps 5316888
-<Luminex(0): info depth 5 score cp -401 nodes 167822 nps 5244437
-<Luminex(0): info depth 6 score cp -442 nodes 367026 nps 3495485
-<Luminex(0): info depth 7 score cp -442 nodes 3419635 nps 4274543
-<Luminex(0): bestmove d3h7
->Luminex(0): position startpos moves b1c3 c7c5 g1f3 b8c6 d2d4 c5d4 f3d4 g8f6 d4c6 b7c6 c1g5 d8b6 g5f6 e7f6 e2e3 b6b2 c3e4 d7d5 e4f6 b2f6 f1d3 f8b4 e1f1 b4c3 d3h7 c3a1
+<Luminex(0): info depth 1 score cp 1205 nodes 141 nps 0
+<Luminex(0): info depth 2 score cp 1070 nodes 1375 nps 1375000
+<Luminex(0): info depth 3 score cp 1382 nodes 12121 nps 1346777
+<Luminex(0): info depth 4 score cp 1296 nodes 50252 nps 966384
+<Luminex(0): info depth 5 score cp 1451 nodes 243138 nps 1314259
+<Luminex(0): info depth 6 score cp 1451 nodes 784024 nps 980030
+<Luminex(0): bestmove b5b8
+>Luminex(1): position startpos moves b1c3 e7e6 c3b5 c7c6 b5c7 e8e7 c7a8 b7b5 d2d3 c8b7 a8c7 d8c7 c1f4 c7f4 g1h3 f4b4 d1d2 b4b2 d2b4 c6c5 b4b2 d7d6 b2b5 b7c6 b5b8
+>Luminex(1): isready
+<Luminex(1): readyok
+>Luminex(1): go movetime 1000
+<Luminex(1): info depth 1 score cp -1070 nodes 117 nps 0
+<Luminex(1): info depth 2 score cp -1382 nodes 1502 nps 1502000
+<Luminex(1): info depth 3 score cp -1295 nodes 7207 nps 1029571
+<Luminex(1): info depth 4 score cp -1451 nodes 72335 nps 1339537
+<Luminex(1): info depth 5 score cp -1270 nodes 134614 nps 1170556
+<Luminex(1): info depth 6 score cp -1270 nodes 316490 nps 1198825
+<Luminex(1): info depth 7 score cp -1270 nodes 886953 nps 1108691
+<Luminex(1): bestmove a7a6
+>Luminex(0): position startpos moves b1c3 e7e6 c3b5 c7c6 b5c7 e8e7 c7a8 b7b5 d2d3 c8b7 a8c7 d8c7 c1f4 c7f4 g1h3 f4b4 d1d2 b4b2 d2b4 c6c5 b4b2 d7d6 b2b5 b7c6 b5b8 a7a6
 >Luminex(0): isready
 <Luminex(0): readyok
 >Luminex(0): go movetime 1000
-<Luminex(0): info depth 1 score cp -694 nodes 105 nps 0
-<Luminex(0): info depth 2 score cp -797 nodes 591 nps 0
-<Luminex(0): info depth 3 score cp -746 nodes 5981 nps 5981000
-<Luminex(0): info depth 4 score cp -845 nodes 32669 nps 4667000
-<Luminex(0): info depth 5 score cp -775 nodes 112206 nps 5100272
-<Luminex(0): info depth 6 score cp -794 nodes 296401 nps 3849363
-<Luminex(0): info depth 7 score cp -793 nodes 2554842 nps 5049094
-<Luminex(0): info depth 8 score cp -793 nodes 3676059 nps 4595073
-<Luminex(0): bestmove f1e2
->Luminex(0): position startpos moves b1c3 c7c5 g1f3 b8c6 d2d4 c5d4 f3d4 g8f6 d4c6 b7c6 c1g5 d8b6 g5f6 e7f6 e2e3 b6b2 c3e4 d7d5 e4f6 b2f6 f1d3 f8b4 e1f1 b4c3 d3h7 c3a1 f1e2 h8h7
+<Luminex(0): info depth 1 score cp 1741 nodes 163 nps 0
+<Luminex(0): info depth 2 score cp 1365 nodes 1282 nps 1282000
+<Luminex(0): info depth 3 score cp 1497 nodes 14400 nps 1440000
+<Luminex(0): info depth 4 score cp 1530 nodes 64913 nps 983530
+<Luminex(0): info depth 5 score cp 1898 nodes 213931 nps 1328763
+<Luminex(0): info depth 6 score cp 1898 nodes 761357 nps 951696
+<Luminex(0): bestmove h3f4
+>Luminex(1): position startpos moves b1c3 e7e6 c3b5 c7c6 b5c7 e8e7 c7a8 b7b5 d2d3 c8b7 a8c7 d8c7 c1f4 c7f4 g1h3 f4b4 d1d2 b4b2 d2b4 c6c5 b4b2 d7d6 b2b5 b7c6 b5b8 a7a6 h3f4
+>Luminex(1): isready
+<Luminex(1): readyok
+>Luminex(1): go movetime 1000
+<Luminex(1): info depth 1 score cp -741 nodes 113 nps 0
+<Luminex(1): info depth 2 score cp -1364 nodes 1559 nps 1559000
+<Luminex(1): info depth 3 score cp -1530 nodes 12355 nps 950384
+<Luminex(1): info depth 4 score cp -1898 nodes 87085 nps 1226549
+<Luminex(1): info depth 5 score cp -941 nodes 122422 nps 1177134
+<Luminex(1): info depth 6 score cp -941 nodes 222334 nps 1122898
+<Luminex(1): info depth 7 score cp -941 nodes 882448 nps 1103060
+<Luminex(1): bestmove e6e5
+>Luminex(0): position startpos moves b1c3 e7e6 c3b5 c7c6 b5c7 e8e7 c7a8 b7b5 d2d3 c8b7 a8c7 d8c7 c1f4 c7f4 g1h3 f4b4 d1d2 b4b2 d2b4 c6c5 b4b2 d7d6 b2b5 b7c6 b5b8 a7a6 h3f4 e6e5
 >Luminex(0): isready
 <Luminex(0): readyok
 >Luminex(0): go movetime 1000
-<Luminex(0): info depth 1 score cp -665 nodes 90 nps 0
-<Luminex(0): info depth 2 score cp -887 nodes 874 nps 0
-<Luminex(0): info depth 3 score cp -944 nodes 6198 nps 6198000
-<Luminex(0): info depth 4 score cp -954 nodes 41513 nps 5930428
-<Luminex(0): info depth 5 score cp -765 nodes 84044 nps 6464923
-<Luminex(0): info depth 6 score cp -765 nodes 195737 nps 4077854
-<Luminex(0): info depth 7 score cp -765 nodes 2038680 nps 6390846
-<Luminex(0): info depth 8 score cp -765 nodes 3594522 nps 4493152
-<Luminex(0): bestmove d1a1
->Luminex(0): position startpos moves b1c3 c7c5 g1f3 b8c6 d2d4 c5d4 f3d4 g8f6 d4c6 b7c6 c1g5 d8b6 g5f6 e7f6 e2e3 b6b2 c3e4 d7d5 e4f6 b2f6 f1d3 f8b4 e1f1 b4c3 d3h7 c3a1 f1e2 h8h7 d1a1 c8a6
+<Luminex(0): info depth 1 score cp 1455 nodes 181 nps 0
+<Luminex(0): info depth 2 score cp 1839 nodes 1196 nps 1196000
+<Luminex(0): info depth 3 score cp 1993 nodes 12163 nps 1351444
+<Luminex(0): info depth 4 score cp 1714 nodes 68258 nps 898131
+<Luminex(0): info depth 5 score cp 2126 nodes 419089 nps 1365110
+<Luminex(0): info depth 6 score cp 2126 nodes 827176 nps 1033970
+<Luminex(0): bestmove f4g6
+>Luminex(1): position startpos moves b1c3 e7e6 c3b5 c7c6 b5c7 e8e7 c7a8 b7b5 d2d3 c8b7 a8c7 d8c7 c1f4 c7f4 g1h3 f4b4 d1d2 b4b2 d2b4 c6c5 b4b2 d7d6 b2b5 b7c6 b5b8 a7a6 h3f4 e6e5 f4g6
+>Luminex(1): isready
+<Luminex(1): readyok
+>Luminex(1): go movetime 1000
+<Luminex(1): info depth 1 score cp -1839 nodes 44 nps 0
+<Luminex(1): info depth 2 score cp -1993 nodes 412 nps 0
+<Luminex(1): info depth 3 score cp -1714 nodes 1731 nps 865500
+<Luminex(1): info depth 4 score cp -2126 nodes 15038 nps 1156769
+<Luminex(1): info depth 5 score cp -1820 nodes 45402 nps 966000
+<Luminex(1): info depth 6 score cp -1914 nodes 138379 nps 1089598
+<Luminex(1): info depth 7 score cp -1914 nodes 761900 nps 964430
+<Luminex(1): info depth 8 score cp -1914 nodes 771181 nps 963976
+<Luminex(1): bestmove e7e6
+>Luminex(0): position startpos moves b1c3 e7e6 c3b5 c7c6 b5c7 e8e7 c7a8 b7b5 d2d3 c8b7 a8c7 d8c7 c1f4 c7f4 g1h3 f4b4 d1d2 b4b2 d2b4 c6c5 b4b2 d7d6 b2b5 b7c6 b5b8 a7a6 h3f4 e6e5 f4g6 e7e6
 >Luminex(0): isready
 <Luminex(0): readyok
 >Luminex(0): go movetime 1000
-<Luminex(0): info depth 1 score cp -944 nodes 27 nps 0
-<Luminex(0): info depth 2 score cp -944 nodes 216 nps 0
-<Luminex(0): info depth 3 score cp -992 nodes 872 nps 0
-<Luminex(0): info depth 4 score cp -1216 nodes 6855 nps 6855000
-<Luminex(0): info depth 5 score cp -1044 nodes 8518 nps 8518000
-<Luminex(0): info depth 6 score cp -1044 nodes 20415 nps 5103750
-<Luminex(0): info depth 7 score cp -1044 nodes 74603 nps 5328785
-<Luminex(0): info depth 8 score cp -1044 nodes 306174 nps 5019245
-<Luminex(0): info depth 9 score cp -1044 nodes 3176006 nps 4051028
-<Luminex(0): info depth 10 score cp -1044 nodes 3267550 nps 4084437
-<Luminex(0): bestmove e2d2
->Luminex(0): position startpos moves b1c3 c7c5 g1f3 b8c6 d2d4 c5d4 f3d4 g8f6 d4c6 b7c6 c1g5 d8b6 g5f6 e7f6 e2e3 b6b2 c3e4 d7d5 e4f6 b2f6 f1d3 f8b4 e1f1 b4c3 d3h7 c3a1 f1e2 h8h7 d1a1 c8a6 e2d2 f6f2
+<Luminex(0): info depth 1 score cp 2505 nodes 194 nps 0
+<Luminex(0): info depth 2 score cp 1714 nodes 1464 nps 1464000
+<Luminex(0): info depth 3 score cp 2126 nodes 10880 nps 1360000
+<Luminex(0): info depth 4 score cp 1820 nodes 61487 nps 904220
+<Luminex(0): info depth 5 score cp 2305 nodes 322844 nps 1345183
+<Luminex(0): info depth 6 score cp 2305 nodes 782788 nps 978485
+<Luminex(0): bestmove b8c8
+>Luminex(1): position startpos moves b1c3 e7e6 c3b5 c7c6 b5c7 e8e7 c7a8 b7b5 d2d3 c8b7 a8c7 d8c7 c1f4 c7f4 g1h3 f4b4 d1d2 b4b2 d2b4 c6c5 b4b2 d7d6 b2b5 b7c6 b5b8 a7a6 h3f4 e6e5 f4g6 e7e6 b8c8
+>Luminex(1): isready
+<Luminex(1): readyok
+>Luminex(1): go movetime 1000
+<Luminex(1): info depth 1 score cp -1368 nodes 36 nps 0
+<Luminex(1): info depth 2 score cp -2126 nodes 320 nps 0
+<Luminex(1): info depth 3 score cp -1688 nodes 2971 nps 990333
+<Luminex(1): info depth 4 score cp -2142 nodes 14536 nps 1211333
+<Luminex(1): info depth 5 score cp -1568 nodes 30216 nps 1119111
+<Luminex(1): info depth 6 score cp -1568 nodes 89881 nps 1182644
+<Luminex(1): info depth 7 score cp -1568 nodes 436274 nps 1058917
+<Luminex(1): info depth 8 score cp -1568 nodes 928352 nps 1160440
+<Luminex(1): bestmove c6d7
+>Luminex(0): position startpos moves b1c3 e7e6 c3b5 c7c6 b5c7 e8e7 c7a8 b7b5 d2d3 c8b7 a8c7 d8c7 c1f4 c7f4 g1h3 f4b4 d1d2 b4b2 d2b4 c6c5 b4b2 d7d6 b2b5 b7c6 b5b8 a7a6 h3f4 e6e5 f4g6 e7e6 b8c8 c6d7
 >Luminex(0): isready
 <Luminex(0): readyok
 >Luminex(0): go movetime 1000
-<Luminex(0): info depth 1 score cp -992 nodes 26 nps 0
-<Luminex(0): info depth 2 score cp -1216 nodes 301 nps 0
-<Luminex(0): info depth 3 score cp -1219 nodes 2388 nps 0
-<Luminex(0): info depth 4 score cp -1264 nodes 15827 nps 7913500
-<Luminex(0): info depth 5 score cp -1092 nodes 19147 nps 6382333
-<Luminex(0): info depth 6 score cp -1092 nodes 26978 nps 5395600
-<Luminex(0): info depth 7 score cp -1092 nodes 78375 nps 6028846
-<Luminex(0): info depth 8 score cp -1092 nodes 250014 nps 3846369
-<Luminex(0): info depth 9 score cp -1092 nodes 1781845 nps 5747887
-<Luminex(0): info depth 10 score cp -1092 nodes 3435958 nps 4294947
-<Luminex(0): bestmove d2d1
->Luminex(0): position startpos moves b1c3 c7c5 g1f3 b8c6 d2d4 c5d4 f3d4 g8f6 d4c6 b7c6 c1g5 d8b6 g5f6 e7f6 e2e3 b6b2 c3e4 d7d5 e4f6 b2f6 f1d3 f8b4 e1f1 b4c3 d3h7 c3a1 f1e2 h8h7 d1a1 c8a6 e2d2 f6f2 d2d1 f2g2
+<Luminex(0): info depth 1 score cp 2126 nodes 175 nps 0
+<Luminex(0): info depth 2 score cp 2142 nodes 974 nps 974000
+<Luminex(0): info depth 3 score cp 2142 nodes 7282 nps 1456400
+<Luminex(0): info depth 4 score cp 2150 nodes 36473 nps 985756
+<Luminex(0): info depth 5 score cp 2185 nodes 239945 nps 1454212
+<Luminex(0): info depth 6 score cp 2185 nodes 764297 nps 955371
+<Luminex(0): bestmove g6f8
+>Luminex(1): position startpos moves b1c3 e7e6 c3b5 c7c6 b5c7 e8e7 c7a8 b7b5 d2d3 c8b7 a8c7 d8c7 c1f4 c7f4 g1h3 f4b4 d1d2 b4b2 d2b4 c6c5 b4b2 d7d6 b2b5 b7c6 b5b8 a7a6 h3f4 e6e5 f4g6 e7e6 b8c8 c6d7 g6f8
+>Luminex(1): isready
+<Luminex(1): readyok
+>Luminex(1): go movetime 1000
+<Luminex(1): info depth 1 score cp -2142 nodes 38 nps 0
+<Luminex(1): info depth 2 score cp -2142 nodes 230 nps 0
+<Luminex(1): info depth 3 score cp -1980 nodes 1441 nps 1441000
+<Luminex(1): info depth 4 score cp -2185 nodes 10535 nps 1505000
+<Luminex(1): info depth 5 score cp -2180 nodes 52348 nps 1090583
+<Luminex(1): info depth 6 score cp -2180 nodes 262333 nps 1388005
+<Luminex(1): info depth 7 score cp -2180 nodes 843306 nps 1054132
+<Luminex(1): bestmove e6d5
+>Luminex(0): position startpos moves b1c3 e7e6 c3b5 c7c6 b5c7 e8e7 c7a8 b7b5 d2d3 c8b7 a8c7 d8c7 c1f4 c7f4 g1h3 f4b4 d1d2 b4b2 d2b4 c6c5 b4b2 d7d6 b2b5 b7c6 b5b8 a7a6 h3f4 e6e5 f4g6 e7e6 b8c8 c6d7 g6f8 e6d5
 >Luminex(0): isready
 <Luminex(0): readyok
 >Luminex(0): go movetime 1000
-<Luminex(0): info depth 1 score cp -1227 nodes 104 nps 0
-<Luminex(0): info depth 2 score cp -1270 nodes 608 nps 0
-<Luminex(0): info depth 3 score cp -1263 nodes 2926 nps 0
-<Luminex(0): info depth 4 score cp -1282 nodes 21515 nps 7171666
-<Luminex(0): info depth 5 score cp -1282 nodes 26537 nps 6634250
-<Luminex(0): info depth 6 score cp -1327 nodes 44554 nps 4455400
-<Luminex(0): info depth 7 score cp -1270 nodes 172641 nps 4932600
-<Luminex(0): info depth 8 score cp -1327 nodes 494937 nps 3928071
-<Luminex(0): info depth 9 score cp -1327 nodes 3851002 nps 4813752
-<Luminex(0): bestmove a1e5
->Luminex(0): position startpos moves b1c3 c7c5 g1f3 b8c6 d2d4 c5d4 f3d4 g8f6 d4c6 b7c6 c1g5 d8b6 g5f6 e7f6 e2e3 b6b2 c3e4 d7d5 e4f6 b2f6 f1d3 f8b4 e1f1 b4c3 d3h7 c3a1 f1e2 h8h7 d1a1 c8a6 e2d2 f6f2 d2d1 f2g2 a1e5 e8f8
+<Luminex(0): info depth 1 score cp 2142 nodes 136 nps 0
+<Luminex(0): info depth 2 score cp 1980 nodes 924 nps 924000
+<Luminex(0): info depth 3 score cp 2185 nodes 7304 nps 1826000
+<Luminex(0): info depth 4 score cp 2258 nodes 31355 nps 1119821
+<Luminex(0): info depth 5 score cp 2493 nodes 187230 nps 1656902
+<Luminex(0): info depth 6 score cp 2493 nodes 792145 nps 990181
+<Luminex(0): bestmove c8d7
+>Luminex(1): position startpos moves b1c3 e7e6 c3b5 c7c6 b5c7 e8e7 c7a8 b7b5 d2d3 c8b7 a8c7 d8c7 c1f4 c7f4 g1h3 f4b4 d1d2 b4b2 d2b4 c6c5 b4b2 d7d6 b2b5 b7c6 b5b8 a7a6 h3f4 e6e5 f4g6 e7e6 b8c8 c6d7 g6f8 e6d5 c8d7
+>Luminex(1): isready
+<Luminex(1): readyok
+>Luminex(1): go movetime 1000
+<Luminex(1): info depth 1 score cp -1444 nodes 96 nps 0
+<Luminex(1): info depth 2 score cp -2022 nodes 1067 nps 0
+<Luminex(1): info depth 3 score cp -2258 nodes 8264 nps 1377333
+<Luminex(1): info depth 4 score cp -2493 nodes 70660 nps 1811794
+<Luminex(1): info depth 5 score cp -1644 nodes 85151 nps 1703020
+<Luminex(1): info depth 6 score cp -1644 nodes 141548 nps 1608500
+<Luminex(1): info depth 7 score cp -1644 nodes 333546 nps 1413330
+<Luminex(1): info depth 8 score cp -1644 nodes 1385005 nps 1731256
+<Luminex(1): bestmove g8h6
+>Luminex(0): position startpos moves b1c3 e7e6 c3b5 c7c6 b5c7 e8e7 c7a8 b7b5 d2d3 c8b7 a8c7 d8c7 c1f4 c7f4 g1h3 f4b4 d1d2 b4b2 d2b4 c6c5 b4b2 d7d6 b2b5 b7c6 b5b8 a7a6 h3f4 e6e5 f4g6 e7e6 b8c8 c6d7 g6f8 e6d5 c8d7 g8h6
 >Luminex(0): isready
 <Luminex(0): readyok
 >Luminex(0): go movetime 1000
-<Luminex(0): info depth 1 score cp -1224 nodes 114 nps 0
-<Luminex(0): info depth 2 score cp -1234 nodes 649 nps 0
-<Luminex(0): info depth 3 score cp -1227 nodes 3062 nps 3062000
-<Luminex(0): info depth 4 score cp -1455 nodes 14409 nps 4803000
-<Luminex(0): info depth 5 score cp -1242 nodes 25355 nps 6338750
-<Luminex(0): info depth 6 score cp -1324 nodes 44536 nps 4453600
-<Luminex(0): info depth 7 score cp -1324 nodes 155643 nps 5558678
-<Luminex(0): info depth 8 score cp -1324 nodes 1978157 nps 4405694
-<Luminex(0): info depth 9 score cp -1324 nodes 3617026 nps 4521282
-<Luminex(0): bestmove h1e1
->Luminex(0): position startpos moves b1c3 c7c5 g1f3 b8c6 d2d4 c5d4 f3d4 g8f6 d4c6 b7c6 c1g5 d8b6 g5f6 e7f6 e2e3 b6b2 c3e4 d7d5 e4f6 b2f6 f1d3 f8b4 e1f1 b4c3 d3h7 c3a1 f1e2 h8h7 d1a1 c8a6 e2d2 f6f2 d2d1 f2g2 a1e5 e8f8 h1e1 h7h2
+<Luminex(0): info depth 1 score cp 2022 nodes 177 nps 0
+<Luminex(0): info depth 2 score cp 3129 nodes 641 nps 0
+<Luminex(0): info depth 3 score cp 3129 nodes 6525 nps 2175000
+<Luminex(0): info depth 4 score cp 3127 nodes 38080 nps 1120000
+<Luminex(0): info depth 5 score cp 3147 nodes 339552 nps 1886400
+<Luminex(0): info depth 6 score cp 3147 nodes 958157 nps 1197696
+<Luminex(0): bestmove c2c3
+>Luminex(1): position startpos moves b1c3 e7e6 c3b5 c7c6 b5c7 e8e7 c7a8 b7b5 d2d3 c8b7 a8c7 d8c7 c1f4 c7f4 g1h3 f4b4 d1d2 b4b2 d2b4 c6c5 b4b2 d7d6 b2b5 b7c6 b5b8 a7a6 h3f4 e6e5 f4g6 e7e6 b8c8 c6d7 g6f8 e6d5 c8d7 g8h6 c2c3
+>Luminex(1): isready
+<Luminex(1): readyok
+>Luminex(1): go movetime 1000
+<Luminex(1): info depth 1 score cp -1440 nodes 84 nps 0
+<Luminex(1): info depth 2 score cp -1918 nodes 1239 nps 0
+<Luminex(1): info depth 3 score cp -2904 nodes 5522 nps 1380500
+<Luminex(1): info depth 4 score cp -3147 nodes 65649 nps 1823583
+<Luminex(1): info depth 5 score cp -1640 nodes 78943 nps 1716152
+<Luminex(1): info depth 6 score cp -1640 nodes 129759 nps 1621987
+<Luminex(1): info depth 7 score cp -1640 nodes 303539 nps 1459322
+<Luminex(1): info depth 8 score cp -1640 nodes 1223110 nps 1677791
+<Luminex(1): info depth 9 score cp -1640 nodes 1307245 nps 1634056
+<Luminex(1): bestmove c5c4
+>Luminex(0): position startpos moves b1c3 e7e6 c3b5 c7c6 b5c7 e8e7 c7a8 b7b5 d2d3 c8b7 a8c7 d8c7 c1f4 c7f4 g1h3 f4b4 d1d2 b4b2 d2b4 c6c5 b4b2 d7d6 b2b5 b7c6 b5b8 a7a6 h3f4 e6e5 f4g6 e7e6 b8c8 c6d7 g6f8 e6d5 c8d7 g8h6 c2c3 c5c4
 >Luminex(0): isready
 <Luminex(0): readyok
 >Luminex(0): go movetime 1000
-<Luminex(0): info depth 1 score cp -1408 nodes 101 nps 0
-<Luminex(0): info depth 2 score cp -1458 nodes 565 nps 0
-<Luminex(0): info depth 3 score cp -1191 nodes 3937 nps 3937000
-<Luminex(0): info depth 4 score cp -1462 nodes 23792 nps 5948000
-<Luminex(0): info depth 5 score cp -1291 nodes 43123 nps 6160428
-<Luminex(0): info depth 6 score cp -1291 nodes 92684 nps 4212909
-<Luminex(0): info depth 7 score cp -1291 nodes 498744 nps 6082243
-<Luminex(0): info depth 8 score cp -1291 nodes 3437299 nps 4296623
-<Luminex(0): bestmove e5d6
->Luminex(0): position startpos moves b1c3 c7c5 g1f3 b8c6 d2d4 c5d4 f3d4 g8f6 d4c6 b7c6 c1g5 d8b6 g5f6 e7f6 e2e3 b6b2 c3e4 d7d5 e4f6 b2f6 f1d3 f8b4 e1f1 b4c3 d3h7 c3a1 f1e2 h8h7 d1a1 c8a6 e2d2 f6f2 d2d1 f2g2 a1e5 e8f8 h1e1 h7h2 e5d6 f8g8
+<Luminex(0): info depth 1 score cp 2039 nodes 210 nps 0
+<Luminex(0): info depth 2 score mate 1 nodes 765 nps 0
+<Luminex(0): info depth 3 score mate 1 nodes 7429 nps 1857250
+<Luminex(0): info depth 4 score mate 1 nodes 38389 nps 1129088
+<Luminex(0): info depth 5 score mate 1 nodes 357698 nps 1824989
+<Luminex(0): info depth 6 score mate 1 nodes 969519 nps 1211898
+<Luminex(0): bestmove d7b5
+>Luminex(1): position startpos moves b1c3 e7e6 c3b5 c7c6 b5c7 e8e7 c7a8 b7b5 d2d3 c8b7 a8c7 d8c7 c1f4 c7f4 g1h3 f4b4 d1d2 b4b2 d2b4 c6c5 b4b2 d7d6 b2b5 b7c6 b5b8 a7a6 h3f4 e6e5 f4g6 e7e6 b8c8 c6d7 g6f8 e6d5 c8d7 g8h6 c2c3 c5c4 d7b5
+>Luminex(1): isready
+<Luminex(1): readyok
+>Luminex(1): go movetime 1000
+<Luminex(1): info depth 1 score mate 0 nodes 0 nps 0
+<Luminex(1): info depth 9 score cp -30000 nodes 0 nps 0
+<Luminex(1): bestmove 0000
 >Luminex(0): isready
+>Luminex(1): isready
 <Luminex(0): readyok
->Luminex(0): go movetime 1000
-<Luminex(0): info depth 1 score cp -1191 nodes 89 nps 0
-<Luminex(0): info depth 2 score cp -1462 nodes 621 nps 0
-<Luminex(0): info depth 3 score cp -1808 nodes 3076 nps 0
-<Luminex(0): info depth 4 score cp -1859 nodes 21892 nps 7297333
-<Luminex(0): info depth 5 score cp -1291 nodes 33975 nps 6795000
-<Luminex(0): info depth 6 score cp -1291 nodes 81083 nps 4504611
-<Luminex(0): info depth 7 score cp -1291 nodes 465669 nps 5678890
-<Luminex(0): info depth 8 score cp -1291 nodes 3044153 nps 3805191
-<Luminex(0): bestmove d6c6
->Luminex(0): position startpos moves b1c3 c7c5 g1f3 b8c6 d2d4 c5d4 f3d4 g8f6 d4c6 b7c6 c1g5 d8b6 g5f6 e7f6 e2e3 b6b2 c3e4 d7d5 e4f6 b2f6 f1d3 f8b4 e1f1 b4c3 d3h7 c3a1 f1e2 h8h7 d1a1 c8a6 e2d2 f6f2 d2d1 f2g2 a1e5 e8f8 h1e1 h7h2 e5d6 f8g8 d6c6 g2d2
->Luminex(0): isready
-<Luminex(0): readyok
+<Luminex(1): readyok
