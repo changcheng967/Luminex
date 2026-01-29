@@ -284,6 +284,30 @@ Value evaluate(const Position& pos) {
             int mobility = popcount((bb_rank_attacks(sq, occupied) | bb_file_attacks(sq, occupied)) & ~pos.pieces(c));
             mg_score += sign * mobility * 2;
             eg_score += sign * mobility * 8;
+
+            // Rook on open file bonus
+            File f = file_of(sq);
+            Bitboard file_pawns = pos.pieces(PAWN) & file_bb(f);
+            if (!file_pawns) {
+                // Open file - very valuable
+                mg_score += sign * 30;
+                eg_score += sign * 50;
+            } else {
+                // Check if only enemy pawns on this file (semi-open)
+                Bitboard our_pawns = pos.pieces(c, PAWN) & file_bb(f);
+                if (!our_pawns) {
+                    // Semi-open file for us
+                    mg_score += sign * 15;
+                    eg_score += sign * 25;
+                }
+            }
+
+            // Rook on 7th rank bonus (for white) or 2nd rank (for black)
+            Rank r = rank_of(sq);
+            if ((c == WHITE && r == RANK_7) || (c == BLACK && r == RANK_2)) {
+                mg_score += sign * 30;
+                eg_score += sign * 20;
+            }
         }
 
         // Queens
@@ -481,6 +505,26 @@ Value evaluate(const Position& pos) {
     }
 
     int phase = std::min(24, material / 200);
+
+    // Trade logic: simplify when ahead, complicate when behind
+    // Calculate material difference (without pawns)
+    int white_pieces = popcount(pos.pieces(WHITE, KNIGHT)) + popcount(pos.pieces(WHITE, BISHOP)) * 2
+                       + popcount(pos.pieces(WHITE, ROOK)) * 2 + popcount(pos.pieces(WHITE, QUEEN)) * 4;
+    int black_pieces = popcount(pos.pieces(BLACK, KNIGHT)) + popcount(pos.pieces(BLACK, BISHOP)) * 2
+                       + popcount(pos.pieces(BLACK, ROOK)) * 2 + popcount(pos.pieces(BLACK, QUEEN)) * 4;
+    int piece_diff = white_pieces - black_pieces;
+
+    // When ahead (positive piece difference), favor trades
+    // When behind (negative piece difference), avoid trades
+    if (piece_diff > 0) {
+        // White is ahead - encourage simplification
+        mg_score += piece_diff * 5;
+        eg_score += piece_diff * 3;
+    } else if (piece_diff < 0) {
+        // White is behind - discourage simplification (add negative becomes positive for black)
+        mg_score += piece_diff * 5;
+        eg_score += piece_diff * 3;
+    }
 
     // Interpolate between middle game and endgame
     Score score = (mg_score * phase + eg_score * (24 - phase)) / 24;
