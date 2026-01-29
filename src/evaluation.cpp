@@ -844,6 +844,65 @@ Value evaluate(const Position& pos) {
 
     int phase = std::min(24, material / 200);
 
+    // Endgame evaluation: king activity becomes important when pieces are few
+    if (phase <= 8) {  // Late endgame
+        for (int c_idx = 0; c_idx < 2; ++c_idx) {
+            Color us = Color(c_idx);
+            Sign sign = (us == WHITE) ? 1 : -1;
+            Square ksq = king_sq[int(us)];
+
+            // Centralized king is good in endgame
+            File kf = file_of(ksq);
+            Rank kr = rank_of(ksq);
+
+            // Bonus for king in center (files D-F, ranks 3-6)
+            bool king_centered = (kf >= FILE_D && kf <= FILE_F && kr >= RANK_3 && kr <= RANK_6);
+            if (king_centered) {
+                eg_score += sign * 30;
+            }
+
+            // Distance of king to center squares (d4, e4, d5, e5)
+            int center_dist = 10;
+            Bitboard center = square_bb(D4) | square_bb(E4) | square_bb(D5) | square_bb(E5);
+            while (center) {
+                Square csq = pop_lsb(center);
+                File cf = file_of(csq);
+                Rank cr = rank_of(csq);
+                int dist = std::max(int(std::abs(int(kf) - int(cf))), int(std::abs(int(kr) - int(cr))));
+                center_dist = std::min(center_dist, dist);
+            }
+            eg_score += sign * (4 - center_dist) * 10;
+
+            // King's distance to enemy pawns (closer is better for promoting)
+            Bitboard enemy_pawns = pos.pieces(Color(us ^ 1), PAWN);
+            if (enemy_pawns) {
+                int min_pawn_dist = 10;
+                while (enemy_pawns) {
+                    Square psq = pop_lsb(enemy_pawns);
+                    File pf = file_of(psq);
+                    Rank pr = rank_of(psq);
+                    int dist = std::max(int(std::abs(int(kf) - int(pf))), int(std::abs(int(kr) - int(pr))));
+                    min_pawn_dist = std::min(min_pawn_dist, dist);
+                }
+                eg_score += sign * (8 - min_pawn_dist) * 5;
+            }
+        }
+
+        // Opposition: if kings face each other with one square between and it's our turn, we have advantage
+        Square white_king = king_sq[int(WHITE)];
+        Square black_king = king_sq[int(BLACK)];
+        int king_file_dist = std::abs(int(file_of(white_king)) - int(file_of(black_king)));
+        int king_rank_dist = std::abs(int(rank_of(white_king)) - int(rank_of(black_king)));
+
+        if (king_file_dist <= 1 && king_rank_dist == 1) {
+            // Kings are in opposition - bonus for the side that's not in check
+            if (!pos.is_check()) {
+                // The side to move gains from opposition
+                mg_score += pos.side_to_move() == WHITE ? 20 : -20;
+            }
+        }
+    }
+
     // Trade logic: simplify when ahead, complicate when behind
     // Calculate material difference (without pawns)
     int white_pieces = popcount(pos.pieces(WHITE, KNIGHT)) + popcount(pos.pieces(WHITE, BISHOP)) * 2
