@@ -526,6 +526,149 @@ Value evaluate(const Position& pos) {
         eg_score += piece_diff * 3;
     }
 
+    // Threat detection: find pieces under attack and hanging pieces
+    // For each side, check if their pieces are attacked by opponent
+    for (int c_idx = 0; c_idx < 2; ++c_idx) {
+        Color us = Color(c_idx);
+        Color them = Color(us ^ 1);
+        Sign sign = (us == WHITE) ? 1 : -1;
+
+        // Find all our pieces that might be under attack
+        Bitboard our_pieces = pos.pieces(us);
+        Bitboard their_attacks = 0;
+
+        // Calculate their attack squares
+        Bitboard their_pawns = pos.pieces(them, PAWN);
+        while (their_pawns) {
+            Square sq = pop_lsb(their_pawns);
+            File f = file_of(sq);
+            if (us == WHITE) {
+                // White pawns attack diagonally downward (from black's perspective)
+                Bitboard pb = square_bb(sq);
+                if (f > FILE_A) their_attacks |= shift_sw(pb);
+                if (f < FILE_H) their_attacks |= shift_se(pb);
+            } else {
+                // Black pawns attack diagonally upward (from black's perspective)
+                Bitboard pb = square_bb(sq);
+                if (f > FILE_A) their_attacks |= shift_nw(pb);
+                if (f < FILE_H) their_attacks |= shift_ne(pb);
+            }
+        }
+
+        Bitboard their_knights = pos.pieces(them, KNIGHT);
+        while (their_knights) {
+            Square sq = pop_lsb(their_knights);
+            their_attacks |= knight_attacks_bb(sq);
+        }
+
+        Bitboard their_bishops = pos.pieces(them, BISHOP);
+        while (their_bishops) {
+            Square sq = pop_lsb(their_bishops);
+            their_attacks |= bb_diag_attacks(sq, pos.pieces());
+        }
+
+        Bitboard their_rooks = pos.pieces(them, ROOK);
+        while (their_rooks) {
+            Square sq = pop_lsb(their_rooks);
+            their_attacks |= bb_rank_attacks(sq, pos.pieces()) | bb_file_attacks(sq, pos.pieces());
+        }
+
+        Bitboard their_queens = pos.pieces(them, QUEEN);
+        while (their_queens) {
+            Square sq = pop_lsb(their_queens);
+            their_attacks |= queen_attacks_bb(sq, pos.pieces());
+        }
+
+        Bitboard their_king = pos.pieces(them, KING);
+        while (their_king) {
+            Square sq = pop_lsb(their_king);
+            Bitboard kbb = square_bb(sq);
+            their_attacks |= kbb;
+            if (file_of(sq) > FILE_A) their_attacks |= shift_w(kbb) | shift_nw(kbb) | shift_sw(kbb);
+            if (file_of(sq) < FILE_H) their_attacks |= shift_e(kbb) | shift_ne(kbb) | shift_se(kbb);
+            their_attacks |= shift_n(kbb) | shift_s(kbb);
+        }
+
+        // Now check which of our pieces are under attack
+        Bitboard attacked_pieces = our_pieces & their_attacks;
+        while (attacked_pieces) {
+            Square sq = pop_lsb(attacked_pieces);
+            PieceType pt = pos.piece_type_on(sq);
+            if (pt == KING) continue;  // Skip king
+
+            // Base threat: penalty when our piece is attacked
+            Value piece_value = VALUE_ZERO;
+            if (pt == PAWN) piece_value = PAWN_VALUE;
+            else if (pt == KNIGHT) piece_value = KNIGHT_VALUE;
+            else if (pt == BISHOP) piece_value = BISHOP_VALUE;
+            else if (pt == ROOK) piece_value = ROOK_VALUE;
+            else if (pt == QUEEN) piece_value = QUEEN_VALUE;
+
+            // Check if this piece is defended (hanging piece detection)
+            Bitboard our_attacks = 0;
+
+            // Calculate our defense for this square
+            Bitboard our_pieces_check = pos.pieces(us) ^ square_bb(sq);  // All our pieces except this one
+
+            Bitboard our_pawns = pos.pieces(us, PAWN) & our_pieces_check;
+            while (our_pawns) {
+                Square psq = pop_lsb(our_pawns);
+                File pf = file_of(psq);
+                // White pawns attack diagonally upward, black pawns attack diagonally downward
+                Bitboard pb = square_bb(psq);
+                if (pf > FILE_A) our_attacks |= us == WHITE ? shift_ne(pb) : shift_se(pb);
+                if (pf < FILE_H) our_attacks |= us == WHITE ? shift_nw(pb) : shift_sw(pb);
+            }
+
+            Bitboard our_knights = pos.pieces(us, KNIGHT);
+            while (our_knights) {
+                Square psq = pop_lsb(our_knights);
+                our_attacks |= knight_attacks_bb(psq);
+            }
+
+            Bitboard our_bishops = pos.pieces(us, BISHOP);
+            while (our_bishops) {
+                Square psq = pop_lsb(our_bishops);
+                our_attacks |= bb_diag_attacks(psq, pos.pieces());
+            }
+
+            Bitboard our_rooks = pos.pieces(us, ROOK);
+            while (our_rooks) {
+                Square psq = pop_lsb(our_rooks);
+                our_attacks |= bb_rank_attacks(psq, pos.pieces()) | bb_file_attacks(psq, pos.pieces());
+            }
+
+            Bitboard our_queens = pos.pieces(us, QUEEN);
+            while (our_queens) {
+                Square psq = pop_lsb(our_queens);
+                our_attacks |= queen_attacks_bb(psq, pos.pieces());
+            }
+
+            Bitboard our_king_bb = pos.pieces(us, KING);
+            while (our_king_bb) {
+                Square psq = pop_lsb(our_king_bb);
+                Bitboard kbb = square_bb(psq);
+                our_attacks |= kbb;
+                if (file_of(psq) > FILE_A) our_attacks |= shift_w(kbb) | shift_nw(kbb) | shift_sw(kbb);
+                if (file_of(psq) < FILE_H) our_attacks |= shift_e(kbb) | shift_ne(kbb) | shift_se(kbb);
+                our_attacks |= shift_n(kbb) | shift_s(kbb);
+            }
+
+            bool is_defended = (our_attacks & square_bb(sq)) != 0;
+            bool is_hanging = !is_defended;
+
+            // Heavy penalty for hanging pieces
+            if (is_hanging) {
+                mg_score -= sign * (piece_value * 3 / 2);
+                eg_score -= sign * (piece_value * 3 / 2);
+            } else {
+                // Smaller penalty for attacked but defended pieces
+                mg_score -= sign * (piece_value / 4);
+                eg_score -= sign * (piece_value / 6);
+            }
+        }
+    }
+
     // Interpolate between middle game and endgame
     Score score = (mg_score * phase + eg_score * (24 - phase)) / 24;
 
