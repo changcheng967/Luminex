@@ -1,4 +1,0 @@
-position startpos
-moves c5 Nc3 d5 Nb5 d6
-go depth 10
-quit
