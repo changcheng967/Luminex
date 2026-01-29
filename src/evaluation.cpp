@@ -165,12 +165,29 @@ Score PST_EG_TABLE[2][8][64] = {
 
 using Score = Value;
 
+// Helper: get king danger zone (3x3 area around king, plus pawn attack squares)
+inline Bitboard king_danger_zone(Square ksq) {
+    Bitboard zone = 0;
+    // 3x3 area around king
+    Bitboard kbb = square_bb(ksq);
+    zone |= kbb;
+    if (file_of(ksq) > FILE_A) zone |= shift_w(kbb) | shift_nw(kbb) | shift_sw(kbb);
+    if (file_of(ksq) < FILE_H) zone |= shift_e(kbb) | shift_ne(kbb) | shift_se(kbb);
+    zone |= shift_n(kbb) | shift_s(kbb);
+    // Also include squares that pawns could attack the king from
+    if (rank_of(ksq) > RANK_1) zone |= shift_s(zone);  // One rank below
+    if (rank_of(ksq) < RANK_8) zone |= shift_n(zone);  // One rank above
+    return zone;
+}
+
 Value evaluate(const Position& pos) {
     Score mg_score = 0;
     Score eg_score = 0;
 
-    // Track bishop pairs
+    // Track bishop pairs and king danger
     int bishop_count[2] = {0, 0};
+    int king_attackers[2] = {0, 0};
+    Square king_sq[2] = {pos.king_sq(WHITE), pos.king_sq(BLACK)};
 
     // Material and position evaluation
     for (int c_idx = 0; c_idx < 2; ++c_idx) {
@@ -362,6 +379,93 @@ Value evaluate(const Position& pos) {
     if (bishop_count[BLACK] >= 2) {
         mg_score -= 50;
         eg_score -= 70;
+    }
+
+    // King danger and queen tropism evaluation
+    for (int c_idx = 0; c_idx < 2; ++c_idx) {
+        Color us = Color(c_idx);
+        Color them = Color(us ^ 1);
+        Square their_king = king_sq[int(them)];
+        Square our_king = king_sq[int(us)];
+
+        // Queen tropism: penalty when enemy queen is close to our king
+        Bitboard their_queens = pos.pieces(them, QUEEN);
+        while (their_queens) {
+            Square qsq = pop_lsb(their_queens);
+            int dist = distance(our_king, qsq);
+            if (dist <= 3) {
+                mg_score -= (us == WHITE ? 1 : -1) * (50 * (4 - dist));
+                eg_score -= (us == WHITE ? 1 : -1) * (30 * (4 - dist));
+            } else if (dist <= 5) {
+                mg_score -= (us == WHITE ? 1 : -1) * (20 * (6 - dist));
+            }
+        }
+
+        // King danger: count attackers and their weight
+        Bitboard danger_zone = king_danger_zone(their_king);
+        int danger = 0;
+
+        // Count pieces attacking king zone
+        Bitboard our_knights = pos.pieces(us, KNIGHT);
+        while (our_knights) {
+            Square sq = pop_lsb(our_knights);
+            if (knight_attacks_bb(sq) & danger_zone) {
+                king_attackers[int(us)]++;
+                danger += 40;  // Knight attacks
+            }
+        }
+
+        Bitboard our_bishops = pos.pieces(us, BISHOP);
+        while (our_bishops) {
+            Square sq = pop_lsb(our_bishops);
+            if (bb_diag_attacks(sq, pos.pieces()) & danger_zone) {
+                king_attackers[int(us)]++;
+                danger += 50;  // Bishop attacks
+            }
+        }
+
+        Bitboard our_rooks = pos.pieces(us, ROOK);
+        while (our_rooks) {
+            Square sq = pop_lsb(our_rooks);
+            Bitboard attacks = (bb_rank_attacks(sq, pos.pieces()) | bb_file_attacks(sq, pos.pieces()));
+            if (attacks & danger_zone) {
+                king_attackers[int(us)]++;
+                danger += 70;  // Rook attacks are dangerous
+            }
+        }
+
+        Bitboard our_queens = pos.pieces(us, QUEEN);
+        while (our_queens) {
+            Square sq = pop_lsb(our_queens);
+            if (queen_attacks_bb(sq, pos.pieces()) & danger_zone) {
+                king_attackers[int(us)]++;
+                danger += 120;  // Queen attacks are very dangerous
+            }
+        }
+
+        // Bonus for multiple attackers (coordination)
+        if (king_attackers[int(us)] >= 2) {
+            danger += (king_attackers[int(us)] - 1) * 30;
+        }
+
+        // Penalty when we have no safe king position (king in center)
+        Rank krank = rank_of(our_king);
+        if ((us == WHITE && krank >= RANK_3 && krank <= RANK_5) ||
+            (us == BLACK && krank >= RANK_4 && krank <= RANK_6)) {
+            // King in center - very dangerous in middle game
+            mg_score -= (us == WHITE ? 1 : -1) * 40;
+            // Even worse when under attack
+            if (king_attackers[int(them)] > 0) {
+                mg_score -= (us == WHITE ? 1 : -1) * 60 * king_attackers[int(them)];
+            }
+        }
+
+        // Apply king danger score (scaled by number of attackers)
+        if (king_attackers[int(us)] >= 2) {
+            mg_score += (us == WHITE ? 1 : -1) * danger;
+        } else if (king_attackers[int(us)] == 1 && danger > 50) {
+            mg_score += (us == WHITE ? 1 : -1) * (danger / 2);
+        }
     }
 
     // Game phase detection (simplified)
