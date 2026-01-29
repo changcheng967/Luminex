@@ -384,6 +384,42 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
             if (new_depth < 1) new_depth = 1;
         }
 
+        // Check extension: extend by one ply if move gives check (helps find tactical sequences)
+        bool gives_check = false;
+        if (depth >= 2 && !pos.is_check()) {
+            PieceType pt = pos.piece_type_on(m.from());
+            Square to = m.to();
+            Color opponent = Color(int(pos.side_to_move()) ^ 1);
+            Square king_sq = pos.king_sq(opponent);
+
+            if (pt == KNIGHT) {
+                gives_check = (knight_attacks_bb(to) & square_bb(king_sq)) != 0;
+            } else if (pt == BISHOP) {
+                gives_check = (bb_diag_attacks(to, pos.pieces()) & square_bb(king_sq)) != 0;
+            } else if (pt == ROOK) {
+                gives_check = ((bb_rank_attacks(to, pos.pieces()) | bb_file_attacks(to, pos.pieces())) & square_bb(king_sq)) != 0;
+            } else if (pt == QUEEN) {
+                gives_check = (queen_attacks_bb(to, pos.pieces()) & square_bb(king_sq)) != 0;
+            } else if (pt == PAWN) {
+                Bitboard pawn_attacks = 0;
+                Bitboard pb = square_bb(to);
+                if (pos.side_to_move() == WHITE) {
+                    if (file_of(to) > FILE_A) pawn_attacks |= shift_nw(pb);
+                    if (file_of(to) < FILE_H) pawn_attacks |= shift_ne(pb);
+                } else {
+                    if (file_of(to) > FILE_A) pawn_attacks |= shift_sw(pb);
+                    if (file_of(to) < FILE_H) pawn_attacks |= shift_se(pb);
+                }
+                gives_check = (pawn_attacks & square_bb(king_sq)) != 0;
+            }
+        }
+
+        // Extend for checks and important captures
+        bool extension = gives_check;
+        if (extension && depth < 6) {
+            new_depth++;
+        }
+
         // Store current move and moved piece for counter-move history
         ss->current_move = m;
         ss->moved_piece = pos.piece_on(m.from());
