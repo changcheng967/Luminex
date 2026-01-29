@@ -1,3 +1,0 @@
-position startpos moves b1c3 c7c5 c3b5 d7d5 b5d6
-d
-quit
