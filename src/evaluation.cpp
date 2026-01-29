@@ -403,6 +403,19 @@ Value evaluate(const Position& pos) {
                     mg_score += sign * 30;
                     eg_score += sign * 40;
                 }
+
+                // Key squares evaluation: bonus for king near passed pawn's promotion path
+                Square our_king = king_sq[int(c)];
+                Square their_king = king_sq[int(c ^ 1)];
+
+                // Calculate king distance to the passed pawn's file and promotion rank
+                int our_king_dist = std::abs(int(file_of(our_king)) - int(f)) + std::abs(int(rank_of(our_king)) - int(r));
+                int their_king_dist = std::abs(int(file_of(their_king)) - int(f)) + std::abs(int(rank_of(their_king)) - int(r));
+
+                // Bonus if our king is closer to supporting the passed pawn
+                if (our_king_dist < their_king_dist) {
+                    eg_score += sign * (their_king_dist - our_king_dist) * 10;
+                }
             }
         }
 
