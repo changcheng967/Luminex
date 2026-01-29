@@ -42,12 +42,12 @@ bool check_time() {
         return true;
     }
 
-    // Check movetime limit - use 20% as buffer to ensure we NEVER exceed
+    // Check movetime limit - use buffer to avoid exceeding time
     if (limits.movetime) {
         auto now = std::chrono::steady_clock::now();
         int elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(now - search_start).count();
-        // Use 20% as buffer - extremely conservative to never exceed the limit
-        int limit = (limits.movetime / 5);
+        // Use 20% buffer - accounts for time check granularity and depth completion
+        int limit = (limits.movetime * 4) / 5;
         if (elapsed >= limit) {
             stop = true;
             return true;
@@ -75,8 +75,8 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
 
     ++nodes;
 
-    // Check time every 128 nodes
-    if ((nodes & 127) == 0) {
+    // Check time every 64 nodes
+    if ((nodes & 63) == 0) {
         check_time();
     }
 
@@ -146,8 +146,8 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
 
     const bool pv_node = (beta - alpha > 1);
 
-    // Check time every 128 nodes for stricter time management
-    if ((nodes & 127) == 0) {
+    // Check time every 64 nodes for better time control
+    if ((nodes & 63) == 0) {
         check_time();
     }
 
@@ -274,7 +274,8 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
     for (ExtMove* it = moves; it != end; ++it) {
         // Check time very frequently during move loop
         if ((moves_played & 1) == 0) {
-            if (check_time()) break;  // Time exceeded, stop searching
+            check_time();
+            if (stop.load(std::memory_order_relaxed)) break;
         }
         Move m = it->move;
 
