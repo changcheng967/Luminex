@@ -161,8 +161,38 @@ void handle_go(Position& pos, const std::string& cmd) {
     }
 }
 
-void handle_setoption(const std::string&) {
-    // TODO: Implement options
+void handle_setoption(const std::string& cmd) {
+    std::istringstream ss(cmd);
+    std::string token;
+    ss >> token; // "setoption"
+    ss >> token; // "name"
+
+    std::string name;
+    std::string value;
+
+    // Get the option name (may contain spaces)
+    while (ss >> token && token != "value") {
+        if (!name.empty()) name += " ";
+        name += token;
+    }
+
+    // Get the option value
+    while (ss >> token) {
+        if (!value.empty()) value += " ";
+        value += token;
+    }
+
+    // Handle known options
+    if (name == "Contempt" || name == "UCI_AnalyseMode") {
+        if (name == "Contempt") {
+            params.contempt = std::stoi(value);
+        }
+    } else if (name == "Clear Hash") {
+        TT.clear();
+    } else if (name == "Hash" || name == "Threads") {
+        // These are typically set before initialization
+        // We don't dynamically resize TT during play
+    }
 }
 
 void handle_stop() {

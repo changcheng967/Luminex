@@ -146,7 +146,10 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
 
     // Check for draw
     if (pos.is_draw()) {
-        return VALUE_DRAW;
+        // Apply contempt: if positive, prefer avoiding draws
+        // From root perspective, positive contempt means "I want to avoid draws"
+        // So we return VALUE_DRAW - contempt/2 for root player
+        return VALUE_DRAW - (pos.side_to_move() == WHITE ? params.contempt / 2 : -params.contempt / 2);
     }
 
     // Evaluate position
@@ -208,7 +211,10 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
 
     // Check for draw
     if (pos.is_draw()) {
-        return VALUE_DRAW;
+        // Apply contempt: if positive, prefer avoiding draws
+        // From root perspective, positive contempt means "I want to avoid draws"
+        // So we return VALUE_DRAW - contempt/2 for root player
+        return VALUE_DRAW - (pos.side_to_move() == WHITE ? params.contempt / 2 : -params.contempt / 2);
     }
 
     ++nodes;
@@ -342,7 +348,8 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
         if (pos.is_check()) {
             return -VALUE_MATE + ss->ply;
         }
-        return VALUE_DRAW;
+        // Stalemate - apply contempt
+        return VALUE_DRAW - (pos.side_to_move() == WHITE ? params.contempt / 2 : -params.contempt / 2);
     }
 
     // Score moves for ordering

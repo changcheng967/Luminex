@@ -1755,6 +1755,12 @@ Value evaluate(const Position& pos) {
     // Interpolate between middle game and endgame
     Score score = (mg_score * phase + eg_score * (24 - phase)) / 24;
 
+    // Apply contempt from the root player's perspective
+    // This is passed through the search params and affects draw decisions
+    // Positive contempt = avoid draws, play for wins
+    // The actual contempt adjustment is applied at search level
+    // This is just a placeholder for where contempt could be evaluated
+
     return pos.side_to_move() == WHITE ? score : -score;
 }
 
