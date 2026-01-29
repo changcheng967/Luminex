@@ -303,6 +303,25 @@ Value evaluate(const Position& pos) {
                 mg_score -= sign * 20;
                 eg_score -= sign * 20;
             }
+
+            // Center pawn bonus: pawns on e4/d4 (white) or e5/d5 (black)
+            bool is_center_pawn = false;
+            if (c == WHITE) {
+                if ((sq == E4) || (sq == D4)) is_center_pawn = true;
+            } else {
+                if ((sq == E5) || (sq == D5)) is_center_pawn = true;
+            }
+
+            if (is_center_pawn) {
+                mg_score += sign * 30;
+                eg_score += sign * 20;
+
+                // Extra bonus if the pawn is protected (not isolated)
+                if (friendly_pawns_adjacent) {
+                    mg_score += sign * 15;
+                    eg_score += sign * 10;
+                }
+            }
         }
 
         // Advanced passed pawn evaluation - done after all pawns are processed
@@ -761,6 +780,8 @@ Value evaluate(const Position& pos) {
     }
 
     // Center control bonus: extra value for controlling center squares (d4, d5, e4, e5)
+    int game_ply = pos.game_ply();  // Get once for use in multiple sections
+
     Bitboard center_squares = 0;
     center_squares |= square_bb(D4);
     center_squares |= square_bb(D5);
@@ -802,10 +823,28 @@ Value evaluate(const Position& pos) {
 
         mg_score += sign * (center_control_count * 10 + center_occupation_count * 20);
         eg_score += sign * (center_control_count * 5 + center_occupation_count * 10);
+
+        // Penalty for not having center pawns (d4/e4 for white, d5/e5 for black) in opening
+        if (game_ply < 20) {  // Before move 10
+            Bitboard our_pawns = pos.pieces(us, PAWN);
+            bool has_d4 = (us == WHITE && (our_pawns & square_bb(D4))) ||
+                           (us == BLACK && (our_pawns & square_bb(D5)));
+            bool has_e4 = (us == WHITE && (our_pawns & square_bb(E4))) ||
+                           (us == BLACK && (our_pawns & square_bb(E5)));
+
+            int center_pawns = (has_d4 ? 1 : 0) + (has_e4 ? 1 : 0);
+
+            // Strong penalty for missing center pawns - forces e4/d4 early
+            int missing = 2 - center_pawns;
+            if (missing > 0) {
+                // Aggressive scaling penalty
+                mg_score -= sign * missing * (120 + game_ply * 30);
+                eg_score -= sign * missing * (60 + game_ply * 15);
+            }
+        }
     }
 
     // Development and opening principles evaluation
-    int game_ply = pos.game_ply();
     for (int c_idx = 0; c_idx < 2; ++c_idx) {
         Color us = Color(c_idx);
         Sign sign = (us == WHITE) ? 1 : -1;
