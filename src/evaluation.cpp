@@ -825,6 +825,7 @@ Value evaluate(const Position& pos) {
         eg_score += sign * (center_control_count * 5 + center_occupation_count * 10);
 
         // Penalty for not having center pawns (d4/e4 for white, d5/e5 for black) in opening
+        // But allow variety - reduce penalty at very start to avoid always playing d4/e4 immediately
         if (game_ply < 20) {  // Before move 10
             Bitboard our_pawns = pos.pieces(us, PAWN);
             bool has_d4 = (us == WHITE && (our_pawns & square_bb(D4))) ||
@@ -834,12 +835,16 @@ Value evaluate(const Position& pos) {
 
             int center_pawns = (has_d4 ? 1 : 0) + (has_e4 ? 1 : 0);
 
-            // Strong penalty for missing center pawns - forces e4/d4 early
+            // Penalty for missing center pawns - but reduced at game start for variety
             int missing = 2 - center_pawns;
             if (missing > 0) {
-                // Aggressive scaling penalty
-                mg_score -= sign * missing * (120 + game_ply * 30);
-                eg_score -= sign * missing * (60 + game_ply * 15);
+                // Reduced penalty at start (game_ply < 6) to allow opening variety
+                // Full penalty kicks in after move 3
+                int base_penalty = (game_ply < 6) ? 40 : 120;
+                int scaling_penalty = (game_ply < 6) ? 10 : 30;
+
+                mg_score -= sign * missing * (base_penalty + game_ply * scaling_penalty);
+                eg_score -= sign * missing * ((base_penalty / 2) + game_ply * (scaling_penalty / 2));
             }
 
             // Penalty for early e-pawn advance before castling - opens e-file against king
@@ -1059,29 +1064,47 @@ Value evaluate(const Position& pos) {
 
         // Unsafe king squares: d7/e7 for Black, d2/e2 for White
         // These squares expose the king to central files without castling safety
-        if (!has_castled && game_ply > 8) {  // After move 4
+        // Also applies to d8/e8 for Black (king hasn't moved from back rank but is blocking)
+        if (!has_castled && game_ply > 4) {  // After move 2 - earlier to catch Kd7 issues
             bool on_unsafe_square = false;
+            bool king_moved_from_back = false;
+
             if (us == WHITE) {
                 // d2 or e2 is dangerous - king blocks center pawns
                 if ((krank == RANK_2) && ((kfile == FILE_D) || (kfile == FILE_E))) {
                     on_unsafe_square = true;
+                }
+                // King moved from e1 (hasn't castled but moved)
+                if (krank == RANK_1 && kfile != FILE_E) {
+                    king_moved_from_back = true;
                 }
             } else {
                 // d7 or e7 is dangerous - same issue for Black
                 if ((krank == RANK_7) && ((kfile == FILE_D) || (kfile == FILE_E))) {
                     on_unsafe_square = true;
                 }
+                // King moved from e8 (hasn't castled but moved)
+                // This catches Kd7 which is especially dangerous
+                if (krank != RANK_8) {
+                    king_moved_from_back = true;
+                }
             }
 
-            if (on_unsafe_square) {
+            if (on_unsafe_square || king_moved_from_back) {
                 // Check if enemy has developed pieces that can attack
                 Color them = Color(us ^ 1);
                 bool enemy_has_queen = pos.pieces(them, QUEEN) != 0;
                 bool enemy_has_rook = pos.pieces(them, ROOK) != 0;
+                bool enemy_has_bishop = pos.pieces(them, BISHOP) != 0;
 
-                int unsafe_penalty = 80;  // Base penalty for unsafe square
-                if (enemy_has_queen) unsafe_penalty += 60;
-                if (enemy_has_rook) unsafe_penalty += 30;
+                int unsafe_penalty = 100;  // Base penalty
+                if (king_moved_from_back) unsafe_penalty += 50;  // Extra for moved king
+                if (enemy_has_queen) unsafe_penalty += 80;
+                if (enemy_has_rook) unsafe_penalty += 40;
+                if (enemy_has_bishop) unsafe_penalty += 20;
+
+                // Extra penalty when game is still very young
+                if (game_ply < 10) unsafe_penalty += 50;
 
                 mg_score -= sign * unsafe_penalty;
                 eg_score -= sign * (unsafe_penalty / 2);
