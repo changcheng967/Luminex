@@ -184,8 +184,17 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
         return eval;
     }
 
-    // Null move pruning
-    if (!pv_node && !pos.is_check() && depth >= 3 && eval >= beta) {
+    // Null move pruning - skip if we're in check, or if we have few pieces, or if eval is much worse than beta
+    int piece_count = popcount(pos.pieces()) - popcount(pos.pieces(PAWN)) - 2;  // Exclude kings and pawns
+    bool null_move_ok = !pv_node && !pos.is_check() && depth >= 3 && piece_count >= 3 &&
+                          eval >= beta && ss->ply >= 1;  // Don't do at root
+
+    // Additional check: don't use null move if we have very few pieces (potential zugzwang)
+    if (null_move_ok && piece_count < 4) {
+        null_move_ok = false;
+    }
+
+    if (null_move_ok) {
         pos.do_null_move();
 
         Value null_value = -search_worker(pos, ss + 1, -beta, -beta + 1, depth - 3, !cut_node);
@@ -193,7 +202,11 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
         pos.undo_null_move();
 
         if (null_value >= beta) {
-            return beta;
+            // Don't return mate scores from null move pruning
+            if (null_value >= VALUE_MATE_IN_MAX_PLY) {
+                null_value = beta;
+            }
+            return null_value;
         }
     }
 
