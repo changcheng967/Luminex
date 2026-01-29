@@ -650,6 +650,40 @@ Value evaluate(const Position& pos) {
         eg_score -= 70;
     }
 
+    // Bishop vs Knight imbalance: bishops are better in open positions
+    // Count the total number of pawns to determine how open the position is
+    int total_pawns = popcount(pos.pieces(PAWN));
+    int white_bishops = bishop_count[WHITE];
+    int black_bishops = bishop_count[BLACK];
+    int white_knights = popcount(pos.pieces(WHITE, KNIGHT));
+    int black_knights = popcount(pos.pieces(BLACK, KNIGHT));
+
+    // In open positions (few pawns), bishops are generally better than knights
+    // In closed positions (many pawns), knights are generally better than bishops
+    int open_position_bonus = 0;
+    if (total_pawns <= 8) {
+        // Very open position - bishops are much better
+        open_position_bonus = 30;
+    } else if (total_pawns <= 12) {
+        // Moderately open - bishops are slightly better
+        open_position_bonus = 15;
+    } else if (total_pawns >= 20) {
+        // Very closed position - knights are better
+        open_position_bonus = -20;
+    }
+
+    // Apply the bonus/penalty based on piece imbalance
+    // White bishop advantage
+    if (white_bishops > black_bishops && white_knights < black_knights) {
+        mg_score += open_position_bonus;
+        eg_score += open_position_bonus * 2;  // Endgame advantage is larger
+    }
+    // Black bishop advantage
+    if (black_bishops > white_bishops && black_knights < white_knights) {
+        mg_score -= open_position_bonus;
+        eg_score -= open_position_bonus * 2;
+    }
+
     // Space evaluation: count squares we control in enemy territory
     for (int c_idx = 0; c_idx < 2; ++c_idx) {
         Color us = Color(c_idx);
