@@ -570,6 +570,159 @@ Value evaluate(const Position& pos) {
         }
     }
 
+    // Weak square evaluation: find squares that can't be defended by pawns
+    for (int c_idx = 0; c_idx < 2; ++c_idx) {
+        Color us = Color(c_idx);
+        Color them = Color(us ^ 1);
+        Sign sign = (us == WHITE) ? 1 : -1;
+
+        // For each file, check if we have pawn weak points
+        for (int fi = int(FILE_A); fi <= int(FILE_H); ++fi) {
+            File f = File(fi);
+            Bitboard file_bb_f = file_bb(f);
+
+            // Find our pawns on this file
+            Bitboard our_pawns_on_file = pos.pieces(us, PAWN) & file_bb_f;
+
+            // Check if we have pawn weak points in the middle ranks (3-6 for white, 3-6 for black)
+            Bitboard weak_squares = 0;
+
+            if (!our_pawns_on_file) {
+                // No pawns on this file - all squares are potentially weak
+                for (int ri = int(RANK_3); ri <= int(RANK_6); ++ri) {
+                    Square sq = make_square(f, Rank(ri));
+                    weak_squares |= square_bb(sq);
+                }
+            } else {
+                // Check for holes in our pawn structure
+                Square frontmost_pawn = us == WHITE ?
+                    msb(our_pawns_on_file) :  // White: highest rank pawn
+                    lsb(our_pawns_on_file);   // Black: lowest rank pawn
+
+                Rank front_rank = relative_rank(us, frontmost_pawn);
+
+                // Squares ahead of our frontmost pawn are weak
+                if (us == WHITE) {
+                    for (int ri = int(front_rank) + 1; ri <= int(RANK_6); ++ri) {
+                        Square sq = make_square(f, Rank(ri));
+                        weak_squares |= square_bb(sq);
+                    }
+                } else {
+                    for (int ri = int(RANK_6); ri >= int(front_rank) + 1; --ri) {
+                        Square sq = relative_square(us, make_square(f, Rank(ri)));
+                        weak_squares |= square_bb(sq);
+                    }
+                }
+            }
+
+            // Check if enemy pieces can control these weak squares
+            if (weak_squares) {
+                Bitboard enemy_knights = pos.pieces(them, KNIGHT);
+                Bitboard enemy_bishops = pos.pieces(them, BISHOP);
+
+                int weak_square_count = 0;
+                while (weak_squares) {
+                    Square sq = pop_lsb(weak_squares);
+
+                    // Check if enemy minor pieces can attack this square
+                    bool attacked = false;
+
+                    Bitboard temp_knights = enemy_knights;
+                    while (temp_knights) {
+                        Square ksq = pop_lsb(temp_knights);
+                        if (knight_attacks_bb(ksq) & square_bb(sq)) {
+                            attacked = true;
+                            break;
+                        }
+                    }
+
+                    if (!attacked) {
+                        Bitboard temp_bishops = enemy_bishops;
+                        while (temp_bishops) {
+                            Square bsq = pop_lsb(temp_bishops);
+                            if (bb_diag_attacks(bsq, pos.pieces()) & square_bb(sq)) {
+                                attacked = true;
+                                break;
+                            }
+                        }
+                    }
+
+                    if (attacked) {
+                        weak_square_count++;
+                    }
+                }
+
+                if (weak_square_count >= 2) {
+                    // Multiple weak squares on this file
+                    mg_score -= sign * 20 * weak_square_count;
+                    eg_score -= sign * 10 * weak_square_count;
+                }
+            }
+        }
+
+        // Backward pawn penalty: pawn that can't be defended by other pawns
+        Bitboard our_pawns = pos.pieces(us, PAWN);
+        while (our_pawns) {
+            Square pawn_sq = pop_lsb(our_pawns);
+            File f = file_of(pawn_sq);
+            Rank r = rank_of(pawn_sq);
+
+            // Check if this pawn has friendly pawn support behind it
+            bool has_support = false;
+            if (us == WHITE && r > RANK_2) {
+                // Check for pawns on adjacent files on rank below
+                Bitboard support_rank = rank_bb(Rank(int(r) - 1));
+                Bitboard adjacent_files = 0;
+                if (f > FILE_A) adjacent_files |= file_bb(File(f - 1));
+                if (f < FILE_H) adjacent_files |= file_bb(File(f + 1));
+                if (pos.pieces(us, PAWN) & support_rank & adjacent_files) {
+                    has_support = true;
+                }
+            } else if (us == BLACK && r < RANK_7) {
+                // Check for pawns on adjacent files on rank above
+                Bitboard support_rank = rank_bb(Rank(int(r) + 1));
+                Bitboard adjacent_files = 0;
+                if (f > FILE_A) adjacent_files |= file_bb(File(f - 1));
+                if (f < FILE_H) adjacent_files |= file_bb(File(f + 1));
+                if (pos.pieces(us, PAWN) & support_rank & adjacent_files) {
+                    has_support = true;
+                }
+            }
+
+            // Check if there are enemy pawns on adjacent files ahead (stopping it from advancing)
+            bool stopped_by_enemy = false;
+            if (us == WHITE && r < RANK_7) {
+                Bitboard ahead_ranks = 0;
+                for (int ar = int(r) + 1; ar <= int(RANK_7); ++ar) {
+                    ahead_ranks |= rank_bb(Rank(ar));
+                }
+                Bitboard adjacent_files = 0;
+                if (f > FILE_A) adjacent_files |= file_bb(File(f - 1));
+                if (f < FILE_H) adjacent_files |= file_bb(File(f + 1));
+                if (pos.pieces(them, PAWN) & ahead_ranks & adjacent_files) {
+                    stopped_by_enemy = true;
+                }
+            } else if (us == BLACK && r > RANK_2) {
+                Bitboard ahead_ranks = 0;
+                for (int ar = int(RANK_2); ar < int(r); ++ar) {
+                    ahead_ranks |= rank_bb(Rank(ar));
+                }
+                Bitboard adjacent_files = 0;
+                if (f > FILE_A) adjacent_files |= file_bb(File(f - 1));
+                if (f < FILE_H) adjacent_files |= file_bb(File(f + 1));
+                if (pos.pieces(them, PAWN) & ahead_ranks & adjacent_files) {
+                    stopped_by_enemy = true;
+                }
+            }
+
+            if (!has_support && stopped_by_enemy) {
+                // Backward pawn
+                mg_score -= sign * 15;
+                eg_score -= sign * 25;
+            }
+        }
+    }
+
     // Game phase detection (simplified)
     int material = 0;
     Bitboard all = pos.pieces();
