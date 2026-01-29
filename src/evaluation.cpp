@@ -221,21 +221,106 @@ Value evaluate(const Position& pos) {
                 mg_score -= sign * 20;
                 eg_score -= sign * 20;
             }
+        }
 
-            // Passed pawn bonus
-            Bitboard ahead = 0;
+        // Advanced passed pawn evaluation - done after all pawns are processed
+        Bitboard our_pawns = pos.pieces(c, PAWN);
+        Bitboard their_pawns = pos.pieces(Color(c ^ 1), PAWN);
+        Bitboard passed_pawns = 0;
+
+        while (our_pawns) {
+            Square sq = pop_lsb(our_pawns);
             Rank r = relative_rank(c, sq);
+            File f = file_of(sq);
+
+            // Check if this pawn is passed (no enemy pawns ahead on same or adjacent files)
+            Bitboard ahead = 0;
             if (r < RANK_7) {
-                // Squares ahead of this pawn
                 for (int rr = int(r) + 1; rr <= int(RANK_7); ++rr) {
-                    Square rank_sq = relative_square(c, make_square(file_of(sq), Rank(rr)));
+                    Square rank_sq = relative_square(c, make_square(f, Rank(rr)));
                     ahead |= square_bb(rank_sq);
+                    if (f > FILE_A) {
+                        Square left_sq = relative_square(c, make_square(File(f - 1), Rank(rr)));
+                        ahead |= square_bb(left_sq);
+                    }
+                    if (f < FILE_H) {
+                        Square right_sq = relative_square(c, make_square(File(f + 1), Rank(rr)));
+                        ahead |= square_bb(right_sq);
+                    }
                 }
             }
-            // No enemy pawns ahead
-            if (!(ahead & pos.pieces(Color(c ^ 1), PAWN))) {
+
+            // No enemy pawns ahead means this is a passed pawn
+            if (!(ahead & their_pawns)) {
+                passed_pawns |= square_bb(sq);
+
+                // Base passed pawn bonus increases with rank
                 mg_score += sign * (20 + r * 10);
                 eg_score += sign * (50 + r * 20);
+
+                // Bonus for protected passed pawn (supported by another pawn)
+                Bitboard pawn_attacks = 0;
+                Bitboard pb = square_bb(sq);
+                if (c == WHITE) {
+                    if (f > FILE_A) pawn_attacks |= shift_sw(pb);
+                    if (f < FILE_H) pawn_attacks |= shift_se(pb);
+                } else {
+                    if (f > FILE_A) pawn_attacks |= shift_nw(pb);
+                    if (f < FILE_H) pawn_attacks |= shift_ne(pb);
+                }
+                if (pawn_attacks & pos.pieces(c, PAWN)) {
+                    mg_score += sign * 20;
+                    eg_score += sign * 30;
+                }
+
+                // Outside passed pawn bonus: passed pawns on queenside when opponent has no passed pawns there
+                bool is_outside = (f <= FILE_C);
+                if (is_outside) {
+                    // Check if opponent has any passed pawns on the same side
+                    Bitboard their_passed_on_queenside = 0;
+
+                    // Find their passed pawns
+                    Bitboard tp = their_pawns;
+                    while (tp) {
+                        Square tp_sq = pop_lsb(tp);
+                        Rank tr = relative_rank(Color(c ^ 1), tp_sq);
+                        File tf = file_of(tp_sq);
+
+                        Bitboard t_ahead = 0;
+                        if (tr < RANK_7) {
+                            for (int trr = int(tr) + 1; trr <= int(RANK_7); ++trr) {
+                                Square t_rank_sq = relative_square(Color(c ^ 1), make_square(tf, Rank(trr)));
+                                t_ahead |= square_bb(t_rank_sq);
+                                if (tf > FILE_A) {
+                                    Square t_left_sq = relative_square(Color(c ^ 1), make_square(File(tf - 1), Rank(trr)));
+                                    t_ahead |= square_bb(t_left_sq);
+                                }
+                                if (tf < FILE_H) {
+                                    Square t_right_sq = relative_square(Color(c ^ 1), make_square(File(tf + 1), Rank(trr)));
+                                    t_ahead |= square_bb(t_right_sq);
+                                }
+                            }
+                        }
+
+                        if (!(t_ahead & pos.pieces(c, PAWN))) {
+                            if (tf <= FILE_C) their_passed_on_queenside |= square_bb(tp_sq);
+                        }
+                    }
+
+                    // If we have outside passed pawn and they don't, big bonus
+                    if (is_outside && !their_passed_on_queenside) {
+                        eg_score += sign * 50;
+                    }
+                }
+
+                // Connected passed pawns bonus (two or more passed pawns supporting each other)
+                Bitboard adjacent_passed = 0;
+                if (f > FILE_A) adjacent_passed |= passed_pawns & file_bb(File(f - 1));
+                if (f < FILE_H) adjacent_passed |= passed_pawns & file_bb(File(f + 1));
+                if (adjacent_passed) {
+                    mg_score += sign * 30;
+                    eg_score += sign * 40;
+                }
             }
         }
 
