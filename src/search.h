@@ -10,7 +10,7 @@ namespace luminex {
 // Search stack
 class Stack {
 public:
-    Move pv[MAX_PLY + 7];
+    Move pv[64];  // Reduced from MAX_PLY + 7 to save stack space
     int ply = 0;
     Move current_move = MOVE_NONE;
     Move excluded_move = MOVE_NONE;

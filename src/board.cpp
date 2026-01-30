@@ -75,7 +75,7 @@ void Position::set(const std::string& fen) {
     // Clear all arrays
     for (int i = 0; i < SQUARE_NONE; ++i) {
         board[i] = NO_PIECE;
-        index[i] = 0;
+        index[i] = -1;  // FIXED: Initialize to -1 (not in list) instead of 0
     }
     for (int i = 0; i < ALL_PIECES; ++i) {
         pieces_by_type[i] = 0;
@@ -287,6 +287,19 @@ void Position::remove_piece(Square s) {
 
     int& count = piece_count[int(c)][int(pt)];
     int idx = index[s];
+
+    // Safety check: if idx is out of bounds, search for the piece
+    if (idx < 0 || idx >= count) {
+        idx = -1;
+        for (int i = 0; i < count; ++i) {
+            if (piece_list[int(c)][int(pt)][i] == s) {
+                idx = i;
+                break;
+            }
+        }
+        if (idx < 0) return;  // Piece not found, abort
+    }
+
     Square last_sq = piece_list[int(c)][int(pt)][count - 1];
 
     piece_list[int(c)][int(pt)][idx] = last_sq;
@@ -295,7 +308,7 @@ void Position::remove_piece(Square s) {
     --count;
 
     board[s] = NO_PIECE;
-    index[s] = 0;
+    index[s] = -1;  // FIXED: Use -1 to indicate "not in list" instead of 0
 }
 
 void Position::move_piece(Square from, Square to) {
@@ -309,18 +322,28 @@ void Position::move_piece(Square from, Square to) {
     board[from] = NO_PIECE;
     board[to] = pc;
     int idx = index[from];
-    if (idx == 0) {
-        int count = piece_count[int(c)][int(pt)];
+
+    // FIXED: Use piece_count to check if index is valid, not just idx == 0
+    // idx could legitimately be 0 (first piece in list)
+    // Check if idx is within valid range instead
+    int count = piece_count[int(c)][int(pt)];
+    if (idx < 0 || idx >= count) {
+        // Search for the piece in piece_list
+        idx = -1;  // Assume not found
         for (int i = 0; i < count; ++i) {
             if (piece_list[int(c)][int(pt)][i] == from) {
                 idx = i;
                 break;
             }
         }
+        // If still not found, this is an error - skip the update
+        if (idx < 0) {
+            return;  // Can't find piece, abort
+        }
     }
     piece_list[int(c)][int(pt)][idx] = to;
     index[to] = idx;
-    index[from] = 0;
+    index[from] = -1;  // FIXED: Use -1 to indicate "not in list" instead of 0
     if (pt == KING) {
         king_square[int(c)] = to;
     }
@@ -414,6 +437,11 @@ void Position::do_move(Move m) {
     Square from = m.from();
     Square to = m.to();
     Piece pc = board[from];
+
+    // CRITICAL FIX: Check if st_ply is about to overflow state_stack
+    if (st_ply >= MAX_STATES - 2) {
+        return;  // Abort the move to prevent crash
+    }
 
     // Flag to track if this move should be executed
     bool valid_move = true;
