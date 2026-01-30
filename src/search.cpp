@@ -47,22 +47,27 @@ constexpr int futility_margin(int depth, bool improving) {
     return base * depth;
 }
 
-// LMR reduction computation - EXTREMELY aggressive for depth
+// LMR reduction computation - very aggressive for quiet moves
 inline int lmr_reduction(int depth, int moves_played, bool improving, bool pv_node) {
-    // Ultra aggressive LMR: more reduction for each move
-    int reduction = 2 + (moves_played - 1);  // Very aggressive: +1 per move
+    // Start with higher base reduction for more depth
+    int reduction = 2;
 
+    // Progressive reduction based on move count
+    if (moves_played >= 4) reduction += 1;
+    if (moves_played >= 8) reduction += 2;
+    if (moves_played >= 12) reduction += 2;
+
+    // Node type and improvement
     if (!pv_node) reduction += 1;
-    if (!improving) reduction += 1;
+    if (!improving) reduction += 2;
 
-    // Extra reduction for very late moves
-    if (moves_played >= 6) reduction += 2;
-    if (moves_played >= 8) reduction += 3;
-            if (moves_played >= 12) reduction += 3;
+    // Depth-based: much more reduction at higher depths
+    if (depth >= 6) reduction += 1;
+    if (depth >= 10) reduction += 2;
 
-    // Limit reduction to prevent over-reduction
-    if (reduction > depth - 1) reduction = depth - 1;
-    if (reduction < 2) reduction = 2;  // Minimum 2 ply reduction
+    // Cap reduction
+    if (reduction > depth - 2) reduction = depth - 2;
+    if (reduction < 2) reduction = 2;
 
     return reduction;
 }
@@ -109,16 +114,16 @@ bool check_time() {
         }
 
         // Consider stopping if we've used ideal time and depth is sufficient
-        // Require higher minimum depth for short time controls
-        int min_depth = 15;  // Need deeper search at short time controls
+        // Reasonable minimum depth that we can achieve at 5+0.5
+        int min_depth = 9;  // Achievable at short time controls
         if (elapsed >= ideal_time && root_depth >= min_depth && !stop) {
-            // Check if we can safely stop (score is stable, not in tactical position)
-            // Use more time in complex positions (low root_depth or high score changes)
-            
+            // Consider using more time if we haven't searched deeply yet
+            if (root_depth < min_depth) {
+                return false;  // Keep searching
+            }
 
-            // Stop if score is stable for 3+ depths and we're past depth 9
-            // Or if we've used most of max_time (90%)
-            if (elapsed >= max_time) {
+            // Stop if we've used most of max_time
+            if (elapsed >= max_time * 9 / 10) {
                 stop = true;
                 return true;
             }
@@ -519,26 +524,29 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
         }
         Move m = it->move;
 
-        // Capture pruning: skip losing captures at low depths
-        if (!pv_node && depth <= 4 && m.is_capture() && !m.is_promotion()) {
+        // Capture pruning: skip losing captures using SEE
+        // This prevents wasting time on captures that lose material
+        if (!pv_node && depth <= 8 && m.is_capture() && !m.is_promotion()) {
             // Skip losing captures (negative SEE) when not at root
+            // At root, we want to consider all captures
             if (ss->ply > 0 && !pos.see_ge(m, VALUE_ZERO)) {
                 continue;
             }
         }
 
-        // EXTREME late move pruning: skip very late moves at low depths
-        if (!pv_node && depth <= 12 && ss->ply > 0 && moves_played >= 3 &&
+        // Late move pruning: very aggressive for quiet moves, keeps all captures/checks
+        // This preserves tactical awareness while gaining depth
+        if (!pv_node && depth <= 8 && ss->ply > 1 && moves_played >= 6 &&
             !m.is_capture() && !m.is_promotion() && !m.is_castling()) {
             continue;  // Skip this late quiet move entirely
         }
 
-        // Late move pruning (futility pruning): skip quiet moves that can't improve alpha
-        // Very aggressive thresholds for maximum depth
-        if (!pv_node && depth <= 10 && ss->ply > 0 && !pos.is_check() &&
+        // Futility pruning: skip quiet moves that can't improve alpha
+        // Very aggressive but keeps tactical awareness through captures
+        if (!pv_node && depth <= 8 && ss->ply > 0 && !pos.is_check() &&
             !m.is_capture() && !m.is_promotion() && !m.is_castling()) {
-            // Futility margin - very aggressive
-            int margin = depth * 500;  // Increased from 200
+            // Very aggressive futility margin
+            int margin = depth * 350 + (ss->improving ? 0 : 100);
 
             // Check if move is futile (eval + margin < alpha)
             if (eval + margin < alpha) {
@@ -548,7 +556,7 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
 
         // Late Move Reduction (LMR)
         Depth new_depth = depth - 1;
-        // More aggressive LMR: apply from move 2 instead of 3, depth 2 instead of 3
+        // Very aggressive LMR: apply from move 2 at depth 2+ for quiet moves only
         bool do_lmr = !pv_node && depth >= 2 && moves_played >= 2 && !m.is_capture() && !m.is_promotion() && !m.is_castling();
 
         if (do_lmr) {

@@ -691,6 +691,41 @@ Value evaluate(const Position& pos) {
         }
 
         mg_score -= sign * open_file_penalty;
+
+        // Penalty for advanced pawns near king (weakening king safety)
+        // Especially bad in opening: pawns like g4 for white or g5 for black
+        if (pos.game_ply() < 40) {  // Opening phase
+            Bitboard king_side_pawns = pos.pieces(c, PAWN);
+            int advanced_pawn_penalty = 0;
+
+            while (king_side_pawns) {
+                Square psq = pop_lsb(king_side_pawns);
+                Rank pr = rank_of(psq);
+                File pf = file_of(psq);
+
+                // Check if pawn is advanced near the king
+                bool near_king = (pf >= kfile - 2 && pf <= kfile + 2);
+
+                if (near_king) {
+                    // White penalty: pawns on rank 3+ in front of king
+                    // Black penalty: pawns on rank 6- in front of king
+                    bool advanced = false;
+                    if (c == WHITE && pr >= RANK_3) advanced = true;
+                    if (c == BLACK && pr <= RANK_6) advanced = true;
+
+                    if (advanced) {
+                        // Extra penalty for f/g/h pawns (kingside)
+                        if (pf >= FILE_F) {
+                            advanced_pawn_penalty += 40;  // Large penalty for kingside pawn advances
+                        } else {
+                            advanced_pawn_penalty += 20;  // Smaller penalty for central pawn advances
+                        }
+                    }
+                }
+            }
+
+            mg_score -= sign * advanced_pawn_penalty;
+        }
     }
 
     // Bishop pair bonus
@@ -1846,6 +1881,48 @@ Value evaluate(const Position& pos) {
     // In middle game, tempo is more valuable; in endgame, less so
     mg_score += 15;
     eg_score += 5;
+
+    // Material imbalance penalty: losing material in opening is very bad
+    int current_ply = pos.game_ply();
+    if (current_ply < 30) {
+        // Count material value for each side (excluding pawns)
+        int white_material = 0;
+        int black_material = 0;
+
+        Bitboard white_pieces = pos.pieces(WHITE);
+        while (white_pieces) {
+            Square sq = pop_lsb(white_pieces);
+            PieceType pt = pos.piece_type_on(sq);
+            if (pt == KNIGHT) white_material += 300;
+            else if (pt == BISHOP) white_material += 320;
+            else if (pt == ROOK) white_material += 500;
+            else if (pt == QUEEN) white_material += 900;
+        }
+
+        Bitboard black_pieces = pos.pieces(BLACK);
+        while (black_pieces) {
+            Square sq = pop_lsb(black_pieces);
+            PieceType pt = pos.piece_type_on(sq);
+            if (pt == KNIGHT) black_material += 300;
+            else if (pt == BISHOP) black_material += 320;
+            else if (pt == ROOK) black_material += 500;
+            else if (pt == QUEEN) black_material += 900;
+        }
+
+        // Large penalty for being down material in opening
+        int material_diff = white_material - black_material;
+        if (material_diff < 0) {
+            // White is down - penalize heavily
+            int penalty = -material_diff * (30 - current_ply) / 10;
+            mg_score -= penalty * 2;
+            eg_score -= penalty;
+        } else if (material_diff > 0) {
+            // White is up - bonus
+            int bonus = material_diff * (30 - current_ply) / 15;
+            mg_score += bonus;
+            eg_score += bonus / 2;
+        }
+    }
 
     // Interpolate between middle game and endgame
     Score score = (mg_score * phase + eg_score * (24 - phase)) / 24;
