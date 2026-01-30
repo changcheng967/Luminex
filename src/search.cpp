@@ -57,7 +57,8 @@ inline int lmr_reduction(int depth, int moves_played, bool improving, bool pv_no
 
     // Extra reduction for very late moves
     if (moves_played >= 6) reduction += 2;
-    if (moves_played >= 10) reduction += 2;
+    if (moves_played >= 8) reduction += 3;
+            if (moves_played >= 12) reduction += 3;
 
     // Limit reduction to prevent over-reduction
     if (reduction > depth - 1) reduction = depth - 1;
