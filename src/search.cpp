@@ -767,22 +767,26 @@ Move search(Position& pos, Limits& lim) {
         max_time = 0;
     }
 
-    // Initialize killers and history (clear for new search)
+    // Initialize killers (clear for new search)
     for (int i = 0; i < MAX_PLY; ++i) {
         killers[i][0] = MOVE_NONE;
         killers[i][1] = MOVE_NONE;
     }
+
+    // Age history tables (divide by 8) instead of clearing
+    // This preserves valuable information between searches
     for (int i = 0; i < 12; ++i) {
         for (int j = 0; j < 64; ++j) {
-            history[i][j] = 0;
+            history[i][j] /= 8;
         }
     }
-    // Initialize counter-move history
+
+    // Age counter-move history
     for (int i = 0; i < 12; ++i) {
         for (int j = 0; j < 64; ++j) {
             for (int k = 0; k < 12; ++k) {
                 for (int l = 0; l < 64; ++l) {
-                    counter_moves[i][j][k][l] = 0;
+                    counter_moves[i][j][k][l] /= 8;
                 }
             }
         }
