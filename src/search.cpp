@@ -528,7 +528,7 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
         }
 
         // EXTREME late move pruning: skip very late moves at low depths
-        if (!pv_node && depth <= 10 && ss->ply > 0 && moves_played >= 4 &&
+        if (!pv_node && depth <= 12 && ss->ply > 0 && moves_played >= 3 &&
             !m.is_capture() && !m.is_promotion() && !m.is_castling()) {
             continue;  // Skip this late quiet move entirely
         }
