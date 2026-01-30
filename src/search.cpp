@@ -31,15 +31,15 @@ int counter_moves[12][64][12][64];
 constexpr int futility_margin(int depth, bool improving) {
     // More aggressive futility margins for deeper search
     // Based on Stockfish and other strong engines
-    int base = 100;
-    if (depth == 1) base = 120;
-    else if (depth == 2) base = 180;
-    else if (depth == 3) base = 250;
-    else base = 320;  // depth >= 4
+    int base = 150;
+    if (depth == 1) base = 200;
+    else if (depth == 2) base = 300;
+    else if (depth == 3) base = 400;
+    else base = 500 + (depth - 3) * 100;  // depth >= 4
 
     // Adjust based on improving flag
-    if (improving) base -= 40;
-    else base += 80;
+    if (improving) base -= 60;
+    else base += 100;
 
     return base * depth;
 }
@@ -267,13 +267,13 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
     }
 
     // Futility pruning - use improving for better pruning decisions
-    if (!pv_node && !pos.is_check() && depth <= 3 && eval - futility_margin(depth, ss->improving) >= beta) {
+    if (!pv_node && !pos.is_check() && depth <= 4 && eval - futility_margin(depth, ss->improving) >= beta) {
         return eval;
     }
 
-    // Razoring: at very low depths, if eval is far below alpha, try qsearch to confirm
-    if (!pv_node && !pos.is_check() && depth <= 2) {
-        Value razor_margin = 300 + depth * 50;  // Margin increases with depth
+    // Razoring: at low depths, if eval is far below alpha, try qsearch to confirm
+    if (!pv_node && !pos.is_check() && depth <= 3) {
+        Value razor_margin = 400 + depth * 100;  // More aggressive margin
         if (eval + razor_margin < alpha) {
             // Try quiescence search to confirm the position is really losing
             Value qsearch_value = qsearch(pos, ss, alpha - 1, alpha, 0);
@@ -521,10 +521,10 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
         }
 
         // Late move pruning (futility pruning): skip quiet moves that can't improve alpha
-        if (!pv_node && depth <= 3 && ss->ply > 0 && !pos.is_check() &&
+        if (!pv_node && depth <= 5 && ss->ply > 2 && !pos.is_check() &&
             !m.is_capture() && !m.is_promotion() && !m.is_castling()) {
-            // Futility margin: depth * 100 centipawns
-            int margin = depth * 100;
+            // More aggressive futility margin
+            int margin = depth * 150;
 
             // Check if move is futile (eval + margin < alpha)
             if (eval + margin < alpha) {
