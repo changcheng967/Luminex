@@ -1101,16 +1101,18 @@ Value evaluate(const Position& pos) {
         }
 
         // King in center penalty - apply earlier and stronger
-        if (game_ply > 10) {  // After move 5 (earlier than before)
+        if (game_ply > 4) {  // After just 2 moves - apply earlier!
             bool king_in_center = (us == WHITE && krank >= RANK_3 && krank <= RANK_5) ||
                                   (us == BLACK && krank >= RANK_4 && krank <= RANK_6);
 
             if (king_in_center) {
-                // King in center is VERY dangerous - stronger penalty
-                int base_penalty = 120;
+                // King in center is VERY dangerous - especially early
+                // Massive penalty that scales with how early it is
+                int base_penalty = 200;  // Increased from 120
+                int early_bonus = (40 - game_ply) * 10;  // More penalty for early king moves
                 int extra_penalty = (game_ply - 10) * 5;  // Grows as game progresses
-                mg_score -= sign * (base_penalty + extra_penalty);
-                eg_score -= sign * (50 + extra_penalty / 2);
+                mg_score -= sign * (base_penalty + early_bonus + extra_penalty);
+                eg_score -= sign * (100 + extra_penalty / 2);
 
                 // Extra penalty when enemy queen/rook is in our half
                 Color them = Color(us ^ 1);
