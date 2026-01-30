@@ -219,17 +219,25 @@ ExtMove* generate_moves(const Position& pos, ExtMove* moveList) {
     // Castling (only when not in check and not generating evasions)
     if constexpr (T == GEN_QUIET || T == GEN_ALL || T == GEN_LEGAL || T == GEN_NON_EVASION) {
         if (!checkers) {
-            // Kingside
-            CastlingRight king_side = us == WHITE ? WHITE_KINGSIDE : BLACK_KINGSIDE;
-            if (pos.castling_allowed(us, king_side)) {
-                Square to = Square(us == WHITE ? G1 : G8);
-                *moveList++ = Move(ksq, to, MF_CASTLING_KING);
-            }
-            // Queenside
-            CastlingRight queen_side = us == WHITE ? WHITE_QUEENSIDE : BLACK_QUEENSIDE;
-            if (pos.castling_allowed(us, queen_side)) {
-                Square to = Square(us == WHITE ? C1 : C8);
-                *moveList++ = Move(ksq, to, MF_CASTLING_QUEEN);
+            // CRITICAL: Only generate castling if king is on starting square
+            // White king must be on e1, black king must be on e8
+            bool king_on_start = (us == WHITE && ksq == E1) || (us == BLACK && ksq == E8);
+            if (!king_on_start) {
+                // King has moved - cannot castle, even if castling rights aren't revoked
+                // This prevents generating illegal castling moves like b1g1
+            } else {
+                // Kingside
+                CastlingRight king_side = us == WHITE ? WHITE_KINGSIDE : BLACK_KINGSIDE;
+                if (pos.castling_allowed(us, king_side)) {
+                    Square to = Square(us == WHITE ? G1 : G8);
+                    *moveList++ = Move(ksq, to, MF_CASTLING_KING);
+                }
+                // Queenside
+                CastlingRight queen_side = us == WHITE ? WHITE_QUEENSIDE : BLACK_QUEENSIDE;
+                if (pos.castling_allowed(us, queen_side)) {
+                    Square to = Square(us == WHITE ? C1 : C8);
+                    *moveList++ = Move(ksq, to, MF_CASTLING_QUEEN);
+                }
             }
         }
     }
