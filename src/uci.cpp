@@ -11,13 +11,24 @@ namespace luminex {
 static Position pos;
 
 void handle_uci() {
-    std::cout << "id name " << ENGINE_NAME << " " << ENGINE_VERSION << std::endl;
-    std::cout << "id author " << ENGINE_AUTHOR << std::endl;
-    std::cout << "uciok" << std::endl;
+    std::cout << "id name " << ENGINE_NAME << " " << ENGINE_VERSION << "\n";
+    std::cout.flush();
+    std::cout << "id author " << ENGINE_AUTHOR << "\n";
+    std::cout.flush();
+    // Declare UCI options
+    std::cout << "option name Hash type spin default 128 min 1 max 1048576\n";
+    std::cout.flush();
+    std::cout << "option name Contempt type spin default 0 min -1000 max 1000\n";
+    std::cout.flush();
+    std::cout << "option name Clear Hash type button\n";
+    std::cout.flush();
+    std::cout << "uciok\n";
+    std::cout.flush();
 }
 
 void handle_isready() {
-    std::cout << "readyok" << std::endl;
+    std::cout << "readyok\n";
+    std::cout.flush();
 }
 
 void handle_ucinewgame() {
@@ -37,6 +48,10 @@ void handle_position(Position& pos, const std::string& cmd) {
     } else {
         fen = cmd.substr(pos_idx + 8);
     }
+
+    // Debug: print the position command (truncated)
+    // std::cout << "info string pos_cmd: " << cmd.substr(0, 50) << "\n";
+    // std::cout.flush();
 
     // Trim leading/trailing whitespace
     size_t start = fen.find_first_not_of(" \t");
@@ -101,9 +116,9 @@ void handle_position(Position& pos, const std::string& cmd) {
 
             Move m(from, to, flags);
 
-            if (pos.legal(m)) {
-                pos.do_move(m);
-            }
+            // Trust the GUI - always make the move
+            // If there's a bug in our move generation, we want to play what GUI says
+            pos.do_move(m);
         }
     }
 }
@@ -137,7 +152,9 @@ void handle_go(Position& pos, const std::string& cmd) {
         }
     }
 
-    if (limits.depth == 0) {
+    // If no depth specified and not using time control, set max depth
+    // (prevents infinite search when "go" is sent with no params)
+    if (limits.depth == 0 && (limits.time[WHITE] == 0 && limits.time[BLACK] == 0)) {
         limits.depth = MAX_PLY - 1;
     }
 
@@ -151,14 +168,13 @@ void handle_go(Position& pos, const std::string& cmd) {
     // Send final info
     uci_info(pos, root_depth, root_score, nodes.load(), time_ms);
 
-    // Send best move
+    // Send best move with explicit flush
     if (best_move) {
-        std::cout << "bestmove " << best_move << std::endl;
-        std::cout.flush();
+        std::cout << "bestmove " << best_move << "\n";
     } else {
-        std::cout << "bestmove 0000" << std::endl;
-        std::cout.flush();
+        std::cout << "bestmove 0000\n";
     }
+    std::cout.flush();
 }
 
 void handle_setoption(const std::string& cmd) {
@@ -232,7 +248,8 @@ void uci_loop() {
             break;
         } else if (cmd == "d") {
             // Debug: print board
-            std::cout << pos.fen() << std::endl;
+            std::cout << pos.fen() << "\n";
+            std::cout.flush();
         }
     }
 }
@@ -242,6 +259,7 @@ void uci_send(const char* msg, ...) {
     va_start(args, msg);
     std::vprintf(msg, args);
     va_end(args);
+    std::cout.flush();
 }
 
 } // namespace luminex

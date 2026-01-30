@@ -740,6 +740,9 @@ bool Position::legal(Move m) const {
         }
         // Castling needs special handling
         if (m.is_castling()) {
+            // King cannot castle out of check
+            if ((attackers_to(from) & pieces(them)) != 0) return false;
+
             if (to == (us == WHITE ? G1 : G8)) {
                 // Kingside castling: check f1/g1 squares
                 Square s1 = Square((us == WHITE ? F1 : F8));

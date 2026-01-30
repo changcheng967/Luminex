@@ -255,8 +255,17 @@ inline std::ostream& operator<<(std::ostream& os, Square s) {
 }
 
 inline std::ostream& operator<<(std::ostream& os, Move m) {
-    if (m) os << m.from() << m.to();
-    else os << "0000";
+    if (m) {
+        os << m.from() << m.to();
+        // Append promotion piece for promotions
+        if (m.is_promotion()) {
+            constexpr char promo_chars[] = {'n', 'b', 'r', 'q'};
+            int idx = (m.flags() & 0x3000) >> 12;  // Extract bits 12-13
+            os << promo_chars[idx];
+        }
+    } else {
+        os << "0000";
+    }
     return os;
 }
 

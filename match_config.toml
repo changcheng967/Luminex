@@ -1,0 +1,16 @@
+# Cute Chess match configuration
+event = "Luminex vs Stockfish"
+site = "Local"
+engine1.cmd = "C:/Users/chang/Downloads/Luminex/build/luminex.exe"
+engine1.name = "Luminex 3.1.0"
+engine1.protocol = "uci"
+engine2.cmd = "C:/Users/chang/Downloads/stockfish-windows-x86-64/stockfish/stockfish-windows-x86-64.exe"
+engine2.name = "Stockfish"
+engine2.protocol = "uci"
+engine2.uci.Options = { Skill Level = 1, UCI_Chess960 = "false" }
+each.tc = 5+0.05
+each.option.Threads = 1
+games = 20
+repeat = 1
+ratinginterval = 5
+verbose = true

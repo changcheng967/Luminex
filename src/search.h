@@ -27,7 +27,7 @@ struct Limits {
     int inc[2] = {};
     int npmsec = 0;
     int movetime = 0;
-    int depth = MAX_PLY - 1;
+    int depth = 0;  // Default 0 to allow time management
     int nodes = 0;
     uint64_t mate = 0;
     bool infinite = false;

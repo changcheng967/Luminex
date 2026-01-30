@@ -725,9 +725,11 @@ Move search(Position& pos, Limits& lim) {
         if (pos.is_check()) {
             // We are checkmated
             std::cout << "info depth 1 score mate 0 nodes 0 nps 0" << std::endl;
+            std::cout.flush();
         } else {
             // We are stalemated
             std::cout << "info depth 1 score cp 0 nodes 0 nps 0" << std::endl;
+            std::cout.flush();
         }
         return MOVE_NONE;  // No move to make
     }
@@ -796,7 +798,9 @@ Move search(Position& pos, Limits& lim) {
     }
 
     // Iterative deepening
-    for (root_depth = 1; root_depth <= limits.depth; ++root_depth) {
+    // When depth=0, search until time runs out (tournament time control)
+    // When depth>0, search to that specific depth
+    for (root_depth = 1; limits.depth == 0 || root_depth <= limits.depth; ++root_depth) {
         // Check time before starting a new depth (for movetime)
         check_time();
         if (stop.load(std::memory_order_relaxed)) break;
@@ -956,6 +960,15 @@ Move search(Position& pos, Limits& lim) {
         if (stop.load(std::memory_order_relaxed)) break;
     }
 
+    // Fallback: if best_move is still MOVE_NONE but we have legal moves, pick the first one
+    if (best_move == MOVE_NONE) {
+        ExtMove moves[MAX_MOVES];
+        ExtMove* end = generate<GEN_LEGAL>(pos, moves);
+        if (moves != end) {
+            best_move = moves[0].move;  // Use first legal move as fallback
+        }
+    }
+
     return best_move;
 }
 
@@ -980,7 +993,8 @@ void uci_info([[maybe_unused]] const Position& pos, int depth, Value score, uint
 
     std::cout << " nodes " << node_count
               << " nps " << (time_ms > 0 ? node_count * 1000 / time_ms : 0)
-              << std::endl;
+              << "\n";
+    std::cout.flush();
 }
 
 } // namespace luminex

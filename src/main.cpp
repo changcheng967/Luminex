@@ -1,6 +1,12 @@
 #include "luminex.h"
 #include <chrono>
 #include <iostream>
+#include <cstdio>
+
+#ifdef _WIN32
+#include <io.h>
+#include <fcntl.h>
+#endif
 
 namespace luminex {
 
@@ -33,8 +39,17 @@ uint64_t perft(Position& pos, Depth depth) {
 int main(int argc, char* argv[]) {
     using namespace luminex;
 
-    // Force unbuffered stdout for immediate UCI output
-    std::cout << std::unitbuf;
+#ifdef _WIN32
+    // Set stdin/stdout to binary mode for Windows pipe compatibility
+    _setmode(_fileno(stdin), _O_BINARY);
+    _setmode(_fileno(stdout), _O_BINARY);
+#endif
+
+    // Disable all buffering for immediate UCI output (critical for cutechess-cli)
+    setvbuf(stdout, NULL, _IONBF, 0);
+    setvbuf(stdin, NULL, _IONBF, 0);
+    std::ios_base::sync_with_stdio(false);
+    std::cout.setf(std::ios::unitbuf);
 
     // Initialize engine
     init();
