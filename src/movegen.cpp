@@ -1,4 +1,5 @@
 #include "luminex.h"
+#include <iostream>
 
 namespace luminex {
 
@@ -252,8 +253,13 @@ ExtMove* generate(const Position& pos, ExtMove* moveList) {
         // Filter for legal moves (evasion moves should already be legal, but verify anyway)
         ExtMove* legal_end = start;
         for (ExtMove* it = start; it != end; ++it) {
-            if (pos.legal(it->move)) {
+            bool is_legal = pos.legal(it->move);
+            if (is_legal) {
                 *(legal_end++) = *it;
+            } else {
+                // DEBUG: log filtered move
+                std::cerr << "FILTERED: from=" << int(it->move.from()) << " to=" << int(it->move.to()) << "\n";
+                std::cerr.flush();
             }
         }
         return legal_end;

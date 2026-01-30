@@ -993,6 +993,78 @@ Value evaluate(const Position& pos) {
             }
         }
 
+        // Early queen development penalty - critical opening principle
+        // Developing queen early loses tempo and exposes it to attack
+        if (game_ply < 20) {  // Before move 10
+            Bitboard our_queens = pos.pieces(us, QUEEN);
+            while (our_queens) {
+                Square qsq = pop_lsb(our_queens);
+                Rank qrank = rank_of(qsq);
+
+                // Check if queen has left starting square (developed)
+                // White queen starts on d8 (which is d1 in relative terms, square index 3)
+                // Black queen starts on d0 (which is d8 in relative terms, square index 59)
+                bool queen_developed = false;
+                if (us == WHITE && qsq != D1) queen_developed = true;
+                if (us == BLACK && qsq != D8) queen_developed = true;
+
+                if (queen_developed) {
+                    // Count undeveloped minor pieces
+                    int undeveloped_minors_for_queen = 0;
+
+                    // White knights start on b1(g1) = squares 1, 6
+                    // Black knights start on b8(g8) = squares 57, 62
+                    Bitboard our_knights = pos.pieces(us, KNIGHT);
+                    while (our_knights) {
+                        Square nsq = pop_lsb(our_knights);
+                        bool knight_on_start = false;
+                        if (us == WHITE) {
+                            if (nsq == B1 || nsq == G1) knight_on_start = true;
+                        } else {
+                            if (nsq == B8 || nsq == G8) knight_on_start = true;
+                        }
+                        if (knight_on_start) undeveloped_minors_for_queen++;
+                    }
+
+                    // White bishops start on c1(f1) = squares 2, 5
+                    // Black bishops start on c8(f8) = squares 58, 61
+                    Bitboard our_bishops = pos.pieces(us, BISHOP);
+                    while (our_bishops) {
+                        Square bsq = pop_lsb(our_bishops);
+                        bool bishop_on_start = false;
+                        if (us == WHITE) {
+                            if (bsq == C1 || bsq == F1) bishop_on_start = true;
+                        } else {
+                            if (bsq == C8 || bsq == F8) bishop_on_start = true;
+                        }
+                        if (bishop_on_start) undeveloped_minors_for_queen++;
+                    }
+
+                    // Heavy penalty if queen developed before minor pieces
+                    // This is a classic opening mistake
+                    if (undeveloped_minors_for_queen >= 2) {
+                        int queen_penalty = 200;  // Very strong penalty
+                        // Scale by how early in the game
+                        int early_bonus = (20 - game_ply) * 10;
+                        mg_score -= sign * (queen_penalty + early_bonus);
+                        eg_score -= sign * (queen_penalty / 2 + early_bonus / 2);
+                    } else if (undeveloped_minors_for_queen == 1) {
+                        // Still bad, but less severe
+                        mg_score -= sign * 100;
+                        eg_score -= sign * 50;
+                    }
+
+                    // Extra penalty for queen on d3/d6 (common but usually bad early)
+                    File qfile = file_of(qsq);
+                    if ((us == WHITE && qrank == RANK_3 && qfile == FILE_D) ||
+                        (us == BLACK && qrank == RANK_6 && qfile == FILE_D)) {
+                        mg_score -= sign * 80;
+                        eg_score -= sign * 40;
+                    }
+                }
+            }
+        }
+
         // Castling bonus/penalty
         Square ksq = king_sq[int(us)];
         Rank krank = rank_of(ksq);

@@ -1,9 +1,12 @@
+#define _CRT_SECURE_NO_WARNINGS
 #include "luminex.h"
 #include <chrono>
 #include <cstdarg>
+#include <fstream>
 #include <iostream>
 #include <sstream>
 #include <string>
+#include <cstdio>
 
 namespace luminex {
 
@@ -124,6 +127,22 @@ void handle_position(Position& pos, const std::string& cmd) {
 }
 
 void handle_go(Position& pos, const std::string& cmd) {
+    // Debug log file - use process ID to separate engines
+    static FILE* uci_log = nullptr;
+    static int log_init = 0;
+    if (!log_init) {
+        // Use different files for different processes based on side to move
+        const char* fname = (pos.side_to_move() == WHITE) ?
+            "C:/Users/chang/Downloads/Luminex/luminex_white_log.txt" :
+            "C:/Users/chang/Downloads/Luminex/luminex_black_log.txt";
+        uci_log = fopen(fname, "w");
+        log_init = 1;
+    }
+    if (uci_log) {
+        fprintf(uci_log, "handle_go called: %s\n", cmd.c_str());
+        fflush(uci_log);
+    }
+
     std::istringstream ss(cmd);
     std::string token;
 
@@ -158,23 +177,115 @@ void handle_go(Position& pos, const std::string& cmd) {
         limits.depth = MAX_PLY - 1;
     }
 
+    // Check for terminal positions (checkmate/stalemate) before searching
+    ExtMove move_list[256];
+    ExtMove* move_end = generate_legals(pos, move_list);
+    int legal_count = int(move_end - move_list);
+
+    if (legal_count == 0) {
+        // No legal moves - game over
+        bool is_check = pos.is_check();
+
+        if (is_check) {
+            // Checkmate - send mate in 0 (we are mated)
+            std::cout << "info depth 0 score mate 0 nodes 0\n";
+        } else {
+            // Stalemate
+            std::cout << "info depth 0 score cp 0 nodes 0\n";
+        }
+        std::cout.flush();
+
+        // For terminal positions, send bestmove without argument
+        // The GUI should recognize game over from the score info
+        std::cout << "bestmove\n";
+        std::cout.flush();
+
+        if (uci_log) {
+            fprintf(uci_log, "TERMINAL: %s legal_count=0\n", is_check ? "checkmate" : "stalemate");
+            fflush(uci_log);
+        }
+        return;
+    }
+
     // Run search
     auto start = std::chrono::steady_clock::now();
+    std::cout << "info string DEBUG_BEFORE_SEARCH\n";
+    std::cout.flush();
     Move best_move = search(pos, limits);
     auto end = std::chrono::steady_clock::now();
+    std::cout << "info string DEBUG_AFTER_SEARCH valid=" << (best_move ? "YES" : "NO") << "\n";
+    std::cout.flush();
 
     int time_ms = std::chrono::duration_cast<std::chrono::milliseconds>(end - start).count();
 
     // Send final info
     uci_info(pos, root_depth, root_score, nodes.load(), time_ms);
 
+    // DEBUG: Log what we're about to send
+    std::cerr << "UCI: Sending bestmove, valid=" << (best_move ? "YES" : "NO") << "\n";
+    if (best_move) {
+        std::cerr << "  from=" << int(best_move.from()) << " to=" << int(best_move.to()) << "\n";
+    }
+    std::cerr.flush();
+
     // Send best move with explicit flush
     if (best_move) {
+        std::cout << "info string DEBUG_PRINTING_MOVE from=" << int(best_move.from()) << " to=" << int(best_move.to()) << " raw=" << best_move.raw() << "\n";
+        std::cout.flush();
+        std::string move_str;
+        std::ostringstream oss;
+        oss << best_move;
+        move_str = oss.str();
+        std::cout << "info string DEBUG_MOVE_STRING=" << move_str << "\n";
+        std::cout.flush();
+
+        // Also log to file
+        if (uci_log) {
+            fprintf(uci_log, "BESTMOVE valid=1 from=%d to=%d raw=%d str=%s\n",
+                    int(best_move.from()), int(best_move.to()), best_move.raw(), move_str.c_str());
+            fflush(uci_log);
+        }
+
         std::cout << "bestmove " << best_move << "\n";
     } else {
+        std::cout << "info string DEBUG_PRINTING_MOVE INVALID\n";
+        std::cout.flush();
+
+        // Also log to file
+        if (uci_log) {
+            fprintf(uci_log, "BESTMOVE valid=0 (will send 0000)\n");
+            fflush(uci_log);
+        }
+
         std::cout << "bestmove 0000\n";
     }
     std::cout.flush();
+
+    // Log to file
+    if (uci_log) {
+        fprintf(uci_log, "SENT bestmove\n");
+        fflush(uci_log);
+    }
+
+    // EXTRA DEBUG: If we sent 0000, this is critical - dump more info
+    if (!best_move) {
+        fprintf(uci_log, "CRITICAL: best_move is 0! Checking position...\n");
+        fflush(uci_log);
+
+        // Try to generate moves and see what we get
+        ExtMove check_moves[MAX_MOVES];
+        ExtMove* check_end = generate<GEN_LEGAL>(pos, check_moves);
+        int check_count = int(check_end - check_moves);
+        fprintf(uci_log, "CRITICAL: Generated %d legal moves\n", check_count);
+        fflush(uci_log);
+
+        if (check_count > 0) {
+            fprintf(uci_log, "CRITICAL: First move would be: from=%d to=%d raw=%d\n",
+                    int(check_moves[0].move.from()), int(check_moves[0].move.to()),
+                    check_moves[0].move.raw());
+            fflush(uci_log);
+        }
+    }
 }
 
 void handle_setoption(const std::string& cmd) {

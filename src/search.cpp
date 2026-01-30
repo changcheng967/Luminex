@@ -1,7 +1,9 @@
+#define _CRT_SECURE_NO_WARNINGS
 #include "luminex.h"
 #include <algorithm>
 #include <chrono>
 #include <fstream>
+#include <cstdio>
 
 namespace luminex {
 
@@ -89,6 +91,12 @@ bool check_time() {
         auto now = std::chrono::steady_clock::now();
         int elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(now - search_start).count();
 
+        // CRITICAL: Never stop in the first 100ms of search
+        // This ensures we always complete at least some work
+        if (elapsed < 100) {
+            return false;
+        }
+
         // Stop if we've used max time (hard limit)
         if (elapsed >= max_time) {
             stop = true;
@@ -96,7 +104,9 @@ bool check_time() {
         }
 
         // Consider stopping if we've used ideal time and depth is sufficient
-        if (elapsed >= ideal_time && root_depth >= 6 && !stop) {
+        // Require higher minimum depth for short time controls
+        int min_depth = (ideal_time < 1000) ? 10 : 8;  // Need deeper search at short time controls
+        if (elapsed >= ideal_time && root_depth >= min_depth && !stop) {
             // Check if we can safely stop (score is stable, not in tactical position)
             // Use more time in complex positions (low root_depth or high score changes)
             static Value last_root_score = -VALUE_INFINITE;
@@ -704,6 +714,15 @@ Move search(Position& pos, Limits& lim) {
     // Track search start time for time management
     search_start = std::chrono::steady_clock::now();
 
+    // DEBUG: Log search start via info string
+    {
+        Color us = pos.side_to_move();
+        std::cout << "info string DEBUG_SEARCH_START side=" << int(us)
+                  << " wtime=" << limits.time[0] << " btime=" << limits.time[1]
+                  << " depth=" << limits.depth << "\n";
+        std::cout.flush();
+    }
+
     Move best_move = MOVE_NONE;
     Value best_value = -VALUE_INFINITE;
     root_score = best_value;
@@ -711,9 +730,27 @@ Move search(Position& pos, Limits& lim) {
     // Check if we have any legal moves at all - ALSO SAVE THEM FOR FALLBACK
     ExtMove initial_moves[MAX_MOVES];
     ExtMove* initial_end = generate<GEN_LEGAL>(pos, initial_moves);
+
+    // DEBUG: Log initial moves
+    {
+        int move_count = int(initial_end - initial_moves);
+        std::cout << "info string DEBUG_INITIAL_MOVES count=" << move_count << "\n";
+        std::cout.flush();
+
+        // Also log to stderr for debugging
+        std::cerr << "INITIAL_MOVES count=" << move_count << "\n";
+        if (move_count > 0) {
+            std::cerr << "  First move: from=" << int(initial_moves[0].move.from())
+                      << " to=" << int(initial_moves[0].move.to())
+                      << " raw=" << initial_moves[0].move.raw() << "\n";
+        }
+        std::cerr.flush();
+    }
+
     if (initial_moves == initial_end) {
         // No legal moves for us - we are checkmated or stalemated
-        if (pos.is_check()) {
+        bool is_checkmate = pos.is_check();
+        if (is_checkmate) {
             // We are checkmated
             std::cout << "info depth 1 score mate 0 nodes 0 nps 0" << std::endl;
             std::cout.flush();
@@ -722,6 +759,11 @@ Move search(Position& pos, Limits& lim) {
             std::cout << "info depth 1 score cp 0 nodes 0 nps 0" << std::endl;
             std::cout.flush();
         }
+
+        // Log to stderr for debugging
+        std::cerr << "NO LEGAL MOVES - " << (is_checkmate ? "CHECKMATE" : "STALEMATE") << "\n";
+        std::cerr.flush();
+
         return MOVE_NONE;  // No move to make
     }
 
@@ -746,22 +788,28 @@ Move search(Position& pos, Limits& lim) {
         // In middle game (more pieces), use more time
         // In endgame (fewer pieces), use less time per move
         int piece_count = popcount(pos.pieces());
-        double time_fraction = 0.10;  // Base: 10% of remaining time
+        double time_fraction = 0.12;  // Base: 12% of remaining time (increased from 10%)
 
         if (piece_count > 28) {
-            time_fraction = 0.15;  // Opening: more time for important decisions
+            time_fraction = 0.18;  // Opening: more time for important decisions (increased from 15%)
         } else if (piece_count < 16) {
-            time_fraction = 0.08;  // Endgame: less time needed (simpler positions)
+            time_fraction = 0.10;  // Endgame: less time needed (increased from 8%)
         }
 
-        ideal_time = int(time_left * time_fraction) + time_inc;
-        max_time = int(time_left * 0.75);  // Never use more than 75% at once
+        ideal_time = int(time_left * time_fraction) + time_inc * 2;  // Use 2x increment (was 1x)
+        max_time = int(time_left * 0.80);  // Never use more than 80% at once (increased from 75%)
 
-        // Minimum time to ensure some thinking
-        if (ideal_time < 400) ideal_time = 400;
+        // CRITICAL: Ensure minimum search time for very short time controls
+        // This prevents the search from being interrupted immediately
+        if (ideal_time < 300) ideal_time = 300;  // At least 300ms (reduced from 500ms)
         // Maximum time to avoid time forfeits
-        if (max_time > time_left - 3000) max_time = time_left - 3000;
+        if (max_time > time_left - 2000) max_time = time_left - 2000;
         if (ideal_time > max_time) ideal_time = max_time;
+
+        // For very short time controls, use a larger fraction
+        if (time_left < 10000) {  // Less than 10 seconds
+            ideal_time = std::max(ideal_time, time_left / 2);  // Use 1/2 of remaining time (was 1/3)
+        }
     } else {
         ideal_time = 0;
         max_time = 0;
@@ -959,22 +1007,54 @@ Move search(Position& pos, Limits& lim) {
         if (stop.load(std::memory_order_relaxed)) break;
     }
 
+    // DEBUG: Log search completion
+    {
+        std::cout << "info string DEBUG_LOOP_EXIT depth=" << root_depth
+                  << " best_move_valid=" << (best_move ? 1 : 0)
+                  << " nodes=" << nodes.load() << "\n";
+        std::cout.flush();
+    }
+
     // Fallback: if best_move is still MOVE_NONE, use the first legal move we found initially
+    bool used_fallback = false;
     if (best_move == MOVE_NONE) {
         // Use the initial_moves we saved at the start - these are guaranteed to be valid
+        std::cerr << "FALLBACK: using initial_moves[0], raw=" << initial_moves[0].move.raw() << "\n";
+        std::cerr.flush();
         best_move = initial_moves[0].move;
+        used_fallback = true;
     }
 
     // SAFETY CHECK: best_move MUST be valid at this point
     // If not, something is very wrong and we should use a safe fallback
+    bool used_emergency = false;
     if (!best_move) {
         // This should NEVER happen, but if it does, try to find ANY legal move
+        std::cerr << "EMERGENCY: initial move was invalid, regenerating...\n";
+        std::cerr.flush();
+
         ExtMove emergency_moves[MAX_MOVES];
         ExtMove* emergency_end = generate<GEN_LEGAL>(pos, emergency_moves);
         if (emergency_end != emergency_moves) {
             best_move = emergency_moves[0].move;
+            used_emergency = true;
+            std::cerr << "EMERGENCY: found move, raw=" << best_move.raw() << "\n";
+        } else {
+            std::cerr << "EMERGENCY: NO MOVES FOUND - returning MOVE_NONE\n";
         }
+        std::cerr.flush();
         // If still no move, we have to return something - this is a critical error
+    }
+
+    // DEBUG: Write return info to diagnose 0000 bug
+    {
+        std::cout << "info string DEBUG_RETURN side=" << int(pos.side_to_move())
+                  << " valid=" << (best_move ? 1 : 0)
+                  << " from=" << (best_move ? int(best_move.from()) : -1)
+                  << " to=" << (best_move ? int(best_move.to()) : -1)
+                  << " fallback=" << (used_fallback ? 1 : 0)
+                  << " emergency=" << (used_emergency ? 1 : 0) << "\n";
+        std::cout.flush();
     }
 
     return best_move;

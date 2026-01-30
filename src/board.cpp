@@ -762,8 +762,20 @@ bool Position::legal(Move m) const {
             return false;  // Kings cannot be adjacent
         }
         // King cannot move to attacked square
-        Bitboard attacks = attackers_to(to, pieces() ^ square_bb(from));
-        if (attacks & pieces(them)) {
+        // Calculate occupancy after king moves (king removed from 'from')
+        // If capturing, also remove the captured piece from 'to'
+        Bitboard occ = pieces();
+        occ ^= square_bb(from);
+        Piece captured_piece = piece_on(to);
+        if (captured_piece != NO_PIECE) {
+            occ ^= square_bb(to);
+        }
+        Bitboard attacks = attackers_to(to, occ);
+
+        // Capture enemy pieces bitboard BEFORE any potential state change
+        Bitboard enemy_pieces = pieces(them);
+
+        if (attacks & enemy_pieces) {
             return false;
         }
         // Castling needs special handling
