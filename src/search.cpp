@@ -47,12 +47,11 @@ constexpr int futility_margin(int depth, bool improving) {
 
 // LMR reduction computation
 inline int lmr_reduction(int depth, int moves_played, bool improving, bool pv_node) {
-    // More aggressive LMR for non-PV nodes and late moves
-    int reduction = 2 + (moves_played - 3) / 3;  // More aggressive base
+    // Balanced LMR for good performance
+    int reduction = 1 + (moves_played - 3) / 4;  // Moderate base
 
-    if (!pv_node) reduction += 2;
+    if (!pv_node) reduction += 1;
     if (!improving) reduction += 1;
-    if (depth >= 8) reduction += depth / 4;
 
     // Limit reduction to prevent over-reduction
     if (reduction > depth - 2) reduction = depth - 2;
@@ -524,7 +523,7 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
         // Late move pruning (futility pruning): skip quiet moves that can't improve alpha
         if (!pv_node && depth <= 5 && ss->ply > 2 && !pos.is_check() &&
             !m.is_capture() && !m.is_promotion() && !m.is_castling()) {
-            // More aggressive futility margin
+            // Futility margin
             int margin = depth * 150;
 
             // Check if move is futile (eval + margin < alpha)
@@ -801,9 +800,9 @@ Move search(Position& pos, Limits& lim) {
         check_time();
         if (stop.load(std::memory_order_relaxed)) break;
 
-        // Aspiration window: use narrow window after depth 4
+        // Aspiration window with adaptive delta
         Value alpha, beta;
-        Value delta = Value(PAWN_VALUE);  // Initial window size (one pawn)
+        Value delta = Value(PAWN_VALUE);  // Start with 1 pawn window
 
         if (root_depth >= 5 && best_value > -VALUE_MATE_IN_MAX_PLY && best_value < VALUE_MATE_IN_MAX_PLY) {
             alpha = best_value - delta;
@@ -813,11 +812,11 @@ Move search(Position& pos, Limits& lim) {
             beta = VALUE_INFINITE;
         }
 
-        // Re-search with widening window until we get a result inside the window
-        while (true) {
-            Value depth_best_value = -VALUE_INFINITE;
-            Move depth_best_move = MOVE_NONE;
+        // Re-search loop (limit to 3 iterations to prevent explosion)
+        int re_search_count = 0;
+        bool search_done = false;
 
+        while (!search_done && re_search_count < 3) {
             // Generate moves
             ExtMove moves[MAX_MOVES];
             ExtMove* end = generate<GEN_LEGAL>(pos, moves);
@@ -881,6 +880,9 @@ Move search(Position& pos, Limits& lim) {
                 return a.value > b.value;
             });
 
+            Value depth_best_value = -VALUE_INFINITE;
+            Move depth_best_move = MOVE_NONE;
+
             for (ExtMove* it = moves; it != end; ++it) {
                 if (stop.load(std::memory_order_relaxed)) {
                     break;
@@ -914,29 +916,32 @@ Move search(Position& pos, Limits& lim) {
                 }
             }
 
-            // Check time after all moves searched (before re-search or next depth)
+            // Check time after all moves searched
             check_time();
             if (stop.load(std::memory_order_relaxed)) break;
 
-            // Check if we failed high or low and need to re-search
-            Value original_alpha = alpha - delta + Value(PAWN_VALUE);  // Reconstruct original alpha
-            if (depth_best_value >= beta) {
-                // Failed high - widen window and re-search
-                beta += delta;
-                delta *= 2;
-                if (beta > VALUE_INFINITE) beta = VALUE_INFINITE;
-                continue;  // Re-search
-            } else if (depth_best_value <= original_alpha) {
-                // Failed low - widen window downward and re-search
-                alpha -= delta;
-                delta *= 2;
-                if (alpha < -VALUE_INFINITE) alpha = -VALUE_INFINITE;
-                continue;  // Re-search
+            // Check if we need to re-search with wider window
+            if (re_search_count == 0 && root_depth >= 5) {
+                // Check for aspiration window failures
+                bool failed_high = (depth_best_value >= beta);
+                bool failed_low = (depth_best_value <= alpha - delta);
+
+                if (failed_high || failed_low) {
+                    // Need to re-search with wider window
+                    if (failed_high) {
+                        beta = VALUE_INFINITE;
+                    } else {
+                        alpha = -VALUE_INFINITE;
+                    }
+                    re_search_count++;
+                    continue;  // Re-search
+                }
             }
 
             // Search completed successfully
+            search_done = true;
+
             // Update overall best with this depth's result
-            // Only update if we found a valid move (not MOVE_NONE)
             if (depth_best_move != MOVE_NONE && depth_best_value >= best_value) {
                 best_value = depth_best_value;
                 best_move = depth_best_move;
@@ -949,8 +954,6 @@ Move search(Position& pos, Limits& lim) {
 
             // Send UCI info
             uci_info(pos, root_depth, depth_best_value, nodes.load(), time_ms);
-
-            break;  // Done with this depth
         }
 
         if (stop.load(std::memory_order_relaxed)) break;
