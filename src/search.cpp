@@ -47,15 +47,14 @@ constexpr int futility_margin(int depth, bool improving) {
 // LMR reduction computation
 inline int lmr_reduction(int depth, int moves_played, bool improving, bool pv_node) {
     // More aggressive LMR for non-PV nodes and late moves
-    int reduction = 2 + (moves_played - 3) / 4;  // Base reduction
+    int reduction = 2 + (moves_played - 3) / 3;  // More aggressive base
 
-    if (!pv_node) reduction += 1;
+    if (!pv_node) reduction += 2;
     if (!improving) reduction += 1;
-    if (depth >= 6) reduction += 1;
+    if (depth >= 8) reduction += depth / 4;
 
-    // Limit reduction
-    if (reduction > depth / 2) reduction = depth / 2;
-    if (reduction > 5) reduction = 5;
+    // Limit reduction to prevent over-reduction
+    if (reduction > depth - 2) reduction = depth - 2;
     if (reduction < 1) reduction = 1;
 
     return reduction;
@@ -567,8 +566,7 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
             }
 
             // Limit reduction
-            if (reduction > depth / 2) reduction = depth / 2;
-            if (reduction > 5) reduction = 5;  // Maximum reduction
+            if (reduction > depth - 2) reduction = depth - 2;
             if (reduction < 1) reduction = 1;  // Minimum reduction
 
             new_depth = depth - 1 - reduction;
@@ -605,28 +603,20 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
             }
         }
 
-        // Extend for checks, important captures, and singular moves
-        bool extension = gives_check;
+        // Single extension: at most one extension per move to prevent explosion
+        bool extension = false;
 
-        // Singular extension: extend the TT move if it's singular
+        // Singular extension: highest priority
         if (m == tt_move && tt_move_is_singular) {
             extension = true;
         }
-
-        if (extension && depth < 6) {
-            new_depth++;
+        // Check extension (only if not singular extended)
+        else if (gives_check && depth >= 3) {
+            extension = true;
         }
 
-        // Capture extension at low depths: extend for captures that might win material
-        if (depth <= 4 && m.is_capture() && !pos.is_check()) {
-            PieceType captured = pos.piece_type_on(m.to());
-            PieceType mover = pos.piece_type_on(m.from());
-            // If we're capturing with a less valuable piece, or if capturing a major piece
-            if (int(captured) > int(mover) || captured == QUEEN || captured == ROOK) {
-                if (new_depth < depth) {  // Only if we haven't already extended
-                    new_depth++;
-                }
-            }
+        if (extension && depth < 8) {
+            new_depth++;
         }
 
         // Store current move and moved piece for counter-move history
