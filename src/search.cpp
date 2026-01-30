@@ -527,17 +527,17 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
         }
 
         // EXTREME late move pruning: skip very late moves at low depths
-        if (!pv_node && depth <= 8 && ss->ply > 0 && moves_played >= 5 &&
+        if (!pv_node && depth <= 10 && ss->ply > 0 && moves_played >= 4 &&
             !m.is_capture() && !m.is_promotion() && !m.is_castling()) {
             continue;  // Skip this late quiet move entirely
         }
 
         // Late move pruning (futility pruning): skip quiet moves that can't improve alpha
         // Very aggressive thresholds for maximum depth
-        if (!pv_node && depth <= 9 && ss->ply > 0 && !pos.is_check() &&
+        if (!pv_node && depth <= 10 && ss->ply > 0 && !pos.is_check() &&
             !m.is_capture() && !m.is_promotion() && !m.is_castling()) {
             // Futility margin - very aggressive
-            int margin = depth * 400;  // Increased from 200
+            int margin = depth * 500;  // Increased from 200
 
             // Check if move is futile (eval + margin < alpha)
             if (eval + margin < alpha) {
