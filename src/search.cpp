@@ -853,163 +853,127 @@ Move search(Position& pos, Limits& lim) {
         check_time();
         if (stop.load(std::memory_order_relaxed)) break;
 
-        // Aspiration window with adaptive delta
-        Value alpha, beta;
-        Value delta = Value(PAWN_VALUE);  // Start with 1 pawn window
+        // Aspiration window - DISABLED for faster depth progression
+        // Using full window search to avoid re-search overhead
+        Value alpha = -VALUE_INFINITE;
+        Value beta = VALUE_INFINITE;
 
-        if (root_depth >= 5 && best_value > -VALUE_MATE_IN_MAX_PLY && best_value < VALUE_MATE_IN_MAX_PLY) {
-            alpha = best_value - delta;
-            beta = best_value + delta;
-        } else {
-            alpha = -VALUE_INFINITE;
-            beta = VALUE_INFINITE;
-        }
+        // Generate moves
+        ExtMove moves[MAX_MOVES];
+        ExtMove* end = generate<GEN_LEGAL>(pos, moves);
 
-        // Re-search loop (limit to 3 iterations to prevent explosion)
-        int re_search_count = 0;
-        bool search_done = false;
+        // Order moves at root for better efficiency
+        for (ExtMove* it = moves; it != end; ++it) {
+            Move m = it->move;
+            int score = 0;
 
-        while (!search_done && re_search_count < 3) {
-            // Generate moves
-            ExtMove moves[MAX_MOVES];
-            ExtMove* end = generate<GEN_LEGAL>(pos, moves);
+            // Prioritize winning captures
+            if (m.is_capture()) {
+                PieceType captured = pos.piece_type_on(m.to());
+                Value cap_value = 0;
+                if (captured == PAWN) cap_value = PAWN_VALUE;
+                else if (captured == KNIGHT) cap_value = KNIGHT_VALUE;
+                else if (captured == BISHOP) cap_value = BISHOP_VALUE;
+                else if (captured == ROOK) cap_value = ROOK_VALUE;
+                else if (captured == QUEEN) cap_value = QUEEN_VALUE;
 
-            // Order moves at root for better efficiency
-            for (ExtMove* it = moves; it != end; ++it) {
-                Move m = it->move;
-                int score = 0;
-
-                // Prioritize winning captures
-                if (m.is_capture()) {
-                    PieceType captured = pos.piece_type_on(m.to());
-                    Value cap_value = 0;
-                    if (captured == PAWN) cap_value = PAWN_VALUE;
-                    else if (captured == KNIGHT) cap_value = KNIGHT_VALUE;
-                    else if (captured == BISHOP) cap_value = BISHOP_VALUE;
-                    else if (captured == ROOK) cap_value = ROOK_VALUE;
-                    else if (captured == QUEEN) cap_value = QUEEN_VALUE;
-
-                    score = 1000000 + int(cap_value);
-                }
-                // Checks
-                else if (!pos.is_check()) {
-                    PieceType pt = pos.piece_type_on(m.from());
-                    Square to = m.to();
-                    Color opponent = Color(int(pos.side_to_move()) ^ 1);
-                    Square king_sq = pos.king_sq(opponent);
-
-                    bool gives_check = false;
-                    if (pt == KNIGHT) {
-                        gives_check = (knight_attacks_bb(to) & square_bb(king_sq)) != 0;
-                    } else if (pt == BISHOP) {
-                        gives_check = (bb_diag_attacks(to, pos.pieces()) & square_bb(king_sq)) != 0;
-                    } else if (pt == ROOK) {
-                        gives_check = ((bb_rank_attacks(to, pos.pieces()) | bb_file_attacks(to, pos.pieces())) & square_bb(king_sq)) != 0;
-                    } else if (pt == QUEEN) {
-                        gives_check = (queen_attacks_bb(to, pos.pieces()) & square_bb(king_sq)) != 0;
-                    } else if (pt == PAWN) {
-                        Bitboard pawn_attacks = 0;
-                        Bitboard pb = square_bb(to);
-                        if (pos.side_to_move() == WHITE) {
-                            if (file_of(to) > FILE_A) pawn_attacks |= shift_nw(pb);
-                            if (file_of(to) < FILE_H) pawn_attacks |= shift_ne(pb);
-                        } else {
-                            if (file_of(to) > FILE_A) pawn_attacks |= shift_sw(pb);
-                            if (file_of(to) < FILE_H) pawn_attacks |= shift_se(pb);
-                        }
-                        gives_check = (pawn_attacks & square_bb(king_sq)) != 0;
-                    }
-
-                    if (gives_check) {
-                        score = 500000;
-                    }
-                }
-
-                it->value = score;
+                score = 1000000 + int(cap_value);
             }
+            // Checks
+            else if (!pos.is_check()) {
+                PieceType pt = pos.piece_type_on(m.from());
+                Square to = m.to();
+                Color opponent = Color(int(pos.side_to_move()) ^ 1);
+                Square king_sq = pos.king_sq(opponent);
 
-            // Sort moves by score
-            std::sort(moves, end, [](const ExtMove& a, const ExtMove& b) {
-                return a.value > b.value;
-            });
-
-            Value depth_best_value = -VALUE_INFINITE;
-            Move depth_best_move = MOVE_NONE;
-
-            for (ExtMove* it = moves; it != end; ++it) {
-                if (stop.load(std::memory_order_relaxed)) {
-                    break;
-                }
-
-                // Check time before each root move (especially for movetime)
-                if (check_time()) {
-                    break;  // Time limit exceeded
-                }
-
-                pos.do_move(it->move);
-                Value value = -search_worker(pos, stack + 1, -beta, -alpha, root_depth - 1, false);
-                pos.undo_move(it->move);
-
-                // Check time after each root move
-                if (check_time()) {
-                    break;  // Time limit exceeded
-                }
-
-                if (value > depth_best_value) {
-                    depth_best_value = value;
-                    depth_best_move = it->move;
-                }
-
-                if (value > alpha) {
-                    alpha = value;
-                }
-
-                if (value >= beta) {
-                    break; // Beta cutoff
-                }
-            }
-
-            // Check time after all moves searched
-            check_time();
-            if (stop.load(std::memory_order_relaxed)) break;
-
-            // Check if we need to re-search with wider window
-            if (re_search_count == 0 && root_depth >= 5) {
-                // Check for aspiration window failures
-                bool failed_high = (depth_best_value >= beta);
-                bool failed_low = (depth_best_value <= alpha - delta);
-
-                if (failed_high || failed_low) {
-                    // Need to re-search with wider window
-                    if (failed_high) {
-                        beta = VALUE_INFINITE;
+                bool gives_check = false;
+                if (pt == KNIGHT) {
+                    gives_check = (knight_attacks_bb(to) & square_bb(king_sq)) != 0;
+                } else if (pt == BISHOP) {
+                    gives_check = (bb_diag_attacks(to, pos.pieces()) & square_bb(king_sq)) != 0;
+                } else if (pt == ROOK) {
+                    gives_check = ((bb_rank_attacks(to, pos.pieces()) | bb_file_attacks(to, pos.pieces())) & square_bb(king_sq)) != 0;
+                } else if (pt == QUEEN) {
+                    gives_check = (queen_attacks_bb(to, pos.pieces()) & square_bb(king_sq)) != 0;
+                } else if (pt == PAWN) {
+                    Bitboard pawn_attacks = 0;
+                    Bitboard pb = square_bb(to);
+                    if (pos.side_to_move() == WHITE) {
+                        if (file_of(to) > FILE_A) pawn_attacks |= shift_nw(pb);
+                        if (file_of(to) < FILE_H) pawn_attacks |= shift_ne(pb);
                     } else {
-                        alpha = -VALUE_INFINITE;
+                        if (file_of(to) > FILE_A) pawn_attacks |= shift_sw(pb);
+                        if (file_of(to) < FILE_H) pawn_attacks |= shift_se(pb);
                     }
-                    re_search_count++;
-                    continue;  // Re-search
+                    gives_check = (pawn_attacks & square_bb(king_sq)) != 0;
+                }
+
+                if (gives_check) {
+                    score = 500000;
                 }
             }
 
-            // Search completed successfully
-            search_done = true;
-
-            // Update overall best with this depth's result
-            if (depth_best_move != MOVE_NONE && depth_best_value >= best_value) {
-                best_value = depth_best_value;
-                best_move = depth_best_move;
-            }
-            root_score = depth_best_value;
-
-            // Calculate elapsed time for NPS
-            auto search_end = std::chrono::steady_clock::now();
-            int time_ms = std::chrono::duration_cast<std::chrono::milliseconds>(search_end - search_start).count();
-
-            // Send UCI info
-            uci_info(pos, root_depth, depth_best_value, nodes.load(), time_ms);
+            it->value = score;
         }
 
+        // Sort moves by score
+        std::sort(moves, end, [](const ExtMove& a, const ExtMove& b) {
+            return a.value > b.value;
+        });
+
+        Value depth_best_value = -VALUE_INFINITE;
+        Move depth_best_move = MOVE_NONE;
+
+        for (ExtMove* it = moves; it != end; ++it) {
+            if (stop.load(std::memory_order_relaxed)) {
+                break;
+            }
+
+            // Check time before each root move (especially for movetime)
+            if (check_time()) {
+                break;  // Time limit exceeded
+            }
+
+            pos.do_move(it->move);
+            Value value = -search_worker(pos, stack + 1, -beta, -alpha, root_depth - 1, false);
+            pos.undo_move(it->move);
+
+            // Check time after each root move
+            if (check_time()) {
+                break;  // Time limit exceeded
+            }
+
+            if (value > depth_best_value) {
+                depth_best_value = value;
+                depth_best_move = it->move;
+            }
+
+            if (value > alpha) {
+                alpha = value;
+            }
+
+            if (value >= beta) {
+                break; // Beta cutoff
+            }
+        }
+
+        // Check time after all moves searched
+        check_time();
         if (stop.load(std::memory_order_relaxed)) break;
+
+        // Update overall best with this depth's result (no aspiration window)
+        if (depth_best_move != MOVE_NONE) {
+            best_value = depth_best_value;
+            best_move = depth_best_move;
+        }
+        root_score = depth_best_value;
+
+        // Calculate elapsed time for NPS
+        auto search_end = std::chrono::steady_clock::now();
+        int time_ms = std::chrono::duration_cast<std::chrono::milliseconds>(search_end - search_start).count();
+
+        // Send UCI info
+        uci_info(pos, root_depth, depth_best_value, nodes.load(), time_ms);
     }
 
     // DEBUG: Log search completion
