@@ -141,8 +141,8 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
         return evaluate(pos);
     }
 
-    // Don't search captures beyond a certain depth
-    if (depth < -2) {
+    // Don't search captures beyond a certain depth - reduced from -2 to -1 for efficiency
+    if (depth < -1) {
         return evaluate(pos);
     }
 
