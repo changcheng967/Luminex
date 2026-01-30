@@ -49,11 +49,14 @@ constexpr int futility_margin(int depth, bool improving) {
 
 // LMR reduction computation
 inline int lmr_reduction(int depth, int moves_played, bool improving, bool pv_node) {
-    // Balanced LMR for good performance
-    int reduction = 1 + (moves_played - 3) / 4;  // Moderate base
+    // More aggressive LMR for better depth
+    int reduction = 1 + (moves_played - 3) / 3;  // More aggressive: divide by 3 instead of 4
 
     if (!pv_node) reduction += 1;
     if (!improving) reduction += 1;
+
+    // Extra reduction for very late moves
+    if (moves_played >= 10) reduction += 1;
 
     // Limit reduction to prevent over-reduction
     if (reduction > depth - 2) reduction = depth - 2;
@@ -531,10 +534,11 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
         }
 
         // Late move pruning (futility pruning): skip quiet moves that can't improve alpha
-        if (!pv_node && depth <= 5 && ss->ply > 2 && !pos.is_check() &&
+        // More aggressive thresholds for better pruning
+        if (!pv_node && depth <= 6 && ss->ply > 1 && !pos.is_check() &&
             !m.is_capture() && !m.is_promotion() && !m.is_castling()) {
-            // Futility margin
-            int margin = depth * 150;
+            // Futility margin - more aggressive
+            int margin = depth * 200;  // Increased from 150
 
             // Check if move is futile (eval + margin < alpha)
             if (eval + margin < alpha) {
@@ -544,7 +548,8 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
 
         // Late Move Reduction (LMR)
         Depth new_depth = depth - 1;
-        bool do_lmr = !pv_node && depth >= 3 && moves_played >= 3 && !m.is_capture() && !m.is_promotion() && !m.is_castling();
+        // More aggressive LMR: apply from move 2 instead of 3, depth 2 instead of 3
+        bool do_lmr = !pv_node && depth >= 2 && moves_played >= 2 && !m.is_capture() && !m.is_promotion() && !m.is_castling();
 
         if (do_lmr) {
             // Use unified LMR reduction function
