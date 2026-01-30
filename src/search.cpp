@@ -1,6 +1,7 @@
 #include "luminex.h"
 #include <algorithm>
 #include <chrono>
+#include <fstream>
 
 namespace luminex {
 
@@ -708,10 +709,10 @@ Move search(Position& pos, Limits& lim) {
     Value best_value = -VALUE_INFINITE;
     root_score = best_value;
 
-    // Check if we have any legal moves at all
-    ExtMove test_moves[MAX_MOVES];
-    ExtMove* test_end = generate<GEN_LEGAL>(pos, test_moves);
-    if (test_moves == test_end) {
+    // Check if we have any legal moves at all - ALSO SAVE THEM FOR FALLBACK
+    ExtMove initial_moves[MAX_MOVES];
+    ExtMove* initial_end = generate<GEN_LEGAL>(pos, initial_moves);
+    if (initial_moves == initial_end) {
         // No legal moves for us - we are checkmated or stalemated
         if (pos.is_check()) {
             // We are checkmated
@@ -955,13 +956,22 @@ Move search(Position& pos, Limits& lim) {
         if (stop.load(std::memory_order_relaxed)) break;
     }
 
-    // Fallback: if best_move is still MOVE_NONE but we have legal moves, pick the first one
+    // Fallback: if best_move is still MOVE_NONE, use the first legal move we found initially
     if (best_move == MOVE_NONE) {
-        ExtMove moves[MAX_MOVES];
-        ExtMove* end = generate<GEN_LEGAL>(pos, moves);
-        if (moves != end) {
-            best_move = moves[0].move;  // Use first legal move as fallback
+        // Use the initial_moves we saved at the start - these are guaranteed to be valid
+        best_move = initial_moves[0].move;
+    }
+
+    // SAFETY CHECK: best_move MUST be valid at this point
+    // If not, something is very wrong and we should use a safe fallback
+    if (!best_move) {
+        // This should NEVER happen, but if it does, try to find ANY legal move
+        ExtMove emergency_moves[MAX_MOVES];
+        ExtMove* emergency_end = generate<GEN_LEGAL>(pos, emergency_moves);
+        if (emergency_end != emergency_moves) {
+            best_move = emergency_moves[0].move;
         }
+        // If still no move, we have to return something - this is a critical error
     }
 
     return best_move;
