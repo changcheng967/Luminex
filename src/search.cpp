@@ -109,7 +109,7 @@ bool check_time() {
 
         // Consider stopping if we've used ideal time and depth is sufficient
         // Require higher minimum depth for short time controls
-        int min_depth = (ideal_time < 5000) ? 12 : 10;  // Need deeper search at short time controls
+        int min_depth = 15;  // Need deeper search at short time controls
         if (elapsed >= ideal_time && root_depth >= min_depth && !stop) {
             // Check if we can safely stop (score is stable, not in tactical position)
             // Use more time in complex positions (low root_depth or high score changes)
@@ -795,7 +795,7 @@ Move search(Position& pos, Limits& lim) {
         double time_fraction = 0.45;  // Base: 12% of remaining time (increased from 10%)
 
         if (piece_count > 28) {
-            time_fraction = 0.18;  // Opening: more time for important decisions (increased from 15%)
+            time_fraction = 0.45;  // Opening: more time for important decisions (increased from 15%)
         } else if (piece_count < 16) {
             time_fraction = 0.10;  // Endgame: less time needed (increased from 8%)
         }
