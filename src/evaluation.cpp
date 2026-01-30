@@ -304,68 +304,6 @@ Value evaluate(const Position& pos) {
                 eg_score -= sign * 20;
             }
 
-            // Backward pawn penalty: pawn that cannot advance safely
-            // A pawn is backward if: 1) It has no friendly pawn support behind it
-            // 2) Enemy pawn(s) on adjacent file(s) control the square in front
-            bool is_backward = false;
-            Rank r = relative_rank(c, sq);
-            if (r >= RANK_2 && r < RANK_7) {  // Not on starting rank or promotion rank
-                // Check if there's a friendly pawn behind on adjacent file
-                Bitboard support_behind = 0;
-                if (f > FILE_A) {
-                    File left_file = File(f - 1);
-                    Bitboard left_file_pawns = pos.pieces(c, PAWN) & file_bb(left_file);
-                    while (left_file_pawns) {
-                        Square support_sq = pop_lsb(left_file_pawns);
-                        if (relative_rank(c, support_sq) < r) {  // Behind our pawn
-                            support_behind |= square_bb(support_sq);
-                        }
-                    }
-                }
-                if (f < FILE_H) {
-                    File right_file = File(f + 1);
-                    Bitboard right_file_pawns = pos.pieces(c, PAWN) & file_bb(right_file);
-                    while (right_file_pawns) {
-                        Square support_sq = pop_lsb(right_file_pawns);
-                        if (relative_rank(c, support_sq) < r) {  // Behind our pawn
-                            support_behind |= square_bb(support_sq);
-                        }
-                    }
-                }
-
-                // Check if enemy pawn controls the square directly in front
-                Square front_sq = relative_square(c, make_square(f, Rank(r + 1)));
-                bool enemy_controls_front = false;
-                Color enemy = Color(c ^ 1);
-                Bitboard enemy_pawns = pos.pieces(enemy, PAWN);
-
-                // Check enemy pawns on adjacent files that attack the square in front
-                Bitboard attacking_files = 0;
-                if (f > FILE_A) attacking_files |= file_bb(File(f - 1));
-                if (f < FILE_H) attacking_files |= file_bb(File(f + 1));
-
-                Bitboard enemy_pawns_attacking = attacking_files & enemy_pawns;
-                while (enemy_pawns_attacking) {
-                    Square atk_sq = pop_lsb(enemy_pawns_attacking);
-                    // Enemy pawn attacks diagonally forward
-                    Square enemy_left = relative_square(enemy, make_square(file_of(atk_sq), Rank(1)));
-                    Square enemy_right = relative_square(enemy, make_square(file_of(atk_sq), Rank(1)));
-                    if (enemy_left == front_sq || enemy_right == front_sq) {
-                        enemy_controls_front = true;
-                        break;
-                    }
-                }
-
-                if (!support_behind && enemy_controls_front) {
-                    is_backward = true;
-                }
-            }
-
-            if (is_backward) {
-                mg_score -= sign * 15;
-                eg_score -= sign * 25;  // More severe in endgame
-            }
-
             // Center pawn bonus: pawns on e4/d4 (white) or e5/d5 (black)
             bool is_center_pawn = false;
             if (c == WHITE) {
