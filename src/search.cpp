@@ -797,7 +797,7 @@ Move search(Position& pos, Limits& lim) {
     // When depth=0, search until time runs out (tournament time control)
     // When depth>0, search to that specific depth
     // Start from depth 5 for faster time allocation at short time controls
-    int start_depth = (limits.depth == 0) ? 6 : 1;
+    int start_depth = (limits.depth == 0) ? 5 : 1;
     for (root_depth = start_depth; limits.depth == 0 || root_depth <= limits.depth; ++root_depth) {
         // Check time before starting a new depth (for movetime)
         check_time();
