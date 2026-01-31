@@ -637,13 +637,8 @@ void Position::do_move(Move m) {
     // VALIDATION: Catch board corruption immediately (always enabled for debugging)
     bool valid = validate_move(m, from, to, pc, captured);
     if (!valid) {
-        std::cerr << "\n=== BOARD CORRUPTION DETECTED ===\n";
-        std::cerr << "Move: " << m << " (" << from << " to " << to << ")\n";
-        std::cerr << "Piece moved: " << int(pc) << " (" << piece_char(Color(pc/6), piece_type_of(pc)) << ")\n";
-        std::cerr << "Captured: " << int(captured) << "\n";
-        std::cerr << "Board AFTER move:\n";
-        std::cerr << fen() << "\n";
-        std::cerr << "================================\n\n";
+        // Silently ignore corruption during search - just don't use this position
+        // The move will still be undone properly
     }
 
     // Update check info

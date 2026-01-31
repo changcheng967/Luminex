@@ -59,44 +59,41 @@ inline void clear_eval_cache() {
 
 // Reduction constants
 constexpr int futility_margin(int depth, bool improving) {
-    // More aggressive futility margins for deeper search
-    // Based on Stockfish and other strong engines
-    int base = 150;
-    if (depth == 1) base = 200;
-    else if (depth == 2) base = 300;
-    else if (depth == 3) base = 400;
-    else base = 500 + (depth - 3) * 100;  // depth >= 4
+    // More reasonable futility margins
+    int base = 100;
+    if (depth == 1) base = 120;
+    else if (depth == 2) base = 160;
+    else if (depth == 3) base = 200;
+    else base = 250 + (depth - 3) * 50;  // depth >= 4
 
     // Adjust based on improving flag
-    if (improving) base -= 60;
-    else base += 100;
+    if (improving) base -= 30;
+    else base += 50;
 
-    return base * depth;
+    return base;
 }
 
-// LMR reduction computation - EXTREME reduction for maximum speed
+// LMR reduction computation - balanced for accuracy
 inline int lmr_reduction(int depth, int moves_played, bool improving, bool pv_node) {
-    // Start with much higher base reduction
-    int reduction = 3;
+    // Start with no base reduction
+    int reduction = 0;
 
-    // Very progressive reduction based on move count
-    if (moves_played >= 2) reduction += 1;
-    if (moves_played >= 4) reduction += 2;
-    if (moves_played >= 6) reduction += 3;
-    if (moves_played >= 10) reduction += 4;
+    // Progressive reduction based on move count
+    if (moves_played >= 4) reduction += 1;
+    if (moves_played >= 8) reduction += 1;
+    if (moves_played >= 12) reduction += 1;
 
     // Node type and improvement
     if (!pv_node) reduction += 1;
-    if (!improving) reduction += 2;
+    if (!improving) reduction += 1;
 
-    // Depth-based: aggressive reduction at all depths
-    if (depth >= 4) reduction += 1;
+    // Depth-based: more reduction at deeper depths
     if (depth >= 6) reduction += 1;
-    if (depth >= 8) reduction += 2;
+    if (depth >= 10) reduction += 1;
 
-    // Cap reduction - allow very deep reductions
-    if (reduction > depth - 1) reduction = depth - 1;
-    if (reduction < 2) reduction = 2;
+    // Cap reduction - don't reduce too much
+    if (reduction > depth - 2) reduction = depth - 2;
+    if (reduction < 0) reduction = 0;
 
     return reduction;
 }
@@ -143,8 +140,7 @@ bool check_time() {
         }
 
         // Consider stopping if we've used ideal time and depth is sufficient
-        // Reduced to depth 8 which is achievable
-        int min_depth = 8;  // Achievable at short time controls
+        int min_depth = 12;  // Reasonable minimum depth before considering time stop
         if (elapsed >= ideal_time && root_depth >= min_depth && !stop) {
             // Consider using more time if we haven't searched deeply yet
             if (root_depth < min_depth) {
@@ -357,10 +353,10 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
     ExtMove moves[MAX_MOVES];
     ExtMove* end;
 
-    // CAPTURE-ONLY SEARCH: Aggressive capture-only at deeper plies
-    // Apply at ply >= 4 with depth <= 3, and ply >= 8 with depth <= 5
+    // CAPTURE-ONLY SEARCH: Less aggressive - only apply at very deep plies with low remaining depth
+    // Apply only at ply >= 8 with depth <= 3
     bool capture_only = !pv_node && !pos.is_check() &&
-        ((ss->ply >= 3 && depth <= 4) || (ss->ply >= 6 && depth <= 6));
+        (ss->ply >= 8 && depth <= 3);
 
     if (capture_only) {
         end = generate<GEN_CAPTURE>(pos, moves);
@@ -474,18 +470,19 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
             }
         }
 
-        // Late move pruning: ULTRA - only search FIRST quiet move
-        if (!pv_node && ss->ply > 0 && moves_played >= 1 &&
+        // Late move pruning: balanced - prune late quiet moves at non-PV nodes
+        // Only apply when we have searched enough moves and depth is low
+        if (!pv_node && ss->ply > 0 && moves_played >= 4 && depth <= 4 &&
             !m.is_capture() && !m.is_promotion() && !m.is_castling()) {
-            continue;  // Skip all but first quiet move
+            continue;  // Skip late quiet moves at low depth
         }
 
         // Futility pruning: skip quiet moves that can't improve alpha
-        // ULTRA aggressive - applies at all depths
-        if (!pv_node && ss->ply > 0 && !pos.is_check() &&
+        // Balanced - only apply at low depths
+        if (!pv_node && ss->ply > 0 && !pos.is_check() && depth <= 3 &&
             !m.is_capture() && !m.is_promotion() && !m.is_castling()) {
-            // Ultra aggressive futility margin
-            int margin = depth * 900 + (ss->improving ? 0 : 200);
+            // More reasonable futility margin
+            int margin = depth * 200 + (ss->improving ? 0 : 100);
 
             // Check if move is futile (eval + margin < alpha)
             if (eval + margin < alpha) {

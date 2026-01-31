@@ -150,9 +150,17 @@ Bitboard bb_rank_attacks(Square s, Bitboard occupied);
 Bitboard bb_file_attacks(Square s, Bitboard occupied);
 Bitboard bb_diag_attacks(Square s, Bitboard occupied);
 
-// Queen attacks with blocking pieces
-inline Bitboard queen_attacks_bb(Square s, Bitboard occupied) {
-    return (bb_rank_attacks(s, occupied) | bb_file_attacks(s, occupied) | bb_diag_attacks(s, occupied));
+// Queen attacks now in bitboard.h using optimized tables
+
+// Zobrist hash keys
+namespace Zobrist {
+    // Match sizes in board.cpp implementation
+    extern Key psq[2][8][64];     // piece-square keys [color][pieceType][square]
+    extern Key castling[4];       // castling rights keys
+    extern Key en_passant[8];     // en passant file keys
+    extern Key side;              // side to move key
+
+    void init();  // Initialize Zobrist keys with random values
 }
 
 // Zobrist initialization
