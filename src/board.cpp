@@ -357,17 +357,6 @@ void Position::move_piece(Square from, Square to) {
     PieceType pt = piece_type_of(pc);
     if (int(c) > 1) return;
 
-    // DEBUG: Check if destination square already has a piece
-    if (board[to] != NO_PIECE) {
-        init_board_debug();
-        board_debug_log << "\n=== MOVE_PIECE CORRUPTION ===\n";
-        board_debug_log << "Moving from " << from << " to " << to << "\n";
-        board_debug_log << "Destination already has piece " << int(board[to]) << "\n";
-        board_debug_log << "FEN: " << fen() << "\n";
-        board_debug_log << "==============================\n";
-        board_debug_log.flush();
-    }
-
     pieces_by_color[c] ^= square_bb(from) | square_bb(to);
     pieces_by_type[pt] ^= square_bb(from) | square_bb(to);
     board[from] = NO_PIECE;

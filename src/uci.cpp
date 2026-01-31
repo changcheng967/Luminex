@@ -126,10 +126,25 @@ void handle_position(Position& pos, const std::string& cmd) {
                 flags = (file_of(to) > file_of(from)) ? MF_CASTLING_KING : MF_CASTLING_QUEEN;
             }
 
-            // Check for en passant
-            if (pos.piece_on(from) == make_piece(us, PAWN) && pos.piece_type_on(to) == PT_NONE &&
+            // Check for double pawn push (MUST be checked before en passant)
+            if (flags == MF_QUIET && pos.piece_on(from) == make_piece(us, PAWN) &&
+                file_of(from) == file_of(to)) {
+                // Pawn moving straight - check if it's a double push
+                Rank from_rank = relative_rank(us, from);
+                Rank to_rank = relative_rank(us, to);
+                if (from_rank == RANK_2 && to_rank == RANK_4) {
+                    flags = MF_DOUBLE_PAWN;
+                }
+            }
+
+            // Check for en passant (ONLY if not already flagged as double pawn push)
+            if (flags == MF_QUIET && pos.piece_on(from) == make_piece(us, PAWN) &&
                 file_of(from) != file_of(to)) {
-                flags = MF_EN_PASSANT;
+                // Diagonal pawn move - check if target is empty (en passant)
+                Piece target = pos.piece_on(to);
+                if (target == NO_PIECE) {
+                    flags = MF_EN_PASSANT;
+                }
             }
 
             // DEBUG: Validate board state BEFORE move
@@ -155,8 +170,23 @@ void handle_position(Position& pos, const std::string& cmd) {
                 debug_log.flush();
             }
 
+            // DEBUG: Log move application
+            debug_log << "\n=== APPLYING UCI MOVE: " << move_str << " ===\n";
+            debug_log << "From: " << from << " (" << int(from_piece_before);
+            if (from_piece_before != NO_PIECE) {
+                debug_log << " = " << (pos.color_of_piece(from_piece_before) == WHITE ? "W" : "B") << piece_type_of(from_piece_before);
+            }
+            debug_log << ")\n";
+            debug_log << "To: " << to << "\n";
+            debug_log << "Flags: " << std::hex << flags << std::dec << "\n";
+            debug_log << "FEN before: " << pos.fen() << "\n";
+
             Move m(from, to, flags);
             pos.do_move(m);
+
+            debug_log << "FEN after:  " << pos.fen() << "\n";
+            debug_log << "=========================================\n";
+            debug_log.flush();
 
             // DEBUG: Validate board state after each move application
             std::string check_fen = pos.fen();
@@ -361,6 +391,10 @@ void uci_loop() {
 
     while (std::getline(std::cin, line)) {
         if (line.empty()) continue;
+
+        // DEBUG: Log all incoming UCI commands
+        debug_log << "\n=== RECEIVED: " << line << " ===\n";
+        debug_log.flush();
 
         std::istringstream ss(line);
         std::string cmd;
