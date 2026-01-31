@@ -385,8 +385,39 @@ void handle_go(Position& pos, const std::string& cmd) {
         Piece from_piece = pos.piece_on(from);
         Piece to_piece = pos.piece_on(to);
 
+        // CRITICAL: Check if move is actually legal
+        bool is_legal = pos.legal(best_move);
+
+        if (!is_legal) {
+            std::ofstream err_log("C:\\Users\\chang\\Downloads\\Luminex\\illegal_moves.txt", std::ios::app);
+            err_log << "\n=== ILLEGAL MOVE GENERATED ===\n";
+            err_log << "Move: " << best_move << "\n";
+            err_log << "From: " << from << " piece: " << int(from_piece);
+            if (from_piece != NO_PIECE) {
+                err_log << " (" << (pos.color_of_piece(from_piece) == WHITE ? "W" : "B") << piece_type_of(from_piece) << ")";
+            }
+            err_log << "\n";
+            err_log << "To: " << to << " piece: " << int(to_piece);
+            if (to_piece != NO_PIECE) {
+                err_log << " (" << (pos.color_of_piece(to_piece) == WHITE ? "W" : "B") << piece_type_of(to_piece) << ")";
+            }
+            err_log << "\n";
+            err_log << "FEN: " << pos.fen() << "\n";
+            err_log << "============================\n";
+            err_log.flush();
+
+            // Generate all legal moves and log them
+            ExtMove move_list[256];
+            ExtMove* move_end = generate_legals(pos, move_list);
+            err_log << "Legal moves (" << int(move_end - move_list) << "):\n";
+            for (ExtMove* it = move_list; it != move_end; ++it) {
+                err_log << "  " << it->move << "\n";
+            }
+            err_log.flush();
+        }
+
         std::cerr << "\n=== SENDING BESTMOVE ===\n";
-        std::cerr << "Move: " << best_move << "\n";
+        std::cerr << "Move: " << best_move << " (legal=" << is_legal << ")\n";
         std::cerr << "From: " << from << " piece: " << int(from_piece);
         if (from_piece != NO_PIECE) {
             std::cerr << " (" << (pos.color_of_piece(from_piece) == WHITE ? "W" : "B") << piece_type_of(from_piece) << ")";
@@ -401,7 +432,7 @@ void handle_go(Position& pos, const std::string& cmd) {
         std::cerr << "========================\n";
 
         debug_log << "\n=== SENDING BESTMOVE ===\n";
-        debug_log << "Move: " << best_move << "\n";
+        debug_log << "Move: " << best_move << " (legal=" << is_legal << ")\n";
         debug_log << "From: " << from << " piece: " << int(from_piece);
         if (from_piece != NO_PIECE) {
             debug_log << " (" << (pos.color_of_piece(from_piece) == WHITE ? "W" : "B") << piece_type_of(from_piece) << ")";
