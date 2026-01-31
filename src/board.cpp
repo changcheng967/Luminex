@@ -532,6 +532,36 @@ void Position::do_move(Move m) {
         return;
     }
 
+    // CRITICAL: Validate move flags match actual board state
+    PieceType piece_at_to = piece_type_on(to);
+    bool piece_at_to_is_enemy = (board[to] != NO_PIECE && color_of_piece(board[to]) == them);
+    bool move_flag_says_capture = m.is_capture();
+
+    if (piece_at_to_is_enemy && !move_flag_says_capture && !m.is_promotion()) {
+        // Enemy piece at destination but move is NOT flagged as capture
+        // This will cause board corruption! Abort the move.
+        std::cerr << "\n=== MOVE FLAG ERROR in do_move ===\n";
+        std::cerr << "Move: " << m << " (" << from << " to " << to << ")\n";
+        std::cerr << "Enemy piece at destination but not flagged as capture!\n";
+        std::cerr << "Piece at " << to << ": " << int(board[to]) << "\n";
+        std::cerr << "Move flags: 0x" << std::hex << m.flags() << std::dec << "\n";
+        std::cerr << "Aborting move to prevent corruption.\n";
+        std::cerr << "====================================\n";
+        next_st.move_was_executed = false;
+        return;
+    }
+
+    if (!piece_at_to_is_enemy && piece_at_to != PT_NONE && color_of_piece(board[to]) == us) {
+        // Friendly piece at destination - invalid move
+        std::cerr << "\n=== CAPTURING OWN PIECE in do_move ===\n";
+        std::cerr << "Move: " << m << " (" << from << " to " << to << ")\n";
+        std::cerr << "Friendly piece at destination!\n";
+        std::cerr << "Aborting move.\n";
+        std::cerr << "====================================\n";
+        next_st.move_was_executed = false;
+        return;
+    }
+
     // Handle capture
     PieceType captured = piece_type_on(to);
     if (captured != PT_NONE) {
@@ -618,6 +648,9 @@ void Position::do_move(Move m) {
 
     // Update check info
     set_check_info(st_);
+
+    // DEBUG: Check board consistency after every move
+    assert_consistency("do_move");
 }
 
 void Position::undo_move(Move m) {
@@ -684,6 +717,9 @@ void Position::undo_move(Move m) {
     st_ply--;
     st_ = &state_stack[st_ply];
     --game_ply_;
+
+    // DEBUG: Check board consistency after every undo
+    assert_consistency("undo_move");
 }
 
 void Position::do_null_move() {
@@ -722,6 +758,99 @@ void Position::undo_null_move() {
     st_ = &state_stack[st_ply];
     side_to_move_ = Color(side_to_move_ ^ 1);
     --game_ply_;
+}
+
+// CRITICAL: Consistency check to catch board state desync
+// Call after every do_move/undo_move during debugging
+void Position::assert_consistency(const char* location) {
+    // Check all 64 squares
+    for (int sq = 0; sq < 64; ++sq) {
+        Piece p = board[sq];
+        bool mailbox_has = (p != NO_PIECE);
+
+        // Check if this square is set in any bitboard
+        Bitboard all_pieces = pieces_by_color[WHITE] | pieces_by_color[BLACK];
+        bool bitboard_has = (all_pieces & (1ULL << sq)) != 0;
+
+        if (mailbox_has != bitboard_has) {
+            std::cerr << "\n=== BOARD STATE DESYNC DETECTED ===\n";
+            std::cerr << "Location: " << location << "\n";
+            std::cerr << "Square: " << sq << "\n";
+            std::cerr << "Mailbox says: " << (mailbox_has ? "HAS PIECE " : "EMPTY");
+            if (mailbox_has) {
+                std::cerr << int(p) << "\n";
+            } else {
+                std::cerr << "\n";
+            }
+            std::cerr << "Bitboard says: " << (bitboard_has ? "HAS PIECE" : "EMPTY") << "\n";
+            std::cerr << "All pieces bitboard: 0x" << std::hex << all_pieces << std::dec << "\n";
+            std::cerr << "White pieces: 0x" << std::hex << pieces_by_color[WHITE] << std::dec << "\n";
+            std::cerr << "Black pieces: 0x" << std::hex << pieces_by_color[BLACK] << std::dec << "\n";
+            std::cerr << "FEN: " << fen() << "\n";
+            std::cerr << "Last move: " << st_->move << "\n";
+            std::cerr << "====================================\n";
+            std::cerr.flush();
+
+            // Don't abort in production, just log and continue
+            // abort();
+        }
+    }
+
+    // CRITICAL: Verify piece counts match bitboards
+    for (int c = 0; c < NO_COLOR; ++c) {
+        for (int pt = 0; pt < ALL_PIECES; ++pt) {
+            int count = piece_count[c][pt];
+            Bitboard bb = pieces_by_color[c] & pieces_by_type[pt];
+            int bb_count = popcount(bb);
+
+            if (count != bb_count) {
+                std::cerr << "\n=== PIECE COUNT DESYNC ===\n";
+                std::cerr << "Location: " << location << "\n";
+                std::cerr << "Color: " << c << " (" << (c == WHITE ? "WHITE" : "BLACK") << ")\n";
+                std::cerr << "PieceType: " << pt << "\n";
+                std::cerr << "piece_count says: " << count << "\n";
+                std::cerr << "bitboard count says: " << bb_count << "\n";
+                std::cerr << "Bitboard: 0x" << std::hex << bb << std::dec << "\n";
+                std::cerr << "FEN: " << fen() << "\n";
+                std::cerr << "Last move: " << st_->move << "\n";
+                std::cerr << "============================\n";
+                std::cerr.flush();
+
+                // Log piece_list contents
+                std::cerr << "piece_list contents:\n";
+                for (int i = 0; i < 16; ++i) {
+                    Square s = piece_list[c][pt][i];
+                    if (s != SQUARE_NONE) {
+                        std::cerr << "  [" << i << "] = " << s << " (board=" << int(board[s]) << ")\n";
+                    }
+                }
+                std::cerr.flush();
+            }
+        }
+    }
+
+    // CRITICAL: Verify that board[] array matches bitboards for each piece type
+    for (int sq = 0; sq < 64; ++sq) {
+        Piece p = board[sq];
+        if (p != NO_PIECE) {
+            Color c = color_of_piece(p);
+            PieceType pt = piece_type_of(p);
+            Bitboard expected_bb = pieces_by_color[c] & pieces_by_type[pt];
+            if ((expected_bb & (1ULL << sq)) == 0) {
+                std::ofstream err_log("C:\\Users\\chang\\Downloads\\Luminex\\board_corruption.txt", std::ios::app);
+                err_log << "\n=== PIECE TYPE MISMATCH ===\n";
+                err_log << "Location: " << location << "\n";
+                err_log << "Square: " << sq << " (" << char('a' + (sq % 8)) << char('1' + (sq / 8)) << ")\n";
+                err_log << "board[] has: " << int(p) << " (" << (c == WHITE ? "W" : "B") << "PNBRQK"[pt] << ")\n";
+                err_log << "But bitboards don't have this piece type at this square!\n";
+                err_log << "pieces_by_color[" << c << "]: 0x" << std::hex << pieces_by_color[c] << std::dec << "\n";
+                err_log << "pieces_by_type[" << pt << "]: 0x" << std::hex << pieces_by_type[pt] << std::dec << "\n";
+                err_log << "FEN: " << fen() << "\n";
+                err_log << "=============================\n";
+                err_log.flush();
+            }
+        }
+    }
 }
 
 bool Position::see_ge(Move m, Value threshold) const {

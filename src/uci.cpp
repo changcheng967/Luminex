@@ -12,6 +12,11 @@ namespace {
 std::ofstream debug_log;
 bool debug_initialized = false;
 
+// Helper to check if flags represent a promotion with capture
+bool is_promotion_capture(uint16_t flags) {
+    return (flags & 0xC000) == 0xC000;  // 0xCxxx - 0xFxxx
+}
+
 void init_debug() {
     if (!debug_initialized) {
         debug_log.open("C:\\Users\\chang\\Downloads\\Luminex\\luminex_debug.txt", std::ios::out | std::ios::trunc);
@@ -115,14 +120,15 @@ void handle_position(Position& pos, const std::string& cmd) {
                     case 'q': flags = isCapture ? MF_CAPTURE_PROMO_QUEEN : MF_PROMO_QUEEN; break;
                 }
             } else {
+                // Check for capture (unless already flagged as promotion)
                 Piece target = pos.piece_on(to);
                 if (target != NO_PIECE && pos.color_of_piece(target) != us) {
                     flags = MF_CAPTURE;
                 }
             }
 
-            // Check for castling - only if the piece on from is OUR king
-            if (pos.piece_on(from) == make_piece(us, KING) && std::abs(file_of(to) - file_of(from)) > 1) {
+            // Check for castling (ONLY if not already flagged as capture/promotion)
+            if (flags == MF_QUIET && pos.piece_on(from) == make_piece(us, KING) && std::abs(file_of(to) - file_of(from)) > 1) {
                 flags = (file_of(to) > file_of(from)) ? MF_CASTLING_KING : MF_CASTLING_QUEEN;
             }
 
@@ -137,18 +143,18 @@ void handle_position(Position& pos, const std::string& cmd) {
                 }
             }
 
-            // Check for en passant (ONLY if not already flagged as double pawn push)
+            // Check for en passant (ONLY if not already flagged)
+            // CRITICAL: This must come AFTER capture check to distinguish normal captures from en passant
             if (flags == MF_QUIET && pos.piece_on(from) == make_piece(us, PAWN) &&
                 file_of(from) != file_of(to)) {
-                // Diagonal pawn move - check if target is empty (en passant)
-                Piece target = pos.piece_on(to);
-                if (target == NO_PIECE) {
-                    flags = MF_EN_PASSANT;
-                }
+                // Diagonal pawn move with QUIET flag means target was empty
+                // This can only be en passant (normal diagonal pawn moves would be captures)
+                flags = MF_EN_PASSANT;
             }
 
             // DEBUG: Validate board state BEFORE move
             Piece from_piece_before = pos.piece_on(from);
+            Piece to_piece_before = pos.piece_on(to);
 
             // Check if from_piece belongs to us
             if (from_piece_before != NO_PIECE) {
@@ -177,14 +183,87 @@ void handle_position(Position& pos, const std::string& cmd) {
                 debug_log << " = " << (pos.color_of_piece(from_piece_before) == WHITE ? "W" : "B") << piece_type_of(from_piece_before);
             }
             debug_log << ")\n";
-            debug_log << "To: " << to << "\n";
-            debug_log << "Flags: " << std::hex << flags << std::dec << "\n";
+            debug_log << "To: " << to << " (" << int(to_piece_before);
+            if (to_piece_before != NO_PIECE) {
+                debug_log << " = " << (pos.color_of_piece(to_piece_before) == WHITE ? "W" : "B") << piece_type_of(to_piece_before);
+            }
+            debug_log << ")\n";
+            debug_log << "Flags: 0x" << std::hex << flags << std::dec;
+            if (flags == MF_QUIET) debug_log << " (QUIET)";
+            else if (flags == MF_CAPTURE) debug_log << " (CAPTURE)";
+            else if (flags == MF_DOUBLE_PAWN) debug_log << " (DOUBLE_PAWN)";
+            else if (flags == MF_EN_PASSANT) debug_log << " (EN_PASSANT)";
+            else if (flags == MF_CASTLING_KING) debug_log << " (CASTLE_K)";
+            else if (flags == MF_CASTLING_QUEEN) debug_log << " (CASTLE_Q)";
+            else debug_log << " (OTHER)";
+            debug_log << "\n";
             debug_log << "FEN before: " << pos.fen() << "\n";
 
+            // VALIDATE: Check if move flags match actual board state
+            if (to_piece_before != NO_PIECE && pos.color_of_piece(to_piece_before) != us) {
+                // Enemy piece at destination - should be CAPTURE flag
+                if (flags != MF_CAPTURE && (flags & 0xF000) != MF_CAPTURE && !is_promotion_capture(flags)) {
+                    debug_log << "*** FLAG MISMATCH: Enemy piece at destination but flags=0x" << std::hex << flags << std::dec << " ***\n";
+                    debug_log << "*** This will cause board corruption! Fixing to MF_CAPTURE ***\n";
+                    flags = MF_CAPTURE;  // AUTO-FIX: Set correct flag
+                }
+            } else if (to_piece_before != NO_PIECE && pos.color_of_piece(to_piece_before) == us) {
+                // Friendly piece at destination - INVALID move (capturing own piece)
+                debug_log << "*** INVALID: Friendly piece at destination! ***\n";
+                debug_log << "*** From: " << from << " To: " << to << " ***\n";
+                debug_log << "*** Piece at from: " << int(from_piece_before) << " ***\n";
+                debug_log << "*** Piece at to: " << int(to_piece_before) << " ***\n";
+                // Skip this move to prevent corruption
+                continue;
+            }
+
             Move m(from, to, flags);
+
+            // VALIDATE: Log board state before move
+            std::string fen_before = pos.fen();
+
             pos.do_move(m);
 
-            debug_log << "FEN after:  " << pos.fen() << "\n";
+            // VALIDATE: Log board state after move
+            std::string fen_after = pos.fen();
+
+            debug_log << "FEN after:  " << fen_after << "\n";
+
+            // CRITICAL: Validate that piece counts make sense
+            int white_pawns = 0, black_pawns = 0, white_knights = 0, black_knights = 0;
+            int white_bishops = 0, black_bishops = 0, white_rooks = 0, black_rooks = 0;
+            int white_queens = 0, black_queens = 0;
+            for (int sq = 0; sq < 64; ++sq) {
+                Piece p = pos.piece_on(Square(sq));
+                if (p != NO_PIECE) {
+                    PieceType pt = piece_type_of(p);
+                    Color c = pos.color_of_piece(p);
+                    if (c == WHITE) {
+                        if (pt == PAWN) white_pawns++;
+                        else if (pt == KNIGHT) white_knights++;
+                        else if (pt == BISHOP) white_bishops++;
+                        else if (pt == ROOK) white_rooks++;
+                        else if (pt == QUEEN) white_queens++;
+                    } else {
+                        if (pt == PAWN) black_pawns++;
+                        else if (pt == KNIGHT) black_knights++;
+                        else if (pt == BISHOP) black_bishops++;
+                        else if (pt == ROOK) black_rooks++;
+                        else if (pt == QUEEN) black_queens++;
+                    }
+                }
+            }
+            if (white_pawns > 8 || black_pawns > 8 || white_knights > 2 || black_knights > 2 ||
+                white_bishops > 2 || black_bishops > 2 || white_rooks > 2 || black_rooks > 2 ||
+                white_queens > 9 || black_queens > 9) {
+                debug_log << "*** PIECE COUNT ERROR: W_P=" << white_pawns << " B_P=" << black_pawns;
+                debug_log << " W_N=" << white_knights << " B_N=" << black_knights;
+                debug_log << " W_B=" << white_bishops << " B_B=" << black_bishops;
+                debug_log << " W_R=" << white_rooks << " B_R=" << black_rooks;
+                debug_log << " W_Q=" << white_queens << " B_Q=" << black_queens << " ***\n";
+                debug_log.flush();
+            }
+
             debug_log << "=========================================\n";
             debug_log.flush();
 
