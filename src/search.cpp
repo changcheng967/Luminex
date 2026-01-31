@@ -360,7 +360,7 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
     // CAPTURE-ONLY SEARCH: Aggressive capture-only at deeper plies
     // Apply at ply >= 4 with depth <= 3, and ply >= 8 with depth <= 5
     bool capture_only = !pv_node && !pos.is_check() &&
-        ((ss->ply >= 4 && depth <= 3) || (ss->ply >= 8 && depth <= 5));
+        ((ss->ply >= 3 && depth <= 4) || (ss->ply >= 6 && depth <= 6));
 
     if (capture_only) {
         end = generate<GEN_CAPTURE>(pos, moves);
@@ -453,23 +453,31 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
         }
         Move m = it->move;
 
-        // Capture pruning: skip clearly losing captures (material comparison)
-        // Much faster than SEE - if attacker >= victim, skip at low depths
-        if (!pv_node && depth <= 6 && ss->ply > 0 && m.is_capture() && !m.is_promotion()) {
+        // Capture pruning: ULTRA aggressive - skip most captures at deep plies
+        // At high ply, only search winning captures (victim > attacker)
+        if (!pv_node && ss->ply > 0 && m.is_capture() && !m.is_promotion()) {
             PieceType captured = pos.piece_type_on(m.to());
             PieceType attacker = pos.piece_type_on(m.from());
-            // Simple material values: P=1, N=3, B=3, R=5, Q=9
             static constexpr int mat_value[] = {0, 1, 3, 3, 5, 9, 0};
-            if (mat_value[attacker] >= mat_value[captured]) {
-                continue;  // Skip losing or equal captures at low depths
+
+            // At deep plies, only search clearly winning captures
+            if (ss->ply >= 6 && mat_value[attacker] >= mat_value[captured] - 1) {
+                continue;  // Skip unless capture wins significant material
+            }
+            // At medium plies, skip equal or losing captures
+            if (ss->ply >= 3 && mat_value[attacker] >= mat_value[captured]) {
+                continue;
+            }
+            // At low depths, skip clearly losing captures
+            if (depth <= 4 && mat_value[attacker] > mat_value[captured]) {
+                continue;
             }
         }
 
-        // Late move pruning: EXTREME - only search first 2 quiet moves at any depth
-        // Preserve ALL captures and checks for tactical awareness
-        if (!pv_node && ss->ply > 0 && moves_played >= 2 &&
+        // Late move pruning: ULTRA - only search FIRST quiet move
+        if (!pv_node && ss->ply > 0 && moves_played >= 1 &&
             !m.is_capture() && !m.is_promotion() && !m.is_castling()) {
-            continue;  // Skip all but first 2 quiet moves
+            continue;  // Skip all but first quiet move
         }
 
         // Futility pruning: skip quiet moves that can't improve alpha
@@ -488,7 +496,7 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
         // Late Move Reduction (LMR)
         Depth new_depth = depth - 1;
         // Very aggressive LMR: apply from move 2 at depth 2+ for quiet moves only
-        bool do_lmr = !pv_node && depth >= 2 && moves_played >= 2 && !m.is_capture() && !m.is_promotion() && !m.is_castling();
+        bool do_lmr = !pv_node && depth >= 2 && moves_played >= 1 && !m.is_capture() && !m.is_promotion() && !m.is_castling();
 
         if (do_lmr) {
             // Use unified LMR reduction function
@@ -789,7 +797,7 @@ Move search(Position& pos, Limits& lim) {
     // When depth=0, search until time runs out (tournament time control)
     // When depth>0, search to that specific depth
     // Start from depth 5 for faster time allocation at short time controls
-    int start_depth = (limits.depth == 0) ? 5 : 1;
+    int start_depth = (limits.depth == 0) ? 6 : 1;
     for (root_depth = start_depth; limits.depth == 0 || root_depth <= limits.depth; ++root_depth) {
         // Check time before starting a new depth (for movetime)
         check_time();
