@@ -8,12 +8,26 @@
 #include <string>
 #include <cstdio>
 
+namespace {
+std::ofstream debug_log;
+bool debug_initialized = false;
+
+void init_debug() {
+    if (!debug_initialized) {
+        debug_log.open("C:\\Users\\chang\\Downloads\\Luminex\\luminex_debug.txt", std::ios::out | std::ios::trunc);
+        debug_initialized = true;
+    }
+}
+}
+
 namespace luminex {
 
 // Position for UCI
 static Position pos;
 
 void handle_uci() {
+    init_debug();
+
     std::cout << "id name " << ENGINE_NAME << " " << ENGINE_VERSION << "\n";
     std::cout.flush();
     std::cout << "id author " << ENGINE_AUTHOR << "\n";
@@ -118,8 +132,53 @@ void handle_position(Position& pos, const std::string& cmd) {
                 flags = MF_EN_PASSANT;
             }
 
+            // DEBUG: Validate board state BEFORE move
+            Piece from_piece_before = pos.piece_on(from);
+
+            // Check if from_piece belongs to us
+            if (from_piece_before != NO_PIECE) {
+                Color piece_color = pos.color_of_piece(from_piece_before);
+                if (piece_color != us) {
+                    debug_log << "\n=== UCI CORRUPTION: Trying to move enemy piece ===\n";
+                    debug_log << "Move: " << from << to << "\n";
+                    debug_log << "From square has " << int(from_piece_before);
+                    debug_log << " (color=" << piece_color << ", us=" << us << ")\n";
+                    debug_log << "FEN before: " << pos.fen() << "\n";
+                    debug_log << "===============================================\n";
+                    debug_log.flush();
+                }
+            } else {
+                debug_log << "\n=== UCI CORRUPTION: Moving from empty square ===\n";
+                debug_log << "Move: " << from << to << "\n";
+                debug_log << "FEN before: " << pos.fen() << "\n";
+                debug_log << "===============================================\n";
+                debug_log.flush();
+            }
+
             Move m(from, to, flags);
             pos.do_move(m);
+
+            // DEBUG: Validate board state after each move application
+            std::string check_fen = pos.fen();
+
+            // Check for obvious corruption: piece counts
+            int white_kings = 0, black_kings = 0;
+            for (int s = 0; s < 64; ++s) {
+                Piece p = pos.piece_on(Square(s));
+                if (p != NO_PIECE) {
+                    PieceType pt = piece_type_of(p);
+                    if (pt == KING) {
+                        if (p / 6 == WHITE) white_kings++;
+                        else black_kings++;
+                    }
+                }
+            }
+
+            if (white_kings != 1 || black_kings != 1) {
+                std::cerr << "\n=== CORRUPTION AFTER MOVE " << m << " ===\n";
+                std::cerr << "White kings: " << white_kings << ", Black kings: " << black_kings << "\n";
+                std::cerr << "FEN: " << check_fen << "\n";
+            }
         }
     }
 }
@@ -164,6 +223,24 @@ void handle_go(Position& pos, const std::string& cmd) {
     ExtMove* move_end = generate_legals(pos, move_list);
     int legal_count = int(move_end - move_list);
 
+    // DEBUG: Log position state before search
+    debug_log << "\n=== BEFORE SEARCH ===\n";
+    debug_log << "FEN: " << pos.fen() << "\n";
+    debug_log << "Legal moves: " << legal_count << "\n";
+    for (ExtMove* it = move_list; it != move_end; ++it) {
+        Move m = it->move;
+        Square from = m.from();
+        Square to = m.to();
+        Piece from_pc = pos.piece_on(from);
+        debug_log << "  " << m << " (from=" << from << " pc=" << int(from_pc);
+        if (from_pc != NO_PIECE) {
+            debug_log << " " << (pos.color_of_piece(from_pc) == WHITE ? "W" : "B") << piece_type_of(from_pc);
+        }
+        debug_log << " to=" << to << ")\n";
+    }
+    debug_log << "====================\n";
+    debug_log.flush();
+
     if (legal_count == 0) {
         // No legal moves - game over
         bool is_check = pos.is_check();
@@ -193,6 +270,43 @@ void handle_go(Position& pos, const std::string& cmd) {
 
     // Send best move
     if (best_move) {
+        // DEBUG: Validate move before sending
+        Square from = best_move.from();
+        Square to = best_move.to();
+        Piece from_piece = pos.piece_on(from);
+        Piece to_piece = pos.piece_on(to);
+
+        std::cerr << "\n=== SENDING BESTMOVE ===\n";
+        std::cerr << "Move: " << best_move << "\n";
+        std::cerr << "From: " << from << " piece: " << int(from_piece);
+        if (from_piece != NO_PIECE) {
+            std::cerr << " (" << (pos.color_of_piece(from_piece) == WHITE ? "W" : "B") << piece_type_of(from_piece) << ")";
+        }
+        std::cerr << "\n";
+        std::cerr << "To: " << to << " piece: " << int(to_piece);
+        if (to_piece != NO_PIECE) {
+            std::cerr << " (" << (pos.color_of_piece(to_piece) == WHITE ? "W" : "B") << piece_type_of(to_piece) << ")";
+        }
+        std::cerr << "\n";
+        std::cerr << "FEN: " << pos.fen() << "\n";
+        std::cerr << "========================\n";
+
+        debug_log << "\n=== SENDING BESTMOVE ===\n";
+        debug_log << "Move: " << best_move << "\n";
+        debug_log << "From: " << from << " piece: " << int(from_piece);
+        if (from_piece != NO_PIECE) {
+            debug_log << " (" << (pos.color_of_piece(from_piece) == WHITE ? "W" : "B") << piece_type_of(from_piece) << ")";
+        }
+        debug_log << "\n";
+        debug_log << "To: " << to << " piece: " << int(to_piece);
+        if (to_piece != NO_PIECE) {
+            debug_log << " (" << (pos.color_of_piece(to_piece) == WHITE ? "W" : "B") << piece_type_of(to_piece) << ")";
+        }
+        debug_log << "\n";
+        debug_log << "FEN: " << pos.fen() << "\n";
+        debug_log << "========================\n";
+        debug_log.flush();
+
         std::cout << "bestmove " << best_move << "\n";
     } else {
         std::cout << "bestmove 0000\n";

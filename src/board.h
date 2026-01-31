@@ -87,6 +87,7 @@ private:
 
     void set_castling_right(Color c, Square rfrom);
     void set_check_info(StateInfo* st);
+    bool validate_move(Move m, Square from, Square to, Piece moved_pc, PieceType captured) const;
 
     bool see_gen(Bitboard stmAttackers, Bitboard occupied) const;
 
