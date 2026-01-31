@@ -461,11 +461,11 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
             static constexpr int mat_value[] = {0, 1, 3, 3, 5, 9, 0};
 
             // At deep plies, only search clearly winning captures
-            if (ss->ply >= 6 && mat_value[attacker] >= mat_value[captured] - 1) {
+            if (ss->ply >= 4 && mat_value[attacker] >= mat_value[captured] - 1) {
                 continue;  // Skip unless capture wins significant material
             }
             // At medium plies, skip equal or losing captures
-            if (ss->ply >= 3 && mat_value[attacker] >= mat_value[captured]) {
+            if (ss->ply >= 2 && mat_value[attacker] >= mat_value[captured]) {
                 continue;
             }
             // At low depths, skip clearly losing captures

@@ -84,4 +84,4 @@ test_check.txt
 test_positions.txt
 Luminex-v*.exe
 nul
-.pgn
+.pgnluminex_*_log.txt
