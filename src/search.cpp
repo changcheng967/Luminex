@@ -666,15 +666,6 @@ Move search(Position& pos, Limits& lim) {
     // Track search start time for time management
     search_start = std::chrono::steady_clock::now();
 
-    // DEBUG: Log search start via info string
-    {
-        Color us = pos.side_to_move();
-        std::cout << "info string DEBUG_SEARCH_START side=" << int(us)
-                  << " wtime=" << limits.time[0] << " btime=" << limits.time[1]
-                  << " depth=" << limits.depth << "\n";
-        std::cout.flush();
-    }
-
     Move best_move = MOVE_NONE;
     Value best_value = -VALUE_INFINITE;
     root_score = best_value;
@@ -682,22 +673,6 @@ Move search(Position& pos, Limits& lim) {
     // Check if we have any legal moves at all - ALSO SAVE THEM FOR FALLBACK
     ExtMove initial_moves[MAX_MOVES];
     ExtMove* initial_end = generate<GEN_LEGAL>(pos, initial_moves);
-
-    // DEBUG: Log initial moves
-    {
-        int move_count = int(initial_end - initial_moves);
-        std::cout << "info string DEBUG_INITIAL_MOVES count=" << move_count << "\n";
-        std::cout.flush();
-
-        // Also log to stderr for debugging
-        std::cerr << "INITIAL_MOVES count=" << move_count << "\n";
-        if (move_count > 0) {
-            std::cerr << "  First move: from=" << int(initial_moves[0].move.from())
-                      << " to=" << int(initial_moves[0].move.to())
-                      << " raw=" << initial_moves[0].move.raw() << "\n";
-        }
-        std::cerr.flush();
-    }
 
     if (initial_moves == initial_end) {
         // No legal moves for us - we are checkmated or stalemated
@@ -711,10 +686,6 @@ Move search(Position& pos, Limits& lim) {
             std::cout << "info depth 1 score cp 0 nodes 0 nps 0" << std::endl;
             std::cout.flush();
         }
-
-        // Log to stderr for debugging
-        std::cerr << "NO LEGAL MOVES - " << (is_checkmate ? "CHECKMATE" : "STALEMATE") << "\n";
-        std::cerr.flush();
 
         return MOVE_NONE;  // No move to make
     }
@@ -926,54 +897,18 @@ Move search(Position& pos, Limits& lim) {
         uci_info(pos, root_depth, depth_best_value, nodes.load(), time_ms);
     }
 
-    // DEBUG: Log search completion
-    {
-        std::cout << "info string DEBUG_LOOP_EXIT depth=" << root_depth
-                  << " best_move_valid=" << (best_move ? 1 : 0)
-                  << " nodes=" << nodes.load() << "\n";
-        std::cout.flush();
-    }
-
     // Fallback: if best_move is still MOVE_NONE, use the first legal move we found initially
-    bool used_fallback = false;
     if (best_move == MOVE_NONE) {
-        // Use the initial_moves we saved at the start - these are guaranteed to be valid
-        std::cerr << "FALLBACK: using initial_moves[0], raw=" << initial_moves[0].move.raw() << "\n";
-        std::cerr.flush();
         best_move = initial_moves[0].move;
-        used_fallback = true;
     }
 
     // SAFETY CHECK: best_move MUST be valid at this point
-    // If not, something is very wrong and we should use a safe fallback
-    bool used_emergency = false;
     if (!best_move) {
-        // This should NEVER happen, but if it does, try to find ANY legal move
-        std::cerr << "EMERGENCY: initial move was invalid, regenerating...\n";
-        std::cerr.flush();
-
         ExtMove emergency_moves[MAX_MOVES];
         ExtMove* emergency_end = generate<GEN_LEGAL>(pos, emergency_moves);
         if (emergency_end != emergency_moves) {
             best_move = emergency_moves[0].move;
-            used_emergency = true;
-            std::cerr << "EMERGENCY: found move, raw=" << best_move.raw() << "\n";
-        } else {
-            std::cerr << "EMERGENCY: NO MOVES FOUND - returning MOVE_NONE\n";
         }
-        std::cerr.flush();
-        // If still no move, we have to return something - this is a critical error
-    }
-
-    // DEBUG: Write return info to diagnose 0000 bug
-    {
-        std::cout << "info string DEBUG_RETURN side=" << int(pos.side_to_move())
-                  << " valid=" << (best_move ? 1 : 0)
-                  << " from=" << (best_move ? int(best_move.from()) : -1)
-                  << " to=" << (best_move ? int(best_move.to()) : -1)
-                  << " fallback=" << (used_fallback ? 1 : 0)
-                  << " emergency=" << (used_emergency ? 1 : 0) << "\n";
-        std::cout.flush();
     }
 
     return best_move;

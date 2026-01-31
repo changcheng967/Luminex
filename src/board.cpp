@@ -784,14 +784,18 @@ bool Position::legal(Move m) const {
             if ((attackers_to(from) & pieces(them)) != 0) return false;
 
             if (to == (us == WHITE ? G1 : G8)) {
-                // Kingside castling: check f1/g1 squares
+                // Kingside castling: check f1/g1 squares AND rook on h1/h8
+                Square rook_sq = Square(us == WHITE ? H1 : H8);
+                if (piece_on(rook_sq) != make_piece(us, ROOK)) return false;
                 Square s1 = Square((us == WHITE ? F1 : F8));
                 Square s2 = Square((us == WHITE ? G1 : G8));
                 if ((pieces() & (square_bb(s1) | square_bb(s2))) != 0) return false;
                 if ((attackers_to(s1) & pieces(them)) != 0) return false;
                 if ((attackers_to(s2) & pieces(them)) != 0) return false;
             } else {
-                // Queenside castling: check b1/c1/d1 squares
+                // Queenside castling: check b1/c1/d1 squares AND rook on a1/a8
+                Square rook_sq = Square(us == WHITE ? A1 : A8);
+                if (piece_on(rook_sq) != make_piece(us, ROOK)) return false;
                 Square s1 = Square((us == WHITE ? C1 : C8));
                 Square s2 = Square((us == WHITE ? D1 : D8));
                 Square s3 = Square((us == WHITE ? B1 : B8));

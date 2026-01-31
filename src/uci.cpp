@@ -52,10 +52,6 @@ void handle_position(Position& pos, const std::string& cmd) {
         fen = cmd.substr(pos_idx + 8);
     }
 
-    // Debug: print the position command (truncated)
-    // std::cout << "info string pos_cmd: " << cmd.substr(0, 50) << "\n";
-    // std::cout.flush();
-
     // Trim leading/trailing whitespace
     size_t start = fen.find_first_not_of(" \t");
     if (start != std::string::npos) {
@@ -92,57 +88,43 @@ void handle_position(Position& pos, const std::string& cmd) {
             Square to = Square((move_str[3] - '1') * 8 + (move_str[2] - 'a'));
 
             uint16_t flags = MF_QUIET;
+            Color us = pos.side_to_move();
 
             // Check for promotion
             if (move_str.length() > 4) {
-                bool isCapture = pos.piece_type_on(to) != PT_NONE;
+                Piece target = pos.piece_on(to);
+                bool isCapture = (target != NO_PIECE && pos.color_of_piece(target) != us);
                 switch (move_str[4]) {
                     case 'n': flags = isCapture ? MF_CAPTURE_PROMO_KNIGHT : MF_PROMO_KNIGHT; break;
                     case 'b': flags = isCapture ? MF_CAPTURE_PROMO_BISHOP : MF_PROMO_BISHOP; break;
                     case 'r': flags = isCapture ? MF_CAPTURE_PROMO_ROOK : MF_PROMO_ROOK; break;
                     case 'q': flags = isCapture ? MF_CAPTURE_PROMO_QUEEN : MF_PROMO_QUEEN; break;
                 }
-            } else if (pos.piece_type_on(to) != PT_NONE) {
-                flags = MF_CAPTURE;
+            } else {
+                Piece target = pos.piece_on(to);
+                if (target != NO_PIECE && pos.color_of_piece(target) != us) {
+                    flags = MF_CAPTURE;
+                }
             }
 
-            // Check for castling
-            if (pos.piece_type_on(from) == KING && std::abs(file_of(to) - file_of(from)) > 1) {
+            // Check for castling - only if the piece on from is OUR king
+            if (pos.piece_on(from) == make_piece(us, KING) && std::abs(file_of(to) - file_of(from)) > 1) {
                 flags = (file_of(to) > file_of(from)) ? MF_CASTLING_KING : MF_CASTLING_QUEEN;
             }
 
             // Check for en passant
-            if (pos.piece_type_on(from) == PAWN && pos.piece_type_on(to) == PT_NONE &&
+            if (pos.piece_on(from) == make_piece(us, PAWN) && pos.piece_type_on(to) == PT_NONE &&
                 file_of(from) != file_of(to)) {
                 flags = MF_EN_PASSANT;
             }
 
             Move m(from, to, flags);
-
-            // Trust the GUI - always make the move
-            // If there's a bug in our move generation, we want to play what GUI says
             pos.do_move(m);
         }
     }
 }
 
 void handle_go(Position& pos, const std::string& cmd) {
-    // Debug log file - use process ID to separate engines
-    static FILE* uci_log = nullptr;
-    static int log_init = 0;
-    if (!log_init) {
-        // Use different files for different processes based on side to move
-        const char* fname = (pos.side_to_move() == WHITE) ?
-            "C:/Users/chang/Downloads/Luminex/luminex_white_log.txt" :
-            "C:/Users/chang/Downloads/Luminex/luminex_black_log.txt";
-        uci_log = fopen(fname, "w");
-        log_init = 1;
-    }
-    if (uci_log) {
-        fprintf(uci_log, "handle_go called: %s\n", cmd.c_str());
-        fflush(uci_log);
-    }
-
     std::istringstream ss(cmd);
     std::string token;
 
@@ -200,92 +182,22 @@ void handle_go(Position& pos, const std::string& cmd) {
         std::cout << "bestmove\n";
         std::cout.flush();
 
-        if (uci_log) {
-            fprintf(uci_log, "TERMINAL: %s legal_count=0\n", is_check ? "checkmate" : "stalemate");
-            fflush(uci_log);
-        }
         return;
     }
 
     // Run search
-    auto start = std::chrono::steady_clock::now();
-    std::cout << "info string DEBUG_BEFORE_SEARCH\n";
-    std::cout.flush();
     Move best_move = search(pos, limits);
-    auto end = std::chrono::steady_clock::now();
-    std::cout << "info string DEBUG_AFTER_SEARCH valid=" << (best_move ? "YES" : "NO") << "\n";
-    std::cout.flush();
-
-    int time_ms = std::chrono::duration_cast<std::chrono::milliseconds>(end - start).count();
 
     // Send final info
-    uci_info(pos, root_depth, root_score, nodes.load(), time_ms);
+    uci_info(pos, root_depth, root_score, nodes.load(), 0);
 
-    // DEBUG: Log what we're about to send
-    std::cerr << "UCI: Sending bestmove, valid=" << (best_move ? "YES" : "NO") << "\n";
+    // Send best move
     if (best_move) {
-        std::cerr << "  from=" << int(best_move.from()) << " to=" << int(best_move.to()) << "\n";
-    }
-    std::cerr.flush();
-
-    // Send best move with explicit flush
-    if (best_move) {
-        std::cout << "info string DEBUG_PRINTING_MOVE from=" << int(best_move.from()) << " to=" << int(best_move.to()) << " raw=" << best_move.raw() << "\n";
-        std::cout.flush();
-        std::string move_str;
-        std::ostringstream oss;
-        oss << best_move;
-        move_str = oss.str();
-        std::cout << "info string DEBUG_MOVE_STRING=" << move_str << "\n";
-        std::cout.flush();
-
-        // Also log to file
-        if (uci_log) {
-            fprintf(uci_log, "BESTMOVE valid=1 from=%d to=%d raw=%d str=%s\n",
-                    int(best_move.from()), int(best_move.to()), best_move.raw(), move_str.c_str());
-            fflush(uci_log);
-        }
-
         std::cout << "bestmove " << best_move << "\n";
     } else {
-        std::cout << "info string DEBUG_PRINTING_MOVE INVALID\n";
-        std::cout.flush();
-
-        // Also log to file
-        if (uci_log) {
-            fprintf(uci_log, "BESTMOVE valid=0 (will send 0000)\n");
-            fflush(uci_log);
-        }
-
         std::cout << "bestmove 0000\n";
     }
     std::cout.flush();
-
-    // Log to file
-    if (uci_log) {
-        fprintf(uci_log, "SENT bestmove\n");
-        fflush(uci_log);
-    }
-
-    // EXTRA DEBUG: If we sent 0000, this is critical - dump more info
-    if (!best_move) {
-        fprintf(uci_log, "CRITICAL: best_move is 0! Checking position...\n");
-        fflush(uci_log);
-
-        // Try to generate moves and see what we get
-        ExtMove check_moves[MAX_MOVES];
-        ExtMove* check_end = generate<GEN_LEGAL>(pos, check_moves);
-        int check_count = int(check_end - check_moves);
-        fprintf(uci_log, "CRITICAL: Generated %d legal moves\n", check_count);
-        fflush(uci_log);
-
-        if (check_count > 0) {
-            fprintf(uci_log, "CRITICAL: First move would be: from=%d to=%d raw=%d\n",
-                    int(check_moves[0].move.from()), int(check_moves[0].move.to()),
-                    check_moves[0].move.raw());
-            fflush(uci_log);
-        }
-    }
 }
 
 void handle_setoption(const std::string& cmd) {

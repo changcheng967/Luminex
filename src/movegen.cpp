@@ -264,10 +264,6 @@ ExtMove* generate(const Position& pos, ExtMove* moveList) {
             bool is_legal = pos.legal(it->move);
             if (is_legal) {
                 *(legal_end++) = *it;
-            } else {
-                // DEBUG: log filtered move
-                std::cerr << "FILTERED: from=" << int(it->move.from()) << " to=" << int(it->move.to()) << "\n";
-                std::cerr.flush();
             }
         }
         return legal_end;
