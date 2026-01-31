@@ -181,7 +181,7 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
     ++nodes;
 
     // Check time every 64 nodes
-    if ((nodes & 1023) == 0) {
+    if ((nodes & 2047) == 0) {
         check_time();
     }
 
@@ -263,7 +263,7 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
     const bool pv_node = (beta - alpha > 1);
 
     // Check time every 64 nodes for better time control
-    if ((nodes & 1023) == 0) {
+    if ((nodes & 2047) == 0) {
         check_time();
     }
 
