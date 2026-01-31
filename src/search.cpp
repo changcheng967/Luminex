@@ -485,7 +485,7 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
         if (!pv_node && ss->ply > 0 && !pos.is_check() &&
             !m.is_capture() && !m.is_promotion() && !m.is_castling()) {
             // Ultra aggressive futility margin
-            int margin = depth * 700 + (ss->improving ? 0 : 200);
+            int margin = depth * 900 + (ss->improving ? 0 : 200);
 
             // Check if move is futile (eval + margin < alpha)
             if (eval + margin < alpha) {
