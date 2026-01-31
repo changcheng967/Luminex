@@ -541,12 +541,15 @@ void Position::do_move(Move m) {
     // Remove castling rights if rook moves or is captured
     if (pt == KING) {
         st_->castling_rights &= ~(us == WHITE ? (WHITE_KINGSIDE | WHITE_QUEENSIDE) : (BLACK_KINGSIDE | BLACK_QUEENSIDE));
+        castling_rights_[us] = 0;
     }
     if (from == (us == WHITE ? H1 : H8) || to == (us == WHITE ? H1 : H8)) {
         st_->castling_rights &= ~(us == WHITE ? WHITE_KINGSIDE : BLACK_KINGSIDE);
+        castling_rights_[us] &= ~(us == WHITE ? WHITE_KINGSIDE : BLACK_KINGSIDE);
     }
     if (from == (us == WHITE ? A1 : A8) || to == (us == WHITE ? A1 : A8)) {
         st_->castling_rights &= ~(us == WHITE ? WHITE_QUEENSIDE : BLACK_QUEENSIDE);
+        castling_rights_[us] &= ~(us == WHITE ? WHITE_QUEENSIDE : BLACK_QUEENSIDE);
     }
 
     // Switch side
