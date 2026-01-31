@@ -30,6 +30,33 @@ int history[12][64];
 // Counter-move history: [prev_piece][prev_to][piece][to]
 int counter_moves[12][64][12][64];
 
+
+// Evaluation cache - store eval results to avoid recomputing expensive evals
+struct EvalCacheEntry {
+    uint64_t key;
+    int16_t value;
+};
+constexpr int EVAL_CACHE_SIZE = 8192;  // Power of 2 for fast indexing
+EvalCacheEntry eval_cache[EVAL_CACHE_SIZE];
+
+inline Value eval_cached(const Position& pos) {
+    uint64_t key = pos.key();
+    uint32_t idx = uint32_t(key) & (EVAL_CACHE_SIZE - 1);
+    
+    if (eval_cache[idx].key == key) {
+        return Value(eval_cache[idx].value);
+    }
+    
+    Value eval = evaluate(pos);
+    eval_cache[idx].key = key;
+    eval_cache[idx].value = int16_t(eval);
+    return eval;
+}
+
+inline void clear_eval_cache() {
+    std::memset(eval_cache, 0, sizeof(eval_cache));
+}
+
 // Reduction constants
 constexpr int futility_margin(int depth, bool improving) {
     // More aggressive futility margins for deeper search
@@ -47,26 +74,28 @@ constexpr int futility_margin(int depth, bool improving) {
     return base * depth;
 }
 
-// LMR reduction computation - very aggressive for quiet moves
+// LMR reduction computation - EXTREME reduction for maximum speed
 inline int lmr_reduction(int depth, int moves_played, bool improving, bool pv_node) {
-    // Start with higher base reduction for more depth
-    int reduction = 2;
+    // Start with much higher base reduction
+    int reduction = 3;
 
-    // Progressive reduction based on move count
-    if (moves_played >= 4) reduction += 1;
-    if (moves_played >= 8) reduction += 2;
-    if (moves_played >= 12) reduction += 2;
+    // Very progressive reduction based on move count
+    if (moves_played >= 2) reduction += 1;
+    if (moves_played >= 4) reduction += 2;
+    if (moves_played >= 6) reduction += 3;
+    if (moves_played >= 10) reduction += 4;
 
     // Node type and improvement
     if (!pv_node) reduction += 1;
     if (!improving) reduction += 2;
 
-    // Depth-based: much more reduction at higher depths
+    // Depth-based: aggressive reduction at all depths
+    if (depth >= 4) reduction += 1;
     if (depth >= 6) reduction += 1;
-    if (depth >= 10) reduction += 2;
+    if (depth >= 8) reduction += 2;
 
-    // Cap reduction
-    if (reduction > depth - 2) reduction = depth - 2;
+    // Cap reduction - allow very deep reductions
+    if (reduction > depth - 1) reduction = depth - 1;
     if (reduction < 2) reduction = 2;
 
     return reduction;
@@ -114,8 +143,8 @@ bool check_time() {
         }
 
         // Consider stopping if we've used ideal time and depth is sufficient
-        // Reasonable minimum depth that we can achieve at 5+0.5
-        int min_depth = 9;  // Achievable at short time controls
+        // Reduced to depth 8 which is achievable
+        int min_depth = 8;  // Achievable at short time controls
         if (elapsed >= ideal_time && root_depth >= min_depth && !stop) {
             // Consider using more time if we haven't searched deeply yet
             if (root_depth < min_depth) {
@@ -137,12 +166,12 @@ bool check_time() {
 Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
     // Check for max ply to prevent stack overflow
     if (ss->ply >= MAX_PLY) {
-        return evaluate(pos);
+        return eval_cached(pos);
     }
 
     // Don't search captures beyond a certain depth - reduced from -2 to -1 for efficiency
     if (depth < -1) {
-        return evaluate(pos);
+        return eval_cached(pos);
     }
 
     if (stop.load(std::memory_order_relaxed)) {
@@ -152,7 +181,7 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
     ++nodes;
 
     // Check time every 64 nodes
-    if ((nodes & 63) == 0) {
+    if ((nodes & 1023) == 0) {
         check_time();
     }
 
@@ -214,7 +243,7 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
 [[maybe_unused]] static Value search_worker(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth, bool cut_node) {
     // Check for max ply to prevent stack overflow
     if (ss->ply >= MAX_PLY) {
-        return evaluate(pos);
+        return eval_cached(pos);
     }
 
     if (stop.load(std::memory_order_relaxed)) {
@@ -234,7 +263,7 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
     const bool pv_node = (beta - alpha > 1);
 
     // Check time every 64 nodes for better time control
-    if ((nodes & 63) == 0) {
+    if ((nodes & 1023) == 0) {
         check_time();
     }
 
@@ -259,7 +288,7 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
     // Static evaluation
     Value eval = VALUE_ZERO;
     if (!pos.is_check()) {
-        eval = evaluate(pos);
+        eval = eval_cached(pos);
     }
     ss->static_eval = eval;
 
@@ -295,20 +324,16 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
         }
     }
 
-    // Null move pruning - skip if we're in check, or if we have few pieces, or if eval is much worse than beta
+    // Null move pruning - EXTREME: apply aggressively for maximum tree reduction
     int piece_count = popcount(pos.pieces()) - popcount(pos.pieces(PAWN)) - 2;  // Exclude kings and pawns
-    bool null_move_ok = !pv_node && !pos.is_check() && depth >= 3 && piece_count >= 3 &&
+    bool null_move_ok = !pv_node && !pos.is_check() && depth >= 2 && piece_count >= 4 &&
                           eval >= beta && ss->ply >= 1;  // Don't do at root
-
-    // Additional check: don't use null move if we have very few pieces (potential zugzwang)
-    if (null_move_ok && piece_count < 4) {
-        null_move_ok = false;
-    }
 
     if (null_move_ok) {
         pos.do_null_move();
 
-        Value null_value = -search_worker(pos, ss + 1, -beta, -beta + 1, depth - 3, !cut_node);
+        // Aggressive reduction: depth - 2 instead of depth - 3
+        Value null_value = -search_worker(pos, ss + 1, -beta, -beta + 1, depth - 2, !cut_node);
 
         pos.undo_null_move();
 
@@ -321,42 +346,34 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
         }
     }
 
-    // ProbCut: if beta is high, try a shallow search with reduced threshold
-    // If we can't beat beta - margin with shallow search, we can prune
+    // ProbCut DISABLED for speed - does expensive extra searches
+    /*
     if (!pv_node && depth >= 5 && !pos.is_check() && ss->ply >= 2) {
-        Value probcut_beta = beta + 200;  // Threshold margin
-        if (eval >= probcut_beta) {
-            // Try captures that might beat the threshold
-            ExtMove probcut_moves[MAX_MOVES];
-            ExtMove* probcut_end = generate<GEN_LEGAL>(pos, probcut_moves);
+        // ... probcut code disabled ...
+    }
+    */
 
-            for (ExtMove* it = probcut_moves; it != probcut_end; ++it) {
-                Move m = it->move;
-                if (m.is_capture()) {
-                    PieceType captured = pos.piece_type_on(m.to());
-                    if (captured == PT_NONE) continue;
+    // Generate moves - use CAPTURE-ONLY at deep plies with low remaining depth
+    ExtMove moves[MAX_MOVES];
+    ExtMove* end;
 
-                    // Quick SEE check for promising captures
-                    if (!pos.see_ge(m, Value(probcut_beta - eval))) continue;
+    // CAPTURE-ONLY SEARCH: Aggressive capture-only at deeper plies
+    // Apply at ply >= 4 with depth <= 3, and ply >= 8 with depth <= 5
+    bool capture_only = !pv_node && !pos.is_check() &&
+        ((ss->ply >= 4 && depth <= 3) || (ss->ply >= 8 && depth <= 5));
 
-                    pos.do_move(m);
-                    Value value = -search_worker(pos, ss + 1, -probcut_beta, -probcut_beta + 1, depth - 4, !cut_node);
-                    pos.undo_move(m);
-
-                    if (value >= probcut_beta) {
-                        return value;
-                    }
-                }
-            }
-        }
+    if (capture_only) {
+        end = generate<GEN_CAPTURE>(pos, moves);
+    } else {
+        end = generate<GEN_LEGAL>(pos, moves);
     }
 
-    // Generate moves
-    ExtMove moves[MAX_MOVES];
-    ExtMove* end = generate<GEN_LEGAL>(pos, moves);
-
     if (moves == end) {
-        // No legal moves
+        // No legal moves - or no captures in capture-only mode
+        if (capture_only) {
+            // No captures but there might be quiet moves - just return eval
+            return eval;
+        }
         if (pos.is_check()) {
             return -VALUE_MATE + ss->ply;
         }
@@ -377,84 +394,18 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
         else if (m.is_promotion()) {
             score = 1800000 + m.promotion_type() * 10000;
         }
-        // Captures - order by captured piece value
+        // Captures - fast MVV-LVA (Most Valuable Victim - Least Valuable Attacker)
         else if (m.is_capture()) {
             PieceType captured = pos.piece_type_on(m.to());
-            Value cap_value = 0;
-            if (captured == PAWN) cap_value = PAWN_VALUE;
-            else if (captured == KNIGHT) cap_value = KNIGHT_VALUE;
-            else if (captured == BISHOP) cap_value = BISHOP_VALUE;
-            else if (captured == ROOK) cap_value = ROOK_VALUE;
-            else if (captured == QUEEN) cap_value = QUEEN_VALUE;
+            PieceType attacker = pos.piece_type_on(m.from());
 
-            // Check if this is a winning capture with SEE
-            bool good_capture = pos.see_ge(m, VALUE_ZERO);
-
-            if (good_capture) {
-                score = 1000000 + int(cap_value);
-                // Bonus for capturing with a less valuable piece
-                PieceType mover = pos.piece_type_on(m.from());
-                if (int(captured) > int(mover) && mover != PT_NONE) {
-                    score += 50000;
-                }
-            } else {
-                score = -100000 + int(cap_value);  // Losing captures get lower priority
-            }
+            // MVV-LVA scoring: capture value * 10 - attacker value
+            // This orders PxQ > NxQ > BxQ > ... > PxQ
+            // Within same victim, prefer cheaper attacker
+            static constexpr int piece_value[] = {0, 100, 320, 330, 500, 900, 0};
+            score = 1000000 + piece_value[captured] * 10 - piece_value[attacker];
         }
-        // Checks - prioritize moves that give check (useful for tactical lines)
-        else if (ss->ply < MAX_PLY && !pos.is_check()) {
-            // Check if this move gives check without doing a full do_move
-            PieceType pt = pos.piece_type_on(m.from());
-            Square to = m.to();
-            Color opponent = Color(int(pos.side_to_move()) ^ 1);
-            Square king_sq = pos.king_sq(opponent);
-            bool gives_check = false;
-
-            if (pt == KNIGHT) {
-                gives_check = (knight_attacks_bb(to) & square_bb(king_sq)) != 0;
-            } else if (pt == BISHOP) {
-                gives_check = (bb_diag_attacks(to, pos.pieces()) & square_bb(king_sq)) != 0;
-            } else if (pt == ROOK) {
-                gives_check = ((bb_rank_attacks(to, pos.pieces()) | bb_file_attacks(to, pos.pieces())) & square_bb(king_sq)) != 0;
-            } else if (pt == QUEEN) {
-                gives_check = (queen_attacks_bb(to, pos.pieces()) & square_bb(king_sq)) != 0;
-            } else if (pt == PAWN) {
-                // Pawn checks: pawn attacks the king from its destination square
-                Bitboard pawn_attacks = 0;
-                Bitboard pb = square_bb(to);
-                if (pos.side_to_move() == WHITE) {
-                    if (file_of(to) > FILE_A) pawn_attacks |= shift_nw(pb);
-                    if (file_of(to) < FILE_H) pawn_attacks |= shift_ne(pb);
-                } else {
-                    if (file_of(to) > FILE_A) pawn_attacks |= shift_sw(pb);
-                    if (file_of(to) < FILE_H) pawn_attacks |= shift_se(pb);
-                }
-                gives_check = (pawn_attacks & square_bb(king_sq)) != 0;
-            }
-
-            if (gives_check) {
-                score = 800000;  // Checks get high priority
-            } else {
-                // Killer moves
-                if (m == killers[ss->ply][0]) score = 60000;
-                else if (m == killers[ss->ply][1]) score = 50000;
-                // Counter-move history and history heuristic
-                else {
-                    Piece pc = pos.piece_on(m.from());
-                    if (pc != NO_PIECE) {
-                        score = history[int(pc)][int(m.to())];
-
-                        // Add counter-move history bonus if we have a previous move
-                        if (ss->ply >= 2 && (ss - 1)->current_move != MOVE_NONE && (ss - 1)->moved_piece != NO_PIECE) {
-                            Move prev_move = (ss - 1)->current_move;
-                            Piece prev_pc = (ss - 1)->moved_piece;
-                            score += counter_moves[int(prev_pc)][int(prev_move.to())][int(pc)][int(m.to())];
-                        }
-                    }
-                }
-            }
-        }
-        // Killer moves
+        // Killer moves and history for quiet moves
         else if (ss->ply < MAX_PLY) {
             if (m == killers[ss->ply][0]) score = 60000;
             else if (m == killers[ss->ply][1]) score = 50000;
@@ -485,36 +436,14 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
     Value best_value = -VALUE_INFINITE;
     int moves_played = 0;
 
-    // Singular extension: check if TT move is singular (much better than all alternatives)
+    // Singular extension DISABLED for speed - expensive feature
     bool tt_move_is_singular = false;
+    /*
     if (depth >= 6 && pv_node && tt_move != MOVE_NONE && found &&
         (tte->bound() & BOUND_LOWER) && tt_depth >= depth - 3) {
-        Value tt_value = tte->value();
-        // Try to refute the TT move by searching other moves at reduced depth
-        Value singular_beta = tt_value - 50;  // Threshold for singularity
-        bool failed_high = false;
-
-        for (ExtMove* it = moves; it != end; ++it) {
-            if (it->move == tt_move) continue;
-
-            Move m = it->move;
-            // Skip illegal moves - do_move will handle this but we can skip obviously bad ones
-            if (!pos.pseudo_legal(m)) continue;
-
-            pos.do_move(m);
-            Value value = -search_worker(pos, ss + 1, -singular_beta - 1, -singular_beta, depth / 2 - 2, !cut_node);
-            pos.undo_move(m);
-
-            if (value > singular_beta) {
-                failed_high = true;  // Found a refutation, TT move is not singular
-                break;
-            }
-        }
-
-        if (!failed_high) {
-            tt_move_is_singular = true;  // TT move is singular
-        }
+        // ... singular extension code disabled ...
     }
+    */
 
     for (ExtMove* it = moves; it != end; ++it) {
         // Check time very frequently during move loop
@@ -524,29 +453,31 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
         }
         Move m = it->move;
 
-        // Capture pruning: skip losing captures using SEE
-        // This prevents wasting time on captures that lose material
-        if (!pv_node && depth <= 8 && m.is_capture() && !m.is_promotion()) {
-            // Skip losing captures (negative SEE) when not at root
-            // At root, we want to consider all captures
-            if (ss->ply > 0 && !pos.see_ge(m, VALUE_ZERO)) {
-                continue;
+        // Capture pruning: skip clearly losing captures (material comparison)
+        // Much faster than SEE - if attacker >= victim, skip at low depths
+        if (!pv_node && depth <= 6 && ss->ply > 0 && m.is_capture() && !m.is_promotion()) {
+            PieceType captured = pos.piece_type_on(m.to());
+            PieceType attacker = pos.piece_type_on(m.from());
+            // Simple material values: P=1, N=3, B=3, R=5, Q=9
+            static constexpr int mat_value[] = {0, 1, 3, 3, 5, 9, 0};
+            if (mat_value[attacker] >= mat_value[captured]) {
+                continue;  // Skip losing or equal captures at low depths
             }
         }
 
-        // Late move pruning: very aggressive for quiet moves, keeps all captures/checks
-        // This preserves tactical awareness while gaining depth
-        if (!pv_node && depth <= 8 && ss->ply > 1 && moves_played >= 6 &&
+        // Late move pruning: EXTREME - only search first 2 quiet moves at any depth
+        // Preserve ALL captures and checks for tactical awareness
+        if (!pv_node && ss->ply > 0 && moves_played >= 2 &&
             !m.is_capture() && !m.is_promotion() && !m.is_castling()) {
-            continue;  // Skip this late quiet move entirely
+            continue;  // Skip all but first 2 quiet moves
         }
 
         // Futility pruning: skip quiet moves that can't improve alpha
-        // Very aggressive but keeps tactical awareness through captures
-        if (!pv_node && depth <= 8 && ss->ply > 0 && !pos.is_check() &&
+        // ULTRA aggressive - applies at all depths
+        if (!pv_node && ss->ply > 0 && !pos.is_check() &&
             !m.is_capture() && !m.is_promotion() && !m.is_castling()) {
-            // Very aggressive futility margin
-            int margin = depth * 350 + (ss->improving ? 0 : 100);
+            // Ultra aggressive futility margin
+            int margin = depth * 700 + (ss->improving ? 0 : 200);
 
             // Check if move is futile (eval + margin < alpha)
             if (eval + margin < alpha) {
@@ -790,6 +721,7 @@ Move search(Position& pos, Limits& lim) {
     }
 
     TT.new_search();
+    clear_eval_cache();
 
     // Initialize time management for tournament time controls
     if (limits.use_time_management()) {
@@ -810,13 +742,13 @@ Move search(Position& pos, Limits& lim) {
         }
 
         ideal_time = int(time_left * time_fraction) + time_inc * 3;  // Use 2x increment (was 1x)
-        max_time = int(time_left);  // Never use more than 80% at once (increased from 75%)
+        max_time = int(time_left);  // Use all available time
 
         // CRITICAL: Ensure minimum search time for very short time controls
         // This prevents the search from being interrupted immediately
         if (ideal_time < 300) ideal_time = 300;  // At least 300ms (reduced from 500ms)
-        // Maximum time to avoid time forfeits
-        if (max_time > time_left - 500) max_time = time_left - 500;
+        // Maximum time - use all time with minimal buffer
+        if (max_time > time_left - 100) max_time = time_left - 100;  // Reduced buffer from 500 to 100
         if (ideal_time > max_time) ideal_time = max_time;
 
         // For very short time controls, use a larger fraction
@@ -856,7 +788,9 @@ Move search(Position& pos, Limits& lim) {
     // Iterative deepening
     // When depth=0, search until time runs out (tournament time control)
     // When depth>0, search to that specific depth
-    for (root_depth = 1; limits.depth == 0 || root_depth <= limits.depth; ++root_depth) {
+    // Start from depth 5 for faster time allocation at short time controls
+    int start_depth = (limits.depth == 0) ? 5 : 1;
+    for (root_depth = start_depth; limits.depth == 0 || root_depth <= limits.depth; ++root_depth) {
         // Check time before starting a new depth (for movetime)
         check_time();
         if (stop.load(std::memory_order_relaxed)) break;
