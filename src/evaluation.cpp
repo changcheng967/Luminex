@@ -330,8 +330,8 @@ Value evaluate(const Position& pos) {
             }
 
             if (is_center_pawn) {
-                mg_score += sign * 30;
-                eg_score += sign * 20;
+                mg_score += sign * 50;
+                eg_score += sign * 30;
 
                 // Extra bonus if the pawn is protected (not isolated)
                 if (has_left_support || has_right_support) {
@@ -436,7 +436,7 @@ Value evaluate(const Position& pos) {
                 if (f > FILE_A) adjacent_passed |= passed_pawns & file_bb(File(f - 1));
                 if (f < FILE_H) adjacent_passed |= passed_pawns & file_bb(File(f + 1));
                 if (adjacent_passed) {
-                    mg_score += sign * 30;
+                    mg_score += sign * 50;
                     eg_score += sign * 40;
                 }
 
@@ -605,7 +605,7 @@ Value evaluate(const Position& pos) {
             Bitboard file_pawns = pos.pieces(PAWN) & file_bb(f);
             if (!file_pawns) {
                 // Open file - very valuable
-                mg_score += sign * 30;
+                mg_score += sign * 50;
                 eg_score += sign * 50;
             } else {
                 // Check if only enemy pawns on this file (semi-open)
@@ -617,11 +617,11 @@ Value evaluate(const Position& pos) {
                 }
             }
 
-            // Rook on 7th rank bonus (for white) or 2nd rank (for black)
+            // Rook on 7th rank bonus - increased or 2nd rank (for black)
             Rank r = rank_of(sq);
             if ((c == WHITE && r == RANK_7) || (c == BLACK && r == RANK_2)) {
-                mg_score += sign * 30;
-                eg_score += sign * 20;
+                mg_score += sign * 50;
+                eg_score += sign * 30;
             }
         }
 
@@ -747,12 +747,12 @@ Value evaluate(const Position& pos) {
 
     // Bishop pair bonus
     if (bishop_count[WHITE] >= 2) {
-        mg_score += 50;
-        eg_score += 70;
+        mg_score += 75;
+        eg_score += 100;
     }
     if (bishop_count[BLACK] >= 2) {
-        mg_score -= 50;
-        eg_score -= 70;
+        mg_score -= 75;
+        eg_score -= 100;
     }
 
     // Bishop vs Knight imbalance: bishops are better in open positions
@@ -844,7 +844,7 @@ Value evaluate(const Position& pos) {
 
         // Bonus for space advantage
         if (controlled_squares >= 5) {
-            mg_score += sign * 30;
+            mg_score += sign * 50;
             eg_score += sign * 10;
         } else if (controlled_squares >= 3) {
             mg_score += sign * 15;
@@ -1136,7 +1136,7 @@ Value evaluate(const Position& pos) {
 
         if (has_castled) {
             mg_score += sign * 50;
-            eg_score += sign * 20;
+            eg_score += sign * 30;
         }
 
         // Lost castling rights without castling penalty
@@ -1660,7 +1660,7 @@ Value evaluate(const Position& pos) {
 
             if (connected) {
                 mg_score += sign * 30;  // Significant bonus in middlegame
-                eg_score += sign * 20;
+                eg_score += sign * 30;
             }
         }
     }
