@@ -271,6 +271,26 @@ Value evaluate(const Position& pos) {
     int king_attackers[2] = {0, 0};
     Square king_sq[2] = {pos.king_sq(WHITE), pos.king_sq(BLACK)};
 
+    // Pre-compute pawn file counts for O(n) instead of O(n²) evaluation
+    int pawn_count_by_file[2][8] = {{0}};
+    for (int c_idx = 0; c_idx < 2; ++c_idx) {
+        Color c = Color(c_idx);
+        Bitboard pawns = pos.pieces(c, PAWN);
+        while (pawns) {
+            Square sq = pop_lsb(pawns);
+            File f = file_of(sq);
+            pawn_count_by_file[c_idx][f]++;
+        }
+    }
+
+    // Pre-compute which files have pawns for isolated pawn detection
+    bool file_has_pawn[2][8] = {{0}};
+    for (int c_idx = 0; c_idx < 2; ++c_idx) {
+        for (int f = FILE_A; f <= FILE_H; ++f) {
+            file_has_pawn[c_idx][f] = (pawn_count_by_file[c_idx][f] > 0);
+        }
+    }
+
     // Material and position evaluation
     for (int c_idx = 0; c_idx < 2; ++c_idx) {
         Color c = Color(c_idx);
@@ -286,20 +306,17 @@ Value evaluate(const Position& pos) {
             mg_score += sign * PST_MG_TABLE[int(c)][int(PAWN)][int(sq)];
             eg_score += sign * PST_EG_TABLE[int(c)][int(PAWN)][int(sq)];
 
-            // Doubled pawn penalty
+            // Doubled pawn penalty - O(1) lookup
             File f = file_of(sq);
-            Bitboard file_pawns = pos.pieces(c, PAWN) & file_bb(f);
-            if (popcount(file_pawns) > 1) {
+            if (pawn_count_by_file[c_idx][f] > 1) {
                 mg_score -= sign * 10;
                 eg_score -= sign * 20;
             }
 
-            // Isolated pawn penalty
-            Bitboard adjacent_files = 0;
-            if (f > FILE_A) adjacent_files |= file_bb(File(f - 1));
-            if (f < FILE_H) adjacent_files |= file_bb(File(f + 1));
-            Bitboard friendly_pawns_adjacent = pos.pieces(c, PAWN) & adjacent_files;
-            if (!friendly_pawns_adjacent) {
+            // Isolated pawn penalty - O(1) lookup
+            bool has_left_support = (f > FILE_A && file_has_pawn[c_idx][f - 1]);
+            bool has_right_support = (f < FILE_H && file_has_pawn[c_idx][f + 1]);
+            if (!has_left_support && !has_right_support) {
                 mg_score -= sign * 20;
                 eg_score -= sign * 20;
             }
@@ -317,7 +334,7 @@ Value evaluate(const Position& pos) {
                 eg_score += sign * 20;
 
                 // Extra bonus if the pawn is protected (not isolated)
-                if (friendly_pawns_adjacent) {
+                if (has_left_support || has_right_support) {
                     mg_score += sign * 15;
                     eg_score += sign * 10;
                 }
