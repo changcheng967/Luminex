@@ -270,14 +270,22 @@ ExtMove* generate_moves(const Position& pos, ExtMove* moveList) {
                 // Kingside
                 CastlingRight king_side = us == WHITE ? WHITE_KINGSIDE : BLACK_KINGSIDE;
                 if (pos.castling_allowed(us, king_side)) {
-                    Square to = Square(us == WHITE ? G1 : G8);
-                    *moveList++ = Move(ksq, to, MF_CASTLING_KING);
+                    // CRITICAL: Verify rook is present before generating castling
+                    Square rook_sq = Square(us == WHITE ? H1 : H8);
+                    if (pos.piece_on(rook_sq) == make_piece(us, ROOK)) {
+                        Square to = Square(us == WHITE ? G1 : G8);
+                        *moveList++ = Move(ksq, to, MF_CASTLING_KING);
+                    }
                 }
                 // Queenside
                 CastlingRight queen_side = us == WHITE ? WHITE_QUEENSIDE : BLACK_QUEENSIDE;
                 if (pos.castling_allowed(us, queen_side)) {
-                    Square to = Square(us == WHITE ? C1 : C8);
-                    *moveList++ = Move(ksq, to, MF_CASTLING_QUEEN);
+                    // CRITICAL: Verify rook is present before generating castling
+                    Square rook_sq = Square(us == WHITE ? A1 : A8);
+                    if (pos.piece_on(rook_sq) == make_piece(us, ROOK)) {
+                        Square to = Square(us == WHITE ? C1 : C8);
+                        *moveList++ = Move(ksq, to, MF_CASTLING_QUEEN);
+                    }
                 }
             }
         }

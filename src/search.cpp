@@ -272,7 +272,17 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
     bool found;
     TTEntry* tte = TT.probe(pos.key(), found);
 
-    Move tt_move = found ? tte->move() : MOVE_NONE;
+    // CRITICAL: Validate TT move before using it
+    Move tt_move = MOVE_NONE;
+    if (found) {
+        Move m = tte->move();
+        // Check bounds and pseudo-legal before using TT move
+        if (m && m.from() < SQUARE_NONE && m.to() < SQUARE_NONE) {
+            if (pos.pseudo_legal(m)) {
+                tt_move = m;
+            }
+        }
+    }
     Value tt_value = found ? tte->value() : VALUE_ZERO;
     Depth tt_depth = found ? tte->depth() : DEPTH_ZERO;
 
@@ -906,6 +916,27 @@ Move search(Position& pos, Limits& lim) {
         if (emergency_end != emergency_moves) {
             best_move = emergency_moves[0].move;
         }
+    }
+
+    // CRITICAL: Verify board state is consistent after search
+    // If board is corrupted, we might send illegal moves
+    ExtMove verify_moves[MAX_MOVES];
+    ExtMove* verify_end = generate<GEN_LEGAL>(pos, verify_moves);
+    bool best_move_in_legal = false;
+    for (ExtMove* it = verify_moves; it != verify_end; ++it) {
+        if (it->move == best_move) {
+            best_move_in_legal = true;
+            break;
+        }
+    }
+
+    if (!best_move_in_legal && verify_end != verify_moves) {
+        // Board state changed or best_move is no longer legal - use first legal move
+        std::cerr << "\n=== BOARD STATE CHANGED AFTER SEARCH ===\n";
+        std::cerr << "Best move " << best_move << " not in current legal moves!\n";
+        std::cerr << "Using first legal move instead.\n";
+        std::cerr << "======================================\n";
+        best_move = verify_moves[0].move;
     }
 
     return best_move;

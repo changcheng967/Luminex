@@ -598,7 +598,10 @@ void Position::do_move(Move m) {
             rfrom = us == WHITE ? A1 : A8;
             rto = us == WHITE ? D1 : D8;
         }
+        // CRITICAL: Update Zobrist hash for rook position change
+        st_->key ^= Zobrist::psq[int(us)][int(ROOK)][int(rfrom)];
         move_piece(rfrom, rto);
+        st_->key ^= Zobrist::psq[int(us)][int(ROOK)][int(rto)];
     }
 
     // Handle en passant
@@ -1110,8 +1113,13 @@ bool Position::pseudo_legal(const Move m) const {
     // Castling
     if (m.is_castling()) {
         if (pt != KING) return false;
-        // TODO: Check castling rights
-        return true;
+        // CRITICAL: King must be on starting square for castling to be valid
+        Square ksq = king_square[side_to_move_];
+        if (from != ksq) return false;  // From must be king's current square
+        // Verify move goes to correct castling destination
+        if (to == Square(side_to_move_ == WHITE ? G1 : G8)) return true;  // Kingside
+        if (to == Square(side_to_move_ == WHITE ? C1 : C8)) return true;  // Queenside
+        return false;  // Invalid castling destination
     }
 
     // En passant
