@@ -16,20 +16,23 @@
 | 3.11.0 | 0-20 (3 illegal moves) | Enhanced board validation | Reduced to 15% illegal moves |
 | 3.12.0 | 0-5 (0 illegal moves) | Fixed Zobrist implementation | No illegal moves! But plays very weakly |
 | 3.13.0 | 0-20 (5 illegal moves) | Fixed aggressive pruning, LMR | Regressed! New illegal moves appeared |
+| 3.13.1 | 0-20 (4 illegal moves) | Fixed castling hash update, TT validation | Castling bugs eliminated! New: sliding piece corruption |
 
 ## Illegal Move History
-- Previous fixes resolved most illegal moves
-- **3.12.0**: Fixed Zobrist hash implementation - 0 illegal moves in 5 games!
-- **3.13.0**: New illegal moves: a1e1 (castling bug), f1h1, h3h4, e7f6, h8a8
-- Root cause: Move generation or board corruption during search
+- **3.13.0**: Castling bugs (a1e1, h8a8, f1h1)
+- **3.13.1**: Castling bugs FIXED! New issues: sliding pieces (a8a1, d6h2)
+  - Castling fix: Zobrist hash update for rook position
+  - Castling fix: Rook verification before generating castling
+  - Castling fix: Pseudo-legal validation ensures correct from-square
+  - New bug: Sliding pieces moving through blockers (bitboard corruption)
 
 ## Known Issues
-1. **Move generation bugs** - Illegal moves like a1e1 suggest castling/encoding issues
-2. **Very weak play** - Even without illegal moves, engine gets checkmated quickly
-3. **Board corruption during search** - Validation catches many corrupt positions
+1. **Sliding piece corruption** - a8a1, d6h2 suggest occupied bitboard is wrong
+2. **Board state desync** - Internal board doesn't match GUI state
+3. **Very weak play** - Gets checkmated quickly by Fruit
 
 ## Next Steps
-1. Fix move generation bugs (castling, move encoding)
-2. Investigate why engine plays so weakly
+1. Fix bitboard corruption in sliding piece attacks
+2. Investigate do_move/undo_move for state corruption
 3. Beat Fruit 2.1 in 20-game match
 
