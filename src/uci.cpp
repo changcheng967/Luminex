@@ -6,13 +6,6 @@
 #include <sstream>
 #include <string>
 
-namespace {
-// Helper to check if flags represent a promotion with capture
-bool is_promotion_capture(uint16_t flags) {
-    return (flags & 0xC000) == 0xC000;  // 0xCxxx - 0xFxxx
-}
-}
-
 namespace luminex {
 
 // Position for UCI
@@ -142,7 +135,7 @@ void handle_position(Position& pos, const std::string& cmd) {
             Piece to_piece_before = pos.piece_on(to);
             if (to_piece_before != NO_PIECE && pos.color_of_piece(to_piece_before) != us) {
                 // Enemy piece at destination - should be CAPTURE flag
-                if (flags != MF_CAPTURE && (flags & 0xF000) != MF_CAPTURE && !is_promotion_capture(flags)) {
+                if (flags != MF_CAPTURE && (flags & 0xF000) != MF_CAPTURE) {
                     flags = MF_CAPTURE;  // AUTO-FIX: Set correct flag
                 }
             } else if (to_piece_before != NO_PIECE && pos.color_of_piece(to_piece_before) == us) {
@@ -223,6 +216,19 @@ void handle_go(Position& pos, const std::string& cmd) {
 
     // Send final info
     uci_info(pos, root_depth, root_score, nodes.load(), 0);
+
+    // CRITICAL: Validate best_move is LEGAL before sending
+    // This prevents illegal moves from being sent to the GUI
+    if (best_move && !pos.legal(best_move)) {
+        // Move is not legal - find first legal move instead
+        ExtMove legal_moves[256];
+        ExtMove* legal_end = generate_legals(pos, legal_moves);
+        if (legal_end != legal_moves) {
+            best_move = legal_moves[0].move;
+        } else {
+            best_move = MOVE_NONE;  // No legal moves - game over
+        }
+    }
 
     // Send best move
     if (best_move) {

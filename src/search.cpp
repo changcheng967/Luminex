@@ -309,7 +309,13 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
         // Re-probe TT to get the move from the shallow search
         tte = TT.probe(pos.key(), found);
         if (found) {
-            tt_move = tte->move();
+            Move m = tte->move();
+            // CRITICAL: Validate the TT move before using it
+            if (m && m.from() < SQUARE_NONE && m.to() < SQUARE_NONE) {
+                if (pos.pseudo_legal(m)) {
+                    tt_move = m;
+                }
+            }
         }
     }
 
