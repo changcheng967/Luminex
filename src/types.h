@@ -256,7 +256,9 @@ inline std::ostream& operator<<(std::ostream& os, Square s) {
 
 inline std::ostream& operator<<(std::ostream& os, Move m) {
     if (m) {
-        os << m.from() << m.to();
+        Square from_sq = m.from();
+        Square to_sq = m.to();
+        os << from_sq << to_sq;
         // Append promotion piece for promotions
         if (m.is_promotion()) {
             constexpr char promo_chars[] = {'n', 'b', 'r', 'q'};

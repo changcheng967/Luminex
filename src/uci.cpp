@@ -2,11 +2,9 @@
 #include "luminex.h"
 #include <chrono>
 #include <cstdarg>
-#include <fstream>
 #include <iostream>
 #include <sstream>
 #include <string>
-#include <cstdio>
 
 namespace luminex {
 
@@ -35,9 +33,18 @@ void handle_isready() {
 }
 
 void handle_ucinewgame() {
+    // Debug logging to verify this is being called
+    std::cerr << "DEBUG: ucinewgame received, clearing state" << std::endl;
+
     // Clear transposition table
     TT.clear();
     TT.new_search();
+
+    // CRITICAL: Reset position to starting position
+    // This prevents state from previous game from leaking into new game
+    pos.set("rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1");
+
+    std::cerr << "DEBUG: State cleared, position reset" << std::endl;
 }
 
 void handle_position(Position& pos, const std::string& cmd) {
@@ -51,10 +58,6 @@ void handle_position(Position& pos, const std::string& cmd) {
     } else {
         fen = cmd.substr(pos_idx + 8);
     }
-
-    // Debug: print the position command (truncated)
-    // std::cout << "info string pos_cmd: " << cmd.substr(0, 50) << "\n";
-    // std::cout.flush();
 
     // Trim leading/trailing whitespace
     size_t start = fen.find_first_not_of(" \t");
@@ -78,70 +81,105 @@ void handle_position(Position& pos, const std::string& cmd) {
 
     pos.set(fen);
 
-    // Apply moves
+    // DEBUG: Log position replay for debugging
+    static int move_num = 0;
     if (moves_idx != std::string::npos) {
         std::string moves_str = cmd.substr(moves_idx + 6);
         std::istringstream ss(moves_str);
         std::string move_str;
 
+        move_num = 0;
         while (ss >> move_str) {
-            // Parse move
+            move_num++;
+            // Parse move directly from UCI string
             if (move_str.length() < 4) continue;
 
             Square from = Square((move_str[1] - '1') * 8 + (move_str[0] - 'a'));
             Square to = Square((move_str[3] - '1') * 8 + (move_str[2] - 'a'));
 
+            // Determine move flags based on current position
+            Color us = pos.side_to_move();
+            Piece piece_from = pos.piece_on(from);
             uint16_t flags = MF_QUIET;
 
-            // Check for promotion
-            if (move_str.length() > 4) {
-                bool isCapture = pos.piece_type_on(to) != PT_NONE;
-                switch (move_str[4]) {
-                    case 'n': flags = isCapture ? MF_CAPTURE_PROMO_KNIGHT : MF_PROMO_KNIGHT; break;
-                    case 'b': flags = isCapture ? MF_CAPTURE_PROMO_BISHOP : MF_PROMO_BISHOP; break;
-                    case 'r': flags = isCapture ? MF_CAPTURE_PROMO_ROOK : MF_PROMO_ROOK; break;
-                    case 'q': flags = isCapture ? MF_CAPTURE_PROMO_QUEEN : MF_PROMO_QUEEN; break;
-                }
-            } else if (pos.piece_type_on(to) != PT_NONE) {
+            // Check if it's a capture
+            Piece piece_to = pos.piece_on(to);
+            if (piece_to != NO_PIECE && pos.color_of_piece(piece_to) != us) {
                 flags = MF_CAPTURE;
             }
 
-            // Check for castling
-            if (pos.piece_type_on(from) == KING && std::abs(file_of(to) - file_of(from)) > 1) {
-                flags = (file_of(to) > file_of(from)) ? MF_CASTLING_KING : MF_CASTLING_QUEEN;
+            // Check for promotion
+            PieceType promo_pt = PT_NONE;
+            if (move_str.length() > 4) {
+                switch (move_str[4]) {
+                    case 'q': promo_pt = QUEEN; break;
+                    case 'r': promo_pt = ROOK; break;
+                    case 'b': promo_pt = BISHOP; break;
+                    case 'n': promo_pt = KNIGHT; break;
+                }
+                if (flags == MF_CAPTURE) {
+                    if (promo_pt == KNIGHT) flags = MF_CAPTURE_PROMO_KNIGHT;
+                    else if (promo_pt == BISHOP) flags = MF_CAPTURE_PROMO_BISHOP;
+                    else if (promo_pt == ROOK) flags = MF_CAPTURE_PROMO_ROOK;
+                    else if (promo_pt == QUEEN) flags = MF_CAPTURE_PROMO_QUEEN;
+                } else {
+                    if (promo_pt == KNIGHT) flags = MF_PROMO_KNIGHT;
+                    else if (promo_pt == BISHOP) flags = MF_PROMO_BISHOP;
+                    else if (promo_pt == ROOK) flags = MF_PROMO_ROOK;
+                    else if (promo_pt == QUEEN) flags = MF_PROMO_QUEEN;
+                }
             }
 
-            // Check for en passant
-            if (pos.piece_type_on(from) == PAWN && pos.piece_type_on(to) == PT_NONE &&
-                file_of(from) != file_of(to)) {
-                flags = MF_EN_PASSANT;
+            // Check for castling (king moving two squares)
+            if (piece_from == make_piece(us, KING)) {
+                int file_diff = std::abs(int(file_of(from)) - int(file_of(to)));
+                if (file_diff == 2) {
+                    flags = (to > from) ? MF_CASTLING_KING : MF_CASTLING_QUEEN;
+                }
+            }
+
+            // Check for double pawn push
+            if (flags == MF_QUIET && piece_from == make_piece(us, PAWN)) {
+                Rank from_rank = relative_rank(us, from);
+                Rank to_rank = relative_rank(us, to);
+                if (from_rank == RANK_2 && to_rank == RANK_4) {
+                    flags = MF_DOUBLE_PAWN;
+                }
+            }
+
+            // Check for en passant (diagonal pawn move to empty square)
+            if (flags == MF_QUIET && piece_from == make_piece(us, PAWN)) {
+                if (file_of(from) != file_of(to) && piece_to == NO_PIECE) {
+                    if (to == pos.ep_square()) {
+                        flags = MF_EN_PASSANT;
+                    }
+                }
+            }
+
+            // DEBUG: Verify piece exists on source square
+            if (piece_from == NO_PIECE || pos.color_of_piece(piece_from) != us) {
+                std::cerr << "\n=== REPLAY ERROR at move " << move_num << " ===\n";
+                std::cerr << "Move: " << move_str << "\n";
+                std::cerr << "From square: " << from << "\n";
+                std::cerr << "Piece on from: " << int(piece_from) << "\n";
+                std::cerr << "Side to move: " << (us == WHITE ? "WHITE" : "BLACK") << "\n";
+                std::cerr << "FEN before: " << pos.fen() << "\n";
+                std::cerr << "===================================\n";
             }
 
             Move m(from, to, flags);
-
-            // Trust the GUI - always make the move
-            // If there's a bug in our move generation, we want to play what GUI says
             pos.do_move(m);
         }
+
+        // DEBUG: Log final position after replay
+        std::cerr << "Replay completed: " << move_num << " moves, FEN: " << pos.fen() << "\n";
     }
 }
 
 void handle_go(Position& pos, const std::string& cmd) {
-    // Debug log file - use process ID to separate engines
-    static FILE* uci_log = nullptr;
-    static int log_init = 0;
-    if (!log_init) {
-        // Use different files for different processes based on side to move
-        const char* fname = (pos.side_to_move() == WHITE) ?
-            "C:/Users/chang/Downloads/Luminex/luminex_white_log.txt" :
-            "C:/Users/chang/Downloads/Luminex/luminex_black_log.txt";
-        uci_log = fopen(fname, "w");
-        log_init = 1;
-    }
-    if (uci_log) {
-        fprintf(uci_log, "handle_go called: %s\n", cmd.c_str());
-        fflush(uci_log);
-    }
+    // CRITICAL: Verify position consistency before searching
+    // This catches board corruption early
+    pos.assert_consistency("handle_go entry");
 
     std::istringstream ss(cmd);
     std::string token;
@@ -200,92 +238,88 @@ void handle_go(Position& pos, const std::string& cmd) {
         std::cout << "bestmove\n";
         std::cout.flush();
 
-        if (uci_log) {
-            fprintf(uci_log, "TERMINAL: %s legal_count=0\n", is_check ? "checkmate" : "stalemate");
-            fflush(uci_log);
-        }
         return;
     }
 
-    // Run search
-    auto start = std::chrono::steady_clock::now();
-    std::cout << "info string DEBUG_BEFORE_SEARCH\n";
-    std::cout.flush();
-    Move best_move = search(pos, limits);
-    auto end = std::chrono::steady_clock::now();
-    std::cout << "info string DEBUG_AFTER_SEARCH valid=" << (best_move ? "YES" : "NO") << "\n";
-    std::cout.flush();
+    // CRITICAL: Save FEN before search to restore later
+    // This protects against position corruption during search
+    std::string fen_before_search = pos.fen();
 
-    int time_ms = std::chrono::duration_cast<std::chrono::milliseconds>(end - start).count();
+    // Run search
+    Move best_move = search(pos, limits);
+
+    // CRITICAL: Restore position from saved FEN (in case search corrupted it)
+    // This ensures validation happens against correct position state
+    pos.set(fen_before_search);
+
+    // DEBUG: Verify position was restored correctly
+    std::string fen_after_restore = pos.fen();
+    if (fen_before_search != fen_after_restore) {
+        std::cerr << "\n=== FEN RESTORE FAILED ===\n";
+        std::cerr << "Expected: " << fen_before_search << "\n";
+        std::cerr << "Got:      " << fen_after_restore << "\n";
+        std::cerr << "===========================\n";
+    }
+
+    // CRITICAL: Check board consistency after search
+    // Search may have corrupted the position if do_move/undo aren't balanced
+    pos.assert_consistency("handle_go after search");
 
     // Send final info
-    uci_info(pos, root_depth, root_score, nodes.load(), time_ms);
+    uci_info(pos, root_depth, root_score, nodes.load(), 0);
 
-    // DEBUG: Log what we're about to send
-    std::cerr << "UCI: Sending bestmove, valid=" << (best_move ? "YES" : "NO") << "\n";
-    if (best_move) {
-        std::cerr << "  from=" << int(best_move.from()) << " to=" << int(best_move.to()) << "\n";
-    }
-    std::cerr.flush();
+    // CRITICAL FIX: Match by from/to, then use the legal move object with correct flags
+    // This prevents illegal moves caused by wrong flags from TT or stale position data
+    // For promotions, also match promotion piece type
+    if (best_move != MOVE_NONE) {
+        ExtMove legal_moves[256];
+        ExtMove* legal_end = generate<GEN_LEGAL>(pos, legal_moves);
 
-    // Send best move with explicit flush
-    if (best_move) {
-        std::cout << "info string DEBUG_PRINTING_MOVE from=" << int(best_move.from()) << " to=" << int(best_move.to()) << " raw=" << best_move.raw() << "\n";
-        std::cout.flush();
-        std::string move_str;
-        std::ostringstream oss;
-        oss << best_move;
-        move_str = oss.str();
-        std::cout << "info string DEBUG_MOVE_STRING=" << move_str << "\n";
-        std::cout.flush();
+        // Find matching move by from/to (and promotion type for promotions)
+        bool found_match = false;
+        for (ExtMove* it = legal_moves; it != legal_end; ++it) {
+            bool match = (it->move.from() == best_move.from() &&
+                          it->move.to() == best_move.to());
 
-        // Also log to file
-        if (uci_log) {
-            fprintf(uci_log, "BESTMOVE valid=1 from=%d to=%d raw=%d str=%s\n",
-                    int(best_move.from()), int(best_move.to()), best_move.raw(), move_str.c_str());
-            fflush(uci_log);
+            // For promotions, also verify promotion type matches
+            if (match && (best_move.flags() & 0xF)) {
+                // Check if this is a promotion (flags 0x8-0xF are promotions)
+                bool is_promotion = (best_move.flags() >= 0x8 && best_move.flags() <= 0xF);
+                if (is_promotion) {
+                    match = (it->move.flags() == best_move.flags());
+                }
+            }
+
+            if (match) {
+                // Use the legal move object instead - ensures correct flags!
+                best_move = it->move;
+                found_match = true;
+                break;
+            }
         }
 
+        // If no match found, fall back to first legal move
+        if (!found_match && legal_end != legal_moves) {
+            best_move = legal_moves[0].move;
+        }
+
+        // Final sanity check
+        if (best_move && !pos.legal(best_move)) {
+            if (legal_end != legal_moves) {
+                best_move = legal_moves[0].move;
+            } else {
+                best_move = MOVE_NONE;
+            }
+        }
+    }
+
+    // Send best move
+    if (best_move) {
         std::cout << "bestmove " << best_move << "\n";
     } else {
-        std::cout << "info string DEBUG_PRINTING_MOVE INVALID\n";
-        std::cout.flush();
-
-        // Also log to file
-        if (uci_log) {
-            fprintf(uci_log, "BESTMOVE valid=0 (will send 0000)\n");
-            fflush(uci_log);
-        }
-
         std::cout << "bestmove 0000\n";
     }
     std::cout.flush();
-
-    // Log to file
-    if (uci_log) {
-        fprintf(uci_log, "SENT bestmove\n");
-        fflush(uci_log);
-    }
-
-    // EXTRA DEBUG: If we sent 0000, this is critical - dump more info
-    if (!best_move) {
-        fprintf(uci_log, "CRITICAL: best_move is 0! Checking position...\n");
-        fflush(uci_log);
-
-        // Try to generate moves and see what we get
-        ExtMove check_moves[MAX_MOVES];
-        ExtMove* check_end = generate<GEN_LEGAL>(pos, check_moves);
-        int check_count = int(check_end - check_moves);
-        fprintf(uci_log, "CRITICAL: Generated %d legal moves\n", check_count);
-        fflush(uci_log);
-
-        if (check_count > 0) {
-            fprintf(uci_log, "CRITICAL: First move would be: from=%d to=%d raw=%d\n",
-                    int(check_moves[0].move.from()), int(check_moves[0].move.to()),
-                    check_moves[0].move.raw());
-            fflush(uci_log);
-        }
-    }
 }
 
 void handle_setoption(const std::string& cmd) {

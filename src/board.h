@@ -23,6 +23,32 @@ struct StateInfo {
 class Position {
 public:
     Position() : st_(&dummy_state), st_ply(0) {
+        // CRITICAL: Initialize board to NO_PIECE, not 0 (which is WHITE_PAWN)
+        for (int i = 0; i < SQUARE_NONE; ++i) {
+            board[i] = NO_PIECE;
+            index[i] = -1;  // -1 means "not in piece_list"
+        }
+        // Initialize all other state properly
+        for (int i = 0; i < ALL_PIECES; ++i) {
+            pieces_by_type[i] = 0;
+        }
+        for (int i = 0; i < NO_COLOR; ++i) {
+            pieces_by_color[i] = 0;
+            king_square[i] = SQUARE_NONE;
+            castling_rights_[i] = 0;
+            castling_rook_square_[i][0] = SQUARE_NONE;
+            castling_rook_square_[i][1] = SQUARE_NONE;
+            castling_path_[i][0] = 0;
+            castling_path_[i][1] = 0;
+            for (int j = 0; j < ALL_PIECES; ++j) {
+                piece_count[i][j] = 0;
+                for (int k = 0; k < 16; ++k) {
+                    piece_list[i][j][k] = SQUARE_NONE;
+                }
+            }
+        }
+        side_to_move_ = WHITE;
+        game_ply_ = 0;
         dummy_state.key = 0;
         dummy_state.checkers = 0;
         dummy_state.pinned = 0;
@@ -76,6 +102,7 @@ public:
     bool capture_or_promotion(Move m) const;
 
     Direction pawn_push(Color c) const;
+    void assert_consistency(const char* location);  // Debug: check board consistency (made public for uci.cpp)
 
     static constexpr int MAX_MOVES = 256;
     static constexpr int MAX_PLY = 246;
@@ -87,6 +114,7 @@ private:
 
     void set_castling_right(Color c, Square rfrom);
     void set_check_info(StateInfo* st);
+    bool validate_move(Move m, Square from, Square to, Piece moved_pc, PieceType captured) const;
 
     bool see_gen(Bitboard stmAttackers, Bitboard occupied) const;
 
@@ -96,7 +124,7 @@ private:
 
     Bitboard pieces_by_type[ALL_PIECES] = {};
     Bitboard pieces_by_color[NO_COLOR] = {};
-    Piece board[SQUARE_NONE] = {};
+    Piece board[SQUARE_NONE];  // Initialized in constructor to NO_PIECE
     int piece_count[NO_COLOR][ALL_PIECES] = {};
     Square piece_list[NO_COLOR][ALL_PIECES][16] = {};
     int index[SQUARE_NONE] = {};
@@ -148,9 +176,17 @@ Bitboard bb_rank_attacks(Square s, Bitboard occupied);
 Bitboard bb_file_attacks(Square s, Bitboard occupied);
 Bitboard bb_diag_attacks(Square s, Bitboard occupied);
 
-// Queen attacks with blocking pieces
-inline Bitboard queen_attacks_bb(Square s, Bitboard occupied) {
-    return (bb_rank_attacks(s, occupied) | bb_file_attacks(s, occupied) | bb_diag_attacks(s, occupied));
+// Queen attacks now in bitboard.h using optimized tables
+
+// Zobrist hash keys
+namespace Zobrist {
+    // Match sizes in board.cpp implementation
+    extern Key psq[2][8][64];     // piece-square keys [color][pieceType][square]
+    extern Key castling[4];       // castling rights keys
+    extern Key en_passant[8];     // en passant file keys
+    extern Key side;              // side to move key
+
+    void init();  // Initialize Zobrist keys with random values
 }
 
 // Zobrist initialization

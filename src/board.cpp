@@ -2,8 +2,22 @@
 #include <algorithm>
 #include <cctype>
 #include <cmath>
+#include <fstream>
 #include <iostream>
 #include <sstream>
+
+namespace {
+// Global debug log for board corruption
+std::ofstream board_debug_log;
+bool board_debug_initialized = false;
+
+void init_board_debug() {
+    if (!board_debug_initialized) {
+        board_debug_log.open("C:\\Users\\chang\\Downloads\\Luminex\\board_corruption.txt", std::ios::out | std::ios::trunc);
+        board_debug_initialized = true;
+    }
+}
+}
 
 namespace luminex {
 
@@ -93,6 +107,10 @@ void Position::set(const std::string& fen) {
     }
 
     std::fill_n(castling_rights_, NO_COLOR, 0);
+
+    // CRITICAL: Initialize king_square to invalid values
+    king_square[WHITE] = SQUARE_NONE;
+    king_square[BLACK] = SQUARE_NONE;
 
     std::istringstream ss(fen);
     std::string token;
@@ -263,6 +281,17 @@ std::string Position::fen() const {
 }
 
 void Position::put_piece(Color c, PieceType pt, Square s) {
+    // DEBUG: Check if this square already has a piece (corruption)
+    if (board[s] != NO_PIECE) {
+        init_board_debug();
+        board_debug_log << "\n=== PUT_PIECE CORRUPTION ===\n";
+        board_debug_log << "Square " << s << " already has piece " << int(board[s]);
+        board_debug_log << ", trying to put " << int(make_piece(c, pt)) << "\n";
+        board_debug_log << "FEN: " << fen() << "\n";
+        board_debug_log << "================================\n";
+        board_debug_log.flush();
+    }
+
     board[s] = make_piece(c, pt);
     pieces_by_type[pt] |= square_bb(s);
     pieces_by_color[c] |= square_bb(s);
@@ -273,6 +302,16 @@ void Position::put_piece(Color c, PieceType pt, Square s) {
     piece_count[int(c)][int(pt)]++;
 
     if (pt == KING) {
+        // DEBUG: Check if we already have a king of this color
+        if (king_square[int(c)] != SQUARE_NONE && king_square[int(c)] != s) {
+            init_board_debug();
+            board_debug_log << "\n=== DUPLICATE KING DETECTED ===\n";
+            board_debug_log << "Color " << c << " already has king at " << king_square[int(c)];
+            board_debug_log << ", trying to put another at " << s << "\n";
+            board_debug_log << "FEN: " << fen() << "\n";
+            board_debug_log << "==============================\n";
+            board_debug_log.flush();
+        }
         king_square[int(c)] = s;
     }
 }
@@ -317,6 +356,7 @@ void Position::move_piece(Square from, Square to) {
     Color c = Color(pc / 6);
     PieceType pt = piece_type_of(pc);
     if (int(c) > 1) return;
+
     pieces_by_color[c] ^= square_bb(from) | square_bb(to);
     pieces_by_type[pt] ^= square_bb(from) | square_bb(to);
     board[from] = NO_PIECE;
@@ -458,6 +498,14 @@ void Position::do_move(Move m) {
         valid_move = false;
     }
 
+    // CRITICAL: Bounds check BEFORE incrementing state stack index
+    if (st_ply + 1 >= MAX_STATES) {
+        // State stack overflow! This would corrupt memory.
+        // Mark move as invalid and don't execute it.
+        valid_move = false;
+        return;
+    }
+
     // ALWAYS increment state stack index and save state (even for invalid moves)
     // This ensures undo_move can run without causing st_ply underflow
     st_ply++;
@@ -480,6 +528,36 @@ void Position::do_move(Move m) {
 
     // Only execute the move if it's valid
     if (!valid_move) {
+        next_st.move_was_executed = false;
+        return;
+    }
+
+    // CRITICAL: Validate move flags match actual board state
+    PieceType piece_at_to = piece_type_on(to);
+    bool piece_at_to_is_enemy = (board[to] != NO_PIECE && color_of_piece(board[to]) == them);
+    bool move_flag_says_capture = m.is_capture();
+
+    if (piece_at_to_is_enemy && !move_flag_says_capture && !m.is_promotion()) {
+        // Enemy piece at destination but move is NOT flagged as capture
+        // This will cause board corruption! Abort the move.
+        std::cerr << "\n=== MOVE FLAG ERROR in do_move ===\n";
+        std::cerr << "Move: " << m << " (" << from << " to " << to << ")\n";
+        std::cerr << "Enemy piece at destination but not flagged as capture!\n";
+        std::cerr << "Piece at " << to << ": " << int(board[to]) << "\n";
+        std::cerr << "Move flags: 0x" << std::hex << m.flags() << std::dec << "\n";
+        std::cerr << "Aborting move to prevent corruption.\n";
+        std::cerr << "====================================\n";
+        next_st.move_was_executed = false;
+        return;
+    }
+
+    if (!piece_at_to_is_enemy && piece_at_to != PT_NONE && color_of_piece(board[to]) == us) {
+        // Friendly piece at destination - invalid move
+        std::cerr << "\n=== CAPTURING OWN PIECE in do_move ===\n";
+        std::cerr << "Move: " << m << " (" << from << " to " << to << ")\n";
+        std::cerr << "Friendly piece at destination!\n";
+        std::cerr << "Aborting move.\n";
+        std::cerr << "====================================\n";
         next_st.move_was_executed = false;
         return;
     }
@@ -520,7 +598,10 @@ void Position::do_move(Move m) {
             rfrom = us == WHITE ? A1 : A8;
             rto = us == WHITE ? D1 : D8;
         }
+        // CRITICAL: Update Zobrist hash for rook position change
+        st_->key ^= Zobrist::psq[int(us)][int(ROOK)][int(rfrom)];
         move_piece(rfrom, rto);
+        st_->key ^= Zobrist::psq[int(us)][int(ROOK)][int(rto)];
     }
 
     // Handle en passant
@@ -541,20 +622,33 @@ void Position::do_move(Move m) {
     // Remove castling rights if rook moves or is captured
     if (pt == KING) {
         st_->castling_rights &= ~(us == WHITE ? (WHITE_KINGSIDE | WHITE_QUEENSIDE) : (BLACK_KINGSIDE | BLACK_QUEENSIDE));
+        castling_rights_[us] = 0;
     }
     if (from == (us == WHITE ? H1 : H8) || to == (us == WHITE ? H1 : H8)) {
         st_->castling_rights &= ~(us == WHITE ? WHITE_KINGSIDE : BLACK_KINGSIDE);
+        castling_rights_[us] &= ~(us == WHITE ? WHITE_KINGSIDE : BLACK_KINGSIDE);
     }
     if (from == (us == WHITE ? A1 : A8) || to == (us == WHITE ? A1 : A8)) {
         st_->castling_rights &= ~(us == WHITE ? WHITE_QUEENSIDE : BLACK_QUEENSIDE);
+        castling_rights_[us] &= ~(us == WHITE ? WHITE_QUEENSIDE : BLACK_QUEENSIDE);
     }
 
     // Switch side
     st_->key ^= Zobrist::side;
     side_to_move_ = them;
 
+    // VALIDATION: Catch board corruption immediately (always enabled for debugging)
+    bool valid = validate_move(m, from, to, pc, captured);
+    if (!valid) {
+        // Silently ignore corruption during search - just don't use this position
+        // The move will still be undone properly
+    }
+
     // Update check info
     set_check_info(st_);
+
+    // DEBUG: Check board consistency after every move
+    assert_consistency("do_move");
 }
 
 void Position::undo_move(Move m) {
@@ -621,6 +715,9 @@ void Position::undo_move(Move m) {
     st_ply--;
     st_ = &state_stack[st_ply];
     --game_ply_;
+
+    // DEBUG: Check board consistency after every undo
+    assert_consistency("undo_move");
 }
 
 void Position::do_null_move() {
@@ -659,6 +756,99 @@ void Position::undo_null_move() {
     st_ = &state_stack[st_ply];
     side_to_move_ = Color(side_to_move_ ^ 1);
     --game_ply_;
+}
+
+// CRITICAL: Consistency check to catch board state desync
+// Call after every do_move/undo_move during debugging
+void Position::assert_consistency(const char* location) {
+    // Check all 64 squares
+    for (int sq = 0; sq < 64; ++sq) {
+        Piece p = board[sq];
+        bool mailbox_has = (p != NO_PIECE);
+
+        // Check if this square is set in any bitboard
+        Bitboard all_pieces = pieces_by_color[WHITE] | pieces_by_color[BLACK];
+        bool bitboard_has = (all_pieces & (1ULL << sq)) != 0;
+
+        if (mailbox_has != bitboard_has) {
+            std::cerr << "\n=== BOARD STATE DESYNC DETECTED ===\n";
+            std::cerr << "Location: " << location << "\n";
+            std::cerr << "Square: " << sq << "\n";
+            std::cerr << "Mailbox says: " << (mailbox_has ? "HAS PIECE " : "EMPTY");
+            if (mailbox_has) {
+                std::cerr << int(p) << "\n";
+            } else {
+                std::cerr << "\n";
+            }
+            std::cerr << "Bitboard says: " << (bitboard_has ? "HAS PIECE" : "EMPTY") << "\n";
+            std::cerr << "All pieces bitboard: 0x" << std::hex << all_pieces << std::dec << "\n";
+            std::cerr << "White pieces: 0x" << std::hex << pieces_by_color[WHITE] << std::dec << "\n";
+            std::cerr << "Black pieces: 0x" << std::hex << pieces_by_color[BLACK] << std::dec << "\n";
+            std::cerr << "FEN: " << fen() << "\n";
+            std::cerr << "Last move: " << st_->move << "\n";
+            std::cerr << "====================================\n";
+            std::cerr.flush();
+
+            // Don't abort in production, just log and continue
+            // abort();
+        }
+    }
+
+    // CRITICAL: Verify piece counts match bitboards
+    for (int c = 0; c < NO_COLOR; ++c) {
+        for (int pt = 0; pt < ALL_PIECES; ++pt) {
+            int count = piece_count[c][pt];
+            Bitboard bb = pieces_by_color[c] & pieces_by_type[pt];
+            int bb_count = popcount(bb);
+
+            if (count != bb_count) {
+                std::cerr << "\n=== PIECE COUNT DESYNC ===\n";
+                std::cerr << "Location: " << location << "\n";
+                std::cerr << "Color: " << c << " (" << (c == WHITE ? "WHITE" : "BLACK") << ")\n";
+                std::cerr << "PieceType: " << pt << "\n";
+                std::cerr << "piece_count says: " << count << "\n";
+                std::cerr << "bitboard count says: " << bb_count << "\n";
+                std::cerr << "Bitboard: 0x" << std::hex << bb << std::dec << "\n";
+                std::cerr << "FEN: " << fen() << "\n";
+                std::cerr << "Last move: " << st_->move << "\n";
+                std::cerr << "============================\n";
+                std::cerr.flush();
+
+                // Log piece_list contents
+                std::cerr << "piece_list contents:\n";
+                for (int i = 0; i < 16; ++i) {
+                    Square s = piece_list[c][pt][i];
+                    if (s != SQUARE_NONE) {
+                        std::cerr << "  [" << i << "] = " << s << " (board=" << int(board[s]) << ")\n";
+                    }
+                }
+                std::cerr.flush();
+            }
+        }
+    }
+
+    // CRITICAL: Verify that board[] array matches bitboards for each piece type
+    for (int sq = 0; sq < 64; ++sq) {
+        Piece p = board[sq];
+        if (p != NO_PIECE) {
+            Color c = color_of_piece(p);
+            PieceType pt = piece_type_of(p);
+            Bitboard expected_bb = pieces_by_color[c] & pieces_by_type[pt];
+            if ((expected_bb & (1ULL << sq)) == 0) {
+                std::ofstream err_log("C:\\Users\\chang\\Downloads\\Luminex\\board_corruption.txt", std::ios::app);
+                err_log << "\n=== PIECE TYPE MISMATCH ===\n";
+                err_log << "Location: " << location << "\n";
+                err_log << "Square: " << sq << " (" << char('a' + (sq % 8)) << char('1' + (sq / 8)) << ")\n";
+                err_log << "board[] has: " << int(p) << " (" << (c == WHITE ? "W" : "B") << "PNBRQK"[pt] << ")\n";
+                err_log << "But bitboards don't have this piece type at this square!\n";
+                err_log << "pieces_by_color[" << c << "]: 0x" << std::hex << pieces_by_color[c] << std::dec << "\n";
+                err_log << "pieces_by_type[" << pt << "]: 0x" << std::hex << pieces_by_type[pt] << std::dec << "\n";
+                err_log << "FEN: " << fen() << "\n";
+                err_log << "=============================\n";
+                err_log.flush();
+            }
+        }
+    }
 }
 
 bool Position::see_ge(Move m, Value threshold) const {
@@ -748,6 +938,10 @@ bool Position::see_ge(Move m, Value threshold) const {
 bool Position::legal(Move m) const {
     if (!m) return false;
 
+    // CRITICAL: First check if move is pseudo-legal (piece can actually make this move)
+    // This prevents impossible moves like pawn moving like knight (h5f4, c3h8)
+    if (!pseudo_legal(m)) return false;
+
     Square from = m.from();
     Square to = m.to();
 
@@ -784,14 +978,18 @@ bool Position::legal(Move m) const {
             if ((attackers_to(from) & pieces(them)) != 0) return false;
 
             if (to == (us == WHITE ? G1 : G8)) {
-                // Kingside castling: check f1/g1 squares
+                // Kingside castling: check f1/g1 squares AND rook on h1/h8
+                Square rook_sq = Square(us == WHITE ? H1 : H8);
+                if (piece_on(rook_sq) != make_piece(us, ROOK)) return false;
                 Square s1 = Square((us == WHITE ? F1 : F8));
                 Square s2 = Square((us == WHITE ? G1 : G8));
                 if ((pieces() & (square_bb(s1) | square_bb(s2))) != 0) return false;
                 if ((attackers_to(s1) & pieces(them)) != 0) return false;
                 if ((attackers_to(s2) & pieces(them)) != 0) return false;
             } else {
-                // Queenside castling: check b1/c1/d1 squares
+                // Queenside castling: check b1/c1/d1 squares AND rook on a1/a8
+                Square rook_sq = Square(us == WHITE ? A1 : A8);
+                if (piece_on(rook_sq) != make_piece(us, ROOK)) return false;
                 Square s1 = Square((us == WHITE ? C1 : C8));
                 Square s2 = Square((us == WHITE ? D1 : D8));
                 Square s3 = Square((us == WHITE ? B1 : B8));
@@ -919,8 +1117,13 @@ bool Position::pseudo_legal(const Move m) const {
     // Castling
     if (m.is_castling()) {
         if (pt != KING) return false;
-        // TODO: Check castling rights
-        return true;
+        // CRITICAL: King must be on starting square for castling to be valid
+        Square ksq = king_square[side_to_move_];
+        if (from != ksq) return false;  // From must be king's current square
+        // Verify move goes to correct castling destination
+        if (to == Square(side_to_move_ == WHITE ? G1 : G8)) return true;  // Kingside
+        if (to == Square(side_to_move_ == WHITE ? C1 : C8)) return true;  // Queenside
+        return false;  // Invalid castling destination
     }
 
     // En passant
@@ -1078,6 +1281,69 @@ Bitboard bb_diag_attacks(Square s, Bitboard occupied) {
     }
 
     return attacks;
+}
+
+bool Position::validate_move(Move m, Square from, Square to, Piece moved_pc, PieceType captured) const {
+    // Check 1: The piece that moved should now be on 'to' square
+    Piece piece_on_to = board[to];
+    Color expected_color = Color(moved_pc / 6);
+    (void)captured;  // Unused for now
+
+    // Special case: castling - king is on 'to', rook moved too
+    if (m.is_castling()) {
+        Piece king_on_to = board[to];
+        if (king_on_to != make_piece(expected_color, KING)) {
+            return false;  // King not on destination
+        }
+        // Check rook position
+        Square rook_to = (file_of(to) > file_of(from)) ? Square(to - 1) : Square(to + 1);
+        if (piece_on(rook_to) != make_piece(expected_color, ROOK)) {
+            return false;  // Rook not on expected square
+        }
+    } else {
+        // Normal move: piece should be on 'to'
+        if (piece_on_to != moved_pc) {
+            return false;  // Piece not on destination
+        }
+    }
+
+    // Check 2: 'from' square should be empty (except for en passant where we capture a pawn)
+    if (!m.is_castling() && !m.is_en_passant()) {
+        if (board[from] != NO_PIECE) {
+            return false;  // From square not empty after move
+        }
+    }
+
+    // Check 3: Total piece count should be consistent
+    int total_pieces = 0;
+    for (int c = 0; c < NO_COLOR; ++c) {
+        for (int pt = 0; pt < ALL_PIECES; ++pt) {
+            int count = piece_count[c][pt];
+            total_pieces += count;
+        }
+    }
+
+    // Starting position has 32 pieces, can only decrease with captures
+    if (total_pieces > 32 || total_pieces < 2) {  // Need at least 2 kings
+        return false;  // Invalid piece count
+    }
+
+    // Check 4: Exactly one king of each color
+    int white_kings = piece_count[WHITE][KING];
+    int black_kings = piece_count[BLACK][KING];
+    if (white_kings != 1 || black_kings != 1) {
+        return false;  // Wrong number of kings
+    }
+
+    // Check 5: Kings should be on their tracked squares
+    if (board[king_square[WHITE]] != make_piece(WHITE, KING)) {
+        return false;  // White king not on tracked square
+    }
+    if (board[king_square[BLACK]] != make_piece(BLACK, KING)) {
+        return false;  // Black king not on tracked square
+    }
+
+    return true;
 }
 
 bool Position::is_draw() const {

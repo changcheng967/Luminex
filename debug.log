@@ -1,0 +1,9 @@
+id name Luminex 3.6.0
+id author changcheng967
+option name Hash type spin default 128 min 1 max 1048576
+option name Contempt type spin default 0 min -1000 max 1000
+option name Clear Hash type button
+uciok
+info depth 5 score cp 58 nodes 256067 nps 845105
+info depth 6 score cp 58 nodes 256067 nps 0
+bestmove e7e5

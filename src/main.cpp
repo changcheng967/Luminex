@@ -34,6 +34,23 @@ uint64_t perft(Position& pos, Depth depth) {
     return count;
 }
 
+// Perft divide - shows perft result for each move
+uint64_t perft_divide(Position& pos, Depth depth) {
+    ExtMove moves[MAX_MOVES];
+    ExtMove* end = generate<GEN_LEGAL>(pos, moves);
+
+    uint64_t total = 0;
+    for (ExtMove* it = moves; it != end; ++it) {
+        pos.do_move(it->move);
+        uint64_t count = (depth == 1) ? 1 : perft(pos, depth - 1);
+        pos.undo_move(it->move);
+
+        std::cout << it->move << ": " << count << std::endl;
+        total += count;
+    }
+    return total;
+}
+
 } // namespace luminex
 
 int main(int argc, char* argv[]) {
@@ -71,15 +88,20 @@ int main(int argc, char* argv[]) {
     if (argc > 1 && std::string(argv[1]) == "bench") {
         Position pos;
         pos.set("rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1");
-
-        auto start = std::chrono::steady_clock::now();
         uint64_t nodes = perft(pos, 1);
-        auto end = std::chrono::steady_clock::now();
+        std::cout << "Perft 1: " << nodes << " nodes" << std::endl;
+        return 0;
+    }
 
-        auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(end - start).count();
+    // Check for divide mode
+    if (argc > 1 && std::string(argv[1]) == "divide") {
+        int depth = (argc > 2) ? std::atoi(argv[2]) : 3;
+        Position pos;
+        pos.set("rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1");
 
-        std::cout << "Perft 5: " << nodes << " nodes in " << duration << " ms"
-                  << " (" << nodes * 1000 / duration << " nps)" << std::endl;
+        std::cout << "Divide perft depth " << depth << ":" << std::endl;
+        uint64_t total = perft_divide(pos, depth);
+        std::cout << "Total: " << total << " nodes" << std::endl;
         return 0;
     }
 

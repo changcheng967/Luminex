@@ -213,4 +213,22 @@ constexpr bool more_than_one(Bitboard b) {
     return b & (b - 1);
 }
 
+// Forward declarations for sliding attacks with occupied (defined in board.cpp)
+Bitboard bb_rank_attacks(Square s, Bitboard occupied);
+Bitboard bb_file_attacks(Square s, Bitboard occupied);
+Bitboard bb_diag_attacks(Square s, Bitboard occupied);
+
+// Sliding piece attacks with blocking pieces
+inline Bitboard bishop_attacks_occ(Square s, Bitboard occupied) {
+    return bb_diag_attacks(s, occupied);
+}
+
+inline Bitboard rook_attacks_occ(Square s, Bitboard occupied) {
+    return bb_rank_attacks(s, occupied) | bb_file_attacks(s, occupied);
+}
+
+inline Bitboard queen_attacks_bb(Square s, Bitboard occupied) {
+    return bb_rank_attacks(s, occupied) | bb_file_attacks(s, occupied) | bb_diag_attacks(s, occupied);
+}
+
 } // namespace luminex

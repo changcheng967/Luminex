@@ -59,44 +59,41 @@ inline void clear_eval_cache() {
 
 // Reduction constants
 constexpr int futility_margin(int depth, bool improving) {
-    // More aggressive futility margins for deeper search
-    // Based on Stockfish and other strong engines
-    int base = 150;
-    if (depth == 1) base = 200;
-    else if (depth == 2) base = 300;
-    else if (depth == 3) base = 400;
-    else base = 500 + (depth - 3) * 100;  // depth >= 4
+    // More reasonable futility margins
+    int base = 100;
+    if (depth == 1) base = 120;
+    else if (depth == 2) base = 160;
+    else if (depth == 3) base = 200;
+    else base = 250 + (depth - 3) * 50;  // depth >= 4
 
     // Adjust based on improving flag
-    if (improving) base -= 60;
-    else base += 100;
+    if (improving) base -= 30;
+    else base += 50;
 
-    return base * depth;
+    return base;
 }
 
-// LMR reduction computation - EXTREME reduction for maximum speed
+// LMR reduction computation - balanced for accuracy
 inline int lmr_reduction(int depth, int moves_played, bool improving, bool pv_node) {
-    // Start with much higher base reduction
-    int reduction = 3;
+    // Start with no base reduction
+    int reduction = 0;
 
-    // Very progressive reduction based on move count
-    if (moves_played >= 2) reduction += 1;
-    if (moves_played >= 4) reduction += 2;
-    if (moves_played >= 6) reduction += 3;
-    if (moves_played >= 10) reduction += 4;
+    // Progressive reduction based on move count
+    if (moves_played >= 4) reduction += 1;
+    if (moves_played >= 8) reduction += 1;
+    if (moves_played >= 12) reduction += 1;
 
     // Node type and improvement
     if (!pv_node) reduction += 1;
-    if (!improving) reduction += 2;
+    if (!improving) reduction += 1;
 
-    // Depth-based: aggressive reduction at all depths
-    if (depth >= 4) reduction += 1;
+    // Depth-based: more reduction at deeper depths
     if (depth >= 6) reduction += 1;
-    if (depth >= 8) reduction += 2;
+    if (depth >= 10) reduction += 1;
 
-    // Cap reduction - allow very deep reductions
-    if (reduction > depth - 1) reduction = depth - 1;
-    if (reduction < 2) reduction = 2;
+    // Cap reduction - don't reduce too much
+    if (reduction > depth - 2) reduction = depth - 2;
+    if (reduction < 0) reduction = 0;
 
     return reduction;
 }
@@ -130,32 +127,17 @@ bool check_time() {
         auto now = std::chrono::steady_clock::now();
         int elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(now - search_start).count();
 
-        // CRITICAL: Never stop in the first 100ms of search
-        // This ensures we always complete at least some work
-        if (elapsed < 100) {
-            return false;
-        }
-
-        // Stop if we've used max time (hard limit)
+        // Hard limit - MUST stop
         if (elapsed >= max_time) {
             stop = true;
             return true;
         }
 
-        // Consider stopping if we've used ideal time and depth is sufficient
-        // Reduced to depth 8 which is achievable
-        int min_depth = 8;  // Achievable at short time controls
-        if (elapsed >= ideal_time && root_depth >= min_depth && !stop) {
-            // Consider using more time if we haven't searched deeply yet
-            if (root_depth < min_depth) {
-                return false;  // Keep searching
-            }
-
-            // Stop if we've used most of max_time
-            if (elapsed >= max_time * 9 / 10) {
-                stop = true;
-                return true;
-            }
+        // Soft limit - should stop if we have a result from previous iteration
+        // Only stop at depth 2 or higher to ensure we have at least some analysis
+        if (elapsed >= ideal_time && root_depth >= 2) {
+            stop = true;
+            return true;
         }
     }
 
@@ -276,7 +258,18 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
     bool found;
     TTEntry* tte = TT.probe(pos.key(), found);
 
-    Move tt_move = found ? tte->move() : MOVE_NONE;
+    // CRITICAL: Validate TT move with FULL legal check before using it
+    // This prevents TT corruption from causing illegal moves
+    Move tt_move = MOVE_NONE;
+    if (found) {
+        Move m = tte->move();
+        // Full validation: bounds check + pseudo_legal + legal
+        if (m && m.from() < SQUARE_NONE && m.to() < SQUARE_NONE) {
+            if (pos.legal(m)) {
+                tt_move = m;
+            }
+        }
+    }
     Value tt_value = found ? tte->value() : VALUE_ZERO;
     Depth tt_depth = found ? tte->depth() : DEPTH_ZERO;
 
@@ -303,7 +296,13 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
         // Re-probe TT to get the move from the shallow search
         tte = TT.probe(pos.key(), found);
         if (found) {
-            tt_move = tte->move();
+            Move m = tte->move();
+            // Full validation with legal check
+            if (m && m.from() < SQUARE_NONE && m.to() < SQUARE_NONE) {
+                if (pos.legal(m)) {
+                    tt_move = m;
+                }
+            }
         }
     }
 
@@ -357,10 +356,10 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
     ExtMove moves[MAX_MOVES];
     ExtMove* end;
 
-    // CAPTURE-ONLY SEARCH: Aggressive capture-only at deeper plies
-    // Apply at ply >= 4 with depth <= 3, and ply >= 8 with depth <= 5
+    // CAPTURE-ONLY SEARCH: Less aggressive - only apply at very deep plies with low remaining depth
+    // Apply only at ply >= 8 with depth <= 3
     bool capture_only = !pv_node && !pos.is_check() &&
-        ((ss->ply >= 3 && depth <= 4) || (ss->ply >= 6 && depth <= 6));
+        (ss->ply >= 8 && depth <= 3);
 
     if (capture_only) {
         end = generate<GEN_CAPTURE>(pos, moves);
@@ -474,18 +473,19 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
             }
         }
 
-        // Late move pruning: ULTRA - only search FIRST quiet move
-        if (!pv_node && ss->ply > 0 && moves_played >= 1 &&
+        // Late move pruning: balanced - prune late quiet moves at non-PV nodes
+        // Only apply when we have searched enough moves and depth is low
+        if (!pv_node && ss->ply > 0 && moves_played >= 4 && depth <= 4 &&
             !m.is_capture() && !m.is_promotion() && !m.is_castling()) {
-            continue;  // Skip all but first quiet move
+            continue;  // Skip late quiet moves at low depth
         }
 
         // Futility pruning: skip quiet moves that can't improve alpha
-        // ULTRA aggressive - applies at all depths
-        if (!pv_node && ss->ply > 0 && !pos.is_check() &&
+        // Balanced - only apply at low depths
+        if (!pv_node && ss->ply > 0 && !pos.is_check() && depth <= 3 &&
             !m.is_capture() && !m.is_promotion() && !m.is_castling()) {
-            // Ultra aggressive futility margin
-            int margin = depth * 900 + (ss->improving ? 0 : 200);
+            // More reasonable futility margin
+            int margin = depth * 200 + (ss->improving ? 0 : 100);
 
             // Check if move is futile (eval + margin < alpha)
             if (eval + margin < alpha) {
@@ -666,15 +666,6 @@ Move search(Position& pos, Limits& lim) {
     // Track search start time for time management
     search_start = std::chrono::steady_clock::now();
 
-    // DEBUG: Log search start via info string
-    {
-        Color us = pos.side_to_move();
-        std::cout << "info string DEBUG_SEARCH_START side=" << int(us)
-                  << " wtime=" << limits.time[0] << " btime=" << limits.time[1]
-                  << " depth=" << limits.depth << "\n";
-        std::cout.flush();
-    }
-
     Move best_move = MOVE_NONE;
     Value best_value = -VALUE_INFINITE;
     root_score = best_value;
@@ -682,22 +673,6 @@ Move search(Position& pos, Limits& lim) {
     // Check if we have any legal moves at all - ALSO SAVE THEM FOR FALLBACK
     ExtMove initial_moves[MAX_MOVES];
     ExtMove* initial_end = generate<GEN_LEGAL>(pos, initial_moves);
-
-    // DEBUG: Log initial moves
-    {
-        int move_count = int(initial_end - initial_moves);
-        std::cout << "info string DEBUG_INITIAL_MOVES count=" << move_count << "\n";
-        std::cout.flush();
-
-        // Also log to stderr for debugging
-        std::cerr << "INITIAL_MOVES count=" << move_count << "\n";
-        if (move_count > 0) {
-            std::cerr << "  First move: from=" << int(initial_moves[0].move.from())
-                      << " to=" << int(initial_moves[0].move.to())
-                      << " raw=" << initial_moves[0].move.raw() << "\n";
-        }
-        std::cerr.flush();
-    }
 
     if (initial_moves == initial_end) {
         // No legal moves for us - we are checkmated or stalemated
@@ -711,10 +686,6 @@ Move search(Position& pos, Limits& lim) {
             std::cout << "info depth 1 score cp 0 nodes 0 nps 0" << std::endl;
             std::cout.flush();
         }
-
-        // Log to stderr for debugging
-        std::cerr << "NO LEGAL MOVES - " << (is_checkmate ? "CHECKMATE" : "STALEMATE") << "\n";
-        std::cerr.flush();
 
         return MOVE_NONE;  // No move to make
     }
@@ -732,37 +703,30 @@ Move search(Position& pos, Limits& lim) {
     clear_eval_cache();
 
     // Initialize time management for tournament time controls
+    // Using proven formula: base/20 + inc/2 (from Chess Programming Wiki)
     if (limits.use_time_management()) {
         Color us = pos.side_to_move();
         int time_left = limits.time[int(us)];
         int time_inc = limits.inc[int(us)];
 
-        // Use a fraction of remaining time based on game phase
-        // In middle game (more pieces), use more time
-        // In endgame (fewer pieces), use less time per move
-        int piece_count = popcount(pos.pieces());
-        double time_fraction = 0.45;  // Base: 12% of remaining time (increased from 10%)
+        // Safety margin to avoid losing on time
+        const int overhead = 50;
+        int safe_time = std::max(1, time_left - overhead);
 
-        if (piece_count > 28) {
-            time_fraction = 0.45;  // Opening: more time for important decisions (increased from 15%)
-        } else if (piece_count < 16) {
-            time_fraction = 0.10;  // Endgame: less time needed (increased from 8%)
-        }
+        // Basic formula: base/20 + inc/2
+        ideal_time = safe_time / 20 + time_inc / 2;
 
-        ideal_time = int(time_left * time_fraction) + time_inc * 3;  // Use 2x increment (was 1x)
-        max_time = int(time_left);  // Use all available time
+        // Hard limit: never use more than 1/4 of remaining time
+        max_time = std::min(safe_time / 4, ideal_time * 5);
 
-        // CRITICAL: Ensure minimum search time for very short time controls
-        // This prevents the search from being interrupted immediately
-        if (ideal_time < 300) ideal_time = 300;  // At least 300ms (reduced from 500ms)
-        // Maximum time - use all time with minimal buffer
-        if (max_time > time_left - 100) max_time = time_left - 100;  // Reduced buffer from 500 to 100
+        // Absolute minimums
+        ideal_time = std::max(10, ideal_time);
+        max_time = std::max(10, max_time);
+
+        // Never exceed remaining time minus overhead
+        max_time = std::min(max_time, safe_time - 10);
+
         if (ideal_time > max_time) ideal_time = max_time;
-
-        // For very short time controls, use a larger fraction
-        if (time_left < 10000) {  // Less than 10 seconds
-            ideal_time = std::max(ideal_time, time_left * 4 / 5);  // Use 1/2 of remaining time (was 1/3)
-        }
     } else {
         ideal_time = 0;
         max_time = 0;
@@ -796,8 +760,8 @@ Move search(Position& pos, Limits& lim) {
     // Iterative deepening
     // When depth=0, search until time runs out (tournament time control)
     // When depth>0, search to that specific depth
-    // Start from depth 5 for faster time allocation at short time controls
-    int start_depth = (limits.depth == 0) ? 5 : 1;
+    // Always start from depth 1 for proper iterative deepening
+    int start_depth = (limits.depth == 0) ? 1 : limits.depth;
     for (root_depth = start_depth; limits.depth == 0 || root_depth <= limits.depth; ++root_depth) {
         // Check time before starting a new depth (for movetime)
         check_time();
@@ -926,54 +890,9 @@ Move search(Position& pos, Limits& lim) {
         uci_info(pos, root_depth, depth_best_value, nodes.load(), time_ms);
     }
 
-    // DEBUG: Log search completion
-    {
-        std::cout << "info string DEBUG_LOOP_EXIT depth=" << root_depth
-                  << " best_move_valid=" << (best_move ? 1 : 0)
-                  << " nodes=" << nodes.load() << "\n";
-        std::cout.flush();
-    }
-
     // Fallback: if best_move is still MOVE_NONE, use the first legal move we found initially
-    bool used_fallback = false;
     if (best_move == MOVE_NONE) {
-        // Use the initial_moves we saved at the start - these are guaranteed to be valid
-        std::cerr << "FALLBACK: using initial_moves[0], raw=" << initial_moves[0].move.raw() << "\n";
-        std::cerr.flush();
         best_move = initial_moves[0].move;
-        used_fallback = true;
-    }
-
-    // SAFETY CHECK: best_move MUST be valid at this point
-    // If not, something is very wrong and we should use a safe fallback
-    bool used_emergency = false;
-    if (!best_move) {
-        // This should NEVER happen, but if it does, try to find ANY legal move
-        std::cerr << "EMERGENCY: initial move was invalid, regenerating...\n";
-        std::cerr.flush();
-
-        ExtMove emergency_moves[MAX_MOVES];
-        ExtMove* emergency_end = generate<GEN_LEGAL>(pos, emergency_moves);
-        if (emergency_end != emergency_moves) {
-            best_move = emergency_moves[0].move;
-            used_emergency = true;
-            std::cerr << "EMERGENCY: found move, raw=" << best_move.raw() << "\n";
-        } else {
-            std::cerr << "EMERGENCY: NO MOVES FOUND - returning MOVE_NONE\n";
-        }
-        std::cerr.flush();
-        // If still no move, we have to return something - this is a critical error
-    }
-
-    // DEBUG: Write return info to diagnose 0000 bug
-    {
-        std::cout << "info string DEBUG_RETURN side=" << int(pos.side_to_move())
-                  << " valid=" << (best_move ? 1 : 0)
-                  << " from=" << (best_move ? int(best_move.from()) : -1)
-                  << " to=" << (best_move ? int(best_move.to()) : -1)
-                  << " fallback=" << (used_fallback ? 1 : 0)
-                  << " emergency=" << (used_emergency ? 1 : 0) << "\n";
-        std::cout.flush();
     }
 
     return best_move;
