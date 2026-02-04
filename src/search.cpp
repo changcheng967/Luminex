@@ -937,9 +937,23 @@ Move search(Position& pos, Limits& lim) {
         best_move = initial_moves[0].move;
     }
 
-    // DIAGNOSTIC: Log what we're returning
-    Piece p = pos.piece_on(best_move.from());
-    std::cerr << "=== SEARCH RETURNING best_move=" << best_move << " from=" << best_move.from() << " piece=" << int(p) << " ===" << std::endl;
+    // RIGHT BEFORE return best_move;
+    std::cerr << "\n=== FINAL BESTMOVE VALIDATION ===\n";
+    std::cerr << "Position FEN: " << pos.fen() << "\n";
+    std::cerr << "Side to move: " << (pos.side_to_move() == WHITE ? "WHITE" : "BLACK") << "\n";
+    std::cerr << "best_move: " << best_move << "\n";
+    if (best_move) {
+        std::cerr << "  from=" << best_move.from() << ", to=" << best_move.to() << "\n";
+        Piece pc = pos.piece_on(best_move.from());
+        std::cerr << "  piece at from: " << int(pc);
+        if (pc != NO_PIECE) {
+            std::cerr << " (color=" << (pos.color_of_piece(pc) == WHITE ? "WHITE" : "BLACK") << ")";
+        }
+        std::cerr << "\n";
+        std::cerr << "  pseudo_legal: " << pos.pseudo_legal(best_move) << "\n";
+        std::cerr << "  legal: " << pos.legal(best_move) << "\n";
+    }
+    std::cerr << "=================================\n";
 
     return best_move;
 }
