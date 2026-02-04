@@ -127,31 +127,17 @@ bool check_time() {
         auto now = std::chrono::steady_clock::now();
         int elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(now - search_start).count();
 
-        // CRITICAL: Never stop in the first 100ms of search
-        // This ensures we always complete at least some work
-        if (elapsed < 100) {
-            return false;
-        }
-
-        // Stop if we've used max time (hard limit)
+        // Hard limit - MUST stop
         if (elapsed >= max_time) {
             stop = true;
             return true;
         }
 
-        // Consider stopping if we've used ideal time and depth is sufficient
-        int min_depth = 12;  // Reasonable minimum depth before considering time stop
-        if (elapsed >= ideal_time && root_depth >= min_depth && !stop) {
-            // Consider using more time if we haven't searched deeply yet
-            if (root_depth < min_depth) {
-                return false;  // Keep searching
-            }
-
-            // Stop if we've used most of max_time
-            if (elapsed >= max_time * 9 / 10) {
-                stop = true;
-                return true;
-            }
+        // Soft limit - should stop if we have a result from previous iteration
+        // Only stop at depth 2 or higher to ensure we have at least some analysis
+        if (elapsed >= ideal_time && root_depth >= 2) {
+            stop = true;
+            return true;
         }
     }
 
@@ -272,18 +258,15 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
     bool found;
     TTEntry* tte = TT.probe(pos.key(), found);
 
-    // CRITICAL: Validate TT move before using it
+    // CRITICAL: Validate TT move with FULL legal check before using it
+    // This prevents TT corruption from causing illegal moves
     Move tt_move = MOVE_NONE;
     if (found) {
         Move m = tte->move();
-        // Check bounds and pseudo-legal before using TT move
+        // Full validation: bounds check + pseudo_legal + legal
         if (m && m.from() < SQUARE_NONE && m.to() < SQUARE_NONE) {
-            if (pos.pseudo_legal(m)) {
-                // Additional verification: check piece is actually on source square
-                Piece pc = pos.piece_on(m.from());
-                if (pc != NO_PIECE && pos.color_of_piece(pc) == pos.side_to_move()) {
-                    tt_move = m;
-                }
+            if (pos.legal(m)) {
+                tt_move = m;
             }
         }
     }
@@ -314,13 +297,10 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
         tte = TT.probe(pos.key(), found);
         if (found) {
             Move m = tte->move();
-            // CRITICAL: Validate the TT move before using it
+            // Full validation with legal check
             if (m && m.from() < SQUARE_NONE && m.to() < SQUARE_NONE) {
-                if (pos.pseudo_legal(m)) {
-                    Piece pc = pos.piece_on(m.from());
-                    if (pc != NO_PIECE && pos.color_of_piece(pc) == pos.side_to_move()) {
-                        tt_move = m;
-                    }
+                if (pos.legal(m)) {
+                    tt_move = m;
                 }
             }
         }
@@ -723,37 +703,30 @@ Move search(Position& pos, Limits& lim) {
     clear_eval_cache();
 
     // Initialize time management for tournament time controls
+    // Using proven formula: base/20 + inc/2 (from Chess Programming Wiki)
     if (limits.use_time_management()) {
         Color us = pos.side_to_move();
         int time_left = limits.time[int(us)];
         int time_inc = limits.inc[int(us)];
 
-        // Use a fraction of remaining time based on game phase
-        // In middle game (more pieces), use more time
-        // In endgame (fewer pieces), use less time per move
-        int piece_count = popcount(pos.pieces());
-        double time_fraction = 0.45;  // Base: 12% of remaining time (increased from 10%)
+        // Safety margin to avoid losing on time
+        const int overhead = 50;
+        int safe_time = std::max(1, time_left - overhead);
 
-        if (piece_count > 28) {
-            time_fraction = 0.45;  // Opening: more time for important decisions (increased from 15%)
-        } else if (piece_count < 16) {
-            time_fraction = 0.10;  // Endgame: less time needed (increased from 8%)
-        }
+        // Basic formula: base/20 + inc/2
+        ideal_time = safe_time / 20 + time_inc / 2;
 
-        ideal_time = int(time_left * time_fraction) + time_inc * 3;  // Use 2x increment (was 1x)
-        max_time = int(time_left);  // Use all available time
+        // Hard limit: never use more than 1/4 of remaining time
+        max_time = std::min(safe_time / 4, ideal_time * 5);
 
-        // CRITICAL: Ensure minimum search time for very short time controls
-        // This prevents the search from being interrupted immediately
-        if (ideal_time < 300) ideal_time = 300;  // At least 300ms (reduced from 500ms)
-        // Maximum time - use all time with minimal buffer
-        if (max_time > time_left - 100) max_time = time_left - 100;  // Reduced buffer from 500 to 100
+        // Absolute minimums
+        ideal_time = std::max(10, ideal_time);
+        max_time = std::max(10, max_time);
+
+        // Never exceed remaining time minus overhead
+        max_time = std::min(max_time, safe_time - 10);
+
         if (ideal_time > max_time) ideal_time = max_time;
-
-        // For very short time controls, use a larger fraction
-        if (time_left < 10000) {  // Less than 10 seconds
-            ideal_time = std::max(ideal_time, time_left * 4 / 5);  // Use 1/2 of remaining time (was 1/3)
-        }
     } else {
         ideal_time = 0;
         max_time = 0;
@@ -787,8 +760,8 @@ Move search(Position& pos, Limits& lim) {
     // Iterative deepening
     // When depth=0, search until time runs out (tournament time control)
     // When depth>0, search to that specific depth
-    // Start from depth 5 for faster time allocation at short time controls
-    int start_depth = (limits.depth == 0) ? 5 : 1;
+    // Always start from depth 1 for proper iterative deepening
+    int start_depth = (limits.depth == 0) ? 1 : limits.depth;
     for (root_depth = start_depth; limits.depth == 0 || root_depth <= limits.depth; ++root_depth) {
         // Check time before starting a new depth (for movetime)
         check_time();
@@ -920,53 +893,6 @@ Move search(Position& pos, Limits& lim) {
     // Fallback: if best_move is still MOVE_NONE, use the first legal move we found initially
     if (best_move == MOVE_NONE) {
         best_move = initial_moves[0].move;
-    }
-
-    // SAFETY CHECK: best_move MUST be valid at this point
-    if (!best_move) {
-        ExtMove emergency_moves[MAX_MOVES];
-        ExtMove* emergency_end = generate<GEN_LEGAL>(pos, emergency_moves);
-        if (emergency_end != emergency_moves) {
-            best_move = emergency_moves[0].move;
-        }
-    }
-
-    // CRITICAL: Verify board state is consistent after search
-    // If board is corrupted, we might send illegal moves
-    ExtMove verify_moves[MAX_MOVES];
-    ExtMove* verify_end = generate<GEN_LEGAL>(pos, verify_moves);
-    bool best_move_in_legal = false;
-    for (ExtMove* it = verify_moves; it != verify_end; ++it) {
-        if (it->move == best_move) {
-            best_move_in_legal = true;
-            break;
-        }
-    }
-
-    if (!best_move_in_legal && verify_end != verify_moves) {
-        // Board state changed or best_move is no longer legal - use first legal move
-        std::cerr << "\n=== BOARD STATE CHANGED AFTER SEARCH ===\n";
-        std::cerr << "Best move " << best_move << " not in current legal moves!\n";
-        std::cerr << "FEN: " << pos.fen() << "\n";
-        std::cerr << "Legal moves count: " << (verify_end - verify_moves) << "\n";
-        std::cerr << "Using first legal move instead.\n";
-        std::cerr << "======================================\n";
-        best_move = verify_moves[0].move;
-    }
-
-    // ADDITIONAL VERIFICATION: Check piece on source square
-    if (best_move) {
-        Square from = best_move.from();
-        Piece pc = pos.piece_on(from);
-        if (pc == NO_PIECE) {
-            std::cerr << "\n=== NO PIECE ON SOURCE SQUARE ===\n";
-            std::cerr << "Best move: " << best_move << "\n";
-            std::cerr << "Source square: " << from << "\n";
-            std::cerr << "FEN: " << pos.fen() << "\n";
-            std::cerr << "Using first legal move instead.\n";
-            std::cerr << "===================================\n";
-            best_move = verify_moves[0].move;
-        }
     }
 
     return best_move;
