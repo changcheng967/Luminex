@@ -88,7 +88,7 @@ public:
     bool is_draw() const;
     bool is_check() const;
 
-    void do_move(Move m);
+    bool do_move(Move m);  // Returns true if move executed, false if failed
     void undo_move(Move m);
 
     void do_null_move();

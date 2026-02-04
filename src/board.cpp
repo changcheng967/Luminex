@@ -452,18 +452,18 @@ void Position::set_check_info(StateInfo* si) {
     // King checks (adjacent kings not possible in legal chess)
 }
 
-void Position::do_move(Move m) {
+bool Position::do_move(Move m) {
     Square from = m.from();
     Square to = m.to();
     Piece pc = board[from];
 
     // CRITICAL FIX: Check if st_ply is about to overflow state_stack
     if (st_ply >= MAX_STATES - 2) {
-        return;  // Abort the move to prevent crash
+        return false;  // Abort the move to prevent crash
     }
 
     if (pc == NO_PIECE) {
-        return;
+        return false;
     }
 
     Color us = Color(pc / 6);
@@ -471,7 +471,7 @@ void Position::do_move(Move m) {
     PieceType pt = piece_type_of(pc);
 
     if (int(us) > 1) {
-        return;
+        return false;
     }
 
     // ALWAYS increment state stack index first (required for undo to work)
@@ -511,7 +511,7 @@ void Position::do_move(Move m) {
         std::cerr << "====================================\n";
         next_st.move_was_executed = false;
         // Don't modify board state - just return, undo_move will handle cleanup
-        return;
+        return false;
     }
 
     if (!piece_at_to_is_enemy && piece_at_to != PT_NONE && color_of_piece(board[to]) == us) {
@@ -522,7 +522,7 @@ void Position::do_move(Move m) {
         std::cerr << "Undoing and aborting move.\n";
         std::cerr << "====================================\n";
         next_st.move_was_executed = false;
-        return;
+        return false;
     }
 
     // Handle capture
@@ -639,6 +639,8 @@ void Position::do_move(Move m) {
 
     // DEBUG: Check board consistency after every move
     assert_consistency("do_move");
+
+    return true;  // Move executed successfully
 }
 
 void Position::undo_move(Move m) {

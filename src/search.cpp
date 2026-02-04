@@ -206,7 +206,12 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
         ss->current_move = it->move;
         ss->moved_piece = pos.piece_on(it->move.from());
 
-        pos.do_move(it->move);
+        if (!pos.do_move(it->move)) {
+            // CRITICAL: do_move failed during search - skip this move
+            // Must still call undo_move to clean up state_stack
+            pos.undo_move(it->move);
+            continue;
+        }
         Value value = -qsearch(pos, ss + 1, -beta, -alpha, depth - 1);
         pos.undo_move(it->move);
 
@@ -600,7 +605,12 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
         ss->current_move = m;
         ss->moved_piece = pos.piece_on(m.from());
 
-        pos.do_move(m);
+        if (!pos.do_move(m)) {
+            // CRITICAL: do_move failed - skip this move
+            // Must call undo_move to clean up state_stack even when move failed
+            pos.undo_move(m);
+            continue;
+        }
 
         Value value;
         if (do_lmr && new_depth > 0) {
@@ -887,7 +897,11 @@ Move search(Position& pos, Limits& lim) {
                 break;  // Time limit exceeded
             }
 
-            pos.do_move(it->move);
+            if (!pos.do_move(it->move)) {
+                // CRITICAL: do_move failed at root - skip this move
+                pos.undo_move(it->move);
+                continue;
+            }
             Value value = -search_worker(pos, stack + 1, -beta, -alpha, root_depth - 1, false);
             pos.undo_move(it->move);
 

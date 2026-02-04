@@ -169,7 +169,18 @@ void handle_position(Position& pos, const std::string& cmd) {
                 replay_count++;
             }
 
-            pos.do_move(m);
+            // CRITICAL: Check if do_move succeeded
+            if (!pos.do_move(m)) {
+                std::cerr << "\n=== FATAL: do_move FAILED during replay ===\n";
+                std::cerr << "Move: " << move_str << "\n";
+                std::cerr << "from=" << from << " to=" << to << "\n";
+                std::cerr << "This indicates board state corruption!\n";
+                std::cerr << "Resetting to starting position.\n";
+                std::cerr << "==========================================\n";
+                // Reset to starting position to prevent further corruption
+                pos.set("rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1");
+                return;
+            }
 
             if (replay_count <= 10) {
                 Piece p_after = pos.piece_on(to);
