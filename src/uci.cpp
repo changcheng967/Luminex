@@ -131,7 +131,29 @@ void handle_position(Position& pos, const std::string& cmd) {
                 m = Move(from, to, MF_QUIET);
             }
 
+            // DIAGNOSTIC: Check board state before and after do_move during replay
+            static int replay_count = 0;
+            if (replay_count < 10) {
+                Piece p_before = pos.piece_on(from);
+                std::cerr << "REPLAY #" << replay_count << ": " << move_str << " (from=" << from << " to=" << to << ") ";
+                std::cerr << "piece at from=" << int(p_before);
+                if (p_before != NO_PIECE) {
+                    std::cerr << " (" << (pos.color_of_piece(p_before) == WHITE ? "W" : "B") << ")";
+                }
+                std::cerr << " side_to_move=" << (pos.side_to_move() == WHITE ? "W" : "B") << std::endl;
+                replay_count++;
+            }
+
             pos.do_move(m);
+
+            if (replay_count <= 10) {
+                Piece p_after = pos.piece_on(to);
+                std::cerr << "  after do_move: piece at to=" << int(p_after);
+                if (p_after != NO_PIECE) {
+                    std::cerr << " (" << (pos.color_of_piece(p_after) == WHITE ? "W" : "B") << ")";
+                }
+                std::cerr << " side_to_move=" << (pos.side_to_move() == WHITE ? "W" : "B") << std::endl;
+            }
         }
     }
 }

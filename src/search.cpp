@@ -265,6 +265,21 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
         Move m = tte->move();
         // Full validation: bounds check + pseudo_legal + legal
         if (m && m.from() < SQUARE_NONE && m.to() < SQUARE_NONE) {
+            // DIAGNOSTIC: Check what the TT is giving us
+            Piece pc = pos.piece_on(m.from());
+            if (pc != NO_PIECE) {
+                Color piece_color = pos.color_of_piece(pc);
+                if (piece_color != pos.side_to_move()) {
+                    std::cerr << "\n=== TT GIVING OPPONENT MOVE ===\n";
+                    std::cerr << "TT move: " << m << "\n";
+                    std::cerr << "piece_color: " << (piece_color == WHITE ? "WHITE" : "BLACK") << "\n";
+                    std::cerr << "side_to_move: " << (pos.side_to_move() == WHITE ? "WHITE" : "BLACK") << "\n";
+                    std::cerr << "FEN: " << pos.fen() << "\n";
+                    std::cerr << "pos.legal(m): " << pos.legal(m) << "\n";
+                    std::cerr << "==================================\n";
+                }
+            }
+
             if (pos.legal(m)) {
                 tt_move = m;
             }
@@ -674,6 +689,20 @@ Move search(Position& pos, Limits& lim) {
     ExtMove initial_moves[MAX_MOVES];
     ExtMove* initial_end = generate<GEN_LEGAL>(pos, initial_moves);
 
+    // DEBUG: Check first few moves to see if they're for correct color
+    if (initial_end != initial_moves) {
+        Piece first_piece = pos.piece_on(initial_moves[0].move.from());
+        Color piece_color = (first_piece != NO_PIECE) ? pos.color_of_piece(first_piece) : Color(2);
+        if (piece_color != pos.side_to_move()) {
+            std::cerr << "\n=== SEARCH GENERATING WRONG COLOR MOVES ===\n";
+            std::cerr << "side_to_move: " << (pos.side_to_move() == WHITE ? "WHITE" : "BLACK") << "\n";
+            std::cerr << "First move: " << initial_moves[0].move << "\n";
+            std::cerr << "Piece at from: " << int(first_piece) << " (color=" << (piece_color == WHITE ? "WHITE" : piece_color == BLACK ? "BLACK" : "INVALID") << ")\n";
+            std::cerr << "FEN: " << pos.fen() << "\n";
+            std::cerr << "======================================\n";
+        }
+    }
+
     if (initial_moves == initial_end) {
         // No legal moves for us - we are checkmated or stalemated
         bool is_checkmate = pos.is_check();
@@ -776,6 +805,15 @@ Move search(Position& pos, Limits& lim) {
         // Generate moves
         ExtMove moves[MAX_MOVES];
         ExtMove* end = generate<GEN_LEGAL>(pos, moves);
+
+        // DIAGNOSTIC: Log first few moves at root depth 1
+        if (root_depth == 1) {
+            std::cerr << "Root depth " << root_depth << ": side_to_move=" << (pos.side_to_move() == WHITE ? "W" : "B") << " moves=" << (end - moves) << std::endl;
+            for (ExtMove* it = moves; it != end && it < moves + 5; ++it) {
+                Piece p = pos.piece_on(it->move.from());
+                std::cerr << "  " << it->move << " (from=" << it->move.from() << " piece=" << int(p) << ")" << std::endl;
+            }
+        }
 
         // Order moves at root for better efficiency
         for (ExtMove* it = moves; it != end; ++it) {
@@ -893,8 +931,15 @@ Move search(Position& pos, Limits& lim) {
 
     // Fallback: if best_move is still MOVE_NONE, use the first legal move we found initially
     if (best_move == MOVE_NONE) {
+        std::cerr << "=== FALLBACK TO INITIAL_MOVE[0] ===" << std::endl;
+        std::cerr << "initial_moves[0] = " << initial_moves[0].move << std::endl;
+        std::cerr << "FEN: " << pos.fen() << std::endl;
         best_move = initial_moves[0].move;
     }
+
+    // DIAGNOSTIC: Log what we're returning
+    Piece p = pos.piece_on(best_move.from());
+    std::cerr << "=== SEARCH RETURNING best_move=" << best_move << " from=" << best_move.from() << " piece=" << int(p) << " ===" << std::endl;
 
     return best_move;
 }

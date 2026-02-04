@@ -159,7 +159,7 @@ void Position::set(const std::string& fen) {
 
     // Initialize state stack
     st_ply = 0;
-    st_ = &dummy_state;  // FIX: Use dummy_state, not &state_stack[0]
+    st_ = &state_stack[0];  // CRITICAL FIX: Use state_stack[0], not dummy_state!
     st_->key = 0;
     st_->ply = 0;
     st_->ep_square = SQUARE_NONE;
