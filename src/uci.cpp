@@ -181,6 +181,11 @@ void handle_position(Position& pos, const std::string& cmd) {
 }
 
 void handle_go(Position& pos, const std::string& cmd) {
+    // CRITICAL: Clear TT before each search to prevent pollution from previous games
+    // This is especially important after fixing Zobrist key bugs
+    TT.clear();
+    TT.new_search();
+
     // CRITICAL: Verify position consistency before searching
     // This catches board corruption early
     pos.assert_consistency("handle_go entry");
