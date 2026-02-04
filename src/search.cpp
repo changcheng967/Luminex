@@ -964,6 +964,27 @@ Move search(Position& pos, Limits& lim) {
     }
     std::cerr << "=================================\n";
 
+    // FINAL SAFETY CHECK: Verify best_move is legal before returning
+    // This acts as a last-ditch safety net against corrupted search state
+    if (best_move != MOVE_NONE && !pos.legal(best_move)) {
+        std::cerr << "\n=== CRITICAL: search() generated illegal move ===\n";
+        std::cerr << "best_move: " << best_move << "\n";
+        std::cerr << "FEN: " << pos.fen() << "\n";
+        std::cerr << "Generating legal fallback...\n";
+
+        // Try to find a safe fallback from legal move generation
+        ExtMove safety_moves[MAX_MOVES];
+        ExtMove* end = generate<GEN_LEGAL>(pos, safety_moves);
+        if (end > safety_moves) {
+            best_move = safety_moves[0].move;
+            std::cerr << "FALLBACK to legal move: " << best_move << "\n";
+        } else {
+            std::cerr << "NO LEGAL MOVES - returning MOVE_NONE\n";
+            best_move = MOVE_NONE;
+        }
+        std::cerr << "==============================================\n";
+    }
+
     return best_move;
 }
 

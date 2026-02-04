@@ -181,9 +181,6 @@ void handle_position(Position& pos, const std::string& cmd) {
 }
 
 void handle_go(Position& pos, const std::string& cmd) {
-    // CRITICAL: Clear TT before each search to prevent pollution from previous games
-    // This is especially important after fixing Zobrist key bugs
-    TT.clear();
     TT.new_search();
 
     // CRITICAL: Verify position consistency before searching
@@ -284,9 +281,40 @@ void handle_go(Position& pos, const std::string& cmd) {
     // Send final info
     uci_info(pos, root_depth, root_score, nodes.load(), 0);
 
-    // Send best move
+    // CRITICAL: Validate best_move before sending
     if (best_move) {
-        std::cout << "bestmove " << best_move << "\n";
+        Piece pc = pos.piece_on(best_move.from());
+        Color piece_color = (pc != NO_PIECE) ? pos.color_of_piece(pc) : NO_COLOR;
+        bool is_legal = pos.legal(best_move);
+        bool side_match = (piece_color == pos.side_to_move());
+
+        if (!side_match || !is_legal) {
+            std::cerr << "\n=== ILLEGAL BESTMOVE DETECTED ===\n";
+            std::cerr << "best_move: " << best_move << "\n";
+            std::cerr << "from=" << best_move.from() << " to=" << best_move.to() << "\n";
+            std::cerr << "piece at from: " << int(pc) << " (color=" << (piece_color == WHITE ? "WHITE" : piece_color == BLACK ? "BLACK" : "NONE") << ")\n";
+            std::cerr << "side_to_move: " << (pos.side_to_move() == WHITE ? "WHITE" : "BLACK") << "\n";
+            std::cerr << "side_match: " << side_match << " is_legal: " << is_legal << "\n";
+            std::cerr << "FEN: " << pos.fen() << "\n";
+
+            // Generate a legal move as fallback
+            ExtMove moves[MAX_MOVES];
+            ExtMove* end = generate<GEN_LEGAL>(pos, moves);
+            if (end > moves) {
+                best_move = moves[0].move;
+                std::cerr << "FALLBACK to legal move: " << best_move << "\n";
+            } else {
+                best_move = MOVE_NONE;  // No legal moves - game over
+                std::cerr << "NO LEGAL MOVES - GAME OVER\n";
+            }
+            std::cerr << "===================================\n";
+        }
+
+        if (best_move) {
+            std::cout << "bestmove " << best_move << "\n";
+        } else {
+            std::cout << "bestmove 0000\n";
+        }
     } else {
         std::cout << "bestmove 0000\n";
     }
