@@ -299,6 +299,16 @@ void handle_go(Position& pos, const std::string& cmd) {
     // Search may have corrupted the position if do_move/undo aren't balanced
     pos.assert_consistency("handle_go after search");
 
+    // DIAGNOSTIC: Verify the final best_move is valid before sending
+    if (best_move) {
+        Piece pc = pos.piece_on(best_move.from());
+        Color piece_color = (pc != NO_PIECE) ? pos.color_of_piece(pc) : NO_COLOR;
+        Color stm = pos.side_to_move();
+        std::cerr << "BESTMOVE CHECK: move=" << best_move << " piece_at_from=" << int(pc)
+                  << " piece_color=" << (piece_color == WHITE ? "W" : piece_color == BLACK ? "B" : "N")
+                  << " side_to_move=" << (stm == WHITE ? "W" : "B") << std::endl;
+    }
+
     // Send final info
     uci_info(pos, root_depth, root_score, nodes.load(), 0);
 

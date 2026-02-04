@@ -714,6 +714,19 @@ void Position::undo_move(Move m) {
     st_ = &state_stack[st_ply];
     --game_ply_;
 
+    // CRITICAL FIX: Restore castling_rights_[] from the restored state
+    // do_move modifies castling_rights_[], but it wasn't being restored in undo_move
+    // This caused permanent castling rights corruption after the first move
+    for (Color c : {WHITE, BLACK}) {
+        castling_rights_[c] = 0;
+        if (st_->castling_rights & (c == WHITE ? WHITE_KINGSIDE : BLACK_KINGSIDE)) {
+            castling_rights_[c] |= (c == WHITE ? WHITE_KINGSIDE : BLACK_KINGSIDE);
+        }
+        if (st_->castling_rights & (c == WHITE ? WHITE_QUEENSIDE : BLACK_QUEENSIDE)) {
+            castling_rights_[c] |= (c == WHITE ? WHITE_QUEENSIDE : BLACK_QUEENSIDE);
+        }
+    }
+
     // DEBUG: Check board consistency after every undo
     assert_consistency("undo_move");
 }
