@@ -931,10 +931,19 @@ Move search(Position& pos, Limits& lim) {
 
     // Fallback: if best_move is still MOVE_NONE, use the first legal move we found initially
     if (best_move == MOVE_NONE) {
-        std::cerr << "=== FALLBACK TO INITIAL_MOVE[0] ===" << std::endl;
-        std::cerr << "initial_moves[0] = " << initial_moves[0].move << std::endl;
-        std::cerr << "FEN: " << pos.fen() << std::endl;
-        best_move = initial_moves[0].move;
+        // CRITICAL FIX: Check if we have any legal moves before accessing initial_moves[0]
+        if (initial_end > initial_moves) {
+            std::cerr << "=== FALLBACK TO INITIAL_MOVE[0] ===" << std::endl;
+            std::cerr << "initial_moves[0] = " << initial_moves[0].move << std::endl;
+            std::cerr << "FEN: " << pos.fen() << std::endl;
+            best_move = initial_moves[0].move;
+        } else {
+            // No legal moves - we are checkmated or stalemated
+            std::cerr << "=== NO LEGAL MOVES - GAME OVER ===" << std::endl;
+            std::cerr << "FEN: " << pos.fen() << std::endl;
+            // Return MOVE_NONE to signal game over
+            return MOVE_NONE;
+        }
     }
 
     // RIGHT BEFORE return best_move;

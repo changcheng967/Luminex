@@ -462,11 +462,8 @@ void Position::do_move(Move m) {
         return;  // Abort the move to prevent crash
     }
 
-    // Flag to track if this move should be executed
-    bool valid_move = true;
-
     if (pc == NO_PIECE) {
-        valid_move = false;
+        return;
     }
 
     Color us = Color(pc / 6);
@@ -474,19 +471,10 @@ void Position::do_move(Move m) {
     PieceType pt = piece_type_of(pc);
 
     if (int(us) > 1) {
-        valid_move = false;
-    }
-
-    // CRITICAL: Bounds check BEFORE incrementing state stack index
-    if (st_ply + 1 >= MAX_STATES) {
-        // State stack overflow! This would corrupt memory.
-        // Mark move as invalid and don't execute it.
-        valid_move = false;
         return;
     }
 
-    // ALWAYS increment state stack index and save state (even for invalid moves)
-    // This ensures undo_move can run without causing st_ply underflow
+    // ALWAYS increment state stack index first (required for undo to work)
     st_ply++;
     StateInfo& next_st = state_stack[st_ply];
 
@@ -500,33 +488,29 @@ void Position::do_move(Move m) {
     next_st.ply = st_->ply;
     next_st.move = m;
     next_st.captured_piece = piece_type_on(to);
-    next_st.move_was_executed = valid_move;  // Track if move was actually executed
+    next_st.move_was_executed = true;  // Assume valid until validation proves otherwise
 
     st_ = &next_st;
     ++game_ply_;
 
-    // Only execute the move if it's valid
-    if (!valid_move) {
-        next_st.move_was_executed = false;
-        return;
-    }
-
-    // CRITICAL: Validate move flags match actual board state
+    // CRITICAL: Validate move flags match actual board state AFTER state is saved
+    // This ensures undo can work even if validation fails
     PieceType piece_at_to = piece_type_on(to);
     bool piece_at_to_is_enemy = (board[to] != NO_PIECE && color_of_piece(board[to]) == them);
     bool move_flag_says_capture = m.is_capture();
 
     if (piece_at_to_is_enemy && !move_flag_says_capture && !m.is_promotion()) {
         // Enemy piece at destination but move is NOT flagged as capture
-        // This will cause board corruption! Abort the move.
+        // This will cause board corruption! Undo and abort.
         std::cerr << "\n=== MOVE FLAG ERROR in do_move ===\n";
         std::cerr << "Move: " << m << " (" << from << " to " << to << ")\n";
         std::cerr << "Enemy piece at destination but not flagged as capture!\n";
         std::cerr << "Piece at " << to << ": " << int(board[to]) << "\n";
         std::cerr << "Move flags: 0x" << std::hex << m.flags() << std::dec << "\n";
-        std::cerr << "Aborting move to prevent corruption.\n";
+        std::cerr << "Undoing and aborting move.\n";
         std::cerr << "====================================\n";
         next_st.move_was_executed = false;
+        // Don't modify board state - just return, undo_move will handle cleanup
         return;
     }
 
@@ -535,7 +519,7 @@ void Position::do_move(Move m) {
         std::cerr << "\n=== CAPTURING OWN PIECE in do_move ===\n";
         std::cerr << "Move: " << m << " (" << from << " to " << to << ")\n";
         std::cerr << "Friendly piece at destination!\n";
-        std::cerr << "Aborting move.\n";
+        std::cerr << "Undoing and aborting move.\n";
         std::cerr << "====================================\n";
         next_st.move_was_executed = false;
         return;
@@ -602,6 +586,16 @@ void Position::do_move(Move m) {
         st_->key ^= Zobrist::en_passant[file_of(st_->ep_square)];
     }
 
+    // CRITICAL FIX: Update Zobrist key for castling rights changes
+    // XOR out OLD castling rights BEFORE modifying them
+    for (Color c : {WHITE, BLACK}) {
+        for (int i = 0; i < 2; ++i) {
+            if (st_->castling_rights & (c == WHITE ? (WHITE_KINGSIDE << i) : (BLACK_KINGSIDE << i))) {
+                st_->key ^= Zobrist::castling[(c << 1) | i];
+            }
+        }
+    }
+
     // Update castling rights
     // Remove castling rights if rook moves or is captured
     if (pt == KING) {
@@ -615,6 +609,15 @@ void Position::do_move(Move m) {
     if (from == (us == WHITE ? A1 : A8) || to == (us == WHITE ? A1 : A8)) {
         st_->castling_rights &= ~(us == WHITE ? WHITE_QUEENSIDE : BLACK_QUEENSIDE);
         castling_rights_[us] &= ~(us == WHITE ? WHITE_QUEENSIDE : BLACK_QUEENSIDE);
+    }
+
+    // XOR in NEW castling rights AFTER modifying them
+    for (Color c : {WHITE, BLACK}) {
+        for (int i = 0; i < 2; ++i) {
+            if (st_->castling_rights & (c == WHITE ? (WHITE_KINGSIDE << i) : (BLACK_KINGSIDE << i))) {
+                st_->key ^= Zobrist::castling[(c << 1) | i];
+            }
+        }
     }
 
     // Switch side
