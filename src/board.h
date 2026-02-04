@@ -136,7 +136,7 @@ private:
     int game_ply_ = 0;
     int st_ply = 0;  // Index into state_stack
 
-    static constexpr int MAX_STATES = MAX_PLY + 10;
+    static constexpr int MAX_STATES = 2048;  // Must support long games (not just search depth)
     StateInfo state_stack[MAX_STATES] = {};
     StateInfo dummy_state;  // For default initialization
 

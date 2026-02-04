@@ -62,12 +62,6 @@ void init() {
 
 } // namespace Zobrist
 
-// State info allocator
-constexpr int STATE_ALLOC_SIZE = 2048;
-
-StateInfo state_stack[STATE_ALLOC_SIZE];  // Fixed: Array of objects, not pointers
-int state_stack_top = 0;  // No longer needed with array-of-objects approach
-
 // Position implementation
 
 void Position::set(const std::string& fen) {
@@ -597,6 +591,11 @@ void Position::do_move(Move m) {
     }
 
     // Update en passant square (check piece type before move)
+    // CRITICAL FIX: Remove old EP square from key BEFORE setting new one
+    // The key was copied from previous state and still contains the old EP hash
+    if (st_->ep_square != SQUARE_NONE) {
+        st_->key ^= Zobrist::en_passant[file_of(st_->ep_square)];
+    }
     st_->ep_square = SQUARE_NONE;
     if (pt == PAWN && std::abs(int(rank_of(to)) - int(rank_of(from))) == 2) {
         st_->ep_square = Square((from + to) / 2);
