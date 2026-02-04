@@ -501,16 +501,19 @@ bool Position::do_move(Move m) {
 
     if (piece_at_to_is_enemy && !move_flag_says_capture && !m.is_promotion()) {
         // Enemy piece at destination but move is NOT flagged as capture
-        // This will cause board corruption! Undo and abort.
+        // This will cause board corruption! Undo state advance and abort.
         std::cerr << "\n=== MOVE FLAG ERROR in do_move ===\n";
         std::cerr << "Move: " << m << " (" << from << " to " << to << ")\n";
         std::cerr << "Enemy piece at destination but not flagged as capture!\n";
         std::cerr << "Piece at " << to << ": " << int(board[to]) << "\n";
         std::cerr << "Move flags: 0x" << std::hex << m.flags() << std::dec << "\n";
-        std::cerr << "Undoing and aborting move.\n";
+        std::cerr << "Undoing state advance and aborting.\n";
         std::cerr << "====================================\n";
-        next_st.move_was_executed = false;
-        // Don't modify board state - just return, undo_move will handle cleanup
+        // CRITICAL: Manually undo state advance since we're returning false
+        // This ensures atomic failure - nothing changed
+        st_ply--;
+        st_ = &state_stack[st_ply];
+        game_ply_--;
         return false;
     }
 
@@ -519,9 +522,12 @@ bool Position::do_move(Move m) {
         std::cerr << "\n=== CAPTURING OWN PIECE in do_move ===\n";
         std::cerr << "Move: " << m << " (" << from << " to " << to << ")\n";
         std::cerr << "Friendly piece at destination!\n";
-        std::cerr << "Undoing and aborting move.\n";
+        std::cerr << "Undoing state advance and aborting.\n";
         std::cerr << "====================================\n";
-        next_st.move_was_executed = false;
+        // CRITICAL: Manually undo state advance since we're returning false
+        st_ply--;
+        st_ = &state_stack[st_ply];
+        game_ply_--;
         return false;
     }
 

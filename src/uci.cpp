@@ -171,15 +171,15 @@ void handle_position(Position& pos, const std::string& cmd) {
 
             // CRITICAL: Check if do_move succeeded
             if (!pos.do_move(m)) {
-                std::cerr << "\n=== FATAL: do_move FAILED during replay ===\n";
+                std::cerr << "\n=== do_move FAILED during replay ===\n";
                 std::cerr << "Move: " << move_str << "\n";
                 std::cerr << "from=" << from << " to=" << to << "\n";
+                std::cerr << "FEN before: " << pos.fen() << "\n";
                 std::cerr << "This indicates board state corruption!\n";
-                std::cerr << "Resetting to starting position.\n";
                 std::cerr << "==========================================\n";
-                // Reset to starting position to prevent further corruption
-                pos.set("rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1");
-                return;
+                // CRITICAL: Do NOT skip or reset - this would desync position
+                // Just log the error and continue (move was already undone by cleanup in search)
+                // The position may be corrupt, but let's try to continue
             }
 
             if (replay_count <= 10) {

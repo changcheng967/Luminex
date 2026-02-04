@@ -28,7 +28,7 @@ uint64_t perft(Position& pos, Depth depth) {
     for (ExtMove* it = moves; it != end; ++it) {
         if (!pos.do_move(it->move)) {
             // Should never happen with legal move generation
-            pos.undo_move(it->move);
+            // Do NOT call undo_move - do_move guarantees atomic failure
             continue;
         }
         count += perft(pos, depth - 1);
@@ -47,7 +47,7 @@ uint64_t perft_divide(Position& pos, Depth depth) {
     for (ExtMove* it = moves; it != end; ++it) {
         if (!pos.do_move(it->move)) {
             // Should never happen with legal move generation
-            pos.undo_move(it->move);
+            // Do NOT call undo_move - do_move guarantees atomic failure
             continue;
         }
         uint64_t count = (depth == 1) ? 1 : perft(pos, depth - 1);
