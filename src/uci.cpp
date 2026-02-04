@@ -44,7 +44,8 @@ void handle_ucinewgame() {
 void handle_position(Position& pos, const std::string& cmd) {
     // Debug: Log every position command
     static int pos_cmd_count = 0;
-    std::cerr << "\n=== POSITION COMMAND #" << (++pos_cmd_count) << " ===\n";
+    int current_cmd = ++pos_cmd_count;
+    std::cerr << "\n=== POSITION COMMAND #" << current_cmd << " ===\n";
     std::cerr << "CMD: " << cmd << "\n";
     std::cerr << "Current FEN before set: " << pos.fen() << "\n";
     std::cerr << "=====================================\n";
