@@ -646,6 +646,15 @@ bool Position::do_move(Move m) {
     // DEBUG: Check board consistency after every move
     assert_consistency("do_move");
 
+    // DIAGNOSTIC: Verify side_to_move was flipped correctly
+    if (side_to_move_ != them) {
+        std::cerr << "\n=== SIDE_TO_MOVE NOT FLIPPED IN do_move ===\n";
+        std::cerr << "Move: " << m << "\n";
+        std::cerr << "Expected side to move: " << (them == WHITE ? "WHITE" : "BLACK") << "\n";
+        std::cerr << "Actual side to move: " << (side_to_move_ == WHITE ? "WHITE" : "BLACK") << "\n";
+        std::cerr << "==========================================\n";
+    }
+
     return true;  // Move executed successfully
 }
 
@@ -729,6 +738,17 @@ void Position::undo_move(Move m) {
 
     // DEBUG: Check board consistency after every undo
     assert_consistency("undo_move");
+
+    // DIAGNOSTIC: Verify side_to_move was restored correctly
+    // After undo, side_to_move should be us (the side that made the move)
+    if (side_to_move_ != us) {
+        std::cerr << "\n=== SIDE_TO_MOVE WRONG AFTER undo_move ===\n";
+        std::cerr << "Move: " << m << "\n";
+        std::cerr << "Expected side to move: " << (us == WHITE ? "WHITE" : "BLACK") << "\n";
+        std::cerr << "Actual side to move: " << (side_to_move_ == WHITE ? "WHITE" : "BLACK") << "\n";
+        std::cerr << "st_ply: " << st_ply << "\n";
+        std::cerr << "===========================================\n";
+    }
 }
 
 void Position::do_null_move() {

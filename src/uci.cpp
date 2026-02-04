@@ -176,10 +176,11 @@ void handle_position(Position& pos, const std::string& cmd) {
                 std::cerr << "from=" << from << " to=" << to << "\n";
                 std::cerr << "FEN before: " << pos.fen() << "\n";
                 std::cerr << "This indicates board state corruption!\n";
+                std::cerr << "Skipping remaining moves to prevent further corruption.\n";
                 std::cerr << "==========================================\n";
-                // CRITICAL: Do NOT skip or reset - this would desync position
-                // Just log the error and continue (move was already undone by cleanup in search)
-                // The position may be corrupt, but let's try to continue
+                // CRITICAL: Skip remaining moves - the position is desynchronized
+                // If we continue, side_to_move will be wrong for all subsequent moves
+                break;
             }
 
             if (replay_count <= 10) {
@@ -207,6 +208,13 @@ void handle_go(Position& pos, const std::string& cmd) {
     // CRITICAL: Verify position consistency before searching
     // This catches board corruption early
     pos.assert_consistency("handle_go entry");
+
+    // DIAGNOSTIC: Verify critical state before search
+    std::cerr << "=== BEFORE SEARCH ===" << std::endl;
+    std::cerr << "FEN: " << pos.fen() << std::endl;
+    std::cerr << "side_to_move: " << (pos.side_to_move() == WHITE ? "WHITE" : "BLACK") << std::endl;
+    std::cerr << "st_ply: " << pos.game_ply() << std::endl;
+    std::cerr << "====================" << std::endl;
 
     std::istringstream ss(cmd);
     std::string token;
