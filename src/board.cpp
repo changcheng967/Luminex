@@ -65,23 +65,8 @@ void init() {
 // State info allocator
 constexpr int STATE_ALLOC_SIZE = 128;
 
-StateInfo* state_stack[STATE_ALLOC_SIZE];
-int state_stack_top = 0;
-
-StateInfo* new_state_info() {
-    if (state_stack_top > 0) {
-        return state_stack[--state_stack_top];
-    }
-    return new StateInfo();
-}
-
-void free_state_info(StateInfo* st) {
-    if (state_stack_top < STATE_ALLOC_SIZE) {
-        state_stack[state_stack_top++] = st;
-    } else {
-        delete st;
-    }
-}
+StateInfo state_stack[STATE_ALLOC_SIZE];  // Fixed: Array of objects, not pointers
+int state_stack_top = 0;  // No longer needed with array-of-objects approach
 
 // Position implementation
 
@@ -174,7 +159,7 @@ void Position::set(const std::string& fen) {
 
     // Initialize state stack
     st_ply = 0;
-    st_ = &state_stack[0];
+    st_ = &dummy_state;  // FIX: Use dummy_state, not &state_stack[0]
     st_->key = 0;
     st_->ply = 0;
     st_->ep_square = SQUARE_NONE;

@@ -59,10 +59,16 @@ void handle_position(Position& pos, const std::string& cmd) {
         fen = cmd.substr(pos_idx + 8);
     }
 
-    // Trim leading/trailing whitespace
-    size_t start = fen.find_first_not_of(" \t");
+    // Trim leading whitespace
+    size_t start = fen.find_first_not_of(" \t\r\n");
     if (start != std::string::npos) {
         fen = fen.substr(start);
+    }
+
+    // Trim trailing whitespace (including \r from Windows line endings)
+    size_t end = fen.find_last_not_of(" \t\r\n");
+    if (end != std::string::npos) {
+        fen = fen.substr(0, end + 1);
     }
 
     // Remove "startpos" prefix
@@ -106,36 +112,23 @@ void handle_position(Position& pos, const std::string& cmd) {
                 }
             }
 
-            // Generate legal moves and find the matching one
-            ExtMove legal_moves[256];
-            ExtMove* legal_end = generate<GEN_LEGAL>(pos, legal_moves);
-
-            Move m = MOVE_NONE;
-            for (ExtMove* it = legal_moves; it != legal_end; ++it) {
-                if (it->move.from() == from && it->move.to() == to) {
-                    // For promotions, also check promotion type
-                    if (promo_pt != PT_NONE) {
-                        if (it->move.promotion_type() == promo_pt) {
-                            m = it->move;
-                            break;
-                        }
-                    } else if (!it->move.is_promotion()) {
-                        m = it->move;
-                        break;
-                    }
+            // Create move directly from from/to/promotion
+            // Don't validate against legal moves - our internal board might be corrupted
+            Move m;
+            if (promo_pt != PT_NONE) {
+                // Create promotion move with appropriate flag
+                int promo_flag = 0;
+                switch (promo_pt) {
+                    case QUEEN: promo_flag = MF_PROMO_QUEEN; break;
+                    case ROOK: promo_flag = MF_PROMO_ROOK; break;
+                    case BISHOP: promo_flag = MF_PROMO_BISHOP; break;
+                    case KNIGHT: promo_flag = MF_PROMO_KNIGHT; break;
+                    default: promo_flag = MF_PROMO_QUEEN; break;  // Fallback
                 }
-            }
-
-            if (m == MOVE_NONE) {
-                std::cerr << "\n=== REPLAY ERROR: Move not found in legal moves ===\n";
-                std::cerr << "UCI move: " << move_str << "\n";
-                std::cerr << "From: " << from << " To: " << to << "\n";
-                std::cerr << "Promotion: " << int(promo_pt) << "\n";
-                std::cerr << "FEN: " << pos.fen() << "\n";
-                std::cerr << "Legal moves: " << (legal_end - legal_moves) << "\n";
-                std::cerr << "===========================================\n";
-                // Abort - position would be corrupted
-                return;
+                m = Move(from, to, promo_flag);
+            } else {
+                // Create quiet/capture move (flags will be set by do_move if needed)
+                m = Move(from, to, MF_QUIET);
             }
 
             pos.do_move(m);
@@ -259,6 +252,21 @@ void handle_go(Position& pos, const std::string& cmd) {
     // This prevents illegal moves caused by wrong flags from TT or stale position data
     // For promotions, also match promotion piece type
     if (best_move != MOVE_NONE) {
+        // DEBUG: Check if best_move piece matches side_to_move
+        Piece piece_at_from = pos.piece_on(best_move.from());
+        Color piece_color = (piece_at_from != NO_PIECE) ? pos.color_of_piece(piece_at_from) : Color(2);
+        Color expected_color = pos.side_to_move();
+
+        if (piece_color != expected_color) {
+            std::cerr << "\n=== ILLEGAL MOVE DETECTED ===\n";
+            std::cerr << "best_move: " << best_move << "\n";
+            std::cerr << "from=" << best_move.from() << " to=" << best_move.to() << "\n";
+            std::cerr << "piece at from: " << int(piece_at_from) << " (color=" << (piece_color == WHITE ? "WHITE" : piece_color == BLACK ? "BLACK" : "INVALID") << ")\n";
+            std::cerr << "expected color: " << (expected_color == WHITE ? "WHITE" : "BLACK") << "\n";
+            std::cerr << "FEN: " << pos.fen() << "\n";
+            std::cerr << "===========================\n";
+        }
+
         ExtMove legal_moves[256];
         ExtMove* legal_end = generate<GEN_LEGAL>(pos, legal_moves);
 
@@ -283,11 +291,20 @@ void handle_go(Position& pos, const std::string& cmd) {
 
         // If no match found, fall back to first legal move
         if (!found_match && legal_end != legal_moves) {
+            std::cerr << "\n=== NO MATCH FOUND, USING FIRST LEGAL MOVE ===\n";
+            std::cerr << "best_move was: " << best_move << "\n";
+            std::cerr << "Using: " << legal_moves[0].move << "\n";
+            std::cerr << "FEN: " << pos.fen() << "\n";
+            std::cerr << "==========================================\n";
             best_move = legal_moves[0].move;
         }
 
         // Final sanity check
         if (best_move && !pos.legal(best_move)) {
+            std::cerr << "\n=== SANITY CHECK FAILED ===\n";
+            std::cerr << "best_move: " << best_move << "\n";
+            std::cerr << "FEN: " << pos.fen() << "\n";
+            std::cerr << "============================\n";
             if (legal_end != legal_moves) {
                 best_move = legal_moves[0].move;
             } else {

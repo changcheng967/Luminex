@@ -650,7 +650,7 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
 
     // Save to TT
     Bound bound = best_value >= beta ? BOUND_LOWER : BOUND_UPPER;
-    tte->save(pos.key(), best_value, pv_node, bound, depth, ss->pv[0], eval, TT.generation());
+    tte->save(pos.key(), best_value, pv_node, bound, depth, ss->pv[ss->ply], eval, TT.generation());
 
     return best_value;
 }
@@ -691,8 +691,9 @@ Move search(Position& pos, Limits& lim) {
     }
 
     // Initialize search stack
+    // CRITICAL: stack[0] is unused (ply -1), stack[1] is ply 0 for root search
     for (int i = 0; i < MAX_PLY_PLUS_6; ++i) {
-        stack[i].ply = i;
+        stack[i].ply = i - 1;  // stack[0].ply = -1, stack[1].ply = 0, etc.
         stack[i].current_move = MOVE_NONE;
         stack[i].moved_piece = NO_PIECE;
         stack[i].previous = i > 0 ? &stack[i - 1] : nullptr;
