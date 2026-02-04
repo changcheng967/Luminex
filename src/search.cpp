@@ -279,7 +279,11 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
         // Check bounds and pseudo-legal before using TT move
         if (m && m.from() < SQUARE_NONE && m.to() < SQUARE_NONE) {
             if (pos.pseudo_legal(m)) {
-                tt_move = m;
+                // Additional verification: check piece is actually on source square
+                Piece pc = pos.piece_on(m.from());
+                if (pc != NO_PIECE && pos.color_of_piece(pc) == pos.side_to_move()) {
+                    tt_move = m;
+                }
             }
         }
     }
@@ -313,7 +317,10 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
             // CRITICAL: Validate the TT move before using it
             if (m && m.from() < SQUARE_NONE && m.to() < SQUARE_NONE) {
                 if (pos.pseudo_legal(m)) {
-                    tt_move = m;
+                    Piece pc = pos.piece_on(m.from());
+                    if (pc != NO_PIECE && pos.color_of_piece(pc) == pos.side_to_move()) {
+                        tt_move = m;
+                    }
                 }
             }
         }

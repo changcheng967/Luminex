@@ -248,6 +248,10 @@ void handle_position(Position& pos, const std::string& cmd) {
 }
 
 void handle_go(Position& pos, const std::string& cmd) {
+    // CRITICAL: Verify position consistency before searching
+    // This catches board corruption early
+    pos.assert_consistency("handle_go entry");
+
     std::istringstream ss(cmd);
     std::string token;
 
