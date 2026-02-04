@@ -113,7 +113,10 @@ void handle_position(Position& pos, const std::string& cmd) {
             }
 
             // Create move directly from from/to/promotion
-            // Don't validate against legal moves - our internal board might be corrupted
+            // CRITICAL: Detect captures and set the correct flag
+            Piece piece_at_to = pos.piece_on(to);
+            bool is_capture = (piece_at_to != NO_PIECE && piece_at_to != NO_PIECE);
+
             Move m;
             if (promo_pt != PT_NONE) {
                 // Create promotion move with appropriate flag
@@ -127,8 +130,9 @@ void handle_position(Position& pos, const std::string& cmd) {
                 }
                 m = Move(from, to, promo_flag);
             } else {
-                // Create quiet/capture move (flags will be set by do_move if needed)
-                m = Move(from, to, MF_QUIET);
+                // Create move with correct capture flag
+                int flag = is_capture ? MF_CAPTURE : MF_QUIET;
+                m = Move(from, to, flag);
             }
 
             // DIAGNOSTIC: Check board state before and after do_move during replay
