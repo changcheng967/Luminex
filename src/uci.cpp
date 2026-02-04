@@ -87,6 +87,9 @@ void handle_position(Position& pos, const std::string& cmd) {
 
     pos.set(fen);
 
+    // DIAGNOSTIC: Verify side_to_move after FEN load
+    std::cerr << "AFTER SET FEN: side_to_move=" << (pos.side_to_move() == WHITE ? "WHITE" : "BLACK") << " fen=" << fen << std::endl;
+
     // CRITICAL FIX: Use legal move generation for position replay
     // This ensures correct move flags and prevents position corruption
     if (moves_idx != std::string::npos) {
@@ -176,6 +179,13 @@ void handle_position(Position& pos, const std::string& cmd) {
                 }
                 std::cerr << " side_to_move=" << (pos.side_to_move() == WHITE ? "W" : "B") << std::endl;
             }
+        }
+
+        // DIAGNOSTIC: After replay, verify final side_to_move
+        static int replay_call_count = 0;
+        if (replay_call_count < 5) {
+            std::cerr << "AFTER REPLAY #" << replay_call_count << ": side_to_move=" << (pos.side_to_move() == WHITE ? "WHITE" : "BLACK") << std::endl;
+            replay_call_count++;
         }
     }
 }
