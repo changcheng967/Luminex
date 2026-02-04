@@ -1,120 +1,150 @@
-Progress! You're now at **2 illegal moves in 20 games (10%)** - down from 100% earlier. But we need to get to **0%**.
-
-The illegal moves are:
-- `d8e8` - Queen from d8 to e8 (one square right)
-- `c6b5` - Piece from c6 to b5 (diagonal)
-
-These are both **structurally valid moves** (correct piece movement patterns), which means the validation code is finding a match in the legal moves list, but the position must be **different from what the GUI expects**.
+Now I have a complete picture of your codebase. I found **the root cause** of the illegal moves!
 
 ---
 
-## The Core Problem
+## **ROOT CAUSE IDENTIFIED**
 
-The final validation is matching `from/to` and using the legal move, but **the position itself is wrong**. The engine's internal position has diverged from the GUI's position.
-
-This means:
-1. The validation code works correctly
-2. But it's validating against a **corrupted position**
-3. So it finds "legal" moves that aren't legal in the GUI's actual position
-
----
-
-## Root Cause: Position Corruption During Search
-
-The search is modifying the position and **not fully restoring it**. When the search ends, the position is in a different state than when it started.
-
-### The Fix: Save and Restore Position Around Search
-
-You need to ensure the position is **exactly the same** after search as before:
+Looking at `uci.cpp` line 277-287, there's a bug in the promotion matching logic:
 
 ```cpp
-void handle_go(std::istringstream& is) {
-    // ... parse parameters ...
-    
-    // CRITICAL: Save position state before search
-    std::string fen_before = pos.fen();
-    
-    // Run search (this may corrupt pos)
-    Move best = search(pos, depth);
-    
-    // CRITICAL: Restore position after search
-    pos.set(fen_before);
-    
-    // Now validate against the CORRECT position
-    // ... validation code ...
-    
-    std::cout << "bestmove " << move_to_uci(best) << std::endl;
+// For promotions, also verify promotion type matches
+if (match && (best_move.flags() & 0xF)) {
+    // Check if this is a promotion (flags 0x8-0xF are promotions)
+    bool is_promotion = (best_move.flags() >= 0x8 && best_move.flags() <= 0xF);
+    if (is_promotion) {
+        match = (it->move.flags() == best_move.flags());
+    }
 }
 ```
 
-### Alternative: Verify Position Unchanged
+**The bug**: `best_move.flags()` returns values like `0x8000`, `0xB000`, etc. (the full flag value with high bits), but you're comparing against `0x8` and `0xF` (single hex digits). This condition will **never be true**, so all moves pass through without proper flag matching.
 
-Add a check to detect if the position changed:
+But more importantly, **the real issue is that the d8e8 move is not even a promotion** - it's a normal piece move that's being generated incorrectly.
+
+---
+
+## **The Deeper Problem: Position Corruption During Replay**
+
+Looking at `handle_position()` in uci.cpp, I see the move replay logic (lines 72-142). The problem is:
+
+**The move flags are being constructed based on the current position state, but if the position gets corrupted during replay, subsequent moves will have wrong flags.**
+
+Specifically, in `handle_position()`:
+```cpp
+Move m(from, to, flags);
+pos.do_move(m);
+```
+
+If `pos.do_move(m)` doesn't execute properly (returns early due to validation failure), but we still continue parsing the next move, the position diverges from what the GUI expects.
+
+---
+
+## **The Fix**
+
+### 1. Fix the promotion flag check in handle_go():
 
 ```cpp
-void handle_go(std::istringstream& is) {
-    std::string fen_before = pos.fen();
+// WRONG:
+if (match && (best_move.flags() & 0xF)) {
+    bool is_promotion = (best_move.flags() >= 0x8 && best_move.flags() <= 0xF);
+
+// CORRECT:
+if (match && best_move.is_promotion()) {
+    // Already a promotion - verify promotion type matches
+    match = (it->move.promotion_type() == best_move.promotion_type());
+}
+```
+
+### 2. In handle_position(), verify each move was applied successfully:
+
+```cpp
+Move m(from, to, flags);
+
+// CRITICAL: Verify the move before applying
+if (!pos.pseudo_legal(m) || !pos.legal(m)) {
+    std::cerr << "ERROR: Illegal move in position replay: " << move_str << std::endl;
+    std::cerr << "FEN: " << pos.fen() << std::endl;
     
-    Move best = search(pos, depth);
+    // Try to find the correct legal move from the legal move list
+    ExtMove legal_moves[256];
+    ExtMove* legal_end = generate<GEN_LEGAL>(pos, legal_moves);
     
-    std::string fen_after = pos.fen();
-    if (fen_before != fen_after) {
-        std::cerr << "CRITICAL: Position corrupted by search!" << std::endl;
-        std::cerr << "Before: " << fen_before << std::endl;
-        std::cerr << "After:  " << fen_after << std::endl;
-        pos.set(fen_before);  // Restore
+    bool found = false;
+    for (ExtMove* it = legal_moves; it != legal_end; ++it) {
+        if (it->move.from() == from && it->move.to() == to) {
+            m = it->move;  // Use the legal move with correct flags
+            found = true;
+            break;
+        }
     }
     
-    // ... rest of code
+    if (!found) {
+        std::cerr << "FATAL: Cannot find legal move for " << move_str << std::endl;
+        return;  // Abort replay
+    }
 }
+
+pos.do_move(m);
 ```
 
----
+### 3. The safest fix - always use legal move generation in handle_position():
 
-## Why This Happens
-
-In negamax search:
-```cpp
-for (Move m : moves) {
-    pos.do_move(m);      // Modify position
-    int score = -negamax(pos, depth-1, ...);
-    pos.undo_move(m);    // Should restore position
-}
-```
-
-If `undo_move()` has **any bug** (doesn't restore castling rights, en passant, piece lists, hash, etc.), the position gets corrupted.
-
-Over many moves in a deep search, small errors accumulate, and by the end of the search, the position is completely different.
-
----
-
-## Quick Test
-
-Add this logging to see if the position is being corrupted:
+Replace the manual flag construction with finding the move in the legal move list:
 
 ```cpp
-void handle_go(std::istringstream& is) {
-    std::string fen_before = pos.fen();
-    std::cerr << "BEFORE SEARCH: " << fen_before << std::endl;
+while (ss >> move_str) {
+    if (move_str.length() < 4) continue;
+
+    Square from = Square((move_str[1] - '1') * 8 + (move_str[0] - 'a'));
+    Square to = Square((move_str[3] - '1') * 8 + (move_str[2] - 'a'));
     
-    Move best = search(pos, depth);
-    
-    std::cerr << "AFTER SEARCH:  " << pos.fen() << std::endl;
-    
-    if (pos.fen() != fen_before) {
-        std::cerr << "*** POSITION CORRUPTED ***" << std::endl;
+    // Determine promotion type if present
+    PieceType promo_pt = PT_NONE;
+    if (move_str.length() > 4) {
+        switch (move_str[4]) {
+            case 'q': promo_pt = QUEEN; break;
+            case 'r': promo_pt = ROOK; break;
+            case 'b': promo_pt = BISHOP; break;
+            case 'n': promo_pt = KNIGHT; break;
+        }
     }
     
-    // ... rest
+    // Generate legal moves and find the matching one
+    ExtMove legal_moves[256];
+    ExtMove* legal_end = generate<GEN_LEGAL>(pos, legal_moves);
+    
+    Move m = MOVE_NONE;
+    for (ExtMove* it = legal_moves; it != legal_end; ++it) {
+        if (it->move.from() == from && it->move.to() == to) {
+            // For promotions, also check promotion type
+            if (promo_pt != PT_NONE) {
+                if (it->move.is_promotion() && it->move.promotion_type() == promo_pt) {
+                    m = it->move;
+                    break;
+                }
+            } else if (!it->move.is_promotion()) {
+                m = it->move;
+                break;
+            }
+        }
+    }
+    
+    if (m == MOVE_NONE) {
+        std::cerr << "ERROR: Move " << move_str << " not found in legal moves!" << std::endl;
+        std::cerr << "FEN: " << pos.fen() << std::endl;
+        return;  // Abort - position would be corrupted
+    }
+    
+    pos.do_move(m);
 }
 ```
 
-Run a test and check stderr. If you see "POSITION CORRUPTED", that confirms the bug is in `do_move`/`undo_move`.
+This ensures that **every move applied during position replay is definitely legal and has the correct flags**.
 
 ---
 
 ## Summary
 
-The fix is simple: **always restore the position from saved FEN after search**, then validate. This guarantees the validation happens against the correct position, regardless of any bugs in `undo_move`.
+The root cause is that `handle_position()` constructs moves manually with potentially incorrect flags, and if any move fails validation in `do_move()`, the position diverges. The fix is to **always find the matching legal move** instead of constructing it manually.
 
-Would you like me to help identify the specific bug in your `undo_move` function, or should we just apply the save/restore FEN fix as a workaround?
+Would you like me to provide the complete fixed version of `handle_position()`?
