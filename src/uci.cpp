@@ -8,6 +8,9 @@
 
 namespace luminex {
 
+// Debug flag for detailed move replay logging (set via environment variable or debug option)
+static bool DEBUG_REPLAY = false;  // Disabled for normal testing
+
 // Position for UCI
 static Position pos;
 
@@ -39,6 +42,13 @@ void handle_ucinewgame() {
 }
 
 void handle_position(Position& pos, const std::string& cmd) {
+    // Debug: Log every position command
+    static int pos_cmd_count = 0;
+    std::cerr << "\n=== POSITION COMMAND #" << (++pos_cmd_count) << " ===\n";
+    std::cerr << "CMD: " << cmd << "\n";
+    std::cerr << "Current FEN before set: " << pos.fen() << "\n";
+    std::cerr << "=====================================\n";
+
     size_t pos_idx = cmd.find("position");
     size_t moves_idx = cmd.find("moves");
 
@@ -72,6 +82,25 @@ void handle_position(Position& pos, const std::string& cmd) {
 
     pos.set(fen);
 
+    // Debug: Log FEN after set
+    std::cerr << "After set, FEN: " << pos.fen() << "\n";
+
+    // CRITICAL: Verify initial position was set correctly
+    // Log to stdout so we can see it in cutechess output
+    static int verify_mode = 0;  // Disabled for performance, enable to debug
+    if (verify_mode) {
+        std::cout << "info string FEN after set: " << pos.fen() << "\n";
+        std::cout.flush();
+    }
+
+    // DEBUG: Log initial position
+    static int replay_count = 0;
+    if (DEBUG_REPLAY) {
+        std::cerr << "\n=== REPLAY #" << (++replay_count) << " ===\n";
+        std::cerr << "Initial FEN: " << fen << "\n";
+        std::cerr << "============================\n";
+    }
+
     // Apply moves
     if (moves_idx != std::string::npos) {
         std::string moves_str = cmd.substr(moves_idx + 6);
@@ -79,75 +108,143 @@ void handle_position(Position& pos, const std::string& cmd) {
         std::string move_str;
 
         while (ss >> move_str) {
-            // Parse move
+            // Parse move - use legal move generation for complex moves (promotions, castling)
             if (move_str.length() < 4) continue;
 
             Square from = Square((move_str[1] - '1') * 8 + (move_str[0] - 'a'));
             Square to = Square((move_str[3] - '1') * 8 + (move_str[2] - 'a'));
 
-            uint16_t flags = MF_QUIET;
-            Color us = pos.side_to_move();
+            // DEBUG: Log move before applying
+            std::string fen_before = DEBUG_REPLAY ? pos.fen() : "";
+            if (DEBUG_REPLAY) {
+                std::cerr << "\nMove: " << move_str << " (from " << from << " to " << to << ")\n";
+                std::cerr << "Before: " << fen_before << "\n";
+                std::cerr << "Piece on " << from << ": " << int(pos.piece_on(from)) << "\n";
+                std::cerr << "Piece on " << to << ": " << int(pos.piece_on(to)) << "\n";
+            }
 
-            // Check for promotion
-            if (move_str.length() > 4) {
-                Piece target = pos.piece_on(to);
-                bool isCapture = (target != NO_PIECE && pos.color_of_piece(target) != us);
-                switch (move_str[4]) {
-                    case 'n': flags = isCapture ? MF_CAPTURE_PROMO_KNIGHT : MF_PROMO_KNIGHT; break;
-                    case 'b': flags = isCapture ? MF_CAPTURE_PROMO_BISHOP : MF_PROMO_BISHOP; break;
-                    case 'r': flags = isCapture ? MF_CAPTURE_PROMO_ROOK : MF_PROMO_ROOK; break;
-                    case 'q': flags = isCapture ? MF_CAPTURE_PROMO_QUEEN : MF_PROMO_QUEEN; break;
+            // For complex moves (promotions, castling), use legal move generation to find correct flags
+            if (move_str.length() > 4 || pos.piece_on(from) == make_piece(pos.side_to_move(), KING)) {
+                bool found = false;
+                Move matched_move = MOVE_NONE;
+
+                ExtMove moves[256];
+                ExtMove* end = generate_legals(pos, moves);
+                if (DEBUG_REPLAY) {
+                    std::cerr << "Legal moves from " << from << ": ";
+                    for (ExtMove* it = moves; it != end; ++it) {
+                        if (it->move.from() == from) {
+                            std::cerr << it->move.to() << " ";
+                        }
+                    }
+                    std::cerr << "\n";
+                }
+                for (ExtMove* it = moves; it != end; ++it) {
+                    if (it->move.from() == from && it->move.to() == to) {
+                        // Check promotion piece if specified
+                        if (move_str.length() > 4) {
+                            PieceType promo_pt = PT_NONE;
+                            switch (move_str[4]) {
+                                case 'n': promo_pt = KNIGHT; break;
+                                case 'b': promo_pt = BISHOP; break;
+                                case 'r': promo_pt = ROOK; break;
+                                case 'q': promo_pt = QUEEN; break;
+                            }
+                            uint16_t flags = it->move.flags();
+                            bool matches = false;
+                            if (promo_pt == KNIGHT && (flags == MF_PROMO_KNIGHT || flags == MF_CAPTURE_PROMO_KNIGHT)) matches = true;
+                            else if (promo_pt == BISHOP && (flags == MF_PROMO_BISHOP || flags == MF_CAPTURE_PROMO_BISHOP)) matches = true;
+                            else if (promo_pt == ROOK && (flags == MF_PROMO_ROOK || flags == MF_CAPTURE_PROMO_ROOK)) matches = true;
+                            else if (promo_pt == QUEEN && (flags == MF_PROMO_QUEEN || flags == MF_CAPTURE_PROMO_QUEEN)) matches = true;
+                            if (!matches) continue;
+                        }
+                        matched_move = it->move;
+                        found = true;
+                        if (DEBUG_REPLAY) {
+                            std::cerr << "Matched with flags: 0x" << std::hex << matched_move.flags() << std::dec << "\n";
+                        }
+                        break;
+                    }
+                }
+
+                if (found) {
+                    pos.do_move(matched_move);
+                } else {
+                    if (DEBUG_REPLAY) {
+                        std::cerr << "ERROR: Move not found in legal moves!\n";
+                    }
+                    // Skip this move - don't corrupt board state
+                    continue;
                 }
             } else {
-                // Check for capture (unless already flagged as promotion)
+                // Simple move parsing for normal moves
+                uint16_t flags = MF_QUIET;
+                Color us = pos.side_to_move();
+
+                // Check for promotion (shouldn't reach here due to above check, but just in case)
+                if (move_str.length() > 4) {
+                    bool isCapture = (pos.piece_on(to) != NO_PIECE);
+                    switch (move_str[4]) {
+                        case 'n': flags = isCapture ? MF_CAPTURE_PROMO_KNIGHT : MF_PROMO_KNIGHT; break;
+                        case 'b': flags = isCapture ? MF_CAPTURE_PROMO_BISHOP : MF_PROMO_BISHOP; break;
+                        case 'r': flags = isCapture ? MF_CAPTURE_PROMO_ROOK : MF_PROMO_ROOK; break;
+                        case 'q': flags = isCapture ? MF_CAPTURE_PROMO_QUEEN : MF_PROMO_QUEEN; break;
+                    }
+                }
+
+                // Capture check
                 Piece target = pos.piece_on(to);
                 if (target != NO_PIECE && pos.color_of_piece(target) != us) {
-                    flags = MF_CAPTURE;
+                    if (move_str.length() <= 4) flags = MF_CAPTURE;
                 }
-            }
 
-            // Check for castling (ONLY if not already flagged as capture/promotion)
-            if (flags == MF_QUIET && pos.piece_on(from) == make_piece(us, KING) && std::abs(file_of(to) - file_of(from)) > 1) {
-                flags = (file_of(to) > file_of(from)) ? MF_CASTLING_KING : MF_CASTLING_QUEEN;
-            }
-
-            // Check for double pawn push (MUST be checked before en passant)
-            if (flags == MF_QUIET && pos.piece_on(from) == make_piece(us, PAWN) &&
-                file_of(from) == file_of(to)) {
-                // Pawn moving straight - check if it's a double push
-                Rank from_rank = relative_rank(us, from);
-                Rank to_rank = relative_rank(us, to);
-                if (from_rank == RANK_2 && to_rank == RANK_4) {
-                    flags = MF_DOUBLE_PAWN;
+                // Double pawn push
+                if (flags == MF_QUIET && pos.piece_on(from) == make_piece(us, PAWN) &&
+                    file_of(from) == file_of(to)) {
+                    Rank from_rank = relative_rank(us, from);
+                    Rank to_rank = relative_rank(us, to);
+                    if (from_rank == RANK_2 && to_rank == RANK_4) {
+                        flags = MF_DOUBLE_PAWN;
+                    }
                 }
-            }
 
-            // Check for en passant (ONLY if not already flagged)
-            // CRITICAL: This must come AFTER capture check to distinguish normal captures from en passant
-            if (flags == MF_QUIET && pos.piece_on(from) == make_piece(us, PAWN) &&
-                file_of(from) != file_of(to)) {
-                // Diagonal pawn move with QUIET flag means target was empty
-                // This can only be en passant (normal diagonal pawn moves would be captures)
-                flags = MF_EN_PASSANT;
-            }
-
-            // VALIDATE: Check if move flags match actual board state
-            Piece to_piece_before = pos.piece_on(to);
-            if (to_piece_before != NO_PIECE && pos.color_of_piece(to_piece_before) != us) {
-                // Enemy piece at destination - should be CAPTURE flag
-                if (flags != MF_CAPTURE && (flags & 0xF000) != MF_CAPTURE) {
-                    flags = MF_CAPTURE;  // AUTO-FIX: Set correct flag
+                // En passant
+                if (flags == MF_QUIET && pos.piece_on(from) == make_piece(us, PAWN) &&
+                    file_of(from) != file_of(to)) {
+                    flags = MF_EN_PASSANT;
                 }
-            } else if (to_piece_before != NO_PIECE && pos.color_of_piece(to_piece_before) == us) {
-                // Friendly piece at destination - INVALID move (capturing own piece)
-                // Skip this move to prevent corruption
-                continue;
+
+                if (DEBUG_REPLAY) {
+                    std::cerr << "Flags: 0x" << std::hex << flags << std::dec << "\n";
+                }
+
+                Move m(from, to, flags);
+                pos.do_move(m);
             }
 
-            Move m(from, to, flags);
-            pos.do_move(m);
+            // DEBUG: Check board state after move
+            if (DEBUG_REPLAY) {
+                std::cerr << "After:  " << pos.fen() << "\n";
+                pos.assert_consistency("handle_position after move");
+
+                // Check king positions
+                Square wk = pos.king_sq(WHITE);
+                Square bk = pos.king_sq(BLACK);
+                std::cerr << "White king at: " << wk << " (piece: " << int(pos.piece_on(wk)) << ")\n";
+                std::cerr << "Black king at: " << bk << " (piece: " << int(pos.piece_on(bk)) << ")\n";
+            }
+
+            // CRITICAL: Verify board state after each move
+            if (verify_mode) {
+                std::cout << "info string After " << move_str << ": " << pos.fen() << "\n";
+                std::cout.flush();
+            }
         }
     }
+
+    // Debug: Log final FEN after all moves
+    std::cerr << "Final FEN: " << pos.fen() << "\n";
+    std::cerr << "=============================\n";
 }
 
 void handle_go(Position& pos, const std::string& cmd) {
@@ -221,6 +318,12 @@ void handle_go(Position& pos, const std::string& cmd) {
     // This prevents illegal moves from being sent to the GUI
     if (best_move && !pos.legal(best_move)) {
         // Move is not legal - find first legal move instead
+        std::cerr << "\n=== ILLEGAL BESTMOVE CAUGHT in handle_go ===\n";
+        std::cerr << "Move: " << best_move << " (from " << best_move.from() << " to " << best_move.to() << ")\n";
+        std::cerr << "FEN: " << pos.fen() << "\n";
+        std::cerr << "Piece on source: " << int(pos.piece_on(best_move.from())) << "\n";
+        std::cerr << "Piece on dest: " << int(pos.piece_on(best_move.to())) << "\n";
+        std::cerr << "=================================================\n";
         ExtMove legal_moves[256];
         ExtMove* legal_end = generate_legals(pos, legal_moves);
         if (legal_end != legal_moves) {
@@ -230,10 +333,45 @@ void handle_go(Position& pos, const std::string& cmd) {
         }
     }
 
+    // ADDITIONAL CHECK: Validate piece on source square
+    // This catches cases where board state is wrong but legal() passes
+    if (best_move) {
+        Square from = best_move.from();
+        Piece pc = pos.piece_on(from);
+        if (pc == NO_PIECE || color_of_piece(pc) != pos.side_to_move()) {
+            std::cerr << "\n=== NO PIECE OR WRONG COLOR ON SOURCE ===\n";
+            std::cerr << "Move: " << best_move << "\n";
+            std::cerr << "Source: " << from << ", Piece: " << int(pc) << "\n";
+            std::cerr << "FEN: " << pos.fen() << "\n";
+            std::cerr << "Using first legal move instead.\n";
+            std::cerr << "========================================\n";
+            ExtMove legal_moves[256];
+            ExtMove* legal_end = generate_legals(pos, legal_moves);
+            if (legal_end != legal_moves) {
+                best_move = legal_moves[0].move;
+            } else {
+                best_move = MOVE_NONE;
+            }
+        }
+    }
+
+    // DEBUG: Log board state before sending bestmove
+    if (DEBUG_REPLAY && best_move) {
+        std::cerr << "\n=== SENDING BESTMOVE ===\n";
+        std::cerr << "Move: " << best_move << " (from " << best_move.from() << " to " << best_move.to() << ")\n";
+        std::cerr << "Flags: 0x" << std::hex << best_move.flags() << std::dec << "\n";
+        std::cerr << "FEN: " << pos.fen() << "\n";
+        std::cerr << "Piece on " << best_move.from() << ": " << int(pos.piece_on(best_move.from())) << "\n";
+        std::cerr << "Piece on " << best_move.to() << ": " << int(pos.piece_on(best_move.to())) << "\n";
+        std::cerr << "========================\n";
+    }
+
     // Send best move
     if (best_move) {
+        std::cerr << "SENDING bestmove " << best_move << " (FEN: " << pos.fen() << ")\n";
         std::cout << "bestmove " << best_move << "\n";
     } else {
+        std::cerr << "SENDING bestmove 0000 (no move)\n";
         std::cout << "bestmove 0000\n";
     }
     std::cout.flush();

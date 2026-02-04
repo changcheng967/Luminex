@@ -940,9 +940,26 @@ Move search(Position& pos, Limits& lim) {
         // Board state changed or best_move is no longer legal - use first legal move
         std::cerr << "\n=== BOARD STATE CHANGED AFTER SEARCH ===\n";
         std::cerr << "Best move " << best_move << " not in current legal moves!\n";
+        std::cerr << "FEN: " << pos.fen() << "\n";
+        std::cerr << "Legal moves count: " << (verify_end - verify_moves) << "\n";
         std::cerr << "Using first legal move instead.\n";
         std::cerr << "======================================\n";
         best_move = verify_moves[0].move;
+    }
+
+    // ADDITIONAL VERIFICATION: Check piece on source square
+    if (best_move) {
+        Square from = best_move.from();
+        Piece pc = pos.piece_on(from);
+        if (pc == NO_PIECE) {
+            std::cerr << "\n=== NO PIECE ON SOURCE SQUARE ===\n";
+            std::cerr << "Best move: " << best_move << "\n";
+            std::cerr << "Source square: " << from << "\n";
+            std::cerr << "FEN: " << pos.fen() << "\n";
+            std::cerr << "Using first legal move instead.\n";
+            std::cerr << "===================================\n";
+            best_move = verify_moves[0].move;
+        }
     }
 
     return best_move;

@@ -938,6 +938,10 @@ bool Position::see_ge(Move m, Value threshold) const {
 bool Position::legal(Move m) const {
     if (!m) return false;
 
+    // CRITICAL: First check if move is pseudo-legal (piece can actually make this move)
+    // This prevents impossible moves like pawn moving like knight (h5f4, c3h8)
+    if (!pseudo_legal(m)) return false;
+
     Square from = m.from();
     Square to = m.to();
 
