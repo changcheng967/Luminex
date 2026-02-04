@@ -547,8 +547,11 @@ void Position::do_move(Move m) {
         put_piece(us, promoted, to);
         st_->key ^= Zobrist::psq[int(us)][int(promoted)][int(to)];
     } else {
-        // Move the piece
+        // CRITICAL FIX: Update Zobrist key for the moving piece
+        // XOR out the piece from its old square, XOR in at the new square
+        st_->key ^= Zobrist::psq[int(us)][int(pt)][int(from)];
         move_piece(from, to);
+        st_->key ^= Zobrist::psq[int(us)][int(pt)][int(to)];
     }
 
     // Handle castling
