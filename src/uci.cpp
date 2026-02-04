@@ -115,10 +115,13 @@ void handle_position(Position& pos, const std::string& cmd) {
                 }
             }
 
-            // CRITICAL: Proper move flag detection including En Passant and Capture-Promotion
+            // CRITICAL: Proper move flag detection including En Passant, Castling, and Capture-Promotion
             PieceType piece_type_from = pos.piece_type_on(from);
             Piece piece_at_to = pos.piece_on(to);
             bool is_capture = (piece_at_to != NO_PIECE);
+
+            // Check for Castling: king moves two squares horizontally
+            bool is_castling = (piece_type_from == KING && std::abs(int(from) - int(to)) == 2);
 
             // Check for En Passant: pawn moves diagonally to empty ep_square
             bool is_en_passant = (piece_type_from == PAWN &&
@@ -126,7 +129,14 @@ void handle_position(Position& pos, const std::string& cmd) {
                                   to == pos.ep_square());           // To is ep_square
 
             Move m;
-            if (promo_pt != PT_NONE) {
+            if (is_castling) {
+                // Castling: determine kingside or queenside based on destination file
+                if (file_of(to) > FILE_E) {
+                    m = Move(from, to, MF_CASTLING_KING);  // Kingside (e1g1 or e8g8)
+                } else {
+                    m = Move(from, to, MF_CASTLING_QUEEN); // Queenside (e1c1 or e8c8)
+                }
+            } else if (promo_pt != PT_NONE) {
                 // Promotion: Use correct flag based on whether it's also a capture
                 if (is_capture) {
                     // Capture-Promotion (MF_CAPTURE_PROMO_*)
@@ -181,6 +191,13 @@ void handle_position(Position& pos, const std::string& cmd) {
                 // CRITICAL: Skip remaining moves - the position is desynchronized
                 // If we continue, side_to_move will be wrong for all subsequent moves
                 break;
+            }
+
+            // DIAGNOSTIC: Verify board state after each move (every move for first 3 games)
+            static int verify_count = 0;
+            if (verify_count < 30) {  // Track first 30 moves total
+                std::cerr << "After move " << move_str << ": side_to_move=" << (pos.side_to_move() == WHITE ? "W" : "B") << " FEN=" << pos.fen() << std::endl;
+                verify_count++;
             }
 
             if (replay_count <= 10) {
