@@ -268,6 +268,19 @@ void handle_go(Position& pos, const std::string& cmd) {
     // Send final info
     uci_info(pos, root_depth, root_score, nodes.load(), 0);
 
+    // TARGETED DEBUG: Check if d8e8 or e8d8 moves (king position issues)
+    if ((best_move.from() == Square(3) && best_move.to() == Square(4)) ||  // d8=3, e8=4
+        (best_move.from() == Square(4) && best_move.to() == Square(3))) {
+        std::cerr << "\n=== D8/E8 MOVE DEBUG ===\n";
+        std::cerr << "Best move: " << best_move << "\n";
+        std::cerr << "FEN: " << pos.fen() << "\n";
+        std::cerr << "White king at: " << pos.king_sq(WHITE) << " (should be 0=e1)\n";
+        std::cerr << "Black king at: " << pos.king_sq(BLACK) << " (should be 4=e8)\n";
+        std::cerr << "Piece on d8(3): " << int(pos.piece_on(Square(3))) << "\n";
+        std::cerr << "Piece on e8(4): " << int(pos.piece_on(Square(4))) << "\n";
+        std::cerr << "========================\n";
+    }
+
     // CRITICAL FIX: Match by from/to, then use the legal move object with correct flags
     // This prevents illegal moves caused by wrong flags from TT or stale position data
     // For promotions, also match promotion piece type
