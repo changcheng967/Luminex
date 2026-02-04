@@ -2,6 +2,14 @@
 
 A world-class classical chess engine written in modern C++23.
 
+## Current Status (v3.18.0)
+
+**Active Development**: Fixing illegal move generation issues. Engine currently at ~85% legal move rate in testing.
+
+**Known Issues**:
+- Position state drift after multiple moves
+- Working on comprehensive position validation and restoration
+
 ## Features
 
 ### Search
@@ -76,11 +84,11 @@ quit
 
 ## Engine Info
 
-- **Version**: 3.0.0
+- **Version**: 3.18.0
 - **Author**: changcheng967
 - **Language**: C++23
-- **Code Size**: ~5400 LOC
-- **Binary Size**: ~264KB
+- **Code Size**: ~7000 LOC
+- **Binary Size**: ~280KB
 
 ## Performance
 
