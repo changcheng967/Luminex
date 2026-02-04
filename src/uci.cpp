@@ -112,25 +112,43 @@ void handle_position(Position& pos, const std::string& cmd) {
                 }
             }
 
-            // Create move directly from from/to/promotion
-            // CRITICAL: Detect captures and set the correct flag
+            // CRITICAL: Proper move flag detection including En Passant and Capture-Promotion
+            PieceType piece_type_from = pos.piece_type_on(from);
             Piece piece_at_to = pos.piece_on(to);
-            bool is_capture = (piece_at_to != NO_PIECE && piece_at_to != NO_PIECE);
+            bool is_capture = (piece_at_to != NO_PIECE);
+
+            // Check for En Passant: pawn moves diagonally to empty ep_square
+            bool is_en_passant = (piece_type_from == PAWN &&
+                                  file_of(from) != file_of(to) &&  // Diagonal move
+                                  to == pos.ep_square());           // To is ep_square
 
             Move m;
             if (promo_pt != PT_NONE) {
-                // Create promotion move with appropriate flag
-                int promo_flag = 0;
-                switch (promo_pt) {
-                    case QUEEN: promo_flag = MF_PROMO_QUEEN; break;
-                    case ROOK: promo_flag = MF_PROMO_ROOK; break;
-                    case BISHOP: promo_flag = MF_PROMO_BISHOP; break;
-                    case KNIGHT: promo_flag = MF_PROMO_KNIGHT; break;
-                    default: promo_flag = MF_PROMO_QUEEN; break;  // Fallback
+                // Promotion: Use correct flag based on whether it's also a capture
+                if (is_capture) {
+                    // Capture-Promotion (MF_CAPTURE_PROMO_*)
+                    switch (promo_pt) {
+                        case QUEEN: m = Move(from, to, MF_CAPTURE_PROMO_QUEEN); break;
+                        case ROOK: m = Move(from, to, MF_CAPTURE_PROMO_ROOK); break;
+                        case BISHOP: m = Move(from, to, MF_CAPTURE_PROMO_BISHOP); break;
+                        case KNIGHT: m = Move(from, to, MF_CAPTURE_PROMO_KNIGHT); break;
+                        default: m = Move(from, to, MF_CAPTURE_PROMO_QUEEN); break;
+                    }
+                } else {
+                    // Quiet Promotion (MF_PROMO_*)
+                    switch (promo_pt) {
+                        case QUEEN: m = Move(from, to, MF_PROMO_QUEEN); break;
+                        case ROOK: m = Move(from, to, MF_PROMO_ROOK); break;
+                        case BISHOP: m = Move(from, to, MF_PROMO_BISHOP); break;
+                        case KNIGHT: m = Move(from, to, MF_PROMO_KNIGHT); break;
+                        default: m = Move(from, to, MF_PROMO_QUEEN); break;
+                    }
                 }
-                m = Move(from, to, promo_flag);
+            } else if (is_en_passant) {
+                // En Passant capture
+                m = Move(from, to, MF_EN_PASSANT);
             } else {
-                // Create move with correct capture flag
+                // Normal move: quiet or capture
                 int flag = is_capture ? MF_CAPTURE : MF_QUIET;
                 m = Move(from, to, flag);
             }

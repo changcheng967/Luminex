@@ -63,7 +63,7 @@ void init() {
 } // namespace Zobrist
 
 // State info allocator
-constexpr int STATE_ALLOC_SIZE = 128;
+constexpr int STATE_ALLOC_SIZE = 2048;
 
 StateInfo state_stack[STATE_ALLOC_SIZE];  // Fixed: Array of objects, not pointers
 int state_stack_top = 0;  // No longer needed with array-of-objects approach
