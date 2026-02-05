@@ -814,8 +814,13 @@ Move search(Position& pos, Limits& lim) {
             Move m = it->move;
             int score = 0;
 
+            // CRITICAL: Prioritize previous iteration's best move (PV move)
+            // This improves search stability and helps maintain good lines
+            if (root_depth > 1 && m == best_move) {
+                score = 2000000;  // Highest priority - previous PV move
+            }
             // Prioritize winning captures
-            if (m.is_capture()) {
+            else if (m.is_capture()) {
                 PieceType captured = pos.piece_type_on(m.to());
                 Value cap_value = 0;
                 if (captured == PAWN) cap_value = PAWN_VALUE;
