@@ -364,12 +364,40 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
         }
     }
 
-    // ProbCut DISABLED for speed - does expensive extra searches
-    /*
+    // ProbCut - ENABLED with legality check
+    // If a capture is obviously good enough to cause beta cutoff, verify with shallow search
+    // FIXED: Added pos.legal(m) check to prevent analyzing illegal positions
     if (!pv_node && depth >= 5 && !pos.is_check() && ss->ply >= 2) {
-        // ... probcut code disabled ...
+        Value rbeta = std::min(beta + 200, VALUE_INFINITE - 200);
+        int rdepth = depth - 3;
+
+        // Try winning captures (SEE > 0)
+        ExtMove probcut_moves[MAX_MOVES];
+        ExtMove* probcut_end = generate<GEN_CAPTURE>(pos, probcut_moves);
+
+        for (ExtMove* it = probcut_moves; it != probcut_end; ++it) {
+            Move m = it->move;
+
+            // Skip losing captures
+            if (!pos.see_ge(m, Value(1))) continue;
+
+            // CRITICAL FIX: Check move is legal before do_move
+            // This prevents analyzing positions where our king is in check
+            if (!pos.legal(m)) continue;
+
+            if (!pos.do_move(m)) continue;
+
+            // Shallow search with reduced beta
+            Value value = -search_worker(pos, ss + 1, -rbeta, -rbeta + 1, rdepth, !cut_node);
+
+            pos.undo_move(m);
+
+            if (value >= rbeta) {
+                // Shallow search confirms this move is very good - prune
+                return value;
+            }
+        }
     }
-    */
 
     // Generate moves - use CAPTURE-ONLY at deep plies with low remaining depth
     ExtMove moves[MAX_MOVES];
@@ -665,15 +693,21 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
                         }
                     }
                 }
-                tte->save(pos.key(), value, false, BOUND_LOWER, depth, it->move, eval, TT.generation());
+                // CRITICAL FIX: Only save to TT if search wasn't aborted
+                if (!stop.load(std::memory_order_relaxed)) {
+                    tte->save(pos.key(), value, false, BOUND_LOWER, depth, it->move, eval, TT.generation());
+                }
                 return beta;
             }
         }
     }
 
-    // Save to TT
-    Bound bound = best_value >= beta ? BOUND_LOWER : BOUND_UPPER;
-    tte->save(pos.key(), best_value, pv_node, bound, depth, ss->pv[ss->ply], eval, TT.generation());
+    // CRITICAL FIX: Only save to TT if search completed fully
+    // If search was aborted (stop=true), don't save garbage/incomplete scores
+    if (!stop.load(std::memory_order_relaxed)) {
+        Bound bound = best_value >= beta ? BOUND_LOWER : BOUND_UPPER;
+        tte->save(pos.key(), best_value, pv_node, bound, depth, ss->pv[ss->ply], eval, TT.generation());
+    }
 
     return best_value;
 }
