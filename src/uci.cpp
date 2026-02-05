@@ -244,8 +244,10 @@ void handle_go(Position& pos, const std::string& cmd) {
     // Restore position from saved FEN
     pos.set(fen_before_search);
 
-    // Check board consistency after search
+#ifndef NDEBUG
+    // Check board consistency after search (debug builds only)
     pos.assert_consistency("handle_go after search");
+#endif
 
     // Validate best_move before sending - multiple layers of defense
     if (best_move) {

@@ -7,7 +7,8 @@
 #include <sstream>
 
 namespace {
-// Global debug log for board corruption
+#ifndef NDEBUG
+// Global debug log for board corruption (debug builds only)
 std::ofstream board_debug_log;
 bool board_debug_initialized = false;
 
@@ -17,6 +18,7 @@ void init_board_debug() {
         board_debug_initialized = true;
     }
 }
+#endif
 }
 
 namespace luminex {
@@ -260,6 +262,7 @@ std::string Position::fen() const {
 }
 
 void Position::put_piece(Color c, PieceType pt, Square s) {
+#ifndef NDEBUG
     // DEBUG: Check if this square already has a piece (corruption)
     if (board[s] != NO_PIECE) {
         init_board_debug();
@@ -270,6 +273,7 @@ void Position::put_piece(Color c, PieceType pt, Square s) {
         board_debug_log << "================================\n";
         board_debug_log.flush();
     }
+#endif
 
     board[s] = make_piece(c, pt);
     pieces_by_type[pt] |= square_bb(s);
@@ -281,6 +285,7 @@ void Position::put_piece(Color c, PieceType pt, Square s) {
     piece_count[int(c)][int(pt)]++;
 
     if (pt == KING) {
+#ifndef NDEBUG
         // DEBUG: Check if we already have a king of this color
         if (king_square[int(c)] != SQUARE_NONE && king_square[int(c)] != s) {
             init_board_debug();
@@ -291,6 +296,7 @@ void Position::put_piece(Color c, PieceType pt, Square s) {
             board_debug_log << "==============================\n";
             board_debug_log.flush();
         }
+#endif
         king_square[int(c)] = s;
     }
 }
@@ -387,15 +393,13 @@ Bitboard Position::slider_blockers([[maybe_unused]] Bitboard sliders, Bitboard& 
 
     Square ksq = king_square[side_to_move_];
 
-    // Snipers are sliders that attack our king when one piece is removed
-    Bitboard snipers = 0;
+    // CRITICAL FIX: Find all enemy sliders that could potentially pin through our king
+    // Use attack functions with empty occupancy (0) to get all squares along each ray
+    // Then filter by actual enemy sliders to find potential snipers
+    Bitboard snipers = ((bb_rank_attacks(ksq, 0) | bb_file_attacks(ksq, 0)) & pieces(Color(side_to_move_ ^ 1), ROOK, QUEEN))
+                     | (bb_diag_attacks(ksq, 0) & pieces(Color(side_to_move_ ^ 1), BISHOP, QUEEN));
 
-    snipers |= (pieces(Color(side_to_move_ ^ 1), BISHOP, QUEEN) & BB_DIAGONAL_A1H8) & line_bb(ksq, Square(ksq ^ 56));
-    snipers |= (pieces(Color(side_to_move_ ^ 1), BISHOP, QUEEN) & BB_DIAGONAL_H1A8) & line_bb(ksq, ksq);
-    snipers |= (pieces(Color(side_to_move_ ^ 1), ROOK, QUEEN) & rank_bb(rank_of(ksq))) & line_bb(ksq, ksq);
-    snipers |= (pieces(Color(side_to_move_ ^ 1), ROOK, QUEEN) & file_bb(file_of(ksq))) & line_bb(ksq, ksq);
-
-    Bitboard occupancy = pieces() ^ snipers;
+    Bitboard occupancy = pieces();
 
     while (snipers) {
         Square sniper_sq = pop_lsb(snipers);
@@ -548,9 +552,13 @@ bool Position::do_move(Move m) {
 
     // Handle promotion
     if (m.is_promotion()) {
+        // CRITICAL FIX: XOR out pawn from origin BEFORE removing it
+        // Without this, Zobrist key is corrupted after promotion
+        st_->key ^= Zobrist::psq[int(us)][int(PAWN)][int(from)];
         remove_piece(from);
         PieceType promoted = m.promotion_type();
         put_piece(us, promoted, to);
+        // XOR in promoted piece at destination
         st_->key ^= Zobrist::psq[int(us)][int(promoted)][int(to)];
     } else {
         // CRITICAL FIX: Update Zobrist key for the moving piece
@@ -633,18 +641,13 @@ bool Position::do_move(Move m) {
     st_->key ^= Zobrist::side;
     side_to_move_ = them;
 
-    // VALIDATION: Catch board corruption immediately (always enabled for debugging)
+#ifndef NDEBUG
+    // VALIDATION: Catch board corruption immediately (debug builds only)
     bool valid = validate_move(m, from, to, pc, captured);
     if (!valid) {
         // Silently ignore corruption during search - just don't use this position
         // The move will still be undone properly
     }
-
-    // Update check info
-    set_check_info(st_);
-
-    // DEBUG: Check board consistency after every move
-    assert_consistency("do_move");
 
     // DIAGNOSTIC: Verify side_to_move was flipped correctly
     if (side_to_move_ != them) {
@@ -654,6 +657,15 @@ bool Position::do_move(Move m) {
         std::cerr << "Actual side to move: " << (side_to_move_ == WHITE ? "WHITE" : "BLACK") << "\n";
         std::cerr << "==========================================\n";
     }
+#endif
+
+    // Update check info
+    set_check_info(st_);
+
+#ifndef NDEBUG
+    // DEBUG: Check board consistency after every move (debug builds only)
+    assert_consistency("do_move");
+#endif
 
     return true;  // Move executed successfully
 }
@@ -736,7 +748,8 @@ void Position::undo_move(Move m) {
         }
     }
 
-    // DEBUG: Check board consistency after every undo
+#ifndef NDEBUG
+    // DEBUG: Check board consistency after every undo (debug builds only)
     assert_consistency("undo_move");
 
     // DIAGNOSTIC: Verify side_to_move was restored correctly
@@ -749,6 +762,7 @@ void Position::undo_move(Move m) {
         std::cerr << "st_ply: " << st_ply << "\n";
         std::cerr << "===========================================\n";
     }
+#endif
 }
 
 void Position::do_null_move() {
@@ -791,7 +805,9 @@ void Position::undo_null_move() {
 
 // CRITICAL: Consistency check to catch board state desync
 // Call after every do_move/undo_move during debugging
-void Position::assert_consistency(const char* location) {
+void Position::assert_consistency([[maybe_unused]] const char* location) {
+#ifndef NDEBUG
+    // Debug-only: skip all checks in release builds for performance
     // Check all 64 squares
     for (int sq = 0; sq < 64; ++sq) {
         Piece p = board[sq];
@@ -880,6 +896,7 @@ void Position::assert_consistency(const char* location) {
             }
         }
     }
+#endif
 }
 
 bool Position::see_ge(Move m, Value threshold) const {
