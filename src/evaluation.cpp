@@ -485,10 +485,10 @@ Value evaluate(const Position& pos) {
             mg_score += sign * PST_MG_TABLE[int(c)][int(KNIGHT)][int(sq)];
             eg_score += sign * PST_EG_TABLE[int(c)][int(KNIGHT)][int(sq)];
 
-            // Knight mobility
+            // Knight mobility - INCREASED for better positional play
             int mobility = popcount(knight_attacks_bb(sq) & ~pos.pieces(c));
-            mg_score += sign * mobility * 4;
-            eg_score += sign * mobility * 8;
+            mg_score += sign * mobility * 10;  // Increased from 4
+            eg_score += sign * mobility * 20;  // Increased from 8
 
             // Knight outpost bonus: knight in enemy territory, supported by pawn, not attackable by enemy pawns
             Rank r = rank_of(sq);
@@ -551,10 +551,10 @@ Value evaluate(const Position& pos) {
             mg_score += sign * PST_MG_TABLE[int(c)][int(BISHOP)][int(sq)];
             eg_score += sign * PST_EG_TABLE[int(c)][int(BISHOP)][int(sq)];
 
-            // Bishop mobility
+            // Bishop mobility - INCREASED for better positional play
             int mobility = popcount(bb_diag_attacks(sq, pos.pieces()) & ~pos.pieces(c));
-            mg_score += sign * mobility * 5;
-            eg_score += sign * mobility * 10;
+            mg_score += sign * mobility * 12;  // Increased from 5
+            eg_score += sign * mobility * 25;  // Increased from 10
         }
 
         // Bad bishop penalty: bishop blocked by own pawns on same color
@@ -594,11 +594,11 @@ Value evaluate(const Position& pos) {
             mg_score += sign * PST_MG_TABLE[int(c)][int(ROOK)][int(sq)];
             eg_score += sign * PST_EG_TABLE[int(c)][int(ROOK)][int(sq)];
 
-            // Rook mobility
+            // Rook mobility - INCREASED for better positional play
             Bitboard occupied = pos.pieces();
             int mobility = popcount((bb_rank_attacks(sq, occupied) | bb_file_attacks(sq, occupied)) & ~pos.pieces(c));
-            mg_score += sign * mobility * 2;
-            eg_score += sign * mobility * 8;
+            mg_score += sign * mobility * 6;   // Increased from 2
+            eg_score += sign * mobility * 20;  // Increased from 8
 
             // Rook on open file bonus
             File f = file_of(sq);
@@ -634,11 +634,11 @@ Value evaluate(const Position& pos) {
             mg_score += sign * PST_MG_TABLE[int(c)][int(QUEEN)][int(sq)];
             eg_score += sign * PST_EG_TABLE[int(c)][int(QUEEN)][int(sq)];
 
-            // Queen mobility
+            // Queen mobility - INCREASED for better positional play
             Bitboard occupied = pos.pieces();
             int mobility = popcount(queen_attacks_bb(sq, occupied) & ~pos.pieces(c));
-            mg_score += sign * mobility * 8;
-            eg_score += sign * mobility * 15;
+            mg_score += sign * mobility * 20;  // Increased from 8
+            eg_score += sign * mobility * 40;  // Increased from 15
         }
 
         // King (position only, no material value)
@@ -1284,7 +1284,7 @@ Value evaluate(const Position& pos) {
             }
         }
 
-        // King danger: count attackers and their weight
+        // King danger: count attackers and their weight - INCREASED FOR BETTER KING SAFETY
         Bitboard danger_zone = king_danger_zone(their_king);
         int danger = 0;
 
@@ -1294,7 +1294,7 @@ Value evaluate(const Position& pos) {
             Square sq = pop_lsb(our_knights);
             if (knight_attacks_bb(sq) & danger_zone) {
                 king_attackers[int(us)]++;
-                danger += 40;  // Knight attacks
+                danger += 80;  // Knight attacks (increased from 40)
             }
         }
 
@@ -1303,7 +1303,7 @@ Value evaluate(const Position& pos) {
             Square sq = pop_lsb(our_bishops);
             if (bb_diag_attacks(sq, pos.pieces()) & danger_zone) {
                 king_attackers[int(us)]++;
-                danger += 50;  // Bishop attacks
+                danger += 100;  // Bishop attacks (increased from 50)
             }
         }
 
@@ -1313,7 +1313,7 @@ Value evaluate(const Position& pos) {
             Bitboard attacks = (bb_rank_attacks(sq, pos.pieces()) | bb_file_attacks(sq, pos.pieces()));
             if (attacks & danger_zone) {
                 king_attackers[int(us)]++;
-                danger += 70;  // Rook attacks are dangerous
+                danger += 140;  // Rook attacks are dangerous (increased from 70)
             }
         }
 
@@ -1322,24 +1322,24 @@ Value evaluate(const Position& pos) {
             Square sq = pop_lsb(our_queens);
             if (queen_attacks_bb(sq, pos.pieces()) & danger_zone) {
                 king_attackers[int(us)]++;
-                danger += 120;  // Queen attacks are very dangerous
+                danger += 250;  // Queen attacks are very dangerous (increased from 120)
             }
         }
 
         // Bonus for multiple attackers (coordination)
         if (king_attackers[int(us)] >= 2) {
-            danger += (king_attackers[int(us)] - 1) * 30;
+            danger += (king_attackers[int(us)] - 1) * 60;  // Increased from 30
         }
 
-        // Penalty when we have no safe king position (king in center)
+        // Penalty when we have no safe king position (king in center) - INCREASED
         Rank krank = rank_of(our_king);
         if ((us == WHITE && krank >= RANK_3 && krank <= RANK_5) ||
             (us == BLACK && krank >= RANK_4 && krank <= RANK_6)) {
             // King in center - very dangerous in middle game
-            mg_score -= (us == WHITE ? 1 : -1) * 40;
+            mg_score -= (us == WHITE ? 1 : -1) * 80;  // Increased from 40
             // Even worse when under attack
             if (king_attackers[int(them)] > 0) {
-                mg_score -= (us == WHITE ? 1 : -1) * 60 * king_attackers[int(them)];
+                mg_score -= (us == WHITE ? 1 : -1) * 150 * king_attackers[int(them)];  // Increased from 60
             }
         }
 
