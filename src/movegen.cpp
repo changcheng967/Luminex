@@ -84,7 +84,13 @@ ExtMove* generate_moves(const Position& pos, ExtMove* moveList) {
         // Pawn captures
         // Exclude enemy king from captures
         Bitboard their_pieces = pos.pieces(them) & ~pos.pieces(them, KING);
-        Bitboard targets = their_pieces | (T == GEN_EVASION ? 0 : square_bb(pos.ep_square()));
+        // Only include EP square if it's actually set (not SQUARE_NONE)
+        // square_bb(SQUARE_NONE) where SQUARE_NONE=64 causes UB: 1ULL << 64
+        Bitboard ep_bb = BB_EMPTY;
+        if (pos.ep_square() != SQUARE_NONE) {
+            ep_bb = square_bb(pos.ep_square());
+        }
+        Bitboard targets = their_pieces | (T == GEN_EVASION ? 0 : ep_bb);
         Bitboard attacks = pawn_attacks_bb(us, from) & targets;
 
         while (attacks) {

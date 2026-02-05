@@ -1139,6 +1139,12 @@ bool Position::legal(Move m) const {
 bool Position::pseudo_legal(const Move m) const {
     Square from = m.from();
     Square to = m.to();
+
+    // CRITICAL: Validate squares before accessing board array
+    // board[] has SQUARE_NONE elements (64), indices 0-63 are valid
+    // is_ok(s) returns s < SQUARE_NONE
+    if (!is_ok(from) || !is_ok(to)) return false;
+
     PieceType pt = piece_type_on(from);
 
     if (pt == PT_NONE) return false;
