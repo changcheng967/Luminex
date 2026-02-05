@@ -1,5 +1,4 @@
 #include "luminex.h"
-#include <iostream>
 
 namespace luminex {
 
@@ -14,27 +13,6 @@ ExtMove* generate_moves(const Position& pos, ExtMove* moveList) {
     [[maybe_unused]] const Bitboard pinned = pos.pinned();
     const Bitboard checkers = pos.checkers();
 
-    // DEBUG: Validate board state at move generation time
-    // Check each piece matches what we think it is
-    for (int sq = 0; sq < 64; ++sq) {
-        Piece p = pos.piece_on(Square(sq));
-        if (p != NO_PIECE) {
-            Color c = pos.color_of_piece(p);
-            PieceType pt = piece_type_of(p);
-            // Check if piece is in the right bitboards
-            Bitboard color_bb = pos.pieces(c);
-            Bitboard type_bb = pos.pieces(pt);
-            if (!(color_bb & (1ULL << sq)) || !(type_bb & (1ULL << sq))) {
-                std::cerr << "\n=== BOARD CORRUPTION AT MOVE GEN ===\n";
-                std::cerr << "Square " << Square(sq) << " has piece " << int(p) << "\n";
-                std::cerr << "But color_bb[" << c << "] doesn't have it: " << std::hex << color_bb << std::dec << "\n";
-                std::cerr << "Or type_bb[" << pt << "] doesn't have it: " << std::hex << type_bb << std::dec << "\n";
-                std::cerr << "FEN: " << pos.fen() << "\n";
-                std::cerr << "=====================================\n";
-            }
-        }
-    }
-
     // Generate moves for each piece type
     // Pawns
     Bitboard pawns = pos.pieces(us, PAWN);
@@ -42,16 +20,6 @@ ExtMove* generate_moves(const Position& pos, ExtMove* moveList) {
 
     while (pawns) {
         Square from = pop_lsb(pawns);
-        // DEBUG: Verify there's actually a pawn here
-        Piece p = pos.piece_on(from);
-        if (piece_type_of(p) != PAWN || pos.color_of_piece(p) != us) {
-            std::cerr << "\n=== PAWN BITBOARD CORRUPTION ===\n";
-            std::cerr << "Square " << from << " in pawn bitboard\n";
-            std::cerr << "But actual piece is " << int(p) << "\n";
-            std::cerr << "FEN: " << pos.fen() << "\n";
-            std::cerr << "==============================\n";
-            continue;  // Skip this corrupted entry
-        }
         Square to = Square(from + NORTH);
 
         // Single pawn push
@@ -122,16 +90,6 @@ ExtMove* generate_moves(const Position& pos, ExtMove* moveList) {
     Bitboard knights = pos.pieces(us, KNIGHT);
     while (knights) {
         Square from = pop_lsb(knights);
-        // DEBUG: Verify there's actually a knight here
-        Piece p = pos.piece_on(from);
-        if (piece_type_of(p) != KNIGHT || pos.color_of_piece(p) != us) {
-            std::cerr << "\n=== KNIGHT BITBOARD CORRUPTION ===\n";
-            std::cerr << "Square " << from << " in knight bitboard\n";
-            std::cerr << "But actual piece is " << int(p) << "\n";
-            std::cerr << "FEN: " << pos.fen() << "\n";
-            std::cerr << "================================\n";
-            continue;
-        }
         // Captures: enemy pieces except king
         Bitboard their_pieces = pos.pieces(them) & ~pos.pieces(them, KING);
         Bitboard attacks = knight_attacks_bb(from) & their_pieces;
