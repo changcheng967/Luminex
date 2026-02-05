@@ -479,11 +479,11 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
             }
         }
 
-        // Late move pruning: balanced - prune late quiet moves at non-PV nodes
-        // Only apply when we have searched enough moves and depth is low
-        if (!pv_node && ss->ply > 0 && moves_played >= 4 && depth <= 4 &&
+        // Late move pruning: standard threshold formula 3 + depth²
+        // At depth 4: 3+16=19 moves, not 4. This prevents pruning good moves too early.
+        if (!pv_node && ss->ply > 0 && moves_played >= 3 + depth * depth &&
             !m.is_capture() && !m.is_promotion() && !m.is_castling()) {
-            continue;  // Skip late quiet moves at low depth
+            continue;  // Skip very late quiet moves
         }
 
         // Futility pruning: skip quiet moves that can't improve alpha
