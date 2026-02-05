@@ -383,27 +383,13 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
         }
     }
 
-    // Generate moves - use CAPTURE-ONLY at deep plies with low remaining depth
+    // Generate moves - always generate all legal moves
+    // Removed capture_only optimization which was blind to quiet threats deep in the tree
     ExtMove moves[MAX_MOVES];
-    ExtMove* end;
-
-    // CAPTURE-ONLY SEARCH: Less aggressive - only apply at very deep plies with low remaining depth
-    // Apply only at ply >= 8 with depth <= 3
-    bool capture_only = !pv_node && !pos.is_check() &&
-        (ss->ply >= 8 && depth <= 3);
-
-    if (capture_only) {
-        end = generate<GEN_CAPTURE>(pos, moves);
-    } else {
-        end = generate<GEN_LEGAL>(pos, moves);
-    }
+    ExtMove* end = generate<GEN_LEGAL>(pos, moves);
 
     if (moves == end) {
-        // No legal moves - or no captures in capture-only mode
-        if (capture_only) {
-            // No captures but there might be quiet moves - just return eval
-            return eval;
-        }
+        // No legal moves
         if (pos.is_check()) {
             return -VALUE_MATE + ss->ply;
         }
@@ -482,10 +468,6 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
             if (stop.load(std::memory_order_relaxed)) break;
         }
         Move m = it->move;
-
-        // CRITICAL: Validate capture_only moves before do_move
-        // GEN_CAPTURE returns pseudo-legal moves that may leave king in check
-        if (capture_only && !pos.legal(m)) continue;
 
         // SEE-based capture pruning: skip captures that lose material
         // More conservative than before - use SEE to evaluate actual exchange
