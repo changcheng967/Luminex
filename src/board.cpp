@@ -170,9 +170,16 @@ void Position::set(const std::string& fen) {
     ss >> token;
     st_->ep_square = (token == "-") ? SQUARE_NONE : Square((token[1] - '1') * 8 + (token[0] - 'a'));
 
-    // Game ply
-    ss >> token; // halfmove clock (ignored for now)
-    ss >> token; // fullmove number (ignored for now)
+    // Halfmove clock (for 50-move rule)
+    int halfmove = 0;
+    if (ss >> halfmove) {
+        st_->halfmove_clock = halfmove;
+    } else {
+        st_->halfmove_clock = 0;
+    }
+
+    // Fullmove number (not used but we need to consume it)
+    ss >> token;
 
     st_->castling_rights = 0;
     for (Color c : {WHITE, BLACK}) {
@@ -208,6 +215,10 @@ void Position::set(const std::string& fen) {
     st_->key = k;
 
     game_ply_ = 0;
+
+    // Initialize position history for repetition detection
+    history_size = 0;
+    position_history[history_size++] = st_->key;
 }
 
 std::string Position::fen() const {
@@ -494,6 +505,13 @@ bool Position::do_move(Move m) {
     next_st.captured_piece = piece_type_on(to);
     next_st.move_was_executed = true;  // Assume valid until validation proves otherwise
 
+    // Update halfmove clock for 50-move rule
+    // Reset to 0 on pawn moves or captures, otherwise increment
+    next_st.halfmove_clock = st_->halfmove_clock + 1;
+    if (pt == PAWN || piece_type_on(to) != PT_NONE) {
+        next_st.halfmove_clock = 0;
+    }
+
     st_ = &next_st;
     ++game_ply_;
 
@@ -667,6 +685,11 @@ bool Position::do_move(Move m) {
     assert_consistency("do_move");
 #endif
 
+    // Record position for repetition detection
+    if (history_size < MAX_HISTORY) {
+        position_history[history_size++] = st_->key;
+    }
+
     return true;  // Move executed successfully
 }
 
@@ -763,6 +786,11 @@ void Position::undo_move(Move m) {
         std::cerr << "===========================================\n";
     }
 #endif
+
+    // Decrement history size for repetition detection
+    if (history_size > 0) {
+        history_size--;
+    }
 }
 
 void Position::do_null_move() {
@@ -1401,7 +1429,61 @@ bool Position::validate_move(Move m, Square from, Square to, Piece moved_pc, Pie
 }
 
 bool Position::is_draw() const {
-    // TODO: Implement proper draw detection
+    // 50-move rule: if 100 half-moves (50 full moves) without
+    // a pawn push or capture, it's a draw
+    if (st_->halfmove_clock >= 100) {
+        return true;
+    }
+
+    // Insufficient material detection
+    int piece_count_total = popcount(pieces());
+    if (piece_count_total == 2) {
+        return true;  // K vs K
+    }
+    if (piece_count_total == 3) {
+        // K+B vs K or K+N vs K
+        if (popcount(pieces(BISHOP)) == 1 || popcount(pieces(KNIGHT)) == 1) {
+            return true;
+        }
+    }
+    // K+B vs K+B on same color squares
+    if (piece_count_total == 4 &&
+        popcount(pieces(WHITE, BISHOP)) == 1 &&
+        popcount(pieces(BLACK, BISHOP)) == 1 &&
+        popcount(pieces(WHITE)) == 2 &&  // Just K+B
+        popcount(pieces(BLACK)) == 2) {  // Just K+B
+        Square wb = lsb(pieces(WHITE, BISHOP));
+        Square bb = lsb(pieces(BLACK, BISHOP));
+        // Same color square check: (file + rank) % 2 gives square color
+        bool wb_light = ((int(file_of(wb)) + int(rank_of(wb))) % 2) == 0;
+        bool bb_light = ((int(file_of(bb)) + int(rank_of(bb))) % 2) == 0;
+        if (wb_light == bb_light) {
+            return true;
+        }
+    }
+
+    // Threefold repetition detection
+    // Only need to check positions with the same side to move (every 2 plies)
+    // Only need to search back as far as the last irreversible move
+    int search_back = std::min(st_->halfmove_clock, history_size - 1);
+    int count = 0;
+    Key current_key = st_->key;
+
+    // Start from 4 plies back (same side to move, at least 2 full moves)
+    for (int i = 4; i <= search_back; i += 2) {
+        int idx = history_size - 1 - i;
+        if (idx < 0) break;
+
+        if (position_history[idx] == current_key) {
+            count++;
+            if (count >= 1) {
+                // In search, treat twofold repetition as a draw
+                // (prevents the engine from looping)
+                return true;
+            }
+        }
+    }
+
     return false;
 }
 

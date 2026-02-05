@@ -18,6 +18,7 @@ struct StateInfo {
     Move move = MOVE_NONE;
     PieceType captured_piece = PT_NONE;
     bool move_was_executed = true;  // Tracks if do_move actually executed the move (vs. returning early)
+    int halfmove_clock = 0;  // Half-moves since last pawn push or capture (for 50-move rule)
 };
 
 class Position {
@@ -143,6 +144,11 @@ private:
     int castling_rights_[NO_COLOR] = {};
     Square castling_rook_square_[NO_COLOR][2] = {};
     Bitboard castling_path_[NO_COLOR][2] = {};
+
+    // Position history for repetition detection
+    static constexpr int MAX_HISTORY = 1024;
+    Key position_history[MAX_HISTORY];
+    int history_size = 0;
 };
 
 inline Bitboard Position::pieces() const { return pieces_by_color[WHITE] | pieces_by_color[BLACK]; }

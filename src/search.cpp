@@ -598,22 +598,30 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
         }
 
         Value value;
-        if (do_lmr && new_depth > 0) {
-            // Search with reduced depth first
-            value = -search_worker(pos, ss + 1, -alpha - 1, -alpha, new_depth, !cut_node);
+
+        // PVS: First move always gets full window
+        if (moves_played == 0) {
+            value = -search_worker(pos, ss + 1, -beta, -alpha, new_depth, false);
+        }
+        // LMR moves: reduced depth, zero window first
+        else if (do_lmr) {
+            value = -search_worker(pos, ss + 1, -alpha - 1, -alpha, new_depth, true);
             if (value > alpha) {
-                // Failed high, re-search at full depth
-                value = -search_worker(pos, ss + 1, -beta, -alpha, depth - 1, !cut_node);
+                // Failed high, re-search at full depth, still zero window
+                value = -search_worker(pos, ss + 1, -alpha - 1, -alpha, depth - 1, !cut_node);
+                if (value > alpha && value < beta) {
+                    // Full window re-search only if within window
+                    value = -search_worker(pos, ss + 1, -beta, -alpha, depth - 1, false);
+                }
             }
-        } else if (!pv_node && moves_played > 0 && depth >= 3 && best_value > -VALUE_MATE_IN_MAX_PLY) {
-            // Late moves with narrow window
+        }
+        // Non-first moves without LMR: zero window first
+        else {
             value = -search_worker(pos, ss + 1, -alpha - 1, -alpha, depth - 1, !cut_node);
-            if (value > alpha) {
-                value = -search_worker(pos, ss + 1, -beta, -alpha, depth - 1, !cut_node);
+            if (value > alpha && value < beta) {
+                // Full window re-search only if within window
+                value = -search_worker(pos, ss + 1, -beta, -alpha, depth - 1, false);
             }
-        } else {
-            // Full window search
-            value = -search_worker(pos, ss + 1, -beta, -alpha, depth - 1, !cut_node);
         }
 
         pos.undo_move(m);
@@ -644,11 +652,22 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
                     if (pc != NO_PIECE) {
                         history[int(pc)][int(m.to())] += depth * depth;
 
+                        // Overflow protection: if entry exceeds threshold, halve all history
+                        if (history[int(pc)][int(m.to())] > 8000) {
+                            for (int i = 0; i < 12; ++i)
+                                for (int j = 0; j < 64; ++j)
+                                    history[i][j] /= 2;
+                        }
+
                         // Update counter-move history
                         if (ss->ply >= 1 && (ss - 1)->current_move != MOVE_NONE && (ss - 1)->moved_piece != NO_PIECE) {
                             Move prev_move = (ss - 1)->current_move;
                             Piece prev_pc = (ss - 1)->moved_piece;
-                            counter_moves[int(prev_pc)][int(prev_move.to())][int(pc)][int(m.to())] += depth * depth;
+                            int& cm = counter_moves[int(prev_pc)][int(prev_move.to())][int(pc)][int(m.to())];
+                            cm += depth * depth;
+
+                            // Clip individual counter-move entry to avoid expensive full table halving
+                            if (cm > 8000) cm = 8000;
                         }
                     }
                 }
