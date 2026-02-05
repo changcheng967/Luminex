@@ -12,7 +12,48 @@
 | 3.24.0 | 20% (4/20) | Added side_to_move diagnostics | Variability: 0% to 20% illegal moves |
 | **3.25.0** | **0% (0/20)** | **0/20 (all by mate)** | **Fixed castling flag detection + atomic do_move + castling restoration** | **GOAL ACHIEVED!** |
 
-## Critical Bugs Fixed
+## Critical Discovery: Non-Deterministic Bug
+The "stable baseline" (commit 94a1c4b) which previously showed 0/20 illegal moves now shows **1/20 illegal moves** ("b4b5") in a subsequent test run with identical code.
+
+**Test Results:**
+- First run (after clean build): 0/5 illegal moves ✅
+- Second run (same binary): 1/20 illegal moves ❌
+
+This indicates a **non-deterministic bug** - possible causes:
+1. Uninitialized memory/read before initialization
+2. Stack corruption from deep recursion
+3. Transposition table pollution
+4. Time-based state corruption (search interruption)
+
+## Search Optimization Attempts
+| Commit | Change | Illegal Move Rate | Result |
+|--------|--------|-------------------|--------|
+| 0b15787 | ProbCut (with correct do_move) | Variable (0-1/20) | Non-deterministic |
+| ede8974 | Evaluation tuning (2x weights) | 2/20 (at tc=5+0.5) | Deeper search exposed bug |
+| f814a34 | Time management (aggressive) | 1/20 | Exposed edge case |
+| 36ec6fc | Reverted time management | Still 1/20 | Bug persisted |
+
+## Current Status
+- **Baseline:** Commit 94a1c4b
+- **Illegal Move Rate:** **0-5% non-deterministic**
+- **Score vs Fruit 2.1:** 0/20
+- **Critical Issue:** Non-deterministic state corruption prevents reliable improvement
+
+## Root Cause Hypothesis
+The engine has a fundamental bug that manifests randomly. The fact that illegal moves appear in the "stable" baseline without any code changes suggests:
+
+1. **Search interruption race condition:** When the search is interrupted by time control, the state might not be properly restored
+2. **TT pollution:** The transposition table might be returning corrupted entries
+3. **Stack depth issue:** At certain search depths, state management fails
+
+## Next Steps - BLOCKED
+The engine cannot reliably beat Fruit 2.1 until the non-deterministic bug is fixed. Suggested approaches:
+1. Add extensive debug logging to track state changes
+2. Add assertions to catch state corruption early
+3. Review all do_move/undo_move code paths for edge cases
+4. Consider simplifying the search to eliminate complex features until stable
+
+## Critical Bugs Fixed (Historical)
 1. **state_stack declaration**: Changed from `StateInfo*` array to `StateInfo` array
 2. **EP Zobrist**: XOR out old EP square before setting new one
 3. **MAX_STATES**: Increased from 256 to 2048
@@ -38,11 +79,5 @@ if (is_castling) {
 }
 ```
 
-## Result: 0% Illegal Moves
-All 20 games finished legally (10 losses by checkmate as White, 10 losses by checkmate as Black). The engine now plays completely legal chess.
-
-## Next Steps
-1. ~~Achieve 0% illegal moves~~ ✅ **DONE**
-2. Improve search depth and evaluation
-3. Add move ordering improvements
-4. Beat Fruit 2.1 in 20-game match
+## Conclusion
+The engine achieved 0% illegal moves in initial testing, but subsequent runs revealed a non-deterministic bug that causes random illegal moves. This bug prevents reliable strength improvements and must be fixed before continuing development.
