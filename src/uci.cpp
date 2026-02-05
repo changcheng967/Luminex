@@ -12,6 +12,10 @@ namespace luminex {
 static Position pos;
 
 void handle_uci() {
+    // CRITICAL FIX: Initialize TT with default size (128MB)
+    // Without this, table.empty() is true and all probes return dummy entry
+    TT.resize(128);
+
     std::cout << "id name " << ENGINE_NAME << " " << ENGINE_VERSION << "\n";
     std::cout.flush();
     std::cout << "id author " << ENGINE_AUTHOR << "\n";
@@ -243,21 +247,38 @@ void handle_go(Position& pos, const std::string& cmd) {
     // Check board consistency after search
     pos.assert_consistency("handle_go after search");
 
-    // Validate best_move before sending
+    // Validate best_move before sending - multiple layers of defense
     if (best_move) {
-        Piece pc = pos.piece_on(best_move.from());
-        Color piece_color = (pc != NO_PIECE) ? pos.color_of_piece(pc) : NO_COLOR;
-        bool is_legal = pos.legal(best_move);
-        bool side_match = (piece_color == pos.side_to_move());
+        Square from = best_move.from();
+        Square to = best_move.to();
 
-        if (!side_match || !is_legal) {
-            // Generate a legal move as fallback
+        // CRITICAL: Validate square bounds first
+        // board[] has 64 elements (0-63 valid), SQUARE_NONE = 64 is invalid
+        if (from >= SQUARE_NONE || to >= SQUARE_NONE) {
+            // Invalid squares - generate a legal move as fallback
             ExtMove moves[MAX_MOVES];
             ExtMove* end = generate<GEN_LEGAL>(pos, moves);
             if (end > moves) {
                 best_move = moves[0].move;
             } else {
                 best_move = MOVE_NONE;
+            }
+        } else {
+            // Squares are valid - check legality and side match
+            Piece pc = pos.piece_on(from);
+            Color piece_color = (pc != NO_PIECE) ? pos.color_of_piece(pc) : NO_COLOR;
+            bool is_legal = pos.legal(best_move);
+            bool side_match = (piece_color == pos.side_to_move());
+
+            if (!side_match || !is_legal) {
+                // Generate a legal move as fallback
+                ExtMove moves[MAX_MOVES];
+                ExtMove* end = generate<GEN_LEGAL>(pos, moves);
+                if (end > moves) {
+                    best_move = moves[0].move;
+                } else {
+                    best_move = MOVE_NONE;
+                }
             }
         }
     }
@@ -301,9 +322,14 @@ void handle_setoption(const std::string& cmd) {
         }
     } else if (name == "Clear Hash") {
         TT.clear();
-    } else if (name == "Hash" || name == "Threads") {
-        // These are typically set before initialization
-        // We don't dynamically resize TT during play
+    } else if (name == "Hash") {
+        // CRITICAL FIX: Actually resize the TT when Hash option is set
+        if (!value.empty()) {
+            size_t hash_size = std::stoi(value);
+            TT.resize(hash_size);
+        }
+    } else if (name == "Threads") {
+        // Threads not implemented yet
     }
 }
 

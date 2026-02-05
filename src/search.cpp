@@ -483,6 +483,10 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
         }
         Move m = it->move;
 
+        // CRITICAL: Validate capture_only moves before do_move
+        // GEN_CAPTURE returns pseudo-legal moves that may leave king in check
+        if (capture_only && !pos.legal(m)) continue;
+
         // Capture pruning: ULTRA aggressive - skip most captures at deep plies
         // At high ply, only search winning captures (victim > attacker)
         if (!pv_node && ss->ply > 0 && m.is_capture() && !m.is_promotion()) {
@@ -1012,14 +1016,19 @@ Move search(Position& pos, Limits& lim) {
         }
     }
 
-    // Final safety check: verify best_move is legal
-    if (best_move != MOVE_NONE && !pos.legal(best_move)) {
-        ExtMove safety_moves[MAX_MOVES];
-        ExtMove* end = generate<GEN_LEGAL>(pos, safety_moves);
-        if (end > safety_moves) {
-            best_move = safety_moves[0].move;
-        } else {
-            best_move = MOVE_NONE;
+    // Final safety check: verify best_move has valid squares and is legal
+    if (best_move != MOVE_NONE) {
+        Square from = best_move.from();
+        Square to = best_move.to();
+        // Check bounds first (SQUARE_NONE = 64 is invalid)
+        if (from >= SQUARE_NONE || to >= SQUARE_NONE || !pos.legal(best_move)) {
+            ExtMove safety_moves[MAX_MOVES];
+            ExtMove* end = generate<GEN_LEGAL>(pos, safety_moves);
+            if (end > safety_moves) {
+                best_move = safety_moves[0].move;
+            } else {
+                best_move = MOVE_NONE;
+            }
         }
     }
 
