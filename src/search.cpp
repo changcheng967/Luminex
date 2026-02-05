@@ -90,6 +90,8 @@ inline int lmr_reduction(int depth, int moves_played, bool improving, bool pv_no
     // Depth-based: more reduction at deeper depths
     if (depth >= 6) reduction += 1;
     if (depth >= 10) reduction += 1;
+    if (depth >= 15) reduction += 1;  // Extra reduction at very high depth
+    if (depth >= 22) reduction += 1;  // Maximum reduction for extreme depths
 
     // Cap reduction - don't reduce too much
     if (reduction > depth - 2) reduction = depth - 2;
