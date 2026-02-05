@@ -3,74 +3,41 @@
 ## Version History
 | Version | Illegal Move Rate | Score vs Fruit | What Changed | What I Learned |
 |---------|------------------|----------------|--------------|----------------|
-| 3.18.0 | 100% (20/20) | Major state_stack bug | Illegal moves: opponent's pieces |
-| 3.19.0 | 60% (12/20) | Fixed EP Zobrist, MAX_STATES | Illegal moves reduced |
-| 3.20.0 | 20% (4/20) | Fixed castling Zobrist, search fallback | Still seeing wrong-side moves |
-| 3.21.0 | 10% (2/20) | Added piece-square Zobrist for normal moves | Missing critical Zobrist update! |
-| 3.22.0 | 40% (8/20) | Added TT clear, validation | Pollution, wrong-side moves persist |
-| 3.23.0 | 25% (5/20) | Added final safety check in search() | All illegal moves when Black |
-| 3.24.0 | 20% (4/20) | Added side_to_move diagnostics | Variability: 0% to 20% illegal moves |
-| **3.25.0** | **0% (0/20)** | **0/20 (all by mate)** | **Fixed castling flag detection + atomic do_move + castling restoration** | **GOAL ACHIEVED!** |
+| ... | ... | ... | Previous sessions | ... |
+| **Current** | **0% (0/60)** | **0/60** | **slider_blockers + Zobrist + eval fixes** | **Engine stable, fundamentally weak** |
 
-## Critical Bugs Fixed (Latest Session)
-| Commit | Bug | Fix | Result |
+## Latest Session Fixes
+| Commit | Bug | Fix | Impact |
 |--------|-----|-----|--------|
-| 1a0d8b9 | ProbCut legality violation | Added `pos.legal(m)` check before `do_move` | Prevents analyzing illegal positions |
-| 1a0d8b9 | TT corruption on abort | Added `!stop` check before `tte->save()` | Prevents saving incomplete search results |
+| 9a7704f | Broken slider_blockers | Use attack functions with empty occupancy | Fixed pin detection, 0% illegal moves |
+| 9a7704f | Promotion Zobrist key | XOR out pawn from origin | Fixed position key corruption |
+| 6c676d8 | Wrong phase calculation | Standard piece-count formula | Proper MG/EG tapering |
+| 6c676d8 | Mobility weights too high | Reduced to standard (K:4/6, B:5/7, R:3/5, Q:2/3) | More balanced evaluation |
+| 18b4b4f | No PV prioritization at root | Prioritize previous best move | Improved search stability |
 
 ## Current Status
-- **Commit:** 87d55fc
-- **Configuration:** ProbCut + 2x Mobility + 2x King Safety
-- **Illegal Move Rate:** **0/20** ✅ (verified stable)
-- **Score vs Fruit 2.1:** **0/20** at tc=1+0.1 (all losses by checkmate)
-- **Score vs Fruit 2.1:** **0/20** at tc=5+0.5 (all losses by checkmate)
+- **Commit:** 91aeb82
+- **Illegal Move Rate:** **0%** ✅ (60 games tested)
+- **Score vs Fruit 2.1:** **0-60** at tc=1+0.1 (all losses by checkmate)
 
-## Root Cause: Engine Fundamentally Too Weak
-The engine is legally sound but cannot compete with Fruit 2.1 due to:
+## What Was Fixed
+1. **slider_blockers()** - Completely broken, now correctly identifies pinned pieces
+2. **Promotion Zobrist** - Pawn wasn't XORed out, causing key corruption
+3. **Phase calculation** - Changed from `material/200` to standard formula
+4. **Mobility weights** - Reduced from aggressive to standard values
+5. **PV move ordering** - Previous iteration's best move now prioritized at root
 
-1. **Shallow Search Depth:** At tc=1+0.1, engine only reaches depth 3-5
-2. **Simple Evaluation:** Lacks sophisticated positional patterns
-3. **Poor Time Management:** Conservative formula limits depth
-4. **No Opening Book:** Plays from start position each game
+## Remaining Issues
+The engine is ~1000+ ELO weaker than Fruit 2.1. To be competitive, it needs:
+1. Better tactical vision (search depth improvements)
+2. More sophisticated evaluation (king safety, pawn structure)
+3. Better time management
+4. Opening book (for avoiding early mistakes)
 
-### What Works
-- Atomic `do_move` / `undo_move`
-- ProbCut with legality check
-- TT with abort protection
-- Basic mobility evaluation
-- Basic king safety evaluation
-- Pawn structure (doubled, isolated, passed)
-
-### What's Missing (vs Fruit 2.1)
-- Deep search (Fruit searches deeper at same time control)
-- Complex evaluation patterns
-- Better move ordering
-- Aspiration windows (caused issues)
-- Null move pruning (enabled but weak)
-- Better piece-square tables
-- Tradeoff analysis
-
-## Test Results Summary
-| Time Control | Score | Illegal Moves |
-|--------------|-------|----------------|
-| tc=1+0.1 | 0/20 | 0/20 ✅ |
-| tc=5+0.5 | 0/20 | 0/20 ✅ |
+## Test Results
+| Test | Games | Illegal Moves | Score |
+|------|-------|---------------|-------|
+| Latest build | 60 | 0 ✅ | 0-60 |
 
 ## Conclusion
-The engine has achieved **0% illegal moves** - the primary technical goal. However, beating Fruit 2.1 (10+/20) requires significant architectural improvements beyond simple evaluation tuning.
-
-The engine needs:
-1. Faster search (better pruning, better move ordering)
-2. Deeper search depth at fast time controls
-3. More sophisticated evaluation
-4. Or: slower time controls for testing
-
-## Next Steps (if continuing)
-1. Implement aspiration windows (carefully tested)
-2. Improve root move ordering with TT move priority
-3. Add more aggressive pruning (LMR, futility)
-4. Consider PST tuning
-5. Or: Test at much slower time controls (tc=60+1) to see if depth helps
-
-## Engine is LEGALLY SOUND
-All 40 games tested across multiple commits and time controls show **0% illegal moves**. The engine will not play illegal moves in tournament play.
+Engine is **legally sound** with 0% illegal moves across 60 games. However, significant evaluation and search improvements are needed to compete with strong engines like Fruit 2.1 (~2700 ELO).
