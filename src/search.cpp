@@ -326,7 +326,7 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
         }
     }
 
-    // Null move pruning - EXTREME: apply aggressively for maximum tree reduction
+    // Null move pruning - moderate reduction
     int piece_count = popcount(pos.pieces()) - popcount(pos.pieces(PAWN)) - 2;  // Exclude kings and pawns
     bool null_move_ok = !pv_node && !pos.is_check() && depth >= 2 && piece_count >= 4 &&
                           eval >= beta && ss->ply >= 1;  // Don't do at root
@@ -334,7 +334,7 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
     if (null_move_ok) {
         pos.do_null_move();
 
-        // Aggressive reduction: depth - 2 instead of depth - 3
+        // Moderate reduction: depth - 2 (balance between speed and accuracy)
         Value null_value = -search_worker(pos, ss + 1, -beta, -beta + 1, depth - 2, !cut_node);
 
         pos.undo_null_move();
