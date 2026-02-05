@@ -1284,7 +1284,8 @@ Value evaluate(const Position& pos) {
             }
         }
 
-        // King danger: count attackers and their weight - INCREASED FOR BETTER KING SAFETY
+        // King danger: count attackers and their weight - VERY AGGRESSIVE FOR THREAT AWARENESS
+        // Engine loses by mate, so we need to be extremely sensitive to king danger
         Bitboard danger_zone = king_danger_zone(their_king);
         int danger = 0;
 
@@ -1294,7 +1295,7 @@ Value evaluate(const Position& pos) {
             Square sq = pop_lsb(our_knights);
             if (knight_attacks_bb(sq) & danger_zone) {
                 king_attackers[int(us)]++;
-                danger += 80;  // Knight attacks (increased from 40)
+                danger += 120;  // Knight attacks (very aggressive)
             }
         }
 
@@ -1303,7 +1304,7 @@ Value evaluate(const Position& pos) {
             Square sq = pop_lsb(our_bishops);
             if (bb_diag_attacks(sq, pos.pieces()) & danger_zone) {
                 king_attackers[int(us)]++;
-                danger += 100;  // Bishop attacks (increased from 50)
+                danger += 150;  // Bishop attacks (very aggressive)
             }
         }
 
@@ -1313,7 +1314,7 @@ Value evaluate(const Position& pos) {
             Bitboard attacks = (bb_rank_attacks(sq, pos.pieces()) | bb_file_attacks(sq, pos.pieces()));
             if (attacks & danger_zone) {
                 king_attackers[int(us)]++;
-                danger += 140;  // Rook attacks are dangerous (increased from 70)
+                danger += 200;  // Rook attacks are very dangerous (very aggressive)
             }
         }
 
@@ -1322,24 +1323,24 @@ Value evaluate(const Position& pos) {
             Square sq = pop_lsb(our_queens);
             if (queen_attacks_bb(sq, pos.pieces()) & danger_zone) {
                 king_attackers[int(us)]++;
-                danger += 250;  // Queen attacks are very dangerous (increased from 120)
+                danger += 350;  // Queen attacks are extremely dangerous (very aggressive)
             }
         }
 
-        // Bonus for multiple attackers (coordination)
+        // Bonus for multiple attackers (coordination) - VERY AGGRESSIVE
         if (king_attackers[int(us)] >= 2) {
-            danger += (king_attackers[int(us)] - 1) * 60;  // Increased from 30
+            danger += (king_attackers[int(us)] - 1) * 100;  // Much higher
         }
 
-        // Penalty when we have no safe king position (king in center) - INCREASED
+        // Penalty when we have no safe king position (king in center) - VERY AGGRESSIVE
         Rank krank = rank_of(our_king);
         if ((us == WHITE && krank >= RANK_3 && krank <= RANK_5) ||
             (us == BLACK && krank >= RANK_4 && krank <= RANK_6)) {
-            // King in center - very dangerous in middle game
-            mg_score -= (us == WHITE ? 1 : -1) * 80;  // Increased from 40
-            // Even worse when under attack
+            // King in center - extremely dangerous
+            mg_score -= (us == WHITE ? 1 : -1) * 150;  // Much higher penalty
+            // Even worse when under attack - MASSIVE penalty
             if (king_attackers[int(them)] > 0) {
-                mg_score -= (us == WHITE ? 1 : -1) * 150 * king_attackers[int(them)];  // Increased from 60
+                mg_score -= (us == WHITE ? 1 : -1) * 300 * king_attackers[int(them)];  // Much higher
             }
         }
 
