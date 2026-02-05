@@ -262,31 +262,13 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
     bool found;
     TTEntry* tte = TT.probe(pos.key(), found);
 
-    // CRITICAL: Validate TT move with FULL legal check before using it
-    // This prevents TT corruption from causing illegal moves
+    // Validate TT move with FULL legal check before using it
     Move tt_move = MOVE_NONE;
     if (found) {
         Move m = tte->move();
-        // Full validation: bounds check + pseudo_legal + legal
-        if (m && m.from() < SQUARE_NONE && m.to() < SQUARE_NONE) {
-            // DIAGNOSTIC: Check what the TT is giving us
-            Piece pc = pos.piece_on(m.from());
-            if (pc != NO_PIECE) {
-                Color piece_color = pos.color_of_piece(pc);
-                if (piece_color != pos.side_to_move()) {
-                    std::cerr << "\n=== TT GIVING OPPONENT MOVE ===\n";
-                    std::cerr << "TT move: " << m << "\n";
-                    std::cerr << "piece_color: " << (piece_color == WHITE ? "WHITE" : "BLACK") << "\n";
-                    std::cerr << "side_to_move: " << (pos.side_to_move() == WHITE ? "WHITE" : "BLACK") << "\n";
-                    std::cerr << "FEN: " << pos.fen() << "\n";
-                    std::cerr << "pos.legal(m): " << pos.legal(m) << "\n";
-                    std::cerr << "==================================\n";
-                }
-            }
-
-            if (pos.legal(m)) {
-                tt_move = m;
-            }
+        // Full validation: bounds check + legal
+        if (m && m.from() < SQUARE_NONE && m.to() < SQUARE_NONE && pos.legal(m)) {
+            tt_move = m;
         }
     }
     Value tt_value = found ? tte->value() : VALUE_ZERO;
@@ -727,23 +709,9 @@ Move search(Position& pos, Limits& lim) {
     Value best_value = -VALUE_INFINITE;
     root_score = best_value;
 
-    // Check if we have any legal moves at all - ALSO SAVE THEM FOR FALLBACK
+    // Check if we have any legal moves at all
     ExtMove initial_moves[MAX_MOVES];
     ExtMove* initial_end = generate<GEN_LEGAL>(pos, initial_moves);
-
-    // DEBUG: Check first few moves to see if they're for correct color
-    if (initial_end != initial_moves) {
-        Piece first_piece = pos.piece_on(initial_moves[0].move.from());
-        Color piece_color = (first_piece != NO_PIECE) ? pos.color_of_piece(first_piece) : Color(2);
-        if (piece_color != pos.side_to_move()) {
-            std::cerr << "\n=== SEARCH GENERATING WRONG COLOR MOVES ===\n";
-            std::cerr << "side_to_move: " << (pos.side_to_move() == WHITE ? "WHITE" : "BLACK") << "\n";
-            std::cerr << "First move: " << initial_moves[0].move << "\n";
-            std::cerr << "Piece at from: " << int(first_piece) << " (color=" << (piece_color == WHITE ? "WHITE" : piece_color == BLACK ? "BLACK" : "INVALID") << ")\n";
-            std::cerr << "FEN: " << pos.fen() << "\n";
-            std::cerr << "======================================\n";
-        }
-    }
 
     if (initial_moves == initial_end) {
         // No legal moves for us - we are checkmated or stalemated
@@ -834,28 +802,35 @@ Move search(Position& pos, Limits& lim) {
     // When depth>0, search to that specific depth
     // Always start from depth 1 for proper iterative deepening
     int start_depth = (limits.depth == 0) ? 1 : limits.depth;
+
+    // Track previous score for aspiration windows
+    Value previous_score = VALUE_ZERO;
+
     for (root_depth = start_depth; limits.depth == 0 || root_depth <= limits.depth; ++root_depth) {
         // Check time before starting a new depth (for movetime)
         check_time();
         if (stop.load(std::memory_order_relaxed)) break;
 
-        // Aspiration window - DISABLED for faster depth progression
-        // Using full window search to avoid re-search overhead
-        Value alpha = -VALUE_INFINITE;
-        Value beta = VALUE_INFINITE;
+        // Aspiration window - ENABLED for faster root searches
+        // Use small window around previous score, widen only if fails
+        int aspiration_delta = 50;  // Initial window size
+        Value alpha;
+        Value beta;
+
+        if (root_depth > 1 && previous_score > -VALUE_INFINITE + 5000 && previous_score < VALUE_INFINITE - 5000) {
+            // Use aspiration window around previous score
+            alpha = std::max(Value(-VALUE_INFINITE), Value(previous_score - aspiration_delta));
+            beta = std::min(Value(VALUE_INFINITE), Value(previous_score + aspiration_delta));
+        } else {
+            // First depth or no previous score - use full window
+            alpha = -VALUE_INFINITE;
+            beta = VALUE_INFINITE;
+            aspiration_delta = 1000;  // Skip aspiration on next iteration
+        }
 
         // Generate moves
         ExtMove moves[MAX_MOVES];
         ExtMove* end = generate<GEN_LEGAL>(pos, moves);
-
-        // DIAGNOSTIC: Log first few moves at root depth 1
-        if (root_depth == 1) {
-            std::cerr << "Root depth " << root_depth << ": side_to_move=" << (pos.side_to_move() == WHITE ? "W" : "B") << " moves=" << (end - moves) << std::endl;
-            for (ExtMove* it = moves; it != end && it < moves + 5; ++it) {
-                Piece p = pos.piece_on(it->move.from());
-                std::cerr << "  " << it->move << " (from=" << it->move.from() << " piece=" << int(p) << ")" << std::endl;
-            }
-        }
 
         // Order moves at root for better efficiency
         for (ExtMove* it = moves; it != end; ++it) {
@@ -911,59 +886,110 @@ Move search(Position& pos, Limits& lim) {
             it->value = score;
         }
 
-        // Sort moves by score
+        // Sort moves by score (only need to sort once per depth)
         std::sort(moves, end, [](const ExtMove& a, const ExtMove& b) {
             return a.value > b.value;
         });
 
+        // Save initial aspiration bounds for re-search logic
+        Value window_alpha = alpha;
+        Value window_beta = beta;
         Value depth_best_value = -VALUE_INFINITE;
         Move depth_best_move = MOVE_NONE;
 
-        for (ExtMove* it = moves; it != end; ++it) {
-            if (stop.load(std::memory_order_relaxed)) {
+        // Aspiration re-search loop - widen window if score falls outside
+        while (aspiration_delta <= 1000) {
+            Value current_alpha = (aspiration_delta == 50) ? alpha : window_alpha;
+            Value current_beta = (aspiration_delta == 50) ? beta : window_beta;
+
+
+            // Search all moves with current bounds
+            Value iter_best_value = -VALUE_INFINITE;
+            Move iter_best_move = MOVE_NONE;
+
+            for (ExtMove* it = moves; it != end; ++it) {
+                if (stop.load(std::memory_order_relaxed)) {
+                    break;
+                }
+
+                // Check time before each root move
+                if (check_time()) {
+                    break;
+                }
+
+                if (!pos.do_move(it->move)) {
+                    continue;
+                }
+                Value value = -search_worker(pos, stack + 1, -current_beta, -current_alpha, root_depth - 1, false);
+                pos.undo_move(it->move);
+
+                if (check_time()) {
+                    break;
+                }
+
+                if (value > iter_best_value) {
+                    iter_best_value = value;
+                    iter_best_move = it->move;
+                }
+
+                if (value > current_alpha) {
+                    current_alpha = value;
+                }
+
+                if (value >= current_beta) {
+                    break; // Beta cutoff
+                }
+            }
+
+            // Check if time ran out during search
+            if (stop.load(std::memory_order_relaxed)) break;
+
+            // On first pass, or if we're already at full window, accept result
+            if (aspiration_delta >= 1000 || aspiration_delta == 50) {
+                depth_best_value = iter_best_value;
+                depth_best_move = iter_best_move;
+
+                // Check if we need to re-search (score outside initial window)
+                if (aspiration_delta == 50 && root_depth > 1 &&
+                    previous_score > -VALUE_INFINITE + 5000 && previous_score < VALUE_INFINITE - 5000) {
+                    // Score is outside initial aspiration window
+                    if (iter_best_value <= alpha) {
+                        // Fail-low: widen alpha downward
+                        aspiration_delta *= 2;
+                        window_alpha = std::max(Value(-VALUE_INFINITE), Value(previous_score - aspiration_delta));
+                        window_beta = beta;  // Keep beta unchanged
+                        continue;  // Re-search with new window
+                    } else if (iter_best_value >= beta) {
+                        // Fail-high: widen beta upward
+                        aspiration_delta *= 2;
+                        window_alpha = alpha;  // Keep alpha unchanged
+                        window_beta = std::min(Value(VALUE_INFINITE), Value(previous_score + aspiration_delta));
+                        continue;  // Re-search with new window
+                    }
+                }
+                // Score is within window, or we're at full window - done
                 break;
             }
 
-            // Check time before each root move (especially for movetime)
-            if (check_time()) {
-                break;  // Time limit exceeded
-            }
-
-            if (!pos.do_move(it->move)) {
-                // CRITICAL: do_move failed - atomic failure, no state change
-                // Do NOT call undo_move - do_move already guarantees state is unchanged
-                continue;
-            }
-            Value value = -search_worker(pos, stack + 1, -beta, -alpha, root_depth - 1, false);
-            pos.undo_move(it->move);
-
-            // Check time after each root move
-            if (check_time()) {
-                break;  // Time limit exceeded
-            }
-
-            if (value > depth_best_value) {
-                depth_best_value = value;
-                depth_best_move = it->move;
-            }
-
-            if (value > alpha) {
-                alpha = value;
-            }
-
-            if (value >= beta) {
-                break; // Beta cutoff
-            }
+            // Re-search complete
+            depth_best_value = iter_best_value;
+            depth_best_move = iter_best_move;
+            break;
         }
 
         // Check time after all moves searched
         check_time();
         if (stop.load(std::memory_order_relaxed)) break;
 
-        // Update overall best with this depth's result (no aspiration window)
+        // Update overall best with this depth's result
         if (depth_best_move != MOVE_NONE) {
             best_value = depth_best_value;
             best_move = depth_best_move;
+        }
+
+        // Update previous_score for next depth's aspiration window
+        if (depth_best_value > -VALUE_INFINITE + 5000 && depth_best_value < VALUE_INFINITE - 5000) {
+            previous_score = depth_best_value;
         }
         root_score = depth_best_value;
 
@@ -975,60 +1001,24 @@ Move search(Position& pos, Limits& lim) {
         uci_info(pos, root_depth, depth_best_value, nodes.load(), time_ms);
     }
 
-    // Fallback: if best_move is still MOVE_NONE, use the first legal move we found initially
+    // Fallback: if best_move is still MOVE_NONE, use the first legal move we found
     if (best_move == MOVE_NONE) {
-        // CRITICAL FIX: Check if we have any legal moves before accessing initial_moves[0]
         if (initial_end > initial_moves) {
-            std::cerr << "=== FALLBACK TO INITIAL_MOVE[0] ===" << std::endl;
-            std::cerr << "initial_moves[0] = " << initial_moves[0].move << std::endl;
-            std::cerr << "FEN: " << pos.fen() << std::endl;
             best_move = initial_moves[0].move;
         } else {
-            // No legal moves - we are checkmated or stalemated
-            std::cerr << "=== NO LEGAL MOVES - GAME OVER ===" << std::endl;
-            std::cerr << "FEN: " << pos.fen() << std::endl;
-            // Return MOVE_NONE to signal game over
-            return MOVE_NONE;
+            return MOVE_NONE;  // No legal moves
         }
     }
 
-    // RIGHT BEFORE return best_move;
-    std::cerr << "\n=== FINAL BESTMOVE VALIDATION ===\n";
-    std::cerr << "Position FEN: " << pos.fen() << "\n";
-    std::cerr << "Side to move: " << (pos.side_to_move() == WHITE ? "WHITE" : "BLACK") << "\n";
-    std::cerr << "best_move: " << best_move << "\n";
-    if (best_move) {
-        std::cerr << "  from=" << best_move.from() << ", to=" << best_move.to() << "\n";
-        Piece pc = pos.piece_on(best_move.from());
-        std::cerr << "  piece at from: " << int(pc);
-        if (pc != NO_PIECE) {
-            std::cerr << " (color=" << (pos.color_of_piece(pc) == WHITE ? "WHITE" : "BLACK") << ")";
-        }
-        std::cerr << "\n";
-        std::cerr << "  pseudo_legal: " << pos.pseudo_legal(best_move) << "\n";
-        std::cerr << "  legal: " << pos.legal(best_move) << "\n";
-    }
-    std::cerr << "=================================\n";
-
-    // FINAL SAFETY CHECK: Verify best_move is legal before returning
-    // This acts as a last-ditch safety net against corrupted search state
+    // Final safety check: verify best_move is legal
     if (best_move != MOVE_NONE && !pos.legal(best_move)) {
-        std::cerr << "\n=== CRITICAL: search() generated illegal move ===\n";
-        std::cerr << "best_move: " << best_move << "\n";
-        std::cerr << "FEN: " << pos.fen() << "\n";
-        std::cerr << "Generating legal fallback...\n";
-
-        // Try to find a safe fallback from legal move generation
         ExtMove safety_moves[MAX_MOVES];
         ExtMove* end = generate<GEN_LEGAL>(pos, safety_moves);
         if (end > safety_moves) {
             best_move = safety_moves[0].move;
-            std::cerr << "FALLBACK to legal move: " << best_move << "\n";
         } else {
-            std::cerr << "NO LEGAL MOVES - returning MOVE_NONE\n";
             best_move = MOVE_NONE;
         }
-        std::cerr << "==============================================\n";
     }
 
     return best_move;

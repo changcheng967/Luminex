@@ -33,18 +33,12 @@ void handle_isready() {
 }
 
 void handle_ucinewgame() {
-    // Debug logging to verify this is being called
-    std::cerr << "DEBUG: ucinewgame received, clearing state" << std::endl;
-
     // Clear transposition table
     TT.clear();
     TT.new_search();
 
-    // CRITICAL: Reset position to starting position
-    // This prevents state from previous game from leaking into new game
+    // Reset position to starting position
     pos.set("rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1");
-
-    std::cerr << "DEBUG: State cleared, position reset" << std::endl;
 }
 
 void handle_position(Position& pos, const std::string& cmd) {
@@ -87,10 +81,7 @@ void handle_position(Position& pos, const std::string& cmd) {
 
     pos.set(fen);
 
-    // DIAGNOSTIC: Verify side_to_move after FEN load
-    std::cerr << "AFTER SET FEN: side_to_move=" << (pos.side_to_move() == WHITE ? "WHITE" : "BLACK") << " fen=" << fen << std::endl;
-
-    // CRITICAL FIX: Use legal move generation for position replay
+    // Replay moves using legal move generation
     // This ensures correct move flags and prevents position corruption
     if (moves_idx != std::string::npos) {
         std::string moves_str = cmd.substr(moves_idx + 6);
@@ -166,55 +157,10 @@ void handle_position(Position& pos, const std::string& cmd) {
                 m = Move(from, to, flag);
             }
 
-            // DIAGNOSTIC: Check board state before and after do_move during replay
-            static int replay_count = 0;
-            if (replay_count < 10) {
-                Piece p_before = pos.piece_on(from);
-                std::cerr << "REPLAY #" << replay_count << ": " << move_str << " (from=" << from << " to=" << to << ") ";
-                std::cerr << "piece at from=" << int(p_before);
-                if (p_before != NO_PIECE) {
-                    std::cerr << " (" << (pos.color_of_piece(p_before) == WHITE ? "W" : "B") << ")";
-                }
-                std::cerr << " side_to_move=" << (pos.side_to_move() == WHITE ? "W" : "B") << std::endl;
-                replay_count++;
-            }
-
-            // CRITICAL: Check if do_move succeeded
+            // Execute move - skip if do_move fails
             if (!pos.do_move(m)) {
-                std::cerr << "\n=== do_move FAILED during replay ===\n";
-                std::cerr << "Move: " << move_str << "\n";
-                std::cerr << "from=" << from << " to=" << to << "\n";
-                std::cerr << "FEN before: " << pos.fen() << "\n";
-                std::cerr << "This indicates board state corruption!\n";
-                std::cerr << "Skipping remaining moves to prevent further corruption.\n";
-                std::cerr << "==========================================\n";
-                // CRITICAL: Skip remaining moves - the position is desynchronized
-                // If we continue, side_to_move will be wrong for all subsequent moves
-                break;
+                break;  // Position desynchronized, skip remaining moves
             }
-
-            // DIAGNOSTIC: Verify board state after each move (every move for first 3 games)
-            static int verify_count = 0;
-            if (verify_count < 30) {  // Track first 30 moves total
-                std::cerr << "After move " << move_str << ": side_to_move=" << (pos.side_to_move() == WHITE ? "W" : "B") << " FEN=" << pos.fen() << std::endl;
-                verify_count++;
-            }
-
-            if (replay_count <= 10) {
-                Piece p_after = pos.piece_on(to);
-                std::cerr << "  after do_move: piece at to=" << int(p_after);
-                if (p_after != NO_PIECE) {
-                    std::cerr << " (" << (pos.color_of_piece(p_after) == WHITE ? "W" : "B") << ")";
-                }
-                std::cerr << " side_to_move=" << (pos.side_to_move() == WHITE ? "W" : "B") << std::endl;
-            }
-        }
-
-        // DIAGNOSTIC: After replay, verify final side_to_move
-        static int replay_call_count = 0;
-        if (replay_call_count < 5) {
-            std::cerr << "AFTER REPLAY #" << replay_call_count << ": side_to_move=" << (pos.side_to_move() == WHITE ? "WHITE" : "BLACK") << std::endl;
-            replay_call_count++;
         }
     }
 }
@@ -222,16 +168,8 @@ void handle_position(Position& pos, const std::string& cmd) {
 void handle_go(Position& pos, const std::string& cmd) {
     TT.new_search();
 
-    // CRITICAL: Verify position consistency before searching
-    // This catches board corruption early
+    // Verify position consistency before searching
     pos.assert_consistency("handle_go entry");
-
-    // DIAGNOSTIC: Verify critical state before search
-    std::cerr << "=== BEFORE SEARCH ===" << std::endl;
-    std::cerr << "FEN: " << pos.fen() << std::endl;
-    std::cerr << "side_to_move: " << (pos.side_to_move() == WHITE ? "WHITE" : "BLACK") << std::endl;
-    std::cerr << "st_ply: " << pos.game_ply() << std::endl;
-    std::cerr << "====================" << std::endl;
 
     std::istringstream ss(cmd);
     std::string token;
@@ -293,51 +231,19 @@ void handle_go(Position& pos, const std::string& cmd) {
         return;
     }
 
-    // CRITICAL: Save FEN before search to restore later
-    // This protects against position corruption during search
+    // Save FEN before search to restore later
     std::string fen_before_search = pos.fen();
-    std::cerr << "BEFORE SEARCH: " << fen_before_search << std::endl;
 
     // Run search
     Move best_move = search(pos, limits);
 
-    std::cerr << "AFTER SEARCH:  " << pos.fen() << std::endl;
-
-    if (pos.fen() != fen_before_search) {
-        std::cerr << "*** POSITION CORRUPTED BY SEARCH ***" << std::endl;
-    }
-
-    // CRITICAL: Restore position from saved FEN (in case search corrupted it)
-    // This ensures validation happens against correct position state
+    // Restore position from saved FEN
     pos.set(fen_before_search);
 
-    // DEBUG: Verify position was restored correctly
-    std::string fen_after_restore = pos.fen();
-    if (fen_before_search != fen_after_restore) {
-        std::cerr << "\n=== FEN RESTORE FAILED ===\n";
-        std::cerr << "Expected: " << fen_before_search << "\n";
-        std::cerr << "Got:      " << fen_after_restore << "\n";
-        std::cerr << "===========================\n";
-    }
-
-    // CRITICAL: Check board consistency after search
-    // Search may have corrupted the position if do_move/undo aren't balanced
+    // Check board consistency after search
     pos.assert_consistency("handle_go after search");
 
-    // DIAGNOSTIC: Verify the final best_move is valid before sending
-    if (best_move) {
-        Piece pc = pos.piece_on(best_move.from());
-        Color piece_color = (pc != NO_PIECE) ? pos.color_of_piece(pc) : NO_COLOR;
-        Color stm = pos.side_to_move();
-        std::cerr << "BESTMOVE CHECK: move=" << best_move << " piece_at_from=" << int(pc)
-                  << " piece_color=" << (piece_color == WHITE ? "W" : piece_color == BLACK ? "B" : "N")
-                  << " side_to_move=" << (stm == WHITE ? "W" : "B") << std::endl;
-    }
-
-    // Send final info
-    uci_info(pos, root_depth, root_score, nodes.load(), 0);
-
-    // CRITICAL: Validate best_move before sending
+    // Validate best_move before sending
     if (best_move) {
         Piece pc = pos.piece_on(best_move.from());
         Color piece_color = (pc != NO_PIECE) ? pos.color_of_piece(pc) : NO_COLOR;
@@ -345,32 +251,22 @@ void handle_go(Position& pos, const std::string& cmd) {
         bool side_match = (piece_color == pos.side_to_move());
 
         if (!side_match || !is_legal) {
-            std::cerr << "\n=== ILLEGAL BESTMOVE DETECTED ===\n";
-            std::cerr << "best_move: " << best_move << "\n";
-            std::cerr << "from=" << best_move.from() << " to=" << best_move.to() << "\n";
-            std::cerr << "piece at from: " << int(pc) << " (color=" << (piece_color == WHITE ? "WHITE" : piece_color == BLACK ? "BLACK" : "NONE") << ")\n";
-            std::cerr << "side_to_move: " << (pos.side_to_move() == WHITE ? "WHITE" : "BLACK") << "\n";
-            std::cerr << "side_match: " << side_match << " is_legal: " << is_legal << "\n";
-            std::cerr << "FEN: " << pos.fen() << "\n";
-
             // Generate a legal move as fallback
             ExtMove moves[MAX_MOVES];
             ExtMove* end = generate<GEN_LEGAL>(pos, moves);
             if (end > moves) {
                 best_move = moves[0].move;
-                std::cerr << "FALLBACK to legal move: " << best_move << "\n";
             } else {
-                best_move = MOVE_NONE;  // No legal moves - game over
-                std::cerr << "NO LEGAL MOVES - GAME OVER\n";
+                best_move = MOVE_NONE;
             }
-            std::cerr << "===================================\n";
         }
+    }
 
-        if (best_move) {
-            std::cout << "bestmove " << best_move << "\n";
-        } else {
-            std::cout << "bestmove 0000\n";
-        }
+    // Send final info
+    uci_info(pos, root_depth, root_score, nodes.load(), 0);
+
+    if (best_move) {
+        std::cout << "bestmove " << best_move << "\n";
     } else {
         std::cout << "bestmove 0000\n";
     }
