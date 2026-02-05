@@ -555,6 +555,40 @@ Value evaluate(const Position& pos) {
             int mobility = popcount(bb_diag_attacks(sq, pos.pieces()) & ~pos.pieces(c));
             mg_score += sign * mobility * 12;  // Increased from 5
             eg_score += sign * mobility * 25;  // Increased from 10
+
+            // Trapped bishop detection: bishop on starting square blocked by own pawns
+            // White: c1 blocked by b2+d2 pawns, f1 blocked by e2+g2 pawns
+            // Black: c8 blocked by b7+d7 pawns, f8 blocked by e7+g7 pawns
+            Bitboard our_pawns = pos.pieces(c, PAWN);
+            if (c == WHITE) {
+                if (sq == C1) {
+                    // White bishop on c1 trapped if d2 and b2 occupied by white pawns
+                    if ((our_pawns & square_bb(D2)) && (our_pawns & square_bb(B2))) {
+                        mg_score -= sign * 50;
+                        eg_score -= sign * 50;
+                    }
+                } else if (sq == F1) {
+                    // White bishop on f1 trapped if e2 and g2 occupied by white pawns
+                    if ((our_pawns & square_bb(E2)) && (our_pawns & square_bb(G2))) {
+                        mg_score -= sign * 50;
+                        eg_score -= sign * 50;
+                    }
+                }
+            } else {  // BLACK
+                if (sq == C8) {
+                    // Black bishop on c8 trapped if d7 and b7 occupied by black pawns
+                    if ((our_pawns & square_bb(D7)) && (our_pawns & square_bb(B7))) {
+                        mg_score -= sign * 50;
+                        eg_score -= sign * 50;
+                    }
+                } else if (sq == F8) {
+                    // Black bishop on f8 trapped if e7 and g7 occupied by black pawns
+                    if ((our_pawns & square_bb(E7)) && (our_pawns & square_bb(G7))) {
+                        mg_score -= sign * 50;
+                        eg_score -= sign * 50;
+                    }
+                }
+            }
         }
 
         // Bad bishop penalty: bishop blocked by own pawns on same color
@@ -617,11 +651,21 @@ Value evaluate(const Position& pos) {
                 }
             }
 
-            // Rook on 7th rank bonus - increased or 2nd rank (for black)
+            // Rook on enemy king rank bonus - very valuable for cutting off king
+            Color them = Color(c ^ 1);
+            Square enemy_king = pos.king_sq(them);
+            Rank rook_rank = rank_of(sq);
+            Rank enemy_king_rank = rank_of(enemy_king);
+            if (rook_rank == enemy_king_rank) {
+                mg_score += sign * 20;
+                eg_score += sign * 40;  // Even more valuable in endgame
+            }
+
+            // Rook on 7th rank bonus - reduced MG, increased EG (endgame monsters)
             Rank r = rank_of(sq);
             if ((c == WHITE && r == RANK_7) || (c == BLACK && r == RANK_2)) {
-                mg_score += sign * 50;
-                eg_score += sign * 30;
+                mg_score += sign * 20;  // Reduced from 50 (less critical in middlegame)
+                eg_score += sign * 60;  // Increased from 30 (devastating in endgame)
             }
         }
 
