@@ -485,10 +485,10 @@ Value evaluate(const Position& pos) {
             mg_score += sign * PST_MG_TABLE[int(c)][int(KNIGHT)][int(sq)];
             eg_score += sign * PST_EG_TABLE[int(c)][int(KNIGHT)][int(sq)];
 
-            // Knight mobility - INCREASED for better positional play
+            // Knight mobility - standard weights
             int mobility = popcount(knight_attacks_bb(sq) & ~pos.pieces(c));
-            mg_score += sign * mobility * 10;  // Increased from 4
-            eg_score += sign * mobility * 20;  // Increased from 8
+            mg_score += sign * mobility * 4;
+            eg_score += sign * mobility * 6;
 
             // Knight outpost bonus: knight in enemy territory, supported by pawn, not attackable by enemy pawns
             Rank r = rank_of(sq);
@@ -551,10 +551,10 @@ Value evaluate(const Position& pos) {
             mg_score += sign * PST_MG_TABLE[int(c)][int(BISHOP)][int(sq)];
             eg_score += sign * PST_EG_TABLE[int(c)][int(BISHOP)][int(sq)];
 
-            // Bishop mobility - INCREASED for better positional play
+            // Bishop mobility - standard weights
             int mobility = popcount(bb_diag_attacks(sq, pos.pieces()) & ~pos.pieces(c));
-            mg_score += sign * mobility * 12;  // Increased from 5
-            eg_score += sign * mobility * 25;  // Increased from 10
+            mg_score += sign * mobility * 5;
+            eg_score += sign * mobility * 7;
 
             // Trapped bishop detection: bishop on starting square blocked by own pawns
             // White: c1 blocked by b2+d2 pawns, f1 blocked by e2+g2 pawns
@@ -628,11 +628,11 @@ Value evaluate(const Position& pos) {
             mg_score += sign * PST_MG_TABLE[int(c)][int(ROOK)][int(sq)];
             eg_score += sign * PST_EG_TABLE[int(c)][int(ROOK)][int(sq)];
 
-            // Rook mobility - INCREASED for better positional play
+            // Rook mobility - standard weights
             Bitboard occupied = pos.pieces();
             int mobility = popcount((bb_rank_attacks(sq, occupied) | bb_file_attacks(sq, occupied)) & ~pos.pieces(c));
-            mg_score += sign * mobility * 6;   // Increased from 2
-            eg_score += sign * mobility * 20;  // Increased from 8
+            mg_score += sign * mobility * 3;
+            eg_score += sign * mobility * 5;
 
             // Rook on open file bonus
             File f = file_of(sq);
@@ -678,11 +678,11 @@ Value evaluate(const Position& pos) {
             mg_score += sign * PST_MG_TABLE[int(c)][int(QUEEN)][int(sq)];
             eg_score += sign * PST_EG_TABLE[int(c)][int(QUEEN)][int(sq)];
 
-            // Queen mobility - INCREASED for better positional play
+            // Queen mobility - standard weights
             Bitboard occupied = pos.pieces();
             int mobility = popcount(queen_attacks_bb(sq, occupied) & ~pos.pieces(c));
-            mg_score += sign * mobility * 20;  // Increased from 8
-            eg_score += sign * mobility * 40;  // Increased from 15
+            mg_score += sign * mobility * 2;
+            eg_score += sign * mobility * 3;
         }
 
         // King (position only, no material value)
@@ -1548,19 +1548,12 @@ Value evaluate(const Position& pos) {
         }
     }
 
-    // Game phase detection (simplified)
-    int material = 0;
-    Bitboard all = pos.pieces();
-    while (all) {
-        Square s = pop_lsb(all);
-        if (s >= SQUARE_NONE) continue;
-        PieceType pt = pos.piece_type_on(s);
-        if (pt != PAWN && pt != KING) {
-            material += PAWN_VALUE;
-        }
-    }
-
-    int phase = std::min(24, material / 200);
+    // CRITICAL FIX: Game phase detection using standard formula
+    // Phase represents how close we are to endgame (0 = endgame, 24 = middlegame)
+    // Knights and bishops: 1 point each, Rooks: 2 points, Queens: 4 points
+    int phase = popcount(pos.pieces(KNIGHT)) + popcount(pos.pieces(BISHOP))
+              + popcount(pos.pieces(ROOK)) * 2 + popcount(pos.pieces(QUEEN)) * 4;
+    phase = std::min(24, phase);
 
     // Endgame evaluation: king activity becomes important when pieces are few
     if (phase <= 8) {  // Late endgame
