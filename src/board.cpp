@@ -178,10 +178,15 @@ void Position::set(const std::string& fen) {
         st_->halfmove_clock = 0;
     }
 
-    // Fullmove number (not used but we need to consume it)
-    ss >> token;
-
-    st_->castling_rights = 0;
+    // Fullmove number - compute game_ply_ from it
+    // If fullmove is N and it's White's turn, then (N-1)*2 plies have been played
+    // If fullmove is N and it's Black's turn, then (N-1)*2 + 1 plies have been played
+    int fullmove = 1;
+    if (ss >> fullmove) {
+        game_ply_ = (fullmove - 1) * 2 + (side_to_move_ == BLACK ? 1 : 0);
+    } else {
+        game_ply_ = 0;
+    }
     for (Color c : {WHITE, BLACK}) {
         st_->castling_rights |= castling_rights_[c];
     }
