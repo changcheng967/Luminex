@@ -219,7 +219,8 @@ void Position::set(const std::string& fen) {
 
     st_->key = k;
 
-    game_ply_ = 0;
+    // CRITICAL: game_ply_ is already computed from FEN fullmove above (line 186)
+    // Do NOT reset to 0 here, or fen() will output wrong fullmove number
 
     // Initialize position history for repetition detection
     history_size = 0;
@@ -483,11 +484,23 @@ bool Position::do_move(Move m) {
     }
 
     if (pc == NO_PIECE) {
+        // CRITICAL: Log this for debugging - trying to move from empty square
+        std::cerr << "\n=== ILLEGAL MOVE: NO PIECE AT SOURCE ===\n";
+        std::cerr << "Move: " << m << " (" << from << " to " << to << ")\n";
+        std::cerr << "Side to move: " << (side_to_move_ == WHITE ? "WHITE" : "BLACK") << "\n";
+        std::cerr << "FEN: " << fen() << "\n";
+        std::cerr << "=======================================\n";
         return false;
     }
 
     Color us = Color(pc / 6);
     Color them = Color(us ^ 1);  // Switch color by XORing with 1
+
+    // CRITICAL: Check that the piece belongs to the side to move
+    // Without this, opponent's pieces could move during our turn, corrupting the board
+    if (us != side_to_move_) {
+        return false;
+    }
     PieceType pt = piece_type_of(pc);
 
     if (int(us) > 1) {
