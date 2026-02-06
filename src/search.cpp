@@ -153,8 +153,8 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
         return eval_cached(pos);
     }
 
-    // Don't search captures beyond a certain depth - reduced from -2 to -1 for efficiency
-    if (depth < -1) {
+    // Don't search captures beyond a certain depth - increased to -4 for better tactics
+    if (depth < -4) {
         return eval_cached(pos);
     }
 
@@ -334,8 +334,10 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
     if (null_move_ok) {
         pos.do_null_move();
 
-        // Moderate reduction: depth - 2 (balance between speed and accuracy)
-        Value null_value = -search_worker(pos, ss + 1, -beta, -beta + 1, depth - 2, !cut_node);
+        // Adaptive null move reduction: deeper at higher depths
+        // R=3 at depth 2-5, R=4 at depth 6-11, R=5 at depth 12+, etc.
+        int R = 3 + depth / 6;
+        Value null_value = -search_worker(pos, ss + 1, -beta, -beta + 1, depth - R, !cut_node);
 
         pos.undo_null_move();
 
@@ -462,11 +464,6 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
     */
 
     for (ExtMove* it = moves; it != end; ++it) {
-        // Check time very frequently during move loop
-        if ((moves_played & 1) == 0) {
-            check_time();
-            if (stop.load(std::memory_order_relaxed)) break;
-        }
         Move m = it->move;
 
         // SEE-based capture pruning: skip captures that lose material

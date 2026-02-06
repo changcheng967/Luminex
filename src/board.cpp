@@ -267,7 +267,7 @@ std::string Position::fen() const {
     ss << ' ' << (st_->ep_square == SQUARE_NONE ? "-" : std::string(1, file_char(file_of(st_->ep_square))) + std::string(1, rank_char(rank_of(st_->ep_square))));
 
     // Halfmove and fullmove clocks
-    ss << " 0 1";
+    ss << " " << st_->halfmove_clock << " " << (1 + game_ply_ / 2);
 
     return ss.str();
 }
@@ -1439,13 +1439,28 @@ bool Position::is_draw() const {
         return true;
     }
 
-    // Insufficient material detection
-    int piece_count_total = popcount(pieces());
-    if (piece_count_total == 2) {
+    // Insufficient material: K vs K only (keep it minimal and safe)
+    if (popcount(pieces()) == 2) {
         return true;  // K vs K
     }
 
-    // TODO: Repetition detection temporarily disabled for debugging
+    // Repetition detection — only check actual moves, not null moves
+    // Key insight: only search back halfmove_clock positions, because any
+    // pawn move or capture resets the possibility of repetition.
+    // Also, only compare against positions where the same side was to move (step by 2).
+    if (history_size >= 5 && st_->halfmove_clock >= 4) {
+        int limit = std::min(st_->halfmove_clock, history_size - 1);
+        Key k = st_->key;
+
+        for (int i = 4; i <= limit; i += 2) {
+            int idx = history_size - 1 - i;
+            if (idx < 0) break;
+            if (position_history[idx] == k) {
+                return true;  // Twofold in search = draw
+            }
+        }
+    }
+
     return false;
 }
 
