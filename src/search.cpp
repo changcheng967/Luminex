@@ -598,30 +598,22 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
         }
 
         Value value;
-
-        // PVS: First move always gets full window
-        if (moves_played == 0) {
-            value = -search_worker(pos, ss + 1, -beta, -alpha, new_depth, false);
-        }
-        // LMR moves: reduced depth, zero window first
-        else if (do_lmr) {
-            value = -search_worker(pos, ss + 1, -alpha - 1, -alpha, new_depth, true);
+        if (do_lmr && new_depth > 0) {
+            // Search with reduced depth first
+            value = -search_worker(pos, ss + 1, -alpha - 1, -alpha, new_depth, !cut_node);
             if (value > alpha) {
-                // Failed high, re-search at full depth, still zero window
-                value = -search_worker(pos, ss + 1, -alpha - 1, -alpha, depth - 1, !cut_node);
-                if (value > alpha && value < beta) {
-                    // Full window re-search only if within window
-                    value = -search_worker(pos, ss + 1, -beta, -alpha, depth - 1, false);
-                }
+                // Failed high, re-search at full depth
+                value = -search_worker(pos, ss + 1, -beta, -alpha, depth - 1, !cut_node);
             }
-        }
-        // Non-first moves without LMR: zero window first
-        else {
+        } else if (!pv_node && moves_played > 0 && depth >= 3 && best_value > -VALUE_MATE_IN_MAX_PLY) {
+            // Late moves with narrow window
             value = -search_worker(pos, ss + 1, -alpha - 1, -alpha, depth - 1, !cut_node);
-            if (value > alpha && value < beta) {
-                // Full window re-search only if within window
-                value = -search_worker(pos, ss + 1, -beta, -alpha, depth - 1, false);
+            if (value > alpha) {
+                value = -search_worker(pos, ss + 1, -beta, -alpha, depth - 1, !cut_node);
             }
+        } else {
+            // Full window search
+            value = -search_worker(pos, ss + 1, -beta, -alpha, depth - 1, !cut_node);
         }
 
         pos.undo_move(m);

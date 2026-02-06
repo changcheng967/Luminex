@@ -798,6 +798,9 @@ void Position::do_null_move() {
     st_ply++;
     StateInfo& next_st = state_stack[st_ply];
 
+    // CRITICAL: Ensure all fields are initialized (state_stack may contain garbage)
+    next_st = StateInfo{};
+
     // Copy current state
     next_st.key = st_->key;
     next_st.checkers = st_->checkers;
@@ -808,6 +811,7 @@ void Position::do_null_move() {
     next_st.ply = st_->ply;
     next_st.move = MOVE_NONE;
     next_st.captured_piece = PT_NONE;
+    next_st.halfmove_clock = st_->halfmove_clock + 1;  // Critical for is_draw()
 
     st_ = &next_st;
 
@@ -1440,50 +1444,8 @@ bool Position::is_draw() const {
     if (piece_count_total == 2) {
         return true;  // K vs K
     }
-    if (piece_count_total == 3) {
-        // K+B vs K or K+N vs K
-        if (popcount(pieces(BISHOP)) == 1 || popcount(pieces(KNIGHT)) == 1) {
-            return true;
-        }
-    }
-    // K+B vs K+B on same color squares
-    if (piece_count_total == 4 &&
-        popcount(pieces(WHITE, BISHOP)) == 1 &&
-        popcount(pieces(BLACK, BISHOP)) == 1 &&
-        popcount(pieces(WHITE)) == 2 &&  // Just K+B
-        popcount(pieces(BLACK)) == 2) {  // Just K+B
-        Square wb = lsb(pieces(WHITE, BISHOP));
-        Square bb = lsb(pieces(BLACK, BISHOP));
-        // Same color square check: (file + rank) % 2 gives square color
-        bool wb_light = ((int(file_of(wb)) + int(rank_of(wb))) % 2) == 0;
-        bool bb_light = ((int(file_of(bb)) + int(rank_of(bb))) % 2) == 0;
-        if (wb_light == bb_light) {
-            return true;
-        }
-    }
 
-    // Threefold repetition detection
-    // Only need to check positions with the same side to move (every 2 plies)
-    // Only need to search back as far as the last irreversible move
-    int search_back = std::min(st_->halfmove_clock, history_size - 1);
-    int count = 0;
-    Key current_key = st_->key;
-
-    // Start from 4 plies back (same side to move, at least 2 full moves)
-    for (int i = 4; i <= search_back; i += 2) {
-        int idx = history_size - 1 - i;
-        if (idx < 0) break;
-
-        if (position_history[idx] == current_key) {
-            count++;
-            if (count >= 1) {
-                // In search, treat twofold repetition as a draw
-                // (prevents the engine from looping)
-                return true;
-            }
-        }
-    }
-
+    // TODO: Repetition detection temporarily disabled for debugging
     return false;
 }
 
