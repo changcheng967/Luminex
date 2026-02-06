@@ -5,11 +5,31 @@
 #include <iostream>
 #include <sstream>
 #include <string>
+#include <fstream>
 
 namespace luminex {
 
 // Position for UCI
 static Position pos;
+
+// Debug logging to file (since cutechess-cli doesn't capture stderr on Windows)
+static std::ofstream debug_log;
+static bool debug_log_initialized = false;
+
+void debug_log_init() {
+    if (!debug_log_initialized) {
+        debug_log.open("C:\\Users\\chang\\Downloads\\Luminex\\luminex_debug.txt", std::ios::app);
+        debug_log_initialized = debug_log.is_open();
+    }
+}
+
+void debug_log_write(const std::string& msg) {
+    debug_log_init();
+    if (debug_log_initialized) {
+        debug_log << msg << std::endl;
+        debug_log.flush();
+    }
+}
 
 void handle_uci() {
     // CRITICAL FIX: Initialize TT with default size (128MB)
@@ -163,10 +183,14 @@ void handle_position(Position& pos, const std::string& cmd) {
 
             // Execute move - skip if do_move fails
             if (!pos.do_move(m)) {
+                debug_log_write("DO_MOVE_FAILED: " + move_str + " fen=" + pos.fen());
                 break;  // Position desynchronized, skip remaining moves
             }
+            debug_log_write("APPLY_MOVE: " + move_str + " -> " + pos.fen());
         }
     }
+
+    debug_log_write("POSITION_SET: " + pos.fen());
 }
 
 void handle_go(Position& pos, const std::string& cmd) {
@@ -287,6 +311,11 @@ void handle_go(Position& pos, const std::string& cmd) {
 
     // Send final info
     uci_info(pos, root_depth, root_score, nodes.load(), 0);
+
+    // Log bestmove with FEN for debugging
+    std::ostringstream oss;
+    oss << "BESTMOVE: fen=" << pos.fen() << " move=" << best_move;
+    debug_log_write(oss.str());
 
     if (best_move) {
         std::cout << "bestmove " << best_move << "\n";

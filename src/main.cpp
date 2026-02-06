@@ -96,8 +96,31 @@ int main(int argc, char* argv[]) {
     if (argc > 1 && std::string(argv[1]) == "bench") {
         Position pos;
         pos.set("rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1");
-        uint64_t nodes = perft(pos, 1);
-        std::cout << "Perft 1: " << nodes << " nodes" << std::endl;
+
+        using namespace std::chrono;
+        auto start = high_resolution_clock::now();
+
+        uint64_t p1 = perft(pos, 1);
+        std::cout << "Perft 1: " << p1 << " (expected 20)" << std::endl;
+
+        uint64_t p2 = perft(pos, 2);
+        std::cout << "Perft 2: " << p2 << " (expected 400)" << std::endl;
+
+        uint64_t p3 = perft(pos, 3);
+        std::cout << "Perft 3: " << p3 << " (expected 8902)" << std::endl;
+
+        uint64_t p4 = perft(pos, 4);
+        std::cout << "Perft 4: " << p4 << " (expected 197281)" << std::endl;
+
+        auto end = high_resolution_clock::now();
+        auto ms = duration_cast<milliseconds>(end - start).count();
+        std::cout << "Time: " << ms << "ms" << std::endl;
+
+        if (p1 == 20 && p2 == 400 && p3 == 8902 && p4 == 197281) {
+            std::cout << "ALL PERFT TESTS PASSED" << std::endl;
+        } else {
+            std::cout << "PERFT TESTS FAILED!" << std::endl;
+        }
         return 0;
     }
 

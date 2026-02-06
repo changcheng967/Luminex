@@ -226,6 +226,7 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
 [[maybe_unused]] static Value search_worker(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth, bool cut_node) {
     // Save original alpha for proper bound determination
     Value original_alpha = alpha;
+    Move best_move_found = MOVE_NONE;
 
     // Check for max ply to prevent stack overflow
     if (ss->ply >= MAX_PLY) {
@@ -247,6 +248,9 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
     ++nodes;
 
     const bool pv_node = (beta - alpha > 1);
+
+    // Prevent stale PV data from being saved to TT on fail-low nodes
+    ss->pv[ss->ply] = MOVE_NONE;
 
     // Check time every 64 nodes for better time control
     if ((nodes & 2047) == 0) {
@@ -617,6 +621,7 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
 
         if (value > best_value) {
             best_value = value;
+            best_move_found = m;
 
             if (value > alpha) {
                 alpha = value;
@@ -674,7 +679,8 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
         if (best_value >= beta) bound = BOUND_LOWER;
         else if (best_value > original_alpha) bound = BOUND_EXACT;  // PV node improved alpha
         else bound = BOUND_UPPER;
-        tte->save(pos.key(), best_value, pv_node, bound, depth, ss->pv[ss->ply], eval, TT.generation());
+        // Use best_move_found instead of ss->pv[ss->ply] to avoid stale PV corruption
+        tte->save(pos.key(), best_value, pv_node, bound, depth, best_move_found, eval, TT.generation());
     }
 
     return best_value;
@@ -1003,16 +1009,31 @@ Move search(Position& pos, Limits& lim) {
         }
     }
 
-    // Final safety check: verify best_move has valid squares and is legal
+    // Final safety: verify best_move is actually in the legal move list
     if (best_move != MOVE_NONE) {
-        Square from = best_move.from();
-        Square to = best_move.to();
-        // Check bounds first (SQUARE_NONE = 64 is invalid)
-        if (from >= SQUARE_NONE || to >= SQUARE_NONE || !pos.legal(best_move)) {
-            ExtMove safety_moves[MAX_MOVES];
-            ExtMove* end = generate<GEN_LEGAL>(pos, safety_moves);
-            if (end > safety_moves) {
-                best_move = safety_moves[0].move;
+        ExtMove verify_moves[MAX_MOVES];
+        ExtMove* verify_end = generate<GEN_LEGAL>(pos, verify_moves);
+        bool found_in_legal = false;
+        for (ExtMove* vit = verify_moves; vit != verify_end; ++vit) {
+            if (vit->move.raw() == best_move.raw()) {
+                found_in_legal = true;
+                break;
+            }
+        }
+        if (!found_in_legal) {
+            std::cerr << "ILLEGAL BEST MOVE DETECTED: " << best_move
+                      << " from=" << best_move.from() << " to=" << best_move.to()
+                      << " flags=0x" << std::hex << best_move.flags() << std::dec
+                      << " piece_on_from=" << int(pos.piece_on(best_move.from()))
+                      << " piece_on_to=" << int(pos.piece_on(best_move.to()))
+                      << " side=" << int(pos.side_to_move())
+                      << " legal()=" << pos.legal(best_move)
+                      << " pseudo_legal()=" << pos.pseudo_legal(best_move)
+                      << " fen=" << pos.fen()
+                      << std::endl;
+            // Fallback to first legal move
+            if (verify_end > verify_moves) {
+                best_move = verify_moves[0].move;
             } else {
                 best_move = MOVE_NONE;
             }
