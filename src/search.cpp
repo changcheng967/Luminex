@@ -188,11 +188,6 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
         alpha = eval;
     }
 
-    // Only generate captures at depth 0 or depth -1
-    if (depth < -1) {
-        return alpha;
-    }
-
     // Generate and search captures
     ExtMove moves[MAX_MOVES];
     ExtMove* end = generate<GEN_CAPTURE>(pos, moves);
@@ -217,7 +212,7 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
         pos.undo_move(it->move);
 
         if (value >= beta) {
-            return beta;
+            return value;  // fail-soft
         }
         if (value > alpha) {
             alpha = value;
@@ -229,6 +224,9 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
 
 // Main search function (internal worker)
 [[maybe_unused]] static Value search_worker(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth, bool cut_node) {
+    // Save original alpha for proper bound determination
+    Value original_alpha = alpha;
+
     // Check for max ply to prevent stack overflow
     if (ss->ply >= MAX_PLY) {
         return eval_cached(pos);
@@ -498,8 +496,8 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
 
         // Late Move Reduction (LMR)
         Depth new_depth = depth - 1;
-        // Very aggressive LMR: apply from move 2 at depth 2+ for quiet moves only
-        bool do_lmr = !pv_node && depth >= 2 && moves_played >= 1 && !m.is_capture() && !m.is_promotion() && !m.is_castling();
+        // LMR: apply from move 4 at depth 2+ for quiet moves only (standard threshold)
+        bool do_lmr = !pv_node && depth >= 2 && moves_played >= 3 && !m.is_capture() && !m.is_promotion() && !m.is_castling();
 
         if (do_lmr) {
             // Use unified LMR reduction function
@@ -664,7 +662,7 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
                 if (!stop.load(std::memory_order_relaxed)) {
                     tte->save(pos.key(), value, false, BOUND_LOWER, depth, it->move, eval, TT.generation());
                 }
-                return beta;
+                return value;  // fail-soft
             }
         }
     }
@@ -672,7 +670,10 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
     // CRITICAL FIX: Only save to TT if search completed fully
     // If search was aborted (stop=true), don't save garbage/incomplete scores
     if (!stop.load(std::memory_order_relaxed)) {
-        Bound bound = best_value >= beta ? BOUND_LOWER : BOUND_UPPER;
+        Bound bound;
+        if (best_value >= beta) bound = BOUND_LOWER;
+        else if (best_value > original_alpha) bound = BOUND_EXACT;  // PV node improved alpha
+        else bound = BOUND_UPPER;
         tte->save(pos.key(), best_value, pv_node, bound, depth, ss->pv[ss->ply], eval, TT.generation());
     }
 
