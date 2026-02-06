@@ -891,6 +891,7 @@ Move search(Position& pos, Limits& lim) {
             Value iter_best_value = -VALUE_INFINITE;
             Move iter_best_move = MOVE_NONE;
             int root_moves_searched = 0;
+            Value running_alpha = alpha;  // PVS window only, NOT the aspiration bound
 
             for (ExtMove* it = moves; it != end; ++it) {
                 if (stop.load(std::memory_order_relaxed)) break;
@@ -901,15 +902,15 @@ Move search(Position& pos, Limits& lim) {
                 Value value;
                 // PVS: first move gets full window, rest get zero-window scout
                 if (root_moves_searched == 0) {
-                    value = -search_worker(pos, stack + 1, -beta, -alpha,
+                    value = -search_worker(pos, stack + 1, -beta, -running_alpha,
                                            root_depth - 1, false);
                 } else {
                     // Zero-window scout search
-                    value = -search_worker(pos, stack + 1, -alpha - 1, -alpha,
+                    value = -search_worker(pos, stack + 1, -running_alpha - 1, -running_alpha,
                                            root_depth - 1, true);
                     // Re-search with full window only if scout found something better
-                    if (value > alpha && value < beta) {
-                        value = -search_worker(pos, stack + 1, -beta, -alpha,
+                    if (value > running_alpha && value < beta) {
+                        value = -search_worker(pos, stack + 1, -beta, -running_alpha,
                                                root_depth - 1, false);
                     }
                 }
@@ -923,8 +924,8 @@ Move search(Position& pos, Limits& lim) {
                     iter_best_value = value;
                     iter_best_move = it->move;
                 }
-                if (value > alpha) {
-                    alpha = value;
+                if (value > running_alpha) {
+                    running_alpha = value;
                 }
                 if (value >= beta) break;  // Beta cutoff
             }
@@ -939,7 +940,7 @@ Move search(Position& pos, Limits& lim) {
                 break;
             }
 
-            // Check if score is inside the aspiration window
+            // Aspiration window check uses ORIGINAL alpha (not running_alpha)
             if (iter_best_value <= alpha) {
                 // Fail low - widen downward and re-search
                 beta = (alpha + beta) / 2;
