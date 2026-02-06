@@ -574,11 +574,11 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
             extension = true;
         }
         // Check extension (only if not singular extended)
-        else if (gives_check && depth >= 3) {
+        else if (gives_check) {
             extension = true;
         }
 
-        if (extension && depth < 8) {
+        if (extension) {
             new_depth++;
         }
 
@@ -739,11 +739,11 @@ Move search(Position& pos, Limits& lim) {
         const int overhead = 50;
         int safe_time = std::max(1, time_left - overhead);
 
-        // Basic formula: base/20 + inc/2
-        ideal_time = safe_time / 20 + time_inc / 2;
+        // More aggressive formula for bullet/blitz: base/15 + inc*3/4
+        ideal_time = safe_time / 15 + time_inc * 3 / 4;
 
-        // Hard limit: never use more than 1/4 of remaining time
-        max_time = std::min(safe_time / 4, ideal_time * 5);
+        // Hard limit: never use more than 1/3 of remaining time
+        max_time = std::min(safe_time / 3, ideal_time * 4);
 
         // Absolute minimums
         ideal_time = std::max(10, ideal_time);
@@ -882,90 +882,91 @@ Move search(Position& pos, Limits& lim) {
             return a.value > b.value;
         });
 
-        // Save initial aspiration bounds for re-search logic
-        Value window_alpha = alpha;
-        Value window_beta = beta;
+        // Clean aspiration loop with root PVS
         Value depth_best_value = -VALUE_INFINITE;
         Move depth_best_move = MOVE_NONE;
 
-        // Aspiration re-search loop - widen window if score falls outside
-        while (aspiration_delta <= 1000) {
-            Value current_alpha = (aspiration_delta == 50) ? alpha : window_alpha;
-            Value current_beta = (aspiration_delta == 50) ? beta : window_beta;
-
-
-            // Search all moves with current bounds
+        while (true) {
+            // Search all root moves with current bounds
             Value iter_best_value = -VALUE_INFINITE;
             Move iter_best_move = MOVE_NONE;
+            int root_moves_searched = 0;
 
             for (ExtMove* it = moves; it != end; ++it) {
-                if (stop.load(std::memory_order_relaxed)) {
-                    break;
+                if (stop.load(std::memory_order_relaxed)) break;
+                if (check_time()) break;
+
+                if (!pos.do_move(it->move)) continue;
+
+                Value value;
+                // PVS: first move gets full window, rest get zero-window scout
+                if (root_moves_searched == 0) {
+                    value = -search_worker(pos, stack + 1, -beta, -alpha,
+                                           root_depth - 1, false);
+                } else {
+                    // Zero-window scout search
+                    value = -search_worker(pos, stack + 1, -alpha - 1, -alpha,
+                                           root_depth - 1, true);
+                    // Re-search with full window only if scout found something better
+                    if (value > alpha && value < beta) {
+                        value = -search_worker(pos, stack + 1, -beta, -alpha,
+                                               root_depth - 1, false);
+                    }
                 }
 
-                // Check time before each root move
-                if (check_time()) {
-                    break;
-                }
-
-                if (!pos.do_move(it->move)) {
-                    continue;
-                }
-                Value value = -search_worker(pos, stack + 1, -current_beta, -current_alpha, root_depth - 1, false);
                 pos.undo_move(it->move);
+                root_moves_searched++;
 
-                if (check_time()) {
-                    break;
-                }
+                if (check_time()) break;
 
                 if (value > iter_best_value) {
                     iter_best_value = value;
                     iter_best_move = it->move;
                 }
-
-                if (value > current_alpha) {
-                    current_alpha = value;
+                if (value > alpha) {
+                    alpha = value;
                 }
-
-                if (value >= current_beta) {
-                    break; // Beta cutoff
-                }
+                if (value >= beta) break;  // Beta cutoff
             }
 
             // Check if time ran out during search
-            if (stop.load(std::memory_order_relaxed)) break;
-
-            // On first pass, or if we're already at full window, accept result
-            if (aspiration_delta >= 1000 || aspiration_delta == 50) {
-                depth_best_value = iter_best_value;
-                depth_best_move = iter_best_move;
-
-                // Check if we need to re-search (score outside initial window)
-                if (aspiration_delta == 50 && root_depth > 1 &&
-                    previous_score > -VALUE_INFINITE + 5000 && previous_score < VALUE_INFINITE - 5000) {
-                    // Score is outside initial aspiration window
-                    if (iter_best_value <= alpha) {
-                        // Fail-low: widen alpha downward
-                        aspiration_delta *= 2;
-                        window_alpha = std::max(Value(-VALUE_INFINITE), Value(previous_score - aspiration_delta));
-                        window_beta = beta;  // Keep beta unchanged
-                        continue;  // Re-search with new window
-                    } else if (iter_best_value >= beta) {
-                        // Fail-high: widen beta upward
-                        aspiration_delta *= 2;
-                        window_alpha = alpha;  // Keep alpha unchanged
-                        window_beta = std::min(Value(VALUE_INFINITE), Value(previous_score + aspiration_delta));
-                        continue;  // Re-search with new window
-                    }
+            if (stop.load(std::memory_order_relaxed)) {
+                // Use whatever we have from this iteration
+                if (iter_best_move != MOVE_NONE) {
+                    depth_best_value = iter_best_value;
+                    depth_best_move = iter_best_move;
                 }
-                // Score is within window, or we're at full window - done
                 break;
             }
 
-            // Re-search complete
+            // Check if score is inside the aspiration window
+            if (iter_best_value <= alpha) {
+                // Fail low - widen downward and re-search
+                beta = (alpha + beta) / 2;
+                alpha = std::max(Value(-VALUE_INFINITE),
+                                 Value(iter_best_value - aspiration_delta));
+                aspiration_delta += aspiration_delta / 2;
+            } else if (iter_best_value >= beta) {
+                // Fail high - widen upward and re-search
+                beta = std::min(Value(VALUE_INFINITE),
+                                Value(iter_best_value + aspiration_delta));
+                aspiration_delta += aspiration_delta / 2;
+            } else {
+                // Score inside window - accept result
+                depth_best_value = iter_best_value;
+                depth_best_move = iter_best_move;
+                break;
+            }
+
+            // Safety: if delta is huge, use full window
+            if (aspiration_delta > 1200) {
+                alpha = -VALUE_INFINITE;
+                beta = VALUE_INFINITE;
+            }
+
+            // Update best for next iteration
             depth_best_value = iter_best_value;
             depth_best_move = iter_best_move;
-            break;
         }
 
         // Check time after all moves searched
