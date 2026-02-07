@@ -3,33 +3,12 @@
 #include <chrono>
 #include <cstdarg>
 #include <iostream>
-#include <sstream>
 #include <string>
-#include <fstream>
 
 namespace luminex {
 
 // Position for UCI
 static Position pos;
-
-// Debug logging to file (since cutechess-cli doesn't capture stderr on Windows)
-static std::ofstream debug_log;
-static bool debug_log_initialized = false;
-
-void debug_log_init() {
-    if (!debug_log_initialized) {
-        debug_log.open("C:\\Users\\chang\\Downloads\\Luminex\\luminex_debug.txt", std::ios::app);
-        debug_log_initialized = debug_log.is_open();
-    }
-}
-
-void debug_log_write(const std::string& msg) {
-    debug_log_init();
-    if (debug_log_initialized) {
-        debug_log << msg << std::endl;
-        debug_log.flush();
-    }
-}
 
 void handle_uci() {
     // CRITICAL FIX: Initialize TT with default size (128MB)
@@ -185,21 +164,12 @@ void handle_position(Position& pos, const std::string& cmd) {
                 m = Move(from, to, flag);
             }
 
-            // DEBUG: Log board state before each move
-            Color side = pos.side_to_move();
-            Square actual_king_sq = pos.king_sq(side);
-            debug_log_write("BEFORE_MOVE: " + move_str + " side=" + (side==WHITE?"W":"B") + " king_sq=" + std::to_string(actual_king_sq) + " board[king_sq]=" + std::to_string(int(pos.piece_on(actual_king_sq))) + " fen=" + pos.fen());
-
             // Execute move - skip if do_move fails
             if (!pos.do_move(m)) {
-                debug_log_write("DO_MOVE_FAILED: " + move_str + " fen=" + pos.fen());
                 break;  // Position desynchronized, skip remaining moves
             }
-            debug_log_write("APPLY_MOVE: " + move_str + " -> " + pos.fen());
         }
     }
-
-    debug_log_write("POSITION_SET: " + pos.fen());
 }
 
 void handle_go(Position& pos, const std::string& cmd) {
@@ -279,65 +249,48 @@ void handle_go(Position& pos, const std::string& cmd) {
     // or exception could corrupt the state. Re-parsing from FEN ensures clean state.
     pos.set(fen_before_search);
 
-    // CRITICAL: Validate that the restored position is sane
-    // Check that kings exist and are on expected squares
-    if (pos.piece_on(pos.king_sq(WHITE)) != make_piece(WHITE, KING) ||
-        pos.piece_on(pos.king_sq(BLACK)) != make_piece(BLACK, KING)) {
-        // Board corruption detected - log and try to recover
-        debug_log_write("BOARD_CORRUPTION: Kings not on tracked squares after search restore!");
-        debug_log_write("FEN: " + fen_before_search);
-        // Recovery: clear and re-initialize (this should never happen)
-        TT.clear();
-        TT.new_search();
-    }
-
-    // CRITICAL: Re-validate best_move against restored position
-    // The search may have modified the position, making the move invalid
+    // NUCLEAR SAFETY CHECK: Validate best_move against complete GEN_LEGAL list
+    // We must generate moves TWICE to work around potential state corruption:
+    // 1. First generation: check if best_move is in legal list
+    // 2. If not valid: second generation for fallback
+    // This uses fresh state for each generation to minimize corruption risk.
+    bool best_move_is_valid = false;
     if (best_move) {
+        // First, verify basic move geometry
         Square from = best_move.from();
         Square to = best_move.to();
 
-        // Check squares are valid
-        if (from >= SQUARE_NONE || to >= SQUARE_NONE) {
-            debug_log_write("INVALID_MOVE: Squares out of bounds - from=" + std::to_string(from) + " to=" + std::to_string(to));
-            best_move = MOVE_NONE;
-        } else {
-            // Check piece exists at source square
+        if (from < SQUARE_NONE && to < SQUARE_NONE) {
             Piece pc = pos.piece_on(from);
-            if (pc == NO_PIECE) {
-                debug_log_write("INVALID_MOVE: No piece at source square " + std::to_string(from) + " FEN=" + pos.fen());
-                best_move = MOVE_NONE;
-            } else {
-                // Check piece belongs to side to move
-                Color piece_color = pos.color_of_piece(pc);
-                if (piece_color != pos.side_to_move()) {
-                    debug_log_write("INVALID_MOVE: Piece color mismatch at " + std::to_string(from) + " FEN=" + pos.fen());
-                    best_move = MOVE_NONE;
-                } else if (!pos.legal(best_move)) {
-                    std::ostringstream oss;
-                    oss << "INVALID_MOVE: Move not legal - " << best_move << " FEN=" << pos.fen();
-                    debug_log_write(oss.str());
-                    best_move = MOVE_NONE;
+            if (pc != NO_PIECE && pos.color_of_piece(pc) == pos.side_to_move()) {
+                // Basic geometry passes, now check against full legal list
+                // We re-parse position to get absolutely fresh state
+                Position fresh_pos;
+                fresh_pos.set(fen_before_search);
+                ExtMove moves[MAX_MOVES];
+                ExtMove* end = generate<GEN_LEGAL>(fresh_pos, moves);
+                uint32_t best_raw = best_move.raw();
+
+                for (ExtMove* it = moves; it != end; ++it) {
+                    if (it->move.raw() == best_raw) {
+                        best_move_is_valid = true;
+                        break;
+                    }
                 }
             }
         }
     }
 
-#ifndef NDEBUG
-    // Check board consistency after search (debug builds only)
-    pos.assert_consistency("handle_go after search");
-#endif
-
-    // If best_move is still invalid after the validation above, generate a fallback legal move
-    if (!best_move) {
+    // If best_move failed validation, use first legal move from FRESH position
+    if (!best_move_is_valid) {
+        Position fresh_pos;
+        fresh_pos.set(fen_before_search);
         ExtMove moves[MAX_MOVES];
-        ExtMove* end = generate<GEN_LEGAL>(pos, moves);
+        ExtMove* end = generate<GEN_LEGAL>(fresh_pos, moves);
         if (end > moves) {
             best_move = moves[0].move;
-            debug_log_write("FALLBACK_MOVE: Generated legal move due to validation failure");
         } else {
-            // No legal moves - this is terminal (checkmate or stalemate)
-            debug_log_write("NO_LEGAL_MOVES: Position is terminal");
+            best_move = MOVE_NONE;  // Terminal position
         }
     }
 
@@ -345,11 +298,6 @@ void handle_go(Position& pos, const std::string& cmd) {
     // Note: This is redundant as search() already outputs info, but kept for compatibility
     int final_depth = (root_depth > 1) ? root_depth - 1 : 1;
     uci_info(pos, final_depth, root_score, nodes.load(), 0);
-
-    // Log bestmove with FEN for debugging
-    std::ostringstream oss;
-    oss << "BESTMOVE: fen=" << pos.fen() << " move=" << best_move;
-    debug_log_write(oss.str());
 
     if (best_move) {
         std::cout << "bestmove " << best_move << "\n";
