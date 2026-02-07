@@ -194,14 +194,59 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
     // CRITICAL: When in check, we must consider king moves and blocking moves, not just captures
     ExtMove moves[MAX_MOVES];
     ExtMove* end;
-    if (pos.is_check()) {
+    bool in_check = pos.is_check();
+    if (in_check) {
         end = generate<GEN_LEGAL>(pos, moves);  // All legal moves when in check
     } else {
         end = generate<GEN_CAPTURE>(pos, moves);  // Only captures when not in check
     }
 
+    // CRITICAL: Order evasion moves when in check - best defense first!
+    if (in_check) {
+        for (ExtMove* it = moves; it != end; ++it) {
+            Move m = it->move;
+            int score = 0;
+
+            // Priority 1: Capture the checking piece (best defense)
+            if (m.is_capture()) {
+                PieceType captured = pos.piece_type_on(m.to());
+                static constexpr int piece_value[] = {0, 100, 320, 330, 500, 900, 0};
+                score = 1000000 + piece_value[captured] * 10;
+            }
+            // Priority 2: King moves to safety (corner/castled)
+            else if (pos.piece_type_on(m.from()) == KING) {
+                Square to = m.to();
+                Rank r = rank_of(to);
+                File f = file_of(to);
+                // Prefer corners and castled squares
+                if ((r == RANK_1 || r == RANK_8) && (f == FILE_G || f == FILE_C)) {
+                    score = 500000;  // Castled square
+                } else if (r == RANK_1 || r == RANK_8) {
+                    score = 300000;  // Back rank
+                } else {
+                    score = 100000;  // Any king move
+                }
+            }
+            // Priority 3: Blocking moves with minor pieces
+            else if (pos.piece_type_on(m.from()) == KNIGHT ||
+                     pos.piece_type_on(m.from()) == BISHOP) {
+                score = 200000;
+            }
+            // Priority 4: Other blocking moves
+            else {
+                score = 10000;
+            }
+
+            it->value = score;
+        }
+        // Sort evasions by score (best defenses first)
+        std::sort(moves, end, [](const ExtMove& a, const ExtMove& b) {
+            return a.value > b.value;
+        });
+    }
+
     for (ExtMove* it = moves; it != end; ++it) {
-        if (pos.is_check()) {
+        if (in_check) {
             // For evasions, legal() check already done by GEN_LEGAL
         } else if (!pos.legal(it->move)) {
             continue;
@@ -209,7 +254,7 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
 
         // Skip losing captures with negative SEE (but keep queen promotions)
         // Exception: when in check, try all evasions regardless of SEE
-        if (!pos.is_check() && !it->move.is_promotion() && !pos.see_ge(it->move, VALUE_ZERO)) {
+        if (!in_check && !it->move.is_promotion() && !pos.see_ge(it->move, VALUE_ZERO)) {
             continue;
         }
 
@@ -405,6 +450,8 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
         return VALUE_DRAW - (pos.side_to_move() == WHITE ? params.contempt / 2 : -params.contempt / 2);
     }
 
+    bool in_check = pos.is_check();  // Check once for move ordering
+
     // Score moves for ordering
     for (ExtMove* it = moves; it != end; ++it) {
         Move m = it->move;
@@ -418,6 +465,12 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
         else if (m.is_promotion()) {
             score = 1800000 + m.promotion_type() * 10000;
         }
+        // CRITICAL: When in check, prioritize evasions that capture checking piece
+        else if (in_check && m.is_capture()) {
+            PieceType captured = pos.piece_type_on(m.to());
+            static constexpr int piece_value[] = {0, 100, 320, 330, 500, 900, 0};
+            score = 1500000 + piece_value[captured] * 10;  // Higher than normal captures
+        }
         // Captures - fast MVV-LVA (Most Valuable Victim - Least Valuable Attacker)
         else if (m.is_capture()) {
             PieceType captured = pos.piece_type_on(m.to());
@@ -428,6 +481,10 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
             // Within same victim, prefer cheaper attacker
             static constexpr int piece_value[] = {0, 100, 320, 330, 500, 900, 0};
             score = 1000000 + piece_value[captured] * 10 - piece_value[attacker];
+        }
+        // CRITICAL: When in check, king moves to safety get priority
+        else if (in_check && pos.piece_type_on(m.from()) == KING) {
+            score = 700000;  // King evasions are critical
         }
         // Killer moves and history for quiet moves
         else if (ss->ply < MAX_PLY) {
