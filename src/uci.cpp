@@ -181,6 +181,11 @@ void handle_position(Position& pos, const std::string& cmd) {
                 m = Move(from, to, flag);
             }
 
+            // DEBUG: Log board state before each move
+            Color side = pos.side_to_move();
+            Square actual_king_sq = pos.king_sq(side);
+            debug_log_write("BEFORE_MOVE: " + move_str + " side=" + (side==WHITE?"W":"B") + " king_sq=" + std::to_string(actual_king_sq) + " board[king_sq]=" + std::to_string(int(pos.piece_on(actual_king_sq))) + " fen=" + pos.fen());
+
             // Execute move - skip if do_move fails
             if (!pos.do_move(m)) {
                 debug_log_write("DO_MOVE_FAILED: " + move_str + " fen=" + pos.fen());
