@@ -6,8 +6,8 @@ namespace luminex {
 void TTEntry::save(uint64_t k, Value v, bool, Bound b, Depth d, Move m, Value ev, uint8_t g) {
     key16 = uint16_t(k >> 48);
     move16 = uint16_t(m.raw());
-    value_ = int16_t(v);
-    eval_ = int16_t(ev);
+    value_ = int32_t(v);  // Changed from int16_t to match Value type
+    eval_ = int32_t(ev);   // Changed from int16_t to match Value type
     depth_ = uint8_t(d + 127);
     gen_bound = uint8_t((g << 2) | b);
 }

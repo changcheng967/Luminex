@@ -190,15 +190,26 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
         alpha = eval;
     }
 
-    // Generate and search captures
+    // Generate moves: captures normally, but ALL evasions when in check
+    // CRITICAL: When in check, we must consider king moves and blocking moves, not just captures
     ExtMove moves[MAX_MOVES];
-    ExtMove* end = generate<GEN_CAPTURE>(pos, moves);
+    ExtMove* end;
+    if (pos.is_check()) {
+        end = generate<GEN_LEGAL>(pos, moves);  // All legal moves when in check
+    } else {
+        end = generate<GEN_CAPTURE>(pos, moves);  // Only captures when not in check
+    }
 
     for (ExtMove* it = moves; it != end; ++it) {
-        if (!pos.legal(it->move)) continue;
+        if (pos.is_check()) {
+            // For evasions, legal() check already done by GEN_LEGAL
+        } else if (!pos.legal(it->move)) {
+            continue;
+        }
 
         // Skip losing captures with negative SEE (but keep queen promotions)
-        if (!it->move.is_promotion() && !pos.see_ge(it->move, VALUE_ZERO)) {
+        // Exception: when in check, try all evasions regardless of SEE
+        if (!pos.is_check() && !it->move.is_promotion() && !pos.see_ge(it->move, VALUE_ZERO)) {
             continue;
         }
 
