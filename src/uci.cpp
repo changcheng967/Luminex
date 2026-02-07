@@ -309,8 +309,10 @@ void handle_go(Position& pos, const std::string& cmd) {
         }
     }
 
-    // Send final info
-    uci_info(pos, root_depth, root_score, nodes.load(), 0);
+    // Send final info - use root_depth-1 since loop incremented it
+    // Note: This is redundant as search() already outputs info, but kept for compatibility
+    int final_depth = (root_depth > 1) ? root_depth - 1 : 1;
+    uci_info(pos, final_depth, root_score, nodes.load(), 0);
 
     // Log bestmove with FEN for debugging
     std::ostringstream oss;
