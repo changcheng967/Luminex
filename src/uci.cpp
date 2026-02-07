@@ -210,10 +210,12 @@ void handle_go(Position& pos, const std::string& cmd) {
         }
     }
 
-    // If no depth specified and not using time control, set max depth
-    // (prevents infinite search when "go" is sent with no params)
-    if (limits.depth == 0 && (limits.time[WHITE] == 0 && limits.time[BLACK] == 0)) {
-        limits.depth = MAX_PLY - 1;
+    // If no depth, time control, movetime, or infinite is specified, set reasonable default depth
+    // This prevents infinite search when "go" is sent with no params
+    // Note: depth 7+ causes exponential blowup with current PVS implementation
+    if (limits.depth == 0 && !limits.infinite && limits.movetime == 0 &&
+        limits.time[WHITE] == 0 && limits.time[BLACK] == 0) {
+        limits.depth = 6;  // Safe default depth for bare "go" command
     }
 
     // Check for terminal positions (checkmate/stalemate) before searching

@@ -35,7 +35,7 @@ int counter_moves[12][64][12][64];
 // Evaluation cache - store eval results to avoid recomputing expensive evals
 struct EvalCacheEntry {
     uint64_t key;
-    int16_t value;
+    int32_t value;  // Changed from int16_t to match Value type
 };
 constexpr int EVAL_CACHE_SIZE = 8192;  // Power of 2 for fast indexing
 EvalCacheEntry eval_cache[EVAL_CACHE_SIZE];
@@ -43,14 +43,14 @@ EvalCacheEntry eval_cache[EVAL_CACHE_SIZE];
 inline Value eval_cached(const Position& pos) {
     uint64_t key = pos.key();
     uint32_t idx = uint32_t(key) & (EVAL_CACHE_SIZE - 1);
-    
+
     if (eval_cache[idx].key == key) {
         return Value(eval_cache[idx].value);
     }
-    
+
     Value eval = evaluate(pos);
     eval_cache[idx].key = key;
-    eval_cache[idx].value = int16_t(eval);
+    eval_cache[idx].value = int32_t(eval);
     return eval;
 }
 
@@ -280,15 +280,10 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
     Value tt_value = found ? tte->value() : VALUE_ZERO;
     Depth tt_depth = found ? tte->depth() : DEPTH_ZERO;
 
-    // CRITICAL FIX: Allow TT cutoffs with depth margin of 2
-    // This allows entries from shallower searches to cause cutoffs, dramatically increasing TT efficiency
-    // Apply a small safety margin to the value to be safe with shallower entries
-    if (!pv_node && found && tt_depth >= depth - 2 &&
+    // TT cutoff: require exact or greater depth for safety
+    // IIR naturally improves TT population without aggressive margins
+    if (!pv_node && found && tt_depth >= depth &&
         (tt_value >= beta ? (tte->bound() & BOUND_LOWER) : (tte->bound() & BOUND_UPPER))) {
-        // If entry is shallower, apply small margin to be safe
-        if (tt_depth < depth) {
-            tt_value = (tt_value >= beta) ? tt_value - 2 : tt_value + 2;
-        }
         return tt_value;
     }
 
@@ -613,9 +608,8 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
                 // Failed high, re-search at full depth
                 value = -search_worker(pos, ss + 1, -beta, -alpha, depth - 1, !cut_node);
             }
-        } else if (moves_played > 0 && depth >= 3 && best_value > -VALUE_MATE_IN_MAX_PLY) {
-            // CRITICAL FIX: Enable PVS for ALL nodes (both PV and non-PV)
-            // This is standard practice - use zero-window scout for moves after the first
+        } else if (!pv_node && moves_played > 0 && depth >= 3 && best_value > -VALUE_MATE_IN_MAX_PLY) {
+            // PVS for non-PV nodes only - use zero-window scout for moves after the first
             value = -search_worker(pos, ss + 1, -alpha - 1, -alpha, depth - 1, !cut_node);
             if (value > alpha) {
                 value = -search_worker(pos, ss + 1, -beta, -alpha, depth - 1, !cut_node);
@@ -958,13 +952,12 @@ Move search(Position& pos, Limits& lim) {
 
             // Aspiration window check uses ORIGINAL alpha (not running_alpha)
             if (iter_best_value <= alpha) {
-                // Fail low - widen downward and re-search
-                beta = (alpha + beta) / 2;
+                // Fail low - widen downward (lower alpha only, keep beta)
                 alpha = std::max(Value(-VALUE_INFINITE),
                                  Value(iter_best_value - aspiration_delta));
                 aspiration_delta += aspiration_delta / 2;
             } else if (iter_best_value >= beta) {
-                // Fail high - widen upward and re-search
+                // Fail high - widen upward (raise beta only, keep alpha)
                 beta = std::min(Value(VALUE_INFINITE),
                                 Value(iter_best_value + aspiration_delta));
                 aspiration_delta += aspiration_delta / 2;
