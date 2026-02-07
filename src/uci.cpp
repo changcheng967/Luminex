@@ -135,8 +135,12 @@ void handle_position(Position& pos, const std::string& cmd) {
             Piece piece_at_to = pos.piece_on(to);
             bool is_capture = (piece_at_to != NO_PIECE);
 
-            // Check for Castling: king moves two squares horizontally
-            bool is_castling = (piece_type_from == KING && std::abs(int(from) - int(to)) == 2);
+            // Check for Castling: king moves two squares horizontally FROM STARTING SQUARE
+            // CRITICAL FIX: Must verify king is on e1 (E1) or e8 (E8), not just moving 2 squares
+            // This prevents flagging random 2-square king moves as castling after board corruption
+            bool is_castling = (piece_type_from == KING &&
+                                std::abs(int(from) - int(to)) == 2 &&
+                                from == (pos.side_to_move() == WHITE ? E1 : E8));
 
             // Check for En Passant: pawn moves diagonally to empty ep_square
             bool is_en_passant = (piece_type_from == PAWN &&
@@ -270,47 +274,70 @@ void handle_go(Position& pos, const std::string& cmd) {
     // Run search
     Move best_move = search(pos, limits);
 
-    // Restore position from saved FEN
+    // CRITICAL: Restore position from saved FEN
+    // Search modifies pos directly via do_move/undo_move, and any failure
+    // or exception could corrupt the state. Re-parsing from FEN ensures clean state.
     pos.set(fen_before_search);
+
+    // CRITICAL: Validate that the restored position is sane
+    // Check that kings exist and are on expected squares
+    if (pos.piece_on(pos.king_sq(WHITE)) != make_piece(WHITE, KING) ||
+        pos.piece_on(pos.king_sq(BLACK)) != make_piece(BLACK, KING)) {
+        // Board corruption detected - log and try to recover
+        debug_log_write("BOARD_CORRUPTION: Kings not on tracked squares after search restore!");
+        debug_log_write("FEN: " + fen_before_search);
+        // Recovery: clear and re-initialize (this should never happen)
+        TT.clear();
+        TT.new_search();
+    }
+
+    // CRITICAL: Re-validate best_move against restored position
+    // The search may have modified the position, making the move invalid
+    if (best_move) {
+        Square from = best_move.from();
+        Square to = best_move.to();
+
+        // Check squares are valid
+        if (from >= SQUARE_NONE || to >= SQUARE_NONE) {
+            debug_log_write("INVALID_MOVE: Squares out of bounds - from=" + std::to_string(from) + " to=" + std::to_string(to));
+            best_move = MOVE_NONE;
+        } else {
+            // Check piece exists at source square
+            Piece pc = pos.piece_on(from);
+            if (pc == NO_PIECE) {
+                debug_log_write("INVALID_MOVE: No piece at source square " + std::to_string(from) + " FEN=" + pos.fen());
+                best_move = MOVE_NONE;
+            } else {
+                // Check piece belongs to side to move
+                Color piece_color = pos.color_of_piece(pc);
+                if (piece_color != pos.side_to_move()) {
+                    debug_log_write("INVALID_MOVE: Piece color mismatch at " + std::to_string(from) + " FEN=" + pos.fen());
+                    best_move = MOVE_NONE;
+                } else if (!pos.legal(best_move)) {
+                    std::ostringstream oss;
+                    oss << "INVALID_MOVE: Move not legal - " << best_move << " FEN=" << pos.fen();
+                    debug_log_write(oss.str());
+                    best_move = MOVE_NONE;
+                }
+            }
+        }
+    }
 
 #ifndef NDEBUG
     // Check board consistency after search (debug builds only)
     pos.assert_consistency("handle_go after search");
 #endif
 
-    // Validate best_move before sending - multiple layers of defense
-    if (best_move) {
-        Square from = best_move.from();
-        Square to = best_move.to();
-
-        // CRITICAL: Validate square bounds first
-        // board[] has 64 elements (0-63 valid), SQUARE_NONE = 64 is invalid
-        if (from >= SQUARE_NONE || to >= SQUARE_NONE) {
-            // Invalid squares - generate a legal move as fallback
-            ExtMove moves[MAX_MOVES];
-            ExtMove* end = generate<GEN_LEGAL>(pos, moves);
-            if (end > moves) {
-                best_move = moves[0].move;
-            } else {
-                best_move = MOVE_NONE;
-            }
+    // If best_move is still invalid after the validation above, generate a fallback legal move
+    if (!best_move) {
+        ExtMove moves[MAX_MOVES];
+        ExtMove* end = generate<GEN_LEGAL>(pos, moves);
+        if (end > moves) {
+            best_move = moves[0].move;
+            debug_log_write("FALLBACK_MOVE: Generated legal move due to validation failure");
         } else {
-            // Squares are valid - check legality and side match
-            Piece pc = pos.piece_on(from);
-            Color piece_color = (pc != NO_PIECE) ? pos.color_of_piece(pc) : NO_COLOR;
-            bool is_legal = pos.legal(best_move);
-            bool side_match = (piece_color == pos.side_to_move());
-
-            if (!side_match || !is_legal) {
-                // Generate a legal move as fallback
-                ExtMove moves[MAX_MOVES];
-                ExtMove* end = generate<GEN_LEGAL>(pos, moves);
-                if (end > moves) {
-                    best_move = moves[0].move;
-                } else {
-                    best_move = MOVE_NONE;
-                }
-            }
+            // No legal moves - this is terminal (checkmate or stalemate)
+            debug_log_write("NO_LEGAL_MOVES: Position is terminal");
         }
     }
 
