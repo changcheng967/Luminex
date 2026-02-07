@@ -158,6 +158,10 @@ void handle_position(Position& pos, const std::string& cmd) {
             } else if (is_en_passant) {
                 // En Passant capture
                 m = Move(from, to, MF_EN_PASSANT);
+            } else if (piece_type_from == PAWN && std::abs(int(rank_of(to)) - int(rank_of(from))) == 2) {
+                // Double pawn push - CRITICAL: must set MF_DOUBLE_PAWN so do_move() sets ep_square
+                // Without this, en passant never works in UCI games because the EP square is never set
+                m = Move(from, to, MF_DOUBLE_PAWN);
             } else {
                 // Normal move: quiet or capture
                 int flag = is_capture ? MF_CAPTURE : MF_QUIET;

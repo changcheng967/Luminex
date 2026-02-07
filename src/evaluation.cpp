@@ -463,14 +463,9 @@ Value evaluate(const Position& pos) {
             }
 
             if (is_center_pawn) {
-                mg_score += sign * 50;
-                eg_score += sign * 30;
-
-                // Extra bonus if the pawn is protected (not isolated)
-                if (has_left_support || has_right_support) {
-                    mg_score += sign * 15;
-                    eg_score += sign * 10;
-                }
+                // Reduced bonus from 50/30 to 15/10 - less distortion, more realistic
+                mg_score += sign * 15;
+                eg_score += sign * 10;
             }
         }
 

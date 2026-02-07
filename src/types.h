@@ -8,7 +8,7 @@ namespace luminex {
 
 // Basic types
 using Key = uint64_t;
-using Value = int16_t;
+using Value = int32_t;  // Changed from int16_t to prevent overflow
 using Depth = int;
 using Direction = int;
 
