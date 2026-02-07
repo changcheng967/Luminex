@@ -2,44 +2,40 @@
 
 | Commit | Score vs Stash v9 | Illegal Moves | Key Changes | Status |
 |--------|------------------|---------------|-------------|--------|
-| 91e7c52 | 0/20 | 0/20 (0%) | Reverted evasion ordering (bug), PST init, evasion extension | **Stable but weak** |
-| a570a1d | 0/20 | 0/20 (0%) | PST mirroring fix | **PST now correct** |
-| 217458f | 0/20 | 0/20 (0%) | Check evasion extension | **Helps but not enough** |
-| 8467dd0 | 0/20 | 0/20 (0%) | Search stability fixes | **Stable engine!** |
+| 5d4eb37 | 0/20 (17 mates, 3 stalls) | 0/20 (0%) | Qsearch no stand-pat in check | **Partial fix, has stalls** |
+| 9adac2a | 0/20 (20 mates, 0 stalls) | 0/20 (0%) | Documentation update | Baseline |
+| 91e7c52 | 0/20 | 0/20 (0%) | Reverted evasion ordering | Stable but weak |
+| ed4ed24 | N/A | N/A | Evasion move ordering | Reverted (caused bugs) |
 
 ## Latest Measurements (20 games, tc=1+0.1 vs Stash v9)
-- Score: 0-20 (all by checkmate)
+- Score: 0-20 (17 checkmates, 3 connection stalls)
 - Illegal Move Rate: **0%**
-- Connection stalls: **0%**
-- Game completion: **100%**
+- Connection stalls: **15%** (3/20 games)
 - Estimated Elo: **<1000** (Stash v9 is ~1275)
 
-## Recent Attempts (Not successful yet)
-1. **Check evasion extension** (217458f): Extend when in check to find defenses
-   - Result: No improvement, still 0-20
-2. **PST mirroring fix** (a570a1d): Call init_evaluation() to mirror BLACK PST from WHITE
-   - Result: PST values now correct, but no rating improvement
-3. **Evasion move ordering** (ed4ed24): Prioritize captures of checking piece
-   - Result: **REGRESSION** - introduced illegal move bug, reverted
+## Fixes Applied
+1. **Qsearch stand-pat fix** (5d4eb37): Engine can no longer "stand pat" (accept static eval) when in check
+   - Impact: Critical correctness fix - engine must find evasions when in check
+   - Status: Introduces 15% stall rate (needs investigation)
+
+## Known Issues
+- **Stalls in 15% of games**: Engine stops responding in some positions
+  - May be time management issue
+  - May be infinite loop in search
+  - Needs debugging with logging
 
 ## Current State
-- **Engine is stable**: No crashes, no stalls, no illegal moves (after revert)
-- **Extremely weak**: Loses all games by checkmate vs ~1275 Elo engine
+- **Engine is mostly stable**: 0% illegal moves
+- **Extremely weak**: Still loses all games vs ~1275 Elo engine
 - **Search depth**: ~7-8 in 1 second, ~900K NPS
-- **Evaluation**: PST mirroring fixed, but position evaluation still problematic
-- **Root cause**: Engine doesn't understand tactical threats or defensive resources
+- **Evaluation**: PST mirroring fixed from earlier commit
+- **Root cause**: Engine lacks tactical awareness and king safety
 
-## Diagnosed Issues
-1. **PST was not being mirrored** - FIXED by calling init_evaluation()
-2. **No extension when in check** - FIXED with evasion extension
-3. **Eval bias** - Starting position shows small bias, may need further investigation
-4. **Move ordering** - Evasion moves not ordered (attempted fix caused bugs)
-
-## Next Priority (Safe, incremental fixes)
-1. **Investigate evaluation bias** - Why does engine prefer losing positions?
-2. **Improve qsearch** - Ensure tactical sequences are properly evaluated
-3. **Better time management** - Use more time in critical positions
-4. **King safety evaluation** - Ensure danger is properly assessed
+## Next Priority
+1. **Debug stalls** - Add logging to identify why engine stops responding
+2. **King attack counting** - Utilize the `king_attackers` array that's computed but not used
+3. **Better time management** - Ensure engine doesn't run out of time
+4. **Move ordering improvements** - Better handling of evasions
 
 ## Perft Validation
 - Perft 1: 20 PASS
