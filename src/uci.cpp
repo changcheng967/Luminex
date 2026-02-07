@@ -15,6 +15,9 @@ void handle_uci() {
     // Without this, table.empty() is true and all probes return dummy entry
     TT.resize(128);
 
+    // CRITICAL: Initialize evaluation tables (PST mirroring)
+    init_evaluation();
+
     std::cout << "id name " << ENGINE_NAME << " " << ENGINE_VERSION << "\n";
     std::cout.flush();
     std::cout << "id author " << ENGINE_AUTHOR << "\n";

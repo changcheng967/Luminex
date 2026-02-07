@@ -1974,6 +1974,12 @@ int scale_factor(const Position&, Value) {
 }
 
 void init_evaluation() {
+    static bool initialized = false;
+    if (initialized) {
+        return;
+    }
+    initialized = true;
+
     // Initialize black PST as mirrored white PST
     for (int pt = 0; pt < 8; ++pt) {
         for (int s = 0; s < 64; ++s) {
