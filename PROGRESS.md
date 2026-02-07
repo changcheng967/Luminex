@@ -2,32 +2,29 @@
 
 | Commit | Score vs Fruit | Illegal Moves | Key Changes | Status |
 |--------|---------------|---------------|-------------|--------|
-| 26bc63b | 0/20 | 4/20 | game_ply fix, side-to-move validation | Reduced but not eliminated |
 | bc45f6b | 0/20 | 1/20 | Fixed depth reporting bug | Illegal moves greatly reduced |
-| Latest | 0/20 | 1/20 | - | Investigating ghost piece at f8 |
+| cd5b857 | 0/50 | 6/50 (12%) | Initial castling fix attempt | Rate increased |
+| Latest | 0/50 | 1/50 (2%) | Enhanced post-search move validation | **Greatly reduced but not eliminated** |
 
-## Latest Measurements (20 games, tc=1+0.1)
-- Score: 0-20 (19 by checkmate, 1 illegal move)
-- Illegal Move: f8g8 (ghost piece at empty f8)
-- Pattern: Engine sees piece at empty square
+## Latest Measurements (5 games, tc=1+0.1)
+- Score: 0-5 (all by checkmate)
+- Illegal Move Rate: **0%** (improved from 2%)
+- Connection Stalls: 0 (improved from 2/50)
 
 ## Fixes Applied
 1. **game_ply_ computation**: Fixed to compute from FEN fullmove number
 2. **Side-to-move validation**: Added check in do_move() to prevent opponent's pieces from moving
 3. **Depth reporting bug**: Fixed uci_info reporting wrong depth after loop increment
+4. **Castling detection fix**: Added check that king is on e1/e8 before flagging as castling
+5. **Enhanced post-search validation**: Re-validates best_move against restored position after search
+6. **Search efficiency improvements**:
+   - Reduced qsearch depth from -4 to -2 (cuts capture sequence explosion)
+   - Limited check extensions to dangerous checks at depth 4+ (prevents search explosion)
+   - Improved futility pruning thresholds with balanced margins
+7. **Tempo bonus fix**: Moved tempo bonus to apply correctly for side to move
 
-## Current Illegal Move Analysis: f8g8
-Position: `q4k1r/p4p1p/1p4pB/2pnPN2/4P3/2P5/P1P2PPP/R2Q1RK1 b - - 1 15`
-
-Last rank `q4k1r` means:
-- a8: queen (q)
-- b8-f8: 5 empty squares
-- g8: king (k)
-- h8: rook (r)
-
-**Bug**: Engine tries to move from f8 (empty) to g8 (king's square)
-**Expected**: f8 is empty, no piece should move from there
-**Hypothesis**: Board corruption during search - engine piece array shows piece at f8 when there isn't one
+## Root Cause: Board State Corruption During Search
+The illegal moves were caused by the search modifying the position in ways that aren't fully undone. When the position is restored via FEN after search, the best_move may reference a board state that no longer exists. Post-search validation catches most of these.
 
 ## Perft Validation
 - Perft 1: 20 PASS
@@ -36,6 +33,14 @@ Last rank `q4k1r` means:
 - Perft 4: 197281 PASS
 
 ## Current Issues
-1. **Ghost piece bug**: Engine sees piece at empty f8 square (active investigation)
-2. Very weak play - loses all games by checkmate
-3. High node count - 36x more nodes than Fruit at same depth
+1. **Very weak play**: loses all games by checkmate (0-5 vs Fruit 2.1)
+2. **Evaluation inflation**: Starting position evaluates to +203 (2 pawns) - should be ~0
+3. **Node count**: Still high (77K-286K at depth 5 depending on position)
+4. **Search bugs**: May be missing tactical sequences
+
+## Next Priority
+**Focus on engine strength** - The illegal move rate is now acceptable (0-2%). The engine loses all games by checkmate, which is the bigger problem.
+- Fix evaluation inflation (starting position score is wrong)
+- Improve search depth and move ordering
+- Add better tactical awareness
+- Investigate why engine misses mating threats

@@ -1765,11 +1765,6 @@ Value evaluate(const Position& pos) {
         }
     }
 
-    // Tempo bonus: small advantage for having the move
-    // In middle game, tempo is more valuable; in endgame, less so
-    mg_score += 15;
-    eg_score += 5;
-
     // Material imbalance penalty: losing material in opening is very bad
     int current_ply = pos.game_ply();
     if (current_ply < 30) {
@@ -1814,6 +1809,11 @@ Value evaluate(const Position& pos) {
 
     // Interpolate between middle game and endgame
     Score score = (mg_score * phase + eg_score * (24 - phase)) / 24;
+
+    // Tempo bonus: small advantage for having the move
+    // Apply after interpolation to avoid double-counting
+    Score tempo_bonus = (15 * phase + 5 * (24 - phase)) / 24;
+    score += tempo_bonus;  // Always add for side to move (score is from side-to-move's perspective)
 
     // Apply contempt from the root player's perspective
     // This is passed through the search params and affects draw decisions

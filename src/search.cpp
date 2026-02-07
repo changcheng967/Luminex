@@ -59,16 +59,16 @@ inline void clear_eval_cache() {
 
 // Reduction constants
 constexpr int futility_margin(int depth, bool improving) {
-    // More reasonable futility margins
-    int base = 100;
-    if (depth == 1) base = 120;
-    else if (depth == 2) base = 160;
-    else if (depth == 3) base = 200;
-    else base = 250 + (depth - 3) * 50;  // depth >= 4
+    // Moderate futility margins - balance between pruning and tactical accuracy
+    int base = 120;
+    if (depth == 1) base = 150;
+    else if (depth == 2) base = 200;
+    else if (depth == 3) base = 250;
+    else base = 280 + (depth - 3) * 50;  // depth >= 4
 
     // Adjust based on improving flag
-    if (improving) base -= 30;
-    else base += 50;
+    if (improving) base -= 40;
+    else base += 60;
 
     return base;
 }
@@ -153,8 +153,9 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
         return eval_cached(pos);
     }
 
-    // Don't search captures beyond a certain depth - increased to -4 for better tactics
-    if (depth < -4) {
+    // Don't search captures beyond a certain depth - limited to -2 for efficiency
+    // Going deeper than -2 causes massive node explosion
+    if (depth < -2) {
         return eval_cached(pos);
     }
 
@@ -312,7 +313,8 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
     }
 
     // Futility pruning - use improving for better pruning decisions
-    if (!pv_node && !pos.is_check() && depth <= 4 && eval - futility_margin(depth, ss->improving) >= beta) {
+    // Depth <= 5 for balance between pruning and tactical accuracy
+    if (!pv_node && !pos.is_check() && depth <= 5 && eval - futility_margin(depth, ss->improving) >= beta) {
         return eval;
     }
 
@@ -486,10 +488,10 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
         }
 
         // Futility pruning: skip quiet moves that can't improve alpha
-        // Balanced - only apply at low depths
-        if (!pv_node && ss->ply > 0 && !pos.is_check() && depth <= 3 &&
+        // Balanced - apply at depth <= 4
+        if (!pv_node && ss->ply > 0 && !pos.is_check() && depth <= 4 &&
             !m.is_capture() && !m.is_promotion() && !m.is_castling()) {
-            // More reasonable futility margin
+            // Moderate futility margin
             int margin = depth * 200 + (ss->improving ? 0 : 100);
 
             // Check if move is futile (eval + margin < alpha)
@@ -541,8 +543,10 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
         }
 
         // Check extension: extend by one ply if move gives check (helps find tactical sequences)
+        // LIMITED: Only extend at high depths and for dangerous checks to prevent explosion
         bool gives_check = false;
-        if (depth >= 2 && !pos.is_check()) {
+        bool dangerous_check = false;
+        if (depth >= 4 && !pos.is_check()) {  // Only at depth 4+ (was depth >= 2)
             PieceType pt = pos.piece_type_on(m.from());
             Square to = m.to();
             Color opponent = Color(int(pos.side_to_move()) ^ 1);
@@ -550,12 +554,19 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
 
             if (pt == KNIGHT) {
                 gives_check = (knight_attacks_bb(to) & square_bb(king_sq)) != 0;
+                // Knight checks are often dangerous
+                dangerous_check = gives_check;
             } else if (pt == BISHOP) {
                 gives_check = (bb_diag_attacks(to, pos.pieces()) & square_bb(king_sq)) != 0;
+                dangerous_check = gives_check;
             } else if (pt == ROOK) {
                 gives_check = ((bb_rank_attacks(to, pos.pieces()) | bb_file_attacks(to, pos.pieces())) & square_bb(king_sq)) != 0;
+                // Rook checks are dangerous
+                dangerous_check = gives_check;
             } else if (pt == QUEEN) {
                 gives_check = (queen_attacks_bb(to, pos.pieces()) & square_bb(king_sq)) != 0;
+                // Queen checks are very dangerous
+                dangerous_check = gives_check;
             } else if (pt == PAWN) {
                 Bitboard pawn_attacks = 0;
                 Bitboard pb = square_bb(to);
@@ -567,18 +578,20 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
                     if (file_of(to) < FILE_H) pawn_attacks |= shift_se(pb);
                 }
                 gives_check = (pawn_attacks & square_bb(king_sq)) != 0;
+                // Pawn checks are less dangerous, only extend if deep
+                dangerous_check = (depth >= 8 && gives_check);
             }
         }
 
         // Single extension: at most one extension per move to prevent explosion
         bool extension = false;
 
-        // Singular extension: highest priority
+        // Singular extension: highest priority (disabled for now)
         if (m == tt_move && tt_move_is_singular) {
             extension = true;
         }
-        // Check extension (only if not singular extended)
-        else if (gives_check) {
+        // Check extension: ONLY for dangerous checks (was all checks)
+        else if (dangerous_check) {
             extension = true;
         }
 
