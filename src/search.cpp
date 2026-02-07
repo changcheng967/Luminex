@@ -544,6 +544,10 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
             if (new_depth < 1) new_depth = 1;
         }
 
+        // CRITICAL: Check evasion extension - when we're IN check, extend to find defensive moves
+        // This is the highest priority extension - being mated is the worst outcome
+        bool evasion_extension = (pos.is_check() && depth >= 2);
+
         // Check extension: extend by one ply if move gives check (helps find tactical sequences)
         // LIMITED: Only extend at high depths and for dangerous checks to prevent explosion
         bool gives_check = false;
@@ -588,8 +592,12 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
         // Single extension: at most one extension per move to prevent explosion
         bool extension = false;
 
-        // Singular extension: highest priority (disabled for now)
-        if (m == tt_move && tt_move_is_singular) {
+        // Evasion extension: HIGHEST priority - we're being attacked!
+        if (evasion_extension) {
+            extension = true;
+        }
+        // Singular extension: high priority (disabled for now)
+        else if (m == tt_move && tt_move_is_singular) {
             extension = true;
         }
         // Check extension: ONLY for dangerous checks (was all checks)
