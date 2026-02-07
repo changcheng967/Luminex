@@ -1,0 +1,90 @@
+name: Build
+
+on:
+  push:
+    branches: [ main, develop ]
+  pull_request:
+    branches: [ main, develop ]
+
+jobs:
+  build:
+    name: ${{ matrix.os }} - ${{ matrix.cc }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            cc: clang
+            cmake_args: -DCMAKE_CXX_COMPILER=clang++ -DCMAKE_C_COMPILER=clang
+          - os: ubuntu-latest
+            cc: gcc
+            cmake_args: -DCMAKE_CXX_COMPILER=g++ -DCMAKE_C_COMPILER=gcc
+          - os: windows-latest
+            cc: msvc
+            cmake_args: -G "Visual Studio 17 2022"
+          - os: macos-latest
+            cc: clang
+            cmake_args: -DCMAKE_CXX_COMPILER=clang++ -DCMAKE_C_COMPILER=clang
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Install dependencies (Ubuntu)
+      if: matrix.os == 'ubuntu-latest'
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y ninja-build
+
+    - name: Install dependencies (macOS)
+      if: matrix.os == 'macos-latest'
+      run: |
+        brew install ninja
+
+    - name: Configure CMake
+      run: cmake -B build -G Ninja ${{ matrix.cmake_args }}
+
+    - name: Build
+      run: cmake --build build --config Release
+
+    - name: Test perft
+      run: |
+        if [ "${{ matrix.os }}" != "windows-latest" ]; then
+          ./build/luminex << EOF
+          uci
+          isready
+          position startpos
+          go depth 1
+          quit
+          EOF
+        else
+          ./build/luminex.exe uci
+          ./build/luminex.exe isready
+          ./build/luminex.exe go depth 1
+        fi
+
+  perft:
+    name: Perft Validation
+    runs-on: ubuntu-latest
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Install dependencies
+      run: sudo apt-get update && sudo apt-get install -y ninja-build
+
+    - name: Build
+      run: |
+        cmake -B build -G Ninja -DCMAKE_CXX_COMPILER=clang++ -DCMAKE_C_COMPILER=clang
+        cmake --build build --config Release
+
+    - name: Run Perft tests
+      run: |
+        ./build/luminex << 'EOF'
+        uci
+        isready
+        position startpos
+        go depth 1
+        quit
+        EOF
