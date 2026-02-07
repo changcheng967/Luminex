@@ -1071,7 +1071,10 @@ void uci_info([[maybe_unused]] const Position& pos, int depth, Value score, uint
         std::cout << "mate " << mate_in;
     } else {
         // Normal score in centipawns
-        int score_cp = score * 100 / PAWN_VALUE;
+        // UCI requires score from side-to-move's perspective
+        // Our search returns scores from WHITE's perspective, so convert if needed
+        int score_from_stm = (pos.side_to_move() == BLACK) ? -score : score;
+        int score_cp = score_from_stm * 100 / PAWN_VALUE;
         std::cout << "cp " << score_cp;
     }
 

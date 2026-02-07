@@ -943,7 +943,18 @@ Value evaluate(const Position& pos) {
 
         // Penalty for not having center pawns (d4/e4 for white, d5/e5 for black) in opening
         // But allow variety - reduce penalty at very start to avoid always playing d4/e4 immediately
+        // CRITICAL FIX: Only apply penalty to side that has had chance to move (don't penalize black at ply 1)
         if (game_ply < 20) {  // Before move 10
+            // Skip penalty if this side hasn't had a full turn yet
+            // At ply 0 (white to move), white gets no penalty
+            // At ply 1 (black to move), white gets penalty but black doesn't (black hasn't moved yet)
+            // At ply 2+ (white to move), both sides get penalty
+            bool this_side_has_moved = (us == WHITE && game_ply >= 1) || (us == BLACK && game_ply >= 2);
+            if (!this_side_has_moved) {
+                // Don't penalize this side yet - they haven't had a chance to develop
+                continue;
+            }
+
             Bitboard our_pawns = pos.pieces(us, PAWN);
             bool has_d4 = (us == WHITE && (our_pawns & square_bb(D4))) ||
                            (us == BLACK && (our_pawns & square_bb(D5)));
