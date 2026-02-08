@@ -768,9 +768,8 @@ Move search(Position& pos, Limits& lim) {
         const int overhead = 50;
         int safe_time = std::max(1, time_left - overhead);
 
-        // More aggressive formula for bullet/blitz: base/12 + inc*3/4
-        // Increased from /15 to /12 to allow deeper search (25% more time)
-        ideal_time = safe_time / 12 + time_inc * 3 / 4;
+        // More aggressive formula for bullet/blitz: base/15 + inc*3/4
+        ideal_time = safe_time / 15 + time_inc * 3 / 4;
 
         // Hard limit: never use more than 1/3 of remaining time
         max_time = std::min(safe_time / 3, ideal_time * 4);
