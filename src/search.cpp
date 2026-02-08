@@ -552,7 +552,7 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
         // LIMITED: Only extend at high depths and for dangerous checks to prevent explosion
         bool gives_check = false;
         bool dangerous_check = false;
-        if (depth >= 4 && !pos.is_check()) {  // Only at depth 4+ (was depth >= 2)
+        if (depth >= 3 && !pos.is_check()) {  // Lowered from 4 to 3 for better tactics
             PieceType pt = pos.piece_type_on(m.from());
             Square to = m.to();
             Color opponent = Color(int(pos.side_to_move()) ^ 1);
