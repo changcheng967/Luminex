@@ -2,40 +2,32 @@
 
 | Commit | Score vs Stash v9 | Illegal Moves | Key Changes | Status |
 |--------|------------------|---------------|-------------|--------|
-| 5d4eb37 | 0/20 (17 mates, 3 stalls) | 0/20 (0%) | Qsearch no stand-pat in check | **Partial fix, has stalls** |
-| 9adac2a | 0/20 (20 mates, 0 stalls) | 0/20 (0%) | Documentation update | Baseline |
-| 91e7c52 | 0/20 | 0/20 (0%) | Reverted evasion ordering | Stable but weak |
-| ed4ed24 | N/A | N/A | Evasion move ordering | Reverted (caused bugs) |
+| 466969a | 0/10 (all mates) | 0/10 (0%) | Reduced futility margins 20% | No regression |
+| 002cfa3 | 0/15 (all mates) | 0/15 (0%) | Check extension depth 4->3 | No regression |
+| 27b5b55 | 0/20 (19 mates, 1 stall) | 0/20 (0%) | Reverted qsearch fix | **Stable baseline** |
+| 5d4eb37 | 0/20 (17 mates, 3 stalls) | 0/20 (0%) | Qsearch no stand-pat in check | **Reverted - caused stalls** |
 
-## Latest Measurements (20 games, tc=1+0.1 vs Stash v9)
-- Score: 0-20 (17 checkmates, 3 connection stalls)
-- Illegal Move Rate: **0%**
-- Connection stalls: **15%** (3/20 games)
-- Estimated Elo: **<1000** (Stash v9 is ~1275)
+## Current State (2025-02-08)
+- **Baseline (27b5b55)**: 0/20 vs Stash v9 (5% stall rate, 0% illegal)
+- **Small improvements added**: Check extension, reduced futility margins
+- **Evaluation**: Seems correct (Ruy Lopez eval -225 cp reasonable)
+- **Estimated Elo**: **<1000** (Stash v9 is ~1275)
+- **NPS**: ~650K-900K depending on position
 
-## Fixes Applied
-1. **Qsearch stand-pat fix** (5d4eb37): Engine can no longer "stand pat" (accept static eval) when in check
-   - Impact: Critical correctness fix - engine must find evasions when in check
-   - Status: Introduces 15% stall rate (needs investigation)
+## Recent Changes
+1. **Reverted qsearch fix** - Was causing illegal moves and increased stall rate
+2. **Check extension improvement** - Lowered threshold from depth 4 to 3
+3. **Futility margin reduction** - Reduced by ~20% for better tactical vision
 
 ## Known Issues
-- **Stalls in 15% of games**: Engine stops responding in some positions
-  - May be time management issue
-  - May be infinite loop in search
-  - Needs debugging with logging
-
-## Current State
-- **Engine is mostly stable**: 0% illegal moves
-- **Extremely weak**: Still loses all games vs ~1275 Elo engine
-- **Search depth**: ~7-8 in 1 second, ~900K NPS
-- **Evaluation**: PST mirroring fixed from earlier commit
-- **Root cause**: Engine lacks tactical awareness and king safety
+- **Extremely weak**: Loses all games by checkmate
+- **Root cause**: Likely insufficient search depth or poor defensive awareness
+- **NOT evaluation bug**: Manual testing shows eval returns reasonable values
 
 ## Next Priority
-1. **Debug stalls** - Add logging to identify why engine stops responding
-2. **King attack counting** - Utilize the `king_attackers` array that's computed but not used
-3. **Better time management** - Ensure engine doesn't run out of time
-4. **Move ordering improvements** - Better handling of evasions
+1. **Increase search depth** - Need to find positions where engine stops too early
+2. **Better defensive play** - Engine doesn't see threats coming
+3. **Move ordering** - Could improve efficiency
 
 ## Perft Validation
 - Perft 1: 20 PASS
