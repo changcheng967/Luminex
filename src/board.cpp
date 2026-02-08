@@ -485,11 +485,13 @@ bool Position::do_move(Move m) {
 
     if (pc == NO_PIECE) {
         // CRITICAL: Log this for debugging - trying to move from empty square
+#ifndef NDEBUG
         std::cerr << "\n=== ILLEGAL MOVE: NO PIECE AT SOURCE ===\n";
         std::cerr << "Move: " << m << " (" << from << " to " << to << ")\n";
         std::cerr << "Side to move: " << (side_to_move_ == WHITE ? "WHITE" : "BLACK") << "\n";
         std::cerr << "FEN: " << fen() << "\n";
         std::cerr << "=======================================\n";
+#endif
         return false;
     }
 
@@ -542,6 +544,7 @@ bool Position::do_move(Move m) {
     if (piece_at_to_is_enemy && !move_flag_says_capture && !m.is_promotion()) {
         // Enemy piece at destination but move is NOT flagged as capture
         // This will cause board corruption! Undo state advance and abort.
+#ifndef NDEBUG
         std::cerr << "\n=== MOVE FLAG ERROR in do_move ===\n";
         std::cerr << "Move: " << m << " (" << from << " to " << to << ")\n";
         std::cerr << "Enemy piece at destination but not flagged as capture!\n";
@@ -549,6 +552,7 @@ bool Position::do_move(Move m) {
         std::cerr << "Move flags: 0x" << std::hex << m.flags() << std::dec << "\n";
         std::cerr << "Undoing state advance and aborting.\n";
         std::cerr << "====================================\n";
+#endif
         // CRITICAL: Manually undo state advance since we're returning false
         // This ensures atomic failure - nothing changed
         st_ply--;
@@ -559,11 +563,13 @@ bool Position::do_move(Move m) {
 
     if (!piece_at_to_is_enemy && piece_at_to != PT_NONE && color_of_piece(board[to]) == us) {
         // Friendly piece at destination - invalid move
+#ifndef NDEBUG
         std::cerr << "\n=== CAPTURING OWN PIECE in do_move ===\n";
         std::cerr << "Move: " << m << " (" << from << " to " << to << ")\n";
         std::cerr << "Friendly piece at destination!\n";
         std::cerr << "Undoing state advance and aborting.\n";
         std::cerr << "====================================\n";
+#endif
         // CRITICAL: Manually undo state advance since we're returning false
         st_ply--;
         st_ = &state_stack[st_ply];
@@ -650,18 +656,29 @@ bool Position::do_move(Move m) {
     }
 
     // Update castling rights
-    // Remove castling rights if rook moves or is captured
+    // Remove OUR castling rights when our rook moves FROM its starting square
     if (pt == KING) {
-        st_->castling_rights &= ~(us == WHITE ? (WHITE_KINGSIDE | WHITE_QUEENSIDE) : (BLACK_KINGSIDE | BLACK_QUEENSIDE));
+        st_->castling_rights &= ~(us == WHITE ? (WHITE_KINGSIDE | WHITE_QUEENSIDE)
+                                               : (BLACK_KINGSIDE | BLACK_QUEENSIDE));
         castling_rights_[us] = 0;
     }
-    if (from == (us == WHITE ? H1 : H8) || to == (us == WHITE ? H1 : H8)) {
+    if (from == (us == WHITE ? H1 : H8)) {
         st_->castling_rights &= ~(us == WHITE ? WHITE_KINGSIDE : BLACK_KINGSIDE);
         castling_rights_[us] &= ~(us == WHITE ? WHITE_KINGSIDE : BLACK_KINGSIDE);
     }
-    if (from == (us == WHITE ? A1 : A8) || to == (us == WHITE ? A1 : A8)) {
+    if (from == (us == WHITE ? A1 : A8)) {
         st_->castling_rights &= ~(us == WHITE ? WHITE_QUEENSIDE : BLACK_QUEENSIDE);
         castling_rights_[us] &= ~(us == WHITE ? WHITE_QUEENSIDE : BLACK_QUEENSIDE);
+    }
+
+    // Remove OPPONENT's castling rights when we CAPTURE on their rook starting square
+    if (to == (them == WHITE ? H1 : H8)) {
+        st_->castling_rights &= ~(them == WHITE ? WHITE_KINGSIDE : BLACK_KINGSIDE);
+        castling_rights_[them] &= ~(them == WHITE ? WHITE_KINGSIDE : BLACK_KINGSIDE);
+    }
+    if (to == (them == WHITE ? A1 : A8)) {
+        st_->castling_rights &= ~(them == WHITE ? WHITE_QUEENSIDE : BLACK_QUEENSIDE);
+        castling_rights_[them] &= ~(them == WHITE ? WHITE_QUEENSIDE : BLACK_QUEENSIDE);
     }
 
     // XOR in NEW castling rights AFTER modifying them
