@@ -60,16 +60,17 @@ inline void clear_eval_cache() {
 
 // Reduction constants
 constexpr int futility_margin(int depth, bool improving) {
-    // Moderate futility margins - balance between pruning and tactical accuracy
-    int base = 120;
-    if (depth == 1) base = 150;
-    else if (depth == 2) base = 200;
-    else if (depth == 3) base = 250;
-    else base = 280 + (depth - 3) * 50;  // depth >= 4
+    // Reduced futility margins for better tactical vision
+    // Lowered by ~20% to prune less and search more positions
+    int base = 100;  // Was 120
+    if (depth == 1) base = 125;  // Was 150
+    else if (depth == 2) base = 160;  // Was 200
+    else if (depth == 3) base = 200;  // Was 250
+    else base = 225 + (depth - 3) * 40;  // Was 280 + 50, depth >= 4
 
     // Adjust based on improving flag
-    if (improving) base -= 40;
-    else base += 60;
+    if (improving) base -= 30;  // Was 40
+    else base += 50;  // Was 60
 
     return base;
 }
