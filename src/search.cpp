@@ -181,28 +181,33 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
     }
 
     // Evaluate position
-    Value eval = evaluate(pos);
+    bool in_check = pos.is_check();
 
-    // Stand pat
-    if (eval >= beta) {
-        return beta;
-    }
-    if (eval > alpha) {
-        alpha = eval;
+    if (!in_check) {
+        // Stand pat only when NOT in check
+        Value eval = evaluate(pos);
+        if (eval >= beta) {
+            return beta;
+        }
+        if (eval > alpha) {
+            alpha = eval;
+        }
     }
 
     // Generate moves: captures normally, but ALL evasions when in check
     // CRITICAL: When in check, we must consider king moves and blocking moves, not just captures
     ExtMove moves[MAX_MOVES];
     ExtMove* end;
-    if (pos.is_check()) {
+    if (in_check) {
         end = generate<GEN_LEGAL>(pos, moves);  // All legal moves when in check
     } else {
         end = generate<GEN_CAPTURE>(pos, moves);  // Only captures when not in check
     }
 
+    int moves_searched = 0;
+
     for (ExtMove* it = moves; it != end; ++it) {
-        if (pos.is_check()) {
+        if (in_check) {
             // For evasions, legal() check already done by GEN_LEGAL
         } else if (!pos.legal(it->move)) {
             continue;
@@ -210,7 +215,7 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
 
         // Skip losing captures with negative SEE (but keep queen promotions)
         // Exception: when in check, try all evasions regardless of SEE
-        if (!pos.is_check() && !it->move.is_promotion() && !pos.see_ge(it->move, VALUE_ZERO)) {
+        if (!in_check && !it->move.is_promotion() && !pos.see_ge(it->move, VALUE_ZERO)) {
             continue;
         }
 
@@ -222,6 +227,10 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
             // Do NOT call undo_move - do_move already guarantees state is unchanged
             continue;
         }
+
+        // This move passed do_move - count it as searched
+        moves_searched++;
+
         Value value = -qsearch(pos, ss + 1, -beta, -alpha, depth - 1);
         pos.undo_move(it->move);
 
@@ -231,6 +240,11 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
         if (value > alpha) {
             alpha = value;
         }
+    }
+
+    // Checkmate detection - if in check and no legal evasions
+    if (in_check && moves_searched == 0) {
+        return -VALUE_MATE + ss->ply;
     }
 
     return alpha;
@@ -823,6 +837,20 @@ Move search(Position& pos, Limits& lim) {
     Value previous_score = VALUE_ZERO;
 
     for (root_depth = start_depth; limits.depth == 0 || root_depth <= limits.depth; ++root_depth) {
+        // SAFETY: Hard time check before starting any new depth
+        {
+            auto now = std::chrono::steady_clock::now();
+            int elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(now - search_start).count();
+            if (limits.use_time_management() && elapsed >= max_time) {
+                stop = true;
+                break;
+            }
+            if (limits.movetime && elapsed >= (limits.movetime * 8) / 10) {
+                stop = true;
+                break;
+            }
+        }
+
         // Check time before starting a new depth (for movetime)
         check_time();
         if (stop.load(std::memory_order_relaxed)) break;
@@ -916,10 +944,15 @@ Move search(Position& pos, Limits& lim) {
         Value depth_best_value = -VALUE_INFINITE;
         Move depth_best_move = MOVE_NONE;
 
+        int aspiration_attempts = 0;
         while (true) {
+            aspiration_attempts++;
+            if (aspiration_attempts > 5) {
+                alpha = -VALUE_INFINITE;
+                beta = VALUE_INFINITE;
+            }
+
             // Search all root moves with current bounds
-            Value iter_best_value = -VALUE_INFINITE;
-            Move iter_best_move = MOVE_NONE;
             int root_moves_searched = 0;
             Value running_alpha = alpha;  // PVS window only, NOT the aspiration bound
 
@@ -950,9 +983,9 @@ Move search(Position& pos, Limits& lim) {
 
                 if (check_time()) break;
 
-                if (value > iter_best_value) {
-                    iter_best_value = value;
-                    iter_best_move = it->move;
+                if (value > depth_best_value) {
+                    depth_best_value = value;
+                    depth_best_move = it->move;
                 }
                 if (value > running_alpha) {
                     running_alpha = value;
@@ -963,28 +996,24 @@ Move search(Position& pos, Limits& lim) {
             // Check if time ran out during search
             if (stop.load(std::memory_order_relaxed)) {
                 // Use whatever we have from this iteration
-                if (iter_best_move != MOVE_NONE) {
-                    depth_best_value = iter_best_value;
-                    depth_best_move = iter_best_move;
-                }
+                // depth_best_value and depth_best_move already set
                 break;
             }
 
             // Aspiration window check uses ORIGINAL alpha (not running_alpha)
-            if (iter_best_value <= alpha) {
+            if (depth_best_value <= alpha) {
                 // Fail low - widen downward (lower alpha only, keep beta)
                 alpha = std::max(Value(-VALUE_INFINITE),
-                                 Value(iter_best_value - aspiration_delta));
+                                 Value(depth_best_value - aspiration_delta));
                 aspiration_delta += aspiration_delta / 2;
-            } else if (iter_best_value >= beta) {
+            } else if (depth_best_value >= beta) {
                 // Fail high - widen upward (raise beta only, keep alpha)
                 beta = std::min(Value(VALUE_INFINITE),
-                                Value(iter_best_value + aspiration_delta));
+                                Value(depth_best_value + aspiration_delta));
                 aspiration_delta += aspiration_delta / 2;
             } else {
                 // Score inside window - accept result
-                depth_best_value = iter_best_value;
-                depth_best_move = iter_best_move;
+                // depth_best_value and depth_best_move already set
                 break;
             }
 
@@ -993,10 +1022,6 @@ Move search(Position& pos, Limits& lim) {
                 alpha = -VALUE_INFINITE;
                 beta = VALUE_INFINITE;
             }
-
-            // Update best for next iteration
-            depth_best_value = iter_best_value;
-            depth_best_move = iter_best_move;
         }
 
         // Check time after all moves searched
