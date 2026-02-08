@@ -208,8 +208,7 @@ void handle_go(Position& pos, const std::string& cmd) {
         } else if (token == "binc") {
             ss >> limits.inc[BLACK];
         } else if (token == "movestogo") {
-            int movestogo;
-            ss >> movestogo;
+            ss >> limits.movestogo;
         }
     }
 
