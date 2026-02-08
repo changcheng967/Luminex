@@ -110,7 +110,6 @@ static int max_time = 0;    // Maximum time to use
 // Check time - returns true if time limit exceeded
 bool check_time() {
     if (limits.nodes && nodes >= uint64_t(limits.nodes)) {
-        std::cerr << "DEBUG: check_time() stopping due to nodes limit" << std::endl;
         stop = true;
         return true;
     }
@@ -120,7 +119,6 @@ bool check_time() {
         int elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
             now - search_start).count();
         if (elapsed >= (limits.movetime - 50)) {  // 50ms buffer
-            std::cerr << "DEBUG: check_time() stopping due to movetime: elapsed=" << elapsed << " movetime=" << limits.movetime << std::endl;
             stop = true;
             return true;
         }
@@ -130,9 +128,7 @@ bool check_time() {
         auto now = std::chrono::steady_clock::now();
         int elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
             now - search_start).count();
-        std::cerr << "DEBUG: check_time() elapsed=" << elapsed << " max_time=" << max_time << " ideal_time=" << ideal_time << " nodes=" << nodes.load() << std::endl;
         if (elapsed >= max_time) {
-            std::cerr << "DEBUG: check_time() STOPPING due to max_time" << std::endl;
             stop = true;
             return true;
         }
@@ -772,8 +768,6 @@ Move search(Position& pos, Limits& lim) {
         int time_left = limits.time[int(us)];
         int time_inc = limits.inc[int(us)];
 
-        std::cerr << "DEBUG: Time management setup - time_left=" << time_left << " time_inc=" << time_inc << " movestogo=" << limits.movestogo << std::endl;
-
         // Safety: clamp negatives
         if (time_left < 0) time_left = 0;
         if (time_inc < 0) time_inc = 0;
@@ -787,8 +781,6 @@ Move search(Position& pos, Limits& lim) {
         // Hard bound: never use more than 1/3 of remaining time
         max_time = time_left / 3;
 
-        std::cerr << "DEBUG: CPW times - movestogo_calc=" << movestogo << " ideal_time=" << ideal_time << " max_time=" << max_time << std::endl;
-
         // Overhead buffer: account for communication latency (50ms)
         const int overhead = 50;
         ideal_time = std::max(1, ideal_time - overhead);
@@ -801,12 +793,9 @@ Move search(Position& pos, Limits& lim) {
         // Absolute floor: always have at least 10ms to search
         ideal_time = std::max(10, ideal_time);
         max_time = std::max(10, max_time);
-
-        std::cerr << "DEBUG: Final times - ideal_time=" << ideal_time << " max_time=" << max_time << std::endl;
     } else {
         ideal_time = 0;
         max_time = 0;
-        std::cerr << "DEBUG: NOT using time management - limits.depth=" << limits.depth << " limits.movetime=" << limits.movetime << " limits.nodes=" << limits.nodes << std::endl;
     }
 
     // Initialize killers (clear for new search)
@@ -850,9 +839,7 @@ Move search(Position& pos, Limits& lim) {
             auto now = std::chrono::steady_clock::now();
             int elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
                 now - search_start).count();
-            std::cerr << "DEBUG: ID loop depth=" << root_depth << " elapsed=" << elapsed << " ideal_time=" << ideal_time << " 2x_check=" << (elapsed * 2) << std::endl;
             if (elapsed * 2 > ideal_time) {
-                std::cerr << "DEBUG: ID loop BREAKING due to soft bound" << std::endl;
                 break;
             }
         }
