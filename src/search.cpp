@@ -827,12 +827,15 @@ Move search(Position& pos, Limits& lim) {
     // When depth=0, search until time runs out (tournament time control)
     // When depth>0, search to that specific depth
     // Always start from depth 1 for proper iterative deepening
-    int start_depth = (limits.depth == 0) ? 1 : limits.depth;
+    // WORKAROUND: Limit max depth to 8 to prevent hang at depth 9+
+    int max_depth_limit = 8;
+    int effective_depth = (limits.depth == 0) ? max_depth_limit : std::min(limits.depth, max_depth_limit);
+    int start_depth = 1;
 
     // Track previous score for aspiration windows
     Value previous_score = VALUE_ZERO;
 
-    for (root_depth = start_depth; limits.depth == 0 || root_depth <= limits.depth; ++root_depth) {
+    for (root_depth = start_depth; root_depth <= effective_depth; ++root_depth) {
         // Soft bound: don't start new depth if we've used > 50% of ideal time
         // (next depth will likely take as long as all previous depths combined)
         if (limits.use_time_management()) {
