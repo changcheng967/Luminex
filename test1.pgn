@@ -1,0 +1,95 @@
+[Event "?"]
+[Site "?"]
+[Date "2026.02.09"]
+[Round "1"]
+[White "Luminex"]
+[Black "Luminex2"]
+[Result "0-1"]
+[ECO "A45"]
+[GameDuration "00:00:00"]
+[GameEndTime "2026-02-09T18:23:27.056 东部标准时间"]
+[GameStartTime "2026-02-09T18:23:26.912 东部标准时间"]
+[Opening "Queen's pawn game"]
+[PlyCount "2"]
+[Termination "illegal move"]
+[TimeControl "1+0.1"]
+
+1. d4 {+0.57/6 0.060s} Nf6 {-0.44/5 0.029s, White makes an illegal move: d2d4}
+0-1
+
+[Event "?"]
+[Site "?"]
+[Date "2026.02.09"]
+[Round "2"]
+[White "Luminex2"]
+[Black "Luminex"]
+[Result "0-1"]
+[ECO "A45"]
+[GameDuration "00:00:00"]
+[GameEndTime "2026-02-09T18:23:42.357 东部标准时间"]
+[GameStartTime "2026-02-09T18:23:42.217 东部标准时间"]
+[Opening "Queen's pawn game"]
+[PlyCount "2"]
+[Termination "illegal move"]
+[TimeControl "1+0.1"]
+
+1. d4 {+0.57/6 0.059s} Nf6 {-0.44/5 0.029s, White makes an illegal move: d2d4}
+0-1
+
+[Event "?"]
+[Site "?"]
+[Date "2026.02.09"]
+[Round "3"]
+[White "Luminex"]
+[Black "Luminex2"]
+[Result "0-1"]
+[ECO "A45"]
+[GameDuration "00:00:00"]
+[GameEndTime "2026-02-09T18:23:57.661 东部标准时间"]
+[GameStartTime "2026-02-09T18:23:57.521 东部标准时间"]
+[Opening "Queen's pawn game"]
+[PlyCount "2"]
+[Termination "illegal move"]
+[TimeControl "1+0.1"]
+
+1. d4 {+0.57/6 0.059s} Nf6 {-0.44/5 0.029s, White makes an illegal move: d2d4}
+0-1
+
+[Event "?"]
+[Site "?"]
+[Date "2026.02.09"]
+[Round "4"]
+[White "Luminex2"]
+[Black "Luminex"]
+[Result "0-1"]
+[ECO "A45"]
+[GameDuration "00:00:00"]
+[GameEndTime "2026-02-09T18:24:12.942 东部标准时间"]
+[GameStartTime "2026-02-09T18:24:12.803 东部标准时间"]
+[Opening "Queen's pawn game"]
+[PlyCount "2"]
+[Termination "illegal move"]
+[TimeControl "1+0.1"]
+
+1. d4 {+0.57/6 0.059s} Nf6 {-0.44/5 0.029s, White makes an illegal move: d2d4}
+0-1
+
+[Event "?"]
+[Site "?"]
+[Date "2026.02.09"]
+[Round "5"]
+[White "Luminex"]
+[Black "Luminex2"]
+[Result "0-1"]
+[ECO "A45"]
+[GameDuration "00:00:00"]
+[GameEndTime "2026-02-09T18:24:28.227 东部标准时间"]
+[GameStartTime "2026-02-09T18:24:28.087 东部标准时间"]
+[Opening "Queen's pawn game"]
+[PlyCount "2"]
+[Termination "illegal move"]
+[TimeControl "1+0.1"]
+
+1. d4 {+0.57/6 0.059s} Nf6 {-0.44/5 0.029s, White makes an illegal move: d2d4}
+0-1
+

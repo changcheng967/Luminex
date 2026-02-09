@@ -4,40 +4,52 @@
 #include <cstdarg>
 #include <iostream>
 #include <string>
-#include <thread>
-#include <atomic>
+
+#ifdef _WIN32
+#include <windows.h>
+#endif
 
 namespace luminex {
 
 // Position for UCI
 static Position pos;
 
-// Input reader thread - allows receiving 'stop' command during search
-static std::thread input_thread;
-static std::atomic<bool> input_thread_running(false);
-
-// Background thread to read stdin during search
-// This allows the engine to respond to 'stop' and 'quit' commands
-// even while search() is blocking the main thread.
-static void input_reader() {
-    std::string line;
-    while (input_thread_running.load(std::memory_order_relaxed) && std::getline(std::cin, line)) {
-        // Strip trailing \r (Windows line endings)
-        if (!line.empty() && line.back() == '\r') {
-            line.pop_back();
-        }
-        if (line.empty()) continue;
-
-        if (line == "stop") {
-            stop = true;
-        } else if (line == "quit") {
-            stop = true;
-            input_thread_running.store(false, std::memory_order_relaxed);
-            break;
-        }
-        // Ignore other commands during search - they'll be handled
-        // when the main loop resumes after search completes
+// Check if there's input available on stdin without blocking
+// Returns true if "stop" or "quit" command was received
+// This allows the engine to respond to stop commands during search
+bool check_for_stop_command() {
+#ifdef _WIN32
+    static HANDLE hStdin = INVALID_HANDLE_VALUE;
+    if (hStdin == INVALID_HANDLE_VALUE) {
+        hStdin = GetStdHandle(STD_INPUT_HANDLE);
     }
+    DWORD bytesAvailable = 0;
+    if (PeekNamedPipe(hStdin, nullptr, 0, nullptr, &bytesAvailable, nullptr)) {
+        if (bytesAvailable > 0) {
+            // Input available - read and check for stop/quit
+            std::string line;
+            if (std::getline(std::cin, line)) {
+                if (!line.empty() && line.back() == '\r') {
+                    line.pop_back();
+                }
+                if (!line.empty()) {
+                    if (line == "stop" || line == "quit") {
+                        stop = true;
+                        return true;
+                    }
+                    // Other commands - we need to save them for the main loop
+                    // For now, we've consumed them, which is a problem
+                    // TODO: Implement command queue
+                }
+            }
+        }
+    }
+    return false;
+#else
+    // Non-Windows platforms: could use select() or poll()
+    // For now, just return false
+    return false;
+#endif
 }
 
 void handle_uci() {
@@ -204,7 +216,6 @@ void handle_go(Position& pos, const std::string& cmd) {
 
     // If no depth, time control, movetime, or infinite is specified, set reasonable default depth
     // This prevents infinite search when "go" is sent with no params
-    // Note: depth 7+ causes exponential blowup with current PVS implementation
     if (limits.depth == 0 && !limits.infinite && limits.movetime == 0 &&
         limits.time[WHITE] == 0 && limits.time[BLACK] == 0) {
         limits.depth = 6;  // Safe default depth for bare "go" command
@@ -239,18 +250,8 @@ void handle_go(Position& pos, const std::string& cmd) {
     // Save FEN before search to restore later
     std::string fen_before_search = pos.fen();
 
-    // Start input reader thread to receive 'stop' during search
-    input_thread_running.store(true, std::memory_order_relaxed);
-    input_thread = std::thread(input_reader);
-
     // Run search
     Move best_move = search(pos, limits);
-
-    // Stop input reader thread
-    input_thread_running.store(false, std::memory_order_relaxed);
-    if (input_thread.joinable()) {
-        input_thread.detach();  // Thread will exit on its own when input_thread_running is false
-    }
 
     // CRITICAL: Restore position from saved FEN
     // Search modifies pos directly via do_move/undo_move, and any failure
