@@ -145,9 +145,9 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
         return eval_cached(pos);
     }
 
-    // Don't search captures beyond a certain depth - limited to -2 for efficiency
-    // Going deeper than -2 causes massive node explosion
-    if (depth < -2) {
+    // Don't search captures beyond a certain depth - limited to -8
+    // Allows deeper tactical resolution while preventing unbounded recursion
+    if (depth < -8) {
         return eval_cached(pos);
     }
 
@@ -830,10 +830,7 @@ Move search(Position& pos, Limits& lim) {
     // When depth=0, search until time runs out (tournament time control)
     // When depth>0, search to that specific depth
     // Always start from depth 1 for proper iterative deepening
-    // WORKAROUND: Limit max depth to 8 to prevent hang at depth 9+
-    // TODO: Fix depth 9+ hang bug (qsearch recursion with check extensions)
-    int max_depth_limit = 8;
-    int effective_depth = (limits.depth == 0) ? max_depth_limit : std::min(limits.depth, max_depth_limit);
+    int effective_depth = (limits.depth == 0) ? MAX_PLY : limits.depth;
     int start_depth = 1;
 
     // Track previous score for aspiration windows
