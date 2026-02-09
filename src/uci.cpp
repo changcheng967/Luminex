@@ -112,68 +112,28 @@ void handle_position(Position& pos, const std::string& cmd) {
                 }
             }
 
-            // CRITICAL: Proper move flag detection including En Passant, Castling, and Capture-Promotion
-            PieceType piece_type_from = pos.piece_type_on(from);
-            Piece piece_at_to = pos.piece_on(to);
-            bool is_capture = (piece_at_to != NO_PIECE);
-
-            // Check for Castling: king moves two squares horizontally FROM STARTING SQUARE
-            // CRITICAL FIX: Must verify king is on e1 (E1) or e8 (E8), not just moving 2 squares
-            // This prevents flagging random 2-square king moves as castling after board corruption
-            bool is_castling = (piece_type_from == KING &&
-                                std::abs(int(from) - int(to)) == 2 &&
-                                from == (pos.side_to_move() == WHITE ? E1 : E8));
-
-            // Check for En Passant: pawn moves diagonally to empty ep_square
-            bool is_en_passant = (piece_type_from == PAWN &&
-                                  file_of(from) != file_of(to) &&  // Diagonal move
-                                  to == pos.ep_square());           // To is ep_square
-
-            Move m;
-            if (is_castling) {
-                // Castling: determine kingside or queenside based on destination file
-                if (file_of(to) > FILE_E) {
-                    m = Move(from, to, MF_CASTLING_KING);  // Kingside (e1g1 or e8g8)
-                } else {
-                    m = Move(from, to, MF_CASTLING_QUEEN); // Queenside (e1c1 or e8c8)
-                }
-            } else if (promo_pt != PT_NONE) {
-                // Promotion: Use correct flag based on whether it's also a capture
-                if (is_capture) {
-                    // Capture-Promotion (MF_CAPTURE_PROMO_*)
-                    switch (promo_pt) {
-                        case QUEEN: m = Move(from, to, MF_CAPTURE_PROMO_QUEEN); break;
-                        case ROOK: m = Move(from, to, MF_CAPTURE_PROMO_ROOK); break;
-                        case BISHOP: m = Move(from, to, MF_CAPTURE_PROMO_BISHOP); break;
-                        case KNIGHT: m = Move(from, to, MF_CAPTURE_PROMO_KNIGHT); break;
-                        default: m = Move(from, to, MF_CAPTURE_PROMO_QUEEN); break;
-                    }
-                } else {
-                    // Quiet Promotion (MF_PROMO_*)
-                    switch (promo_pt) {
-                        case QUEEN: m = Move(from, to, MF_PROMO_QUEEN); break;
-                        case ROOK: m = Move(from, to, MF_PROMO_ROOK); break;
-                        case BISHOP: m = Move(from, to, MF_PROMO_BISHOP); break;
-                        case KNIGHT: m = Move(from, to, MF_PROMO_KNIGHT); break;
-                        default: m = Move(from, to, MF_PROMO_QUEEN); break;
+            // Match the UCI move against the legal move list to get correct flags
+            // This is the standard approach (used by Stockfish) and avoids all
+            // flag-construction bugs for castling, en passant, captures, promotions, etc.
+            ExtMove legal_moves[MAX_MOVES];
+            ExtMove* legal_end = generate<GEN_LEGAL>(pos, legal_moves);
+            Move matched = MOVE_NONE;
+            for (ExtMove* lit = legal_moves; lit != legal_end; ++lit) {
+                if (lit->move.from() == from && lit->move.to() == to) {
+                    if (promo_pt != PT_NONE) {
+                        if (lit->move.is_promotion() && lit->move.promotion_type() == promo_pt) {
+                            matched = lit->move;
+                            break;
+                        }
+                    } else if (!lit->move.is_promotion()) {
+                        matched = lit->move;
+                        break;
                     }
                 }
-            } else if (is_en_passant) {
-                // En Passant capture
-                m = Move(from, to, MF_EN_PASSANT);
-            } else if (piece_type_from == PAWN && std::abs(int(rank_of(to)) - int(rank_of(from))) == 2) {
-                // Double pawn push - CRITICAL: must set MF_DOUBLE_PAWN so do_move() sets ep_square
-                // Without this, en passant never works in UCI games because the EP square is never set
-                m = Move(from, to, MF_DOUBLE_PAWN);
-            } else {
-                // Normal move: quiet or capture
-                int flag = is_capture ? MF_CAPTURE : MF_QUIET;
-                m = Move(from, to, flag);
             }
 
-            // Execute move - skip if do_move fails
-            if (!pos.do_move(m)) {
-                break;  // Position desynchronized, skip remaining moves
+            if (matched == MOVE_NONE || !pos.do_move(matched)) {
+                break;  // No matching legal move found or do_move failed
             }
         }
     }

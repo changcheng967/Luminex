@@ -62,6 +62,7 @@ int main(int argc, char* argv[]) {
     // Disable output buffering for immediate UCI response
     // Keep sync_with_stdio enabled for proper text mode handling
     setvbuf(stdout, NULL, _IONBF, 0);
+    std::ios_base::sync_with_stdio(true);
 
     // Initialize engine
     init();
