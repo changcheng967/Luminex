@@ -59,11 +59,9 @@ uint64_t perft_divide(Position& pos, Depth depth) {
 int main(int argc, char* argv[]) {
     using namespace luminex;
 
-    // Disable all buffering for immediate UCI output (critical for cutechess-cli)
+    // Disable output buffering for immediate UCI response
+    // Keep sync_with_stdio enabled for proper text mode handling
     setvbuf(stdout, NULL, _IONBF, 0);
-    setvbuf(stdin, NULL, _IONBF, 0);
-    std::ios_base::sync_with_stdio(false);
-    std::cout.setf(std::ios::unitbuf);
 
     // Initialize engine
     init();
