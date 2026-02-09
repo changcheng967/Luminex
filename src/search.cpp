@@ -128,7 +128,8 @@ bool check_time() {
         auto now = std::chrono::steady_clock::now();
         int elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
             now - search_start).count();
-        if (elapsed >= max_time) {
+        // Safety buffer: stop 50ms before max_time to prevent timeout
+        if (elapsed >= max_time - 50) {
             stop = true;
             return true;
         }
@@ -156,8 +157,9 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
 
     ++nodes;
 
-    // Check time more frequently - every 512 nodes to prevent stalls
-    if ((nodes & 511) == 0) {
+    // Check time more frequently - every 256 nodes to prevent stalls
+    // Increased frequency to catch timeout faster during deep searches
+    if ((nodes & 255) == 0) {
         check_time();
     }
 
@@ -269,8 +271,9 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
     // Prevent stale PV data from being saved to TT on fail-low nodes
     ss->pv[ss->ply] = MOVE_NONE;
 
-    // Check time more frequently - every 512 nodes to prevent stalls
-    if ((nodes & 511) == 0) {
+    // Check time more frequently - every 256 nodes to prevent stalls
+    // Increased frequency to catch timeout faster during deep searches
+    if ((nodes & 255) == 0) {
         check_time();
     }
 
