@@ -20,8 +20,6 @@ static Position pos;
 //
 // IMPORTANT: We only peek at stdin and consume stop/quit commands.
 // All other commands must be left for the main loop to process.
-// Since we can't easily "put back" input we've read, we use a
-// platform-specific approach to only read when we're sure it's stop/quit.
 bool check_for_stop_command() {
 #ifdef _WIN32
     static HANDLE hStdin = INVALID_HANDLE_VALUE;
@@ -32,20 +30,17 @@ bool check_for_stop_command() {
     if (PeekNamedPipe(hStdin, nullptr, 0, nullptr, &bytesAvailable, nullptr)) {
         if (bytesAvailable > 0) {
             // Input available - peek at it without consuming
-            // We need to check if it starts with 's' (stop) or 'q' (quit)
-            // If it's neither, we leave it for the main loop
-
-            // Read the first few bytes to check the command
+            // Read the first few bytes to check if it's "stop" or "quit"
             char buffer[32];
             DWORD bytesRead = 0;
-            if (PeekNamedPipe(hStdin, buffer, sizeof(buffer) - 1, &bytesRead, nullptr, nullptr)) {
+            // Correct parameter order: buffer, size, &bytesRead, &bytesAvailable, nullptr
+            if (PeekNamedPipe(hStdin, buffer, sizeof(buffer) - 1, &bytesRead, &bytesAvailable, nullptr)) {
                 if (bytesRead > 0) {
                     buffer[bytesRead] = '\0';
 
                     // Check if it starts with "stop" or "quit"
-                    // Commands are newline-terminated, so look for that too
-                    bool is_stop = (bytesRead >= 4 && strncmp(buffer, "stop", 4) == 0);
-                    bool is_quit = (bytesRead >= 4 && strncmp(buffer, "quit", 4) == 0);
+                    bool is_stop = (bytesRead >= 4 && _strnicmp(buffer, "stop", 4) == 0);
+                    bool is_quit = (bytesRead >= 4 && _strnicmp(buffer, "quit", 4) == 0);
 
                     if (is_stop || is_quit) {
                         // This is a stop/quit command - consume and process it
@@ -54,14 +49,13 @@ bool check_for_stop_command() {
                             if (!line.empty() && line.back() == '\r') {
                                 line.pop_back();
                             }
-                            if (line == "stop" || line == "quit") {
+                            if (_stricmp(line.c_str(), "stop") == 0 || _stricmp(line.c_str(), "quit") == 0) {
                                 stop = true;
                                 return true;
                             }
                         }
                     }
                     // Not a stop/quit command - leave it for main loop
-                    // Don't consume anything, just return
                 }
             }
         }
@@ -261,9 +255,10 @@ void handle_go(Position& pos, const std::string& cmd) {
         }
         std::cout.flush();
 
-        // For terminal positions, send bestmove without argument
-        // The GUI should recognize game over from the score info
-        std::cout << "bestmove\n";
+        // CRITICAL FIX: Send bestmove 0000 for terminal positions
+        // Sending bare "bestmove" causes UCI protocol desync - CuteChess
+        // will read the next line as the move, shifting all commands
+        std::cout << "bestmove 0000\n";
         std::cout.flush();
 
         return;
@@ -325,11 +320,8 @@ void handle_go(Position& pos, const std::string& cmd) {
         }
     }
 
-    // Send final info - use root_depth-1 since loop incremented it
-    // Note: This is redundant as search() already outputs info, but kept for compatibility
-    int final_depth = (root_depth > 1) ? root_depth - 1 : 1;
-    uci_info(pos, final_depth, root_score, nodes.load(), 0);
-
+    // Output bestmove - search() already output info lines during iterative deepening
+    // No need for duplicate info output here (was causing nps 0 noise)
     if (best_move) {
         std::cout << "bestmove " << best_move << "\n";
     } else {

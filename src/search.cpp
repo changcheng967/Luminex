@@ -112,7 +112,7 @@ static int max_time = 0;    // Maximum time to use
 
 // Check time - returns true if time limit exceeded
 bool check_time() {
-    // Check for stop command from stdin (non-blocking on Windows)
+    // Check for stop command from GUI (non-blocking on Windows via PeekNamedPipe)
     check_for_stop_command();
 
     if (limits.nodes && nodes >= uint64_t(limits.nodes)) {
