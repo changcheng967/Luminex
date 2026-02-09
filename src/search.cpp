@@ -1073,6 +1073,7 @@ Move search(Position& pos, Limits& lim) {
             }
         }
         if (!found_in_legal) {
+#ifndef NDEBUG
             std::cerr << "ILLEGAL BEST MOVE DETECTED: " << best_move
                       << " from=" << best_move.from() << " to=" << best_move.to()
                       << " flags=0x" << std::hex << best_move.flags() << std::dec
@@ -1083,6 +1084,7 @@ Move search(Position& pos, Limits& lim) {
                       << " pseudo_legal()=" << pos.pseudo_legal(best_move)
                       << " fen=" << pos.fen()
                       << std::endl;
+#endif
             // Fallback to first legal move
             if (verify_end > verify_moves) {
                 best_move = verify_moves[0].move;

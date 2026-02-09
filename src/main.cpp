@@ -3,11 +3,6 @@
 #include <iostream>
 #include <cstdio>
 
-#ifdef _WIN32
-#include <io.h>
-#include <fcntl.h>
-#endif
-
 namespace luminex {
 
 void init() {
@@ -63,12 +58,6 @@ uint64_t perft_divide(Position& pos, Depth depth) {
 
 int main(int argc, char* argv[]) {
     using namespace luminex;
-
-#ifdef _WIN32
-    // Set stdin/stdout to binary mode for Windows pipe compatibility
-    _setmode(_fileno(stdin), _O_BINARY);
-    _setmode(_fileno(stdout), _O_BINARY);
-#endif
 
     // Disable all buffering for immediate UCI output (critical for cutechess-cli)
     setvbuf(stdout, NULL, _IONBF, 0);
