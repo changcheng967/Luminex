@@ -4,11 +4,41 @@
 #include <cstdarg>
 #include <iostream>
 #include <string>
+#include <thread>
+#include <atomic>
 
 namespace luminex {
 
 // Position for UCI
 static Position pos;
+
+// Input reader thread - allows receiving 'stop' command during search
+static std::thread input_thread;
+static std::atomic<bool> input_thread_running(false);
+
+// Background thread to read stdin during search
+// This allows the engine to respond to 'stop' and 'quit' commands
+// even while search() is blocking the main thread.
+static void input_reader() {
+    std::string line;
+    while (input_thread_running.load(std::memory_order_relaxed) && std::getline(std::cin, line)) {
+        // Strip trailing \r (Windows line endings)
+        if (!line.empty() && line.back() == '\r') {
+            line.pop_back();
+        }
+        if (line.empty()) continue;
+
+        if (line == "stop") {
+            stop = true;
+        } else if (line == "quit") {
+            stop = true;
+            input_thread_running.store(false, std::memory_order_relaxed);
+            break;
+        }
+        // Ignore other commands during search - they'll be handled
+        // when the main loop resumes after search completes
+    }
+}
 
 void handle_uci() {
     // CRITICAL FIX: Initialize TT with default size (128MB)
@@ -209,8 +239,18 @@ void handle_go(Position& pos, const std::string& cmd) {
     // Save FEN before search to restore later
     std::string fen_before_search = pos.fen();
 
+    // Start input reader thread to receive 'stop' during search
+    input_thread_running.store(true, std::memory_order_relaxed);
+    input_thread = std::thread(input_reader);
+
     // Run search
     Move best_move = search(pos, limits);
+
+    // Stop input reader thread
+    input_thread_running.store(false, std::memory_order_relaxed);
+    if (input_thread.joinable()) {
+        input_thread.detach();  // Thread will exit on its own when input_thread_running is false
+    }
 
     // CRITICAL: Restore position from saved FEN
     // Search modifies pos directly via do_move/undo_move, and any failure
