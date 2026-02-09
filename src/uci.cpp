@@ -17,6 +17,11 @@ static Position pos;
 // Check if there's input available on stdin without blocking
 // Returns true if "stop" or "quit" command was received
 // This allows the engine to respond to stop commands during search
+//
+// IMPORTANT: We only peek at stdin and consume stop/quit commands.
+// All other commands must be left for the main loop to process.
+// Since we can't easily "put back" input we've read, we use a
+// platform-specific approach to only read when we're sure it's stop/quit.
 bool check_for_stop_command() {
 #ifdef _WIN32
     static HANDLE hStdin = INVALID_HANDLE_VALUE;
@@ -26,20 +31,37 @@ bool check_for_stop_command() {
     DWORD bytesAvailable = 0;
     if (PeekNamedPipe(hStdin, nullptr, 0, nullptr, &bytesAvailable, nullptr)) {
         if (bytesAvailable > 0) {
-            // Input available - read and check for stop/quit
-            std::string line;
-            if (std::getline(std::cin, line)) {
-                if (!line.empty() && line.back() == '\r') {
-                    line.pop_back();
-                }
-                if (!line.empty()) {
-                    if (line == "stop" || line == "quit") {
-                        stop = true;
-                        return true;
+            // Input available - peek at it without consuming
+            // We need to check if it starts with 's' (stop) or 'q' (quit)
+            // If it's neither, we leave it for the main loop
+
+            // Read the first few bytes to check the command
+            char buffer[32];
+            DWORD bytesRead = 0;
+            if (PeekNamedPipe(hStdin, buffer, sizeof(buffer) - 1, &bytesRead, nullptr, nullptr)) {
+                if (bytesRead > 0) {
+                    buffer[bytesRead] = '\0';
+
+                    // Check if it starts with "stop" or "quit"
+                    // Commands are newline-terminated, so look for that too
+                    bool is_stop = (bytesRead >= 4 && strncmp(buffer, "stop", 4) == 0);
+                    bool is_quit = (bytesRead >= 4 && strncmp(buffer, "quit", 4) == 0);
+
+                    if (is_stop || is_quit) {
+                        // This is a stop/quit command - consume and process it
+                        std::string line;
+                        if (std::getline(std::cin, line)) {
+                            if (!line.empty() && line.back() == '\r') {
+                                line.pop_back();
+                            }
+                            if (line == "stop" || line == "quit") {
+                                stop = true;
+                                return true;
+                            }
+                        }
                     }
-                    // Other commands - we need to save them for the main loop
-                    // For now, we've consumed them, which is a problem
-                    // TODO: Implement command queue
+                    // Not a stop/quit command - leave it for main loop
+                    // Don't consume anything, just return
                 }
             }
         }

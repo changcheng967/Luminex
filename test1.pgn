@@ -4,92 +4,23 @@
 [Round "1"]
 [White "Luminex"]
 [Black "Luminex2"]
-[Result "0-1"]
+[Result "1-0"]
 [ECO "A45"]
-[GameDuration "00:00:00"]
-[GameEndTime "2026-02-09T18:23:27.056 东部标准时间"]
-[GameStartTime "2026-02-09T18:23:26.912 东部标准时间"]
+[GameDuration "00:00:18"]
+[GameEndTime "2026-02-09T18:28:39.310 东部标准时间"]
+[GameStartTime "2026-02-09T18:28:20.812 东部标准时间"]
 [Opening "Queen's pawn game"]
-[PlyCount "2"]
-[Termination "illegal move"]
+[PlyCount "25"]
+[Termination "stalled connection"]
 [TimeControl "1+0.1"]
 
-1. d4 {+0.57/6 0.060s} Nf6 {-0.44/5 0.029s, White makes an illegal move: d2d4}
-0-1
-
-[Event "?"]
-[Site "?"]
-[Date "2026.02.09"]
-[Round "2"]
-[White "Luminex2"]
-[Black "Luminex"]
-[Result "0-1"]
-[ECO "A45"]
-[GameDuration "00:00:00"]
-[GameEndTime "2026-02-09T18:23:42.357 东部标准时间"]
-[GameStartTime "2026-02-09T18:23:42.217 东部标准时间"]
-[Opening "Queen's pawn game"]
-[PlyCount "2"]
-[Termination "illegal move"]
-[TimeControl "1+0.1"]
-
-1. d4 {+0.57/6 0.059s} Nf6 {-0.44/5 0.029s, White makes an illegal move: d2d4}
-0-1
-
-[Event "?"]
-[Site "?"]
-[Date "2026.02.09"]
-[Round "3"]
-[White "Luminex"]
-[Black "Luminex2"]
-[Result "0-1"]
-[ECO "A45"]
-[GameDuration "00:00:00"]
-[GameEndTime "2026-02-09T18:23:57.661 东部标准时间"]
-[GameStartTime "2026-02-09T18:23:57.521 东部标准时间"]
-[Opening "Queen's pawn game"]
-[PlyCount "2"]
-[Termination "illegal move"]
-[TimeControl "1+0.1"]
-
-1. d4 {+0.57/6 0.059s} Nf6 {-0.44/5 0.029s, White makes an illegal move: d2d4}
-0-1
-
-[Event "?"]
-[Site "?"]
-[Date "2026.02.09"]
-[Round "4"]
-[White "Luminex2"]
-[Black "Luminex"]
-[Result "0-1"]
-[ECO "A45"]
-[GameDuration "00:00:00"]
-[GameEndTime "2026-02-09T18:24:12.942 东部标准时间"]
-[GameStartTime "2026-02-09T18:24:12.803 东部标准时间"]
-[Opening "Queen's pawn game"]
-[PlyCount "2"]
-[Termination "illegal move"]
-[TimeControl "1+0.1"]
-
-1. d4 {+0.57/6 0.059s} Nf6 {-0.44/5 0.029s, White makes an illegal move: d2d4}
-0-1
-
-[Event "?"]
-[Site "?"]
-[Date "2026.02.09"]
-[Round "5"]
-[White "Luminex"]
-[Black "Luminex2"]
-[Result "0-1"]
-[ECO "A45"]
-[GameDuration "00:00:00"]
-[GameEndTime "2026-02-09T18:24:28.227 东部标准时间"]
-[GameStartTime "2026-02-09T18:24:28.087 东部标准时间"]
-[Opening "Queen's pawn game"]
-[PlyCount "2"]
-[Termination "illegal move"]
-[TimeControl "1+0.1"]
-
-1. d4 {+0.57/6 0.059s} Nf6 {-0.44/5 0.029s, White makes an illegal move: d2d4}
-0-1
+1. d4 {+0.57/6 0.073s} Nf6 {-0.44/5 0.038s} 2. Nc3 {+0.87/6 0.11s}
+d5 {-1.44/5 0.061s} 3. e4 {+1.50/5 0.050s} Nc6 {-2.00/5 0.096s}
+4. Bb5 {+5.99/6 0.076s} Bd7 {-4.00/7 0.072s} 5. exd5 {+4.99/6 0.087s}
+Nb4 {-5.38/6 0.035s} 6. Bxd7+ {+8.77/7 0.11s} Kxd7 {-4.92/7 0.11s}
+7. Nf3 {+8.27/6 0.071s} Kc8 {-4.48/6 0.072s} 8. O-O {+7.27/6 0.032s}
+e6 {-3.52/5 0.080s} 9. dxe6 {+6.43/6 0.092s} Bd6 {-2.67/5 0.051s}
+10. exf7 {+4.41/6 0.050s} Qd7 {-3.31/6 0.082s} 11. f8=Q+ {+23.33/7 0.13s}
+Qd8 {-21.59/6 0.065s} 12. Qxh8 {+23.33/6 0.042s} Nbd5 {-23.09/7 0.13s}
+13. Ne5 {+27.06/5 0.040s, Black's connection stalls} 1-0
 

@@ -1,0 +1,48 @@
+[Event "?"]
+[Site "?"]
+[Date "2026.02.09"]
+[Round "1"]
+[White "Luminex"]
+[Black "Stash"]
+[Result "0-1"]
+[ECO "A40"]
+[GameDuration "00:00:02"]
+[GameEndTime "2026-02-09T18:29:13.323 东部标准时间"]
+[GameStartTime "2026-02-09T18:29:11.261 东部标准时间"]
+[Opening "Queen's pawn"]
+[PlyCount "22"]
+[Termination "illegal move"]
+[TimeControl "1+0.1"]
+
+1. d4 {+0.57/6 0.064s} e6 {+1.03/7 0.10s} 2. Nc3 {+4.25/6 0.062s}
+Bb4 {-1.01/6 0.10s} 3. Bd2 {+5.04/5 0.034s} Nc6 {-0.79/6 0.10s}
+4. Nf3 {+4.41/7 0.047s} Nf6 {-0.86/6 0.10s} 5. a3 {+5.38/8 0.054s}
+Bxc3 {+1.47/7 0.10s} 6. bxc3 {+4.88/7 0.072s} Ne4 {+1.32/7 0.10s}
+7. Bf4 {+5.02/7 0.089s} Nxc3 {-0.32/6 0.10s} 8. Qd3 {+5.22/5 0.11s}
+Nd5 {+2.12/7 0.10s} 9. Be5 {+4.81/6 0.14s} Nxe5 {+2.55/7 0.10s}
+10. Nxe5 {+4.71/7 0.14s} f6 {+0.05/6 0.10s} 11. Qg6+ {+M3/7 0.043s}
+hxg6 {+13.56/8 0.10s, White makes an illegal move: e8e7} 0-1
+
+[Event "?"]
+[Site "?"]
+[Date "2026.02.09"]
+[Round "2"]
+[White "Stash"]
+[Black "Luminex"]
+[Result "1-0"]
+[ECO "A00"]
+[GameDuration "00:00:17"]
+[GameEndTime "2026-02-09T18:29:31.161 东部标准时间"]
+[GameStartTime "2026-02-09T18:29:13.324 东部标准时间"]
+[Opening "Dunst (Sleipner, Heinrichsen) Opening"]
+[PlyCount "15"]
+[Termination "stalled connection"]
+[TimeControl "1+0.1"]
+
+1. Nc3 {+1.05/7 0.10s} Nc6 {-0.15/5 0.035s} 2. d4 {+1.20/7 0.10s}
+d5 {-1.15/5 0.063s} 3. e3 {+1.47/7 0.10s} Bf5 {+0.66/7 0.039s}
+4. g4 {-0.51/6 0.10s} Bg6 {+1.90/6 0.042s} 5. Nf3 {-0.66/6 0.10s}
+Nf6 {+1.57/6 0.044s} 6. g5 {-0.62/6 0.10s} Ng4 {+3.94/6 0.14s}
+7. Nh4 {+3.95/7 0.10s} Nb4 {+2.84/4 0.043s}
+8. Nxg6 {+4.58/7 0.10s, Black's connection stalls} 1-0
+
