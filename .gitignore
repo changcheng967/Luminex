@@ -49,6 +49,7 @@ build/
 CLAUDE.md
 
 # Test games and analysis files
+*.pgn
 game_log*.txt
 game_analysis.txt
 mate_test.txt
