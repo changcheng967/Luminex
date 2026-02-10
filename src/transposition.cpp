@@ -4,7 +4,7 @@
 namespace luminex {
 
 void TTEntry::save(uint64_t k, Value v, bool, Bound b, Depth d, Move m, Value ev, uint8_t g) {
-    key16 = uint16_t(k >> 48);
+    key32 = uint32_t(k >> 32);
     move16 = uint16_t(m.raw());
     value_ = int32_t(v);  // Changed from int16_t to match Value type
     eval_ = int32_t(ev);   // Changed from int16_t to match Value type
@@ -61,7 +61,7 @@ TTEntry* TranspositionTable::probe(uint64_t key, bool& found) {
     TTEntry* entry = &table[idx].entry[0];
 
     for (int i = 0; i < 3; ++i, ++entry) {
-        if (entry->key16 == uint16_t(key >> 48) || entry->depth_ == 127) {
+        if (entry->key32 == uint32_t(key >> 32) || entry->depth_ == 127) {
             if (entry->depth_ == 127 || (entry->gen_bound & 0xFC) != generation8) {
                 entry->gen_bound = uint8_t(generation8 | (entry->gen_bound & 0x3));
             }
@@ -93,14 +93,14 @@ void TranspositionTable::write(uint64_t key, Value v, bool pv, Bound b, Depth d,
 
     // Find an entry to replace
     for (int i = 0; i < 3; ++i, ++entry) {
-        if (entry->key16 == uint16_t(key >> 48) || entry->depth_ == 127 ||
+        if (entry->key32 == uint32_t(key >> 32) || entry->depth_ == 127 ||
             (entry->gen_bound & 0xFC) != generation8 || d >= entry->depth()) {
             break;
         }
     }
 
     // Don't overwrite more valuable entries
-    if (b != BOUND_EXACT && entry->key16 == uint16_t(key >> 48)) {
+    if (b != BOUND_EXACT && entry->key32 == uint32_t(key >> 32)) {
         if (entry->depth_ != 127 &&
             (b == BOUND_LOWER ? entry->bound() == BOUND_UPPER : entry->bound() == BOUND_LOWER)) {
             // Don't overwrite with opposite bound at same or lower depth

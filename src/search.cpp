@@ -1073,6 +1073,17 @@ Move search(Position& pos, Limits& lim) {
         }
     }
 
+    // SAFETY: Verify the piece on the from-square belongs to side to move
+    if (best_move != MOVE_NONE) {
+        Piece pc = pos.piece_on(best_move.from());
+        if (pc == NO_PIECE || color_of_piece(pc) != pos.side_to_move()) {
+            // Move references wrong-color piece - fall back
+            ExtMove fallback_moves[MAX_MOVES];
+            ExtMove* fallback_end = generate<GEN_LEGAL>(pos, fallback_moves);
+            best_move = (fallback_end > fallback_moves) ? fallback_moves[0].move : MOVE_NONE;
+        }
+    }
+
     // Final safety: verify best_move is actually in the legal move list
     if (best_move != MOVE_NONE) {
         ExtMove verify_moves[MAX_MOVES];

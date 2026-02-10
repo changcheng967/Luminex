@@ -9,7 +9,7 @@ namespace luminex {
 
 // Transposition table entry
 struct TTEntry {
-    uint16_t key16;
+    uint32_t key32;
     uint16_t move16;
     int32_t value_;  // Changed from int16_t to prevent truncation (Value is int32_t)
     int32_t eval_;   // Changed from int16_t to prevent truncation
@@ -27,11 +27,10 @@ struct TTEntry {
 };
 
 // Transposition table cluster (cache line size = 64 bytes)
-// Entry size increased from 10 to 14 bytes due to int32_t values
-// 3 entries * 14 bytes = 42 bytes, padding = 22 bytes
+// Entry size is 20 bytes (3 * 20 = 60), padding = 4 bytes
 struct TTCluster {
     TTEntry entry[3];
-    char padding[64 - sizeof(TTEntry) * 3];
+    char padding[4];
 };
 
 static_assert(sizeof(TTCluster) == 64, "TTCluster size must be 64 bytes");
