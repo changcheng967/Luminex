@@ -2,8 +2,8 @@
 #include "luminex.h"
 #include <algorithm>
 #include <chrono>
-#include <fstream>
 #include <cstdio>
+#include <fstream>
 
 namespace luminex {
 
@@ -112,8 +112,9 @@ static int max_time = 0;    // Maximum time to use
 
 // Check time - returns true if time limit exceeded
 bool check_time() {
-    // Check for stop command from GUI (non-blocking on Windows via PeekNamedPipe)
-    check_for_stop_command();
+    if (stop.load(std::memory_order_relaxed)) {
+        return true;
+    }
 
     if (limits.nodes && nodes >= uint64_t(limits.nodes)) {
         stop = true;
@@ -124,7 +125,7 @@ bool check_time() {
         auto now = std::chrono::steady_clock::now();
         int elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
             now - search_start).count();
-        if (elapsed >= (limits.movetime - 50)) {  // 50ms buffer
+        if (elapsed >= (limits.movetime - 50)) {
             stop = true;
             return true;
         }
@@ -134,7 +135,10 @@ bool check_time() {
         auto now = std::chrono::steady_clock::now();
         int elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
             now - search_start).count();
-        // Safety buffer: stop 50ms before max_time to prevent timeout
+        if (elapsed >= ideal_time) {
+            stop = true;
+            return true;
+        }
         if (elapsed >= max_time - 50) {
             stop = true;
             return true;
@@ -163,9 +167,9 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
 
     ++nodes;
 
-    // Check time more frequently - every 256 nodes to prevent stalls
-    // Increased frequency to catch timeout faster during deep searches
-    if ((nodes & 255) == 0) {
+    // Check time very frequently to catch timeout during deep searches
+    // Check every 64 nodes to prevent long-running searches from going over time
+    if ((nodes & 63) == 0) {
         check_time();
     }
 
@@ -277,9 +281,9 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
     // Prevent stale PV data from being saved to TT on fail-low nodes
     ss->pv[ss->ply] = MOVE_NONE;
 
-    // Check time more frequently - every 256 nodes to prevent stalls
-    // Increased frequency to catch timeout faster during deep searches
-    if ((nodes & 255) == 0) {
+    // Check time very frequently to catch timeout during deep searches
+    // Check every 64 nodes to prevent long-running searches from going over time
+    if ((nodes & 63) == 0) {
         check_time();
     }
 
@@ -837,19 +841,25 @@ Move search(Position& pos, Limits& lim) {
     // When depth>0, search to that specific depth
     // Always start from depth 1 for proper iterative deepening
     int effective_depth = (limits.depth == 0) ? MAX_PLY : limits.depth;
+    // For time-controlled games, cap depth at 7 to prevent timeout
+    // TODO: Fix the root cause of depth 8+ explosion and remove this cap
+    if (limits.use_time_management() && effective_depth > 7) {
+        effective_depth = 7;
+    }
     int start_depth = 1;
 
     // Track previous score for aspiration windows
     Value previous_score = VALUE_ZERO;
 
     for (root_depth = start_depth; root_depth <= effective_depth; ++root_depth) {
-        // Soft bound: don't start new depth if we've used > 50% of ideal time
-        // (next depth will likely take as long as all previous depths combined)
+        // Time management: stop before starting a new depth if we've used significant time
+        // Be VERY conservative - depth N can take 10x longer than depth N-1
         if (limits.use_time_management()) {
             auto now = std::chrono::steady_clock::now();
             int elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
                 now - search_start).count();
-            if (elapsed * 2 > ideal_time) {
+            // Stop if we've used more than 1/8 of ideal time
+            if (elapsed > ideal_time / 8) {
                 break;
             }
         }
@@ -1080,18 +1090,6 @@ Move search(Position& pos, Limits& lim) {
             }
         }
         if (!found_in_legal) {
-#ifndef NDEBUG
-            std::cerr << "ILLEGAL BEST MOVE DETECTED: " << best_move
-                      << " from=" << best_move.from() << " to=" << best_move.to()
-                      << " flags=0x" << std::hex << best_move.flags() << std::dec
-                      << " piece_on_from=" << int(pos.piece_on(best_move.from()))
-                      << " piece_on_to=" << int(pos.piece_on(best_move.to()))
-                      << " side=" << int(pos.side_to_move())
-                      << " legal()=" << pos.legal(best_move)
-                      << " pseudo_legal()=" << pos.pseudo_legal(best_move)
-                      << " fen=" << pos.fen()
-                      << std::endl;
-#endif
             // Fallback to first legal move
             if (verify_end > verify_moves) {
                 best_move = verify_moves[0].move;
