@@ -17,17 +17,29 @@ namespace luminex {
 static Position pos;
 
 // Check for stop command with stdin polling (for Windows synchronous search)
+// Uses PeekNamedPipe to preview stdin without consuming non-stop commands
 bool check_for_stop_command() {
 #ifdef _WIN32
     HANDLE h = GetStdHandle(STD_INPUT_HANDLE);
     DWORD avail = 0;
-    if (PeekNamedPipe(h, nullptr, 0, nullptr, &avail, nullptr) && avail > 0) {
-        std::string line;
-        std::getline(std::cin, line);
-        if (!line.empty() && line.back() == '\r') line.pop_back();
-        if (line == "stop" || line == "quit") {
+    if (!PeekNamedPipe(h, nullptr, 0, nullptr, &avail, nullptr) || avail == 0) {
+        return stop.load(std::memory_order_relaxed);
+    }
+    // Peek at the buffer content without consuming it
+    char buf[16];
+    DWORD bytesRead = 0;
+    if (PeekNamedPipe(h, buf, sizeof(buf) - 1, &bytesRead, nullptr, nullptr) && bytesRead > 0) {
+        buf[bytesRead] = '\0';
+        // Only consume the line if it starts with "stop" or "quit"
+        std::string preview(buf, bytesRead);
+        if (preview.find("stop") != std::string::npos ||
+            preview.find("quit") != std::string::npos) {
+            // Now actually consume the line
+            std::string line;
+            std::getline(std::cin, line);
             stop.store(true, std::memory_order_relaxed);
         }
+        // Otherwise leave it in the buffer for uci_loop to process
     }
 #endif
     return stop.load(std::memory_order_relaxed);

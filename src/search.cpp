@@ -112,6 +112,8 @@ static int max_time = 0;    // Maximum time to use
 
 // Check time - returns true if time limit exceeded
 bool check_time() {
+    check_for_stop_command();
+
     if (stop.load(std::memory_order_relaxed)) {
         return true;
     }
@@ -167,9 +169,8 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
 
     ++nodes;
 
-    // Check time very frequently to catch timeout during deep searches
-    // Check every 64 nodes to prevent long-running searches from going over time
-    if ((nodes & 63) == 0) {
+    // Check time every 2048 nodes to reduce PeekNamedPipe overhead
+    if ((nodes & 2047) == 0) {
         check_time();
     }
 
@@ -281,9 +282,8 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
     // Prevent stale PV data from being saved to TT on fail-low nodes
     ss->pv[ss->ply] = MOVE_NONE;
 
-    // Check time very frequently to catch timeout during deep searches
-    // Check every 64 nodes to prevent long-running searches from going over time
-    if ((nodes & 63) == 0) {
+    // Check time every 2048 nodes to reduce PeekNamedPipe overhead
+    if ((nodes & 2047) == 0) {
         check_time();
     }
 
