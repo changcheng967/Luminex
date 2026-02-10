@@ -8,6 +8,27 @@
 - Update PROGRESS.md after every test run
 - Remove ALL debug logging before committing
 
+## WHEN STUCK — ESCALATE TO OPUS 4.6
+**CRITICAL**: If you hit a wall on any bug or problem, STOP and follow this protocol:
+1. You have tried at least 3 different diagnostic approaches without finding root cause
+2. You are going in circles (fix A → symptom changes → fix B → back to original symptom)
+3. The bug defies your understanding (e.g., code looks correct but behavior is wrong)
+4. You've spent >30 minutes on one issue without progress
+
+**THEN:**
+- STOP writing code
+- Commit and push ALL changes to GitHub FIRST (git add, commit, push)
+- Provide a detailed summary of:
+  - Exact symptom (with evidence: logs, PGNs, debug output)
+  - What you've tried (each attempt, result, why it failed)
+  - Your current best hypothesis (even if you're unsure)
+  - Relevant code sections (file:line references)
+  - Git commit hash of your changes
+- Wait for Opus 4.6 instructions before continuing
+- Do NOT guess. Do NOT try "one more thing". Stop and escalate.
+
+**Current model running: GLM 4.7 (Claude Code). If stuck, escalate to Opus 4.6.**
+
 ## MISSION
 Build Luminex into a world-class chess engine. Fully autonomous. No human needed.
 Keep improving until there is nothing left to improve.
