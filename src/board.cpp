@@ -1175,22 +1175,11 @@ bool Position::legal(Move m) const {
     if (enemy_pawns & square_bb(to)) {
         enemy_pawns &= ~square_bb(to);
     }
-    Bitboard pawn_attacks = 0;
-    while (enemy_pawns) {
-        Square psq = pop_lsb(enemy_pawns);
-        Bitboard pb = square_bb(psq);
-        if (us == WHITE) {
-            // Black pawns attack diagonally upward (from white's perspective)
-            if (file_of(psq) > FILE_A) pawn_attacks |= shift_nw(pb);
-            if (file_of(psq) < FILE_H) pawn_attacks |= shift_ne(pb);
-        } else {
-            // White pawns attack diagonally downward (from black's perspective)
-            if (file_of(psq) > FILE_A) pawn_attacks |= shift_sw(pb);
-            if (file_of(psq) < FILE_H) pawn_attacks |= shift_se(pb);
-        }
-    }
-    if (pawn_attacks & square_bb(ksq)) {
-        return false;  // Pawn would attack our king
+    // Check pawn attacks (using the same symmetry trick as attackers_to)
+    // pawn_attacks_bb(us, ksq) gives squares our pawn would attack from ksq,
+    // which are exactly the squares from which enemy pawns attack ksq
+    if (pawn_attacks_bb(us, ksq) & enemy_pawns) {
+        return false;  // Enemy pawn would attack our king
     }
 
     // If we were in check, verify the move actually escapes
@@ -1200,10 +1189,11 @@ bool Position::legal(Move m) const {
         // If this is en passant, verify it captures the checking piece or resolves check
         if (m.is_en_passant()) {
             Square cap_sq = Square(to - (us == WHITE ? 8 : -8));
-            // If the checker is not the captured pawn, en passant doesn't help
-            if (!(checkers() & square_bb(cap_sq))) {
-                return false;
+            // En passant is valid if it captures the checker OR if the 'to' square blocks the check
+            if (checkers() & square_bb(cap_sq)) {
+                return true;  // Captures the checking pawn
             }
+            // Fall through to generic blocking check
         }
 
         // If capturing a checker, that's fine

@@ -168,14 +168,13 @@ void handle_position(Position& pos, const std::string& cmd) {
             }
 
             if (matched == MOVE_NONE) {
-                // Move not found in legal moves - position may be corrupt
-                // Reset to startpos as a safety measure
-                pos.set("rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1");
-                return;
+                // Move not found - stop replaying but keep current position
+                // Resetting to startpos would desync with GUI
+                break;
             }
             if (!pos.do_move(matched)) {
-                pos.set("rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1");
-                return;
+                // do_move failed - stop replaying but keep current position
+                break;
             }
         }
     }
