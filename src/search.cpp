@@ -734,6 +734,23 @@ Move search(Position& pos, Limits& lim) {
     stop = false;
     nodes = 0;
 
+    // DEBUG: Log position state at search entry
+    Color stm = pos.side_to_move();
+    std::cout << "info string SEARCH_ENTRY fen=" << pos.fen() << " stm=" << (stm == WHITE ? "WHITE" : "BLACK") << std::endl;
+
+    // Count pieces by color at search entry
+    int white_pieces = 0;
+    int black_pieces = 0;
+    for (int sq = 0; sq < 64; ++sq) {
+        Piece p = pos.piece_on(Square(sq));
+        if (p != NO_PIECE) {
+            if (color_of_piece(p) == WHITE) white_pieces++;
+            else black_pieces++;
+        }
+    }
+    std::cout << "info string SEARCH_ENTRY_PIECES white=" << white_pieces << " black=" << black_pieces << std::endl;
+    std::cout.flush();
+
     // Track search start time for time management
     search_start = std::chrono::steady_clock::now();
 
@@ -1101,6 +1118,18 @@ Move search(Position& pos, Limits& lim) {
 
     // Print search statistics before returning
     // Debug logging removed - statistics confirmed TT efficiency improved 4-5x with PVS fix
+
+    // DEBUG: Log position state when returning best_move
+    Color stm_at_return = pos.side_to_move();
+    std::cout << "info string SEARCH_RETURN fen=" << pos.fen() << " stm=" << (stm_at_return == WHITE ? "WHITE" : "BLACK") << " best_move=" << best_move << std::endl;
+
+    if (best_move != MOVE_NONE) {
+        Square from_sq = best_move.from();
+        Piece pc = pos.piece_on(from_sq);
+        Color piece_color = (pc != NO_PIECE) ? color_of_piece(pc) : NO_COLOR;
+        std::cout << "info string SEARCH_RETURN_MOVE from=" << from_sq << " piece=" << int(pc) << " piece_color=" << (piece_color == WHITE ? "WHITE" : (piece_color == BLACK ? "BLACK" : "NONE")) << " matches_stm=" << (piece_color == stm_at_return ? "YES" : "NO") << std::endl;
+    }
+    std::cout.flush();
 
     return best_move;
 }
