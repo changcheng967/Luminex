@@ -1132,23 +1132,29 @@ bool Position::legal(Move m) const {
 
     // Check if king is under attack after the move
     // Slider attacks (queen, rook, bishop)
-    Bitboard enemy_sliders = pieces(them, QUEEN) | pieces(them, ROOK) | pieces(them, BISHOP);
+    // CRITICAL FIX: Exclude captured piece from enemy sliders, just like we do for knights/pawns
+    Bitboard enemy_queens = pieces(them, QUEEN);
+    Bitboard enemy_rooks = pieces(them, ROOK);
+    Bitboard enemy_bishops = pieces(them, BISHOP);
+    if (enemy_queens & square_bb(to)) enemy_queens &= ~square_bb(to);
+    if (enemy_rooks & square_bb(to)) enemy_rooks &= ~square_bb(to);
+    if (enemy_bishops & square_bb(to)) enemy_bishops &= ~square_bb(to);
 
     // Check queen attacks (all directions)
     Bitboard queen_attacks = queen_attacks_bb(ksq, occ_after);
-    if (queen_attacks & enemy_sliders & pieces(them, QUEEN)) {
+    if (queen_attacks & enemy_queens) {
         return false;  // Queen would attack our king
     }
 
     // Check rook attacks (rank/file)
     Bitboard rook_attacks = bb_rank_attacks(ksq, occ_after) | bb_file_attacks(ksq, occ_after);
-    if (rook_attacks & (pieces(them, ROOK) | pieces(them, QUEEN))) {
+    if (rook_attacks & (enemy_rooks | enemy_queens)) {
         return false;  // Rook or queen would attack our king
     }
 
     // Check bishop attacks (diagonals)
     Bitboard bishop_attacks = bb_diag_attacks(ksq, occ_after);
-    if (bishop_attacks & (pieces(them, BISHOP) | pieces(them, QUEEN))) {
+    if (bishop_attacks & (enemy_bishops | enemy_queens)) {
         return false;  // Bishop or queen would attack our king
     }
 

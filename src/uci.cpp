@@ -4,7 +4,6 @@
 #include <cstdarg>
 #include <iostream>
 #include <string>
-#include <fstream>
 
 #ifdef _WIN32
 #include <windows.h>
@@ -191,18 +190,13 @@ void handle_position(Position& pos, const std::string& cmd) {
                 }
             }
 
-            if (matched == MOVE_NONE || !pos.do_move(matched)) {
-                // CRITICAL FIX: When a move fails to match or do_move fails, the board state
-                // is now corrupted (some moves applied, not all). We MUST:
-                // 1. Reset to the initial FEN (before any moves were applied)
-                // 2. Stop replaying moves (further moves would also fail)
-                // 3. Log the error for debugging
-                std::string initial_fen = fen;  // Save the initial FEN
-                pos.set(initial_fen);  // Reset to initial state
-                std::cerr << "ERROR: Failed to replay move " << move_str << " (matched=" << (matched != MOVE_NONE) << ")" << std::endl;
-                std::cerr << "  Position reset to initial FEN: " << initial_fen << std::endl;
-                std::cerr << "  This usually indicates an illegal move in the move list or state corruption" << std::endl;
-                break;  // Stop replay - position is back to initial state
+            if (matched == MOVE_NONE) {
+                pos.set(fen);  // Reset to initial state
+                break;
+            }
+            if (!pos.do_move(matched)) {
+                pos.set(fen);  // Reset to initial state
+                break;
             }
         }
     }
@@ -214,36 +208,13 @@ void handle_go(Position& pos, const std::string& cmd) {
     // Verify position consistency before searching
     pos.assert_consistency("handle_go entry");
 
-    // CRITICAL CHECK: Verify that the position has legal moves for the side to move.
-    // If not, this indicates the position state is corrupted (likely due to failed
-    // move replay in handle_position). In this case, try the OTHER side to recover.
+    // Check for terminal positions early (no legal moves)
     ExtMove check_moves[MAX_MOVES];
     ExtMove* check_end = generate<GEN_LEGAL>(pos, check_moves);
     int check_count = int(check_end - check_moves);
 
     if (check_count == 0) {
-        // No legal moves for current side - might be terminal OR wrong side!
-        // Check if opponent has moves (indicating we're trying wrong side)
-        Position try_pos;
-        try_pos.set(pos.fen());
-
-        // Manually flip side to move by doing a null move
-        try_pos.do_null_move();
-        ExtMove try_moves[MAX_MOVES];
-        ExtMove* try_end = generate<GEN_LEGAL>(try_pos, try_moves);
-        int try_count = int(try_end - try_moves);
-
-        if (try_count > 0) {
-            // Opponent has moves but we don't - we're on wrong side!
-            // Use first move from opponent's perspective
-            std::cerr << "WARNING: Side-to-move appears wrong. Trying opposite side." << std::endl;
-            std::cerr << "  FEN: " << pos.fen() << std::endl;
-            std::cout << "bestmove " << try_moves[0].move << "\n";
-            std::cout.flush();
-            return;
-        }
-
-        // Neither side has moves - truly terminal
+        // Terminal position - no legal moves
         std::cout << "info depth 0 score cp 0 nodes 0\n";
         std::cout << "bestmove 0000\n";
         std::cout.flush();
@@ -314,47 +285,14 @@ void handle_go(Position& pos, const std::string& cmd) {
     // Save FEN before search to restore later
     std::string fen_before_search = pos.fen();
 
-    // DEBUG: Log FEN before search
-    std::cerr << "FEN before search: " << fen_before_search << std::endl;
-
     // Run search
     Move best_move = search(pos, limits);
 
-    // DEBUG: Log what search returned to file
-    {
-        static std::ofstream dbg("C:\\Users\\chang\\Downloads\\Luminex\\search_debug.txt", std::ios::app);
-        dbg << "FEN: " << fen_before_search << " stm=" << (pos.side_to_move() == WHITE ? "W" : "B") << std::endl;
-        dbg << "Search: " << best_move << " from_idx=" << int(best_move.from()) << " to_idx=" << int(best_move.to()) << std::endl;
-        Piece pc = pos.piece_on(best_move.from());
-        dbg << " piece_at_from=" << int(pc) << " color=" << (pos.color_of_piece(pc) == WHITE ? "W" : "B") << std::endl;
-        dbg.flush();
-    }
-
     // CRITICAL: Restore position from saved FEN
-    // Search modifies pos directly via do_move/undo_move, and any failure
-    // or exception could corrupt the state. Re-parsing from FEN ensures clean state.
-    // Also: re-parse to ensure we have the correct side_to_move after move replay
+    // Search modifies pos directly via do_move/undo_move. Re-parsing ensures clean state.
     pos.set(fen_before_search);
 
-    // CRITICAL FIX: Verify that we actually have legal moves for the side to move.
-    // If not, this indicates the position command had an incomplete move list
-    // (GUI bug) or move replay failed. In this case, we need to understand
-    // what's happening rather than making random moves.
-    ExtMove verify_moves[MAX_MOVES];
-    ExtMove* verify_end = generate<GEN_LEGAL>(pos, verify_moves);
-    int verify_count = int(verify_end - verify_moves);
-
-    // Additional debugging: log if no legal moves
-    if (verify_count == 0) {
-        std::cerr << "WARNING: No legal moves for side to move (" << (pos.side_to_move() == WHITE ? "WHITE" : "BLACK") << ")" << std::endl;
-        std::cerr << "FEN: " << fen_before_search << std::endl;
-        // Send 0000 for no legal moves (this is the correct UCI response)
-        std::cout << "bestmove 0000\n";
-        std::cout.flush();
-        return;
-    }
-
-    // NUCLEAR SAFETY CHECK: Validate best_move against complete GEN_LEGAL list
+    // Validate best_move against complete GEN_LEGAL list
     // We must generate moves TWICE to work around potential state corruption:
     // 1. First generation: check if best_move is in legal list
     // 2. If not valid: second generation for fallback
