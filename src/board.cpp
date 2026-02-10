@@ -444,7 +444,7 @@ void Position::set_check_info(StateInfo* si) {
     // Pawn checks
     Bitboard pawns = pieces(Color(side_to_move_ ^ 1), PAWN);
     if (pawns) {
-        Bitboard pawn_checks = pawn_attacks_bb(Color(side_to_move_ ^ 1), ksq) & pawns;
+        Bitboard pawn_checks = pawn_attacks_bb(side_to_move_, ksq) & pawns;
         si->checkers |= pawn_checks;
     }
 

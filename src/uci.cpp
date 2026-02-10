@@ -16,8 +16,20 @@ namespace luminex {
 // Position for UCI
 static Position pos;
 
-// Simple check for stop - returns current stop flag state
+// Check for stop command with stdin polling (for Windows synchronous search)
 bool check_for_stop_command() {
+#ifdef _WIN32
+    HANDLE h = GetStdHandle(STD_INPUT_HANDLE);
+    DWORD avail = 0;
+    if (PeekNamedPipe(h, nullptr, 0, nullptr, &avail, nullptr) && avail > 0) {
+        std::string line;
+        std::getline(std::cin, line);
+        if (!line.empty() && line.back() == '\r') line.pop_back();
+        if (line == "stop" || line == "quit") {
+            stop.store(true, std::memory_order_relaxed);
+        }
+    }
+#endif
     return stop.load(std::memory_order_relaxed);
 }
 
@@ -144,16 +156,9 @@ void handle_position(Position& pos, const std::string& cmd) {
             }
 
             if (matched == MOVE_NONE) {
-                std::cout << "info string MOVE_NOT_FOUND: " << move_str << " fen=" << pos.fen() << std::endl;
-                std::cout.flush();
-                // CRITICAL FIX: Don't reset position - just skip this move
-                // The game state might have drifted, but resetting to start makes it worse
                 break;
             }
             if (!pos.do_move(matched)) {
-                std::cout << "info string DO_MOVE_FAILED: " << move_str << " fen=" << pos.fen() << std::endl;
-                std::cout.flush();
-                // CRITICAL FIX: Don't reset position - just skip this move
                 break;
             }
         }
@@ -163,206 +168,30 @@ void handle_position(Position& pos, const std::string& cmd) {
 void handle_go(Position& pos, const std::string& cmd) {
     TT.new_search();
 
-    // Verify position consistency before searching
-    pos.assert_consistency("handle_go entry");
-
-    // Clear TT on time management to prevent stale entries from causing illegal moves
-    // This is a workaround for the TT returning moves from wrong positions
-    // TODO: Fix root cause of TT pollution
-    TT.clear();
-
-    // Check for terminal positions early (no legal moves)
-    ExtMove check_moves[MAX_MOVES];
-    ExtMove* check_end = generate<GEN_LEGAL>(pos, check_moves);
-    int check_count = int(check_end - check_moves);
-
-    if (check_count == 0) {
-        // Terminal position - no legal moves
-        std::cout << "info depth 0 score cp 0 nodes 0\n";
-        std::cout << "bestmove 0000\n";
-        std::cout.flush();
-        return;
-    }
-
     std::istringstream ss(cmd);
     std::string token;
-
     limits = Limits();
 
     while (ss >> token) {
-        if (token == "depth") {
-            ss >> limits.depth;
-        } else if (token == "nodes") {
-            ss >> limits.nodes;
-        } else if (token == "movetime") {
-            ss >> limits.movetime;
-        } else if (token == "infinite") {
-            limits.infinite = true;
-        } else if (token == "wtime") {
-            ss >> limits.time[WHITE];
-        } else if (token == "btime") {
-            ss >> limits.time[BLACK];
-        } else if (token == "winc") {
-            ss >> limits.inc[WHITE];
-        } else if (token == "binc") {
-            ss >> limits.inc[BLACK];
-        } else if (token == "movestogo") {
-            ss >> limits.movestogo;
-        }
+        if (token == "depth") ss >> limits.depth;
+        else if (token == "nodes") ss >> limits.nodes;
+        else if (token == "movetime") ss >> limits.movetime;
+        else if (token == "infinite") limits.infinite = true;
+        else if (token == "wtime") ss >> limits.time[WHITE];
+        else if (token == "btime") ss >> limits.time[BLACK];
+        else if (token == "winc") ss >> limits.inc[WHITE];
+        else if (token == "binc") ss >> limits.inc[BLACK];
+        else if (token == "movestogo") ss >> limits.movestogo;
     }
 
-    // If no depth, time control, movetime, or infinite is specified, set reasonable default depth
-    // This prevents infinite search when "go" is sent with no params
     if (limits.depth == 0 && !limits.infinite && limits.movetime == 0 &&
         limits.time[WHITE] == 0 && limits.time[BLACK] == 0) {
-        limits.depth = 6;  // Safe default depth for bare "go" command
+        limits.depth = 6;
     }
 
-    // Check for terminal positions (checkmate/stalemate) before searching
-    ExtMove move_list[256];
-    ExtMove* move_end = generate_legals(pos, move_list);
-    int legal_count = int(move_end - move_list);
-
-    if (legal_count == 0) {
-        // No legal moves - game over
-        bool is_check = pos.is_check();
-
-        if (is_check) {
-            // Checkmate - send mate in 0 (we are mated)
-            std::cout << "info depth 0 score mate 0 nodes 0\n";
-        } else {
-            // Stalemate
-            std::cout << "info depth 0 score cp 0 nodes 0\n";
-        }
-        std::cout.flush();
-
-        // CRITICAL FIX: Send bestmove 0000 for terminal positions
-        // Sending bare "bestmove" causes UCI protocol desync - CuteChess
-        // will read the next line as the move, shifting all commands
-        std::cout << "bestmove 0000\n";
-        std::cout.flush();
-
-        return;
-    }
-
-    // Save FEN before search to restore later
-    std::string fen_before_search = pos.fen();
-    std::cout << "info string SAVING_FEN before_search=" << fen_before_search << std::endl;
-    std::cout << "info string SEARCH_SIDE_TO_MOVE=" << (pos.side_to_move() == WHITE ? "WHITE" : "BLACK") << std::endl;
-    std::cout.flush();
-
-    // SIMPLE SYNCHRONOUS SEARCH - no threading
     Move best_move = search(pos, limits);
-
-    // CRITICAL: Restore position from saved FEN
-    // Search modifies pos directly via do_move/undo_move. Re-parsing ensures clean state.
-    pos.set(fen_before_search);
-
-    // DEBUG: Check if restored position matches expected
-    std::string fen_after_restore = pos.fen();
-    if (fen_before_search != fen_after_restore) {
-        std::cout << "info string FEN_MISMATCH before=" << fen_before_search << " after=" << fen_after_restore << std::endl;
-        std::cout.flush();
-    }
-
-    // Validate and send bestmove
-    if (best_move) {
-        // DEBUG: Print position state BEFORE validation
-        std::cout << "info string BEFORE_VALIDATION fen=" << pos.fen() << " side_to_move=" << (pos.side_to_move() == WHITE ? "WHITE" : "BLACK") << " best_move=" << best_move << std::endl;
-        std::cout.flush();
-
-        // Validate against legal moves
-        ExtMove validate_moves[MAX_MOVES];
-        ExtMove* validate_end = generate<GEN_LEGAL>(pos, validate_moves);
-
-        // DEBUG: Show what piece is on the from square of best_move
-        Square from_sq = best_move.from();
-        Piece pc = pos.piece_on(from_sq);
-        std::cout << "info string PIECE_ON_FROM from=" << from_sq << " piece=" << int(pc) << " color=" << (pc != NO_PIECE ? (color_of_piece(pc) == WHITE ? "WHITE" : "BLACK") : "NONE") << " side_to_move=" << (pos.side_to_move() == WHITE ? "WHITE" : "BLACK") << std::endl;
-
-        // DEBUG: Count pieces by color to detect color flip
-        int white_pieces = 0;
-        int black_pieces = 0;
-        int white_kings = 0;
-        int black_kings = 0;
-        for (int sq = 0; sq < 64; ++sq) {
-            Piece p = pos.piece_on(Square(sq));
-            if (p != NO_PIECE) {
-                if (color_of_piece(p) == WHITE) {
-                    white_pieces++;
-                    if (piece_type_of(p) == KING) white_kings++;
-                } else {
-                    black_pieces++;
-                    if (piece_type_of(p) == KING) black_kings++;
-                }
-            }
-        }
-        std::cout << "info string PIECE_COUNT white=" << white_pieces << " black=" << black_pieces << " white_kings=" << white_kings << " black_kings=" << black_kings << std::endl;
-        std::cout.flush();
-
-        // DEBUG: Print first few legal moves for sanity check
-        std::cout << "info string FIRST_LEGAL_MOVES count=" << (validate_end - validate_moves) << ":";
-        int n = (validate_end - validate_moves);
-        for (int i = 0; i < (n < 5 ? n : 5); ++i) {
-            Square f = validate_moves[i].move.from();
-            Piece p = pos.piece_on(f);
-            std::cout << " " << validate_moves[i].move << "(piece=" << int(p) << "," << (p != NO_PIECE ? (color_of_piece(p) == WHITE ? "W" : "B") : "N") << ")";
-        }
-        std::cout << std::endl;
-        std::cout.flush();
-
-        bool valid = false;
-        for (ExtMove* it = validate_moves; it != validate_end; ++it) {
-            if (it->move.raw() == best_move.raw()) {
-                valid = true;
-                break;
-            }
-        }
-
-        // CRITICAL SANITY CHECK: Explicitly verify the piece belongs to side to move
-        if (valid && pc != NO_PIECE) {
-            Color piece_color = color_of_piece(pc);
-            Color stm = pos.side_to_move();
-            if (piece_color != stm) {
-                std::cout << "info string SANITY_CHECK_FAIL piece_color=" << (piece_color == WHITE ? "WHITE" : "BLACK") << " stm=" << (stm == WHITE ? "WHITE" : "BLACK") << std::endl;
-                std::cout.flush();
-                // Force fallback - this should never happen if everything is working correctly
-                valid = false;
-            }
-        }
-
-        // DEBUG: Print board state if we're about to send a potentially problematic move
-        if (valid) {
-            std::cout << "info string BOARD_STATE stm=" << (pos.side_to_move() == WHITE ? "W" : "B") << " from=" << from_sq << " piece=" << int(pc) << std::endl;
-            // Print pieces on key squares
-            Piece p_g8 = pos.piece_on(G8);
-            Piece p_f6 = pos.piece_on(F6);
-            Piece p_d3 = pos.piece_on(D3);
-            std::cout << "info string KEY_SQUARES g8=" << int(p_g8) << " f6=" << int(p_f6) << " d3=" << int(p_d3) << std::endl;
-            std::cout.flush();
-        }
-        // DEBUG: Always log the move being sent
-        std::cout << "info string SENDING_MOVE move=" << best_move << " valid=" << valid << " legal_count=" << (validate_end - validate_moves) << " fen=" << pos.fen() << std::endl;
-        std::cout.flush();
-        if (valid) {
-            std::cout << "bestmove " << best_move << "\n";
-        } else {
-            // DEBUG: Illegal move detected - print all legal moves
-            std::cout << "info string ILLEGAL_MOVE_DETECTED move=" << best_move << " fen=" << pos.fen() << " legal_count=" << (validate_end - validate_moves) << std::endl;
-            std::cout << "info string LEGAL_MOVES:";
-            for (ExtMove* it = validate_moves; it != validate_end; ++it) {
-                std::cout << " " << it->move;
-            }
-            std::cout << std::endl;
-            std::cout.flush();
-            // Fallback to first legal move
-            if (validate_end > validate_moves) {
-                std::cout << "info string FALLBACK_MOVE move=" << validate_moves[0].move << std::endl;
-                std::cout << "bestmove " << validate_moves[0].move << "\n";
-            } else {
-                std::cout << "bestmove 0000\n";
-            }
-        }
+    if (best_move != MOVE_NONE) {
+        std::cout << "bestmove " << best_move << "\n";
     } else {
         std::cout << "bestmove 0000\n";
     }
@@ -441,11 +270,7 @@ void uci_loop() {
             handle_ucinewgame();
         } else if (cmd == "position") {
             handle_position(pos, line);
-            std::cout << "info string AFTER_POSITION fen=" << pos.fen() << std::endl;
-            std::cout.flush();
         } else if (cmd == "go") {
-            std::cout << "info string BEFORE_GO fen=" << pos.fen() << std::endl;
-            std::cout.flush();
             handle_go(pos, line);
         } else if (cmd == "setoption") {
             handle_setoption(line);
