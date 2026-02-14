@@ -2,6 +2,7 @@
 #include "luminex.h"
 #include <algorithm>
 #include <chrono>
+#include <cmath>
 #include <cstdio>
 
 namespace luminex {
@@ -77,25 +78,19 @@ constexpr int futility_margin(int depth, bool improving) {
     return base;
 }
 
-// LMR reduction computation - balanced for accuracy
+// LMR reduction computation - logarithmic formula (Stockfish-style)
 inline int lmr_reduction(int depth, int moves_played, bool improving, bool pv_node) {
-    // Start with no base reduction
+    // Logarithmic LMR formula: reduction increases with depth and move count
+    // but at a decreasing rate (logarithmic)
     int reduction = 0;
+    if (depth >= 2 && moves_played >= 2) {
+        // Main formula: log(depth) * log(moves) / scaling_factor
+        reduction = int(0.5 + std::log(double(depth)) * std::log(double(moves_played)) / 2.0);
+    }
 
-    // Progressive reduction based on move count
-    if (moves_played >= 4) reduction += 1;
-    if (moves_played >= 8) reduction += 1;
-    if (moves_played >= 12) reduction += 1;
-
-    // Node type and improvement
+    // Node type adjustments
     if (!pv_node) reduction += 1;
     if (!improving) reduction += 1;
-
-    // Depth-based: more reduction at deeper depths
-    if (depth >= 6) reduction += 1;
-    if (depth >= 10) reduction += 1;
-    if (depth >= 15) reduction += 1;  // Extra reduction at very high depth
-    if (depth >= 22) reduction += 1;  // Maximum reduction for extreme depths
 
     // Cap reduction - don't reduce too much
     if (reduction > depth - 2) reduction = depth - 2;
@@ -448,16 +443,21 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
         else if (m.is_promotion()) {
             score = 1800000 + m.promotion_type() * 10000;
         }
-        // Captures - fast MVV-LVA (Most Valuable Victim - Least Valuable Attacker)
+        // Captures - use SEE to distinguish winning vs losing
         else if (m.is_capture()) {
             PieceType captured = pos.piece_type_on(m.to());
             PieceType attacker = pos.piece_type_on(m.from());
 
-            // MVV-LVA scoring: capture value * 10 - attacker value
-            // This orders PxQ > NxQ > BxQ > ... > PxQ
-            // Within same victim, prefer cheaper attacker
+            // MVV-LVA as base score
             static constexpr int piece_value[] = {0, 100, 320, 330, 500, 900, 0};
-            score = 1000000 + piece_value[captured] * 10 - piece_value[attacker];
+            int mvv_lva = piece_value[captured] * 10 - piece_value[attacker];
+
+            // Use SEE to distinguish winning/losing captures
+            if (pos.see_ge(m, VALUE_ZERO)) {
+                score = 1500000 + mvv_lva;  // Winning captures
+            } else {
+                score = 500000 + mvv_lva;   // Losing captures (searched last)
+            }
         }
         // Killer moves and history for quiet moves
         else if (ss->ply < MAX_PLY) {
@@ -887,12 +887,11 @@ Move search(Position& pos, Limits& lim) {
         check_time();
         if (stop.load(std::memory_order_relaxed)) break;
 
-        // Aspiration window - DISABLED
+        // Aspiration window - disabled for stability
         // Score oscillation between depths was causing excessive re-searches
-        // The overhead of re-searching outweighed the benefit of smaller windows
-        int aspiration_delta = 1000;
         Value alpha = -VALUE_INFINITE;
         Value beta = VALUE_INFINITE;
+        int aspiration_delta = 1000;  // Effectively disabled
 
         // Generate moves
         ExtMove moves[MAX_MOVES];
