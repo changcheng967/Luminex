@@ -1449,10 +1449,7 @@ Value evaluate(const Position& pos) {
         Square their_king = king_sq[int(them)];
         Square our_king = king_sq[int(us)];
 
-        // Pawn shield evaluation for our king
-        Score shield_bonus = evaluate_pawn_shield(pos, us, our_king);
-        mg_score += shield_bonus;
-        eg_score += shield_bonus;
+        // Note: Pawn shield is already evaluated inline during king piece loop
 
         // Queen tropism: penalty when enemy queen is close to our king
         Bitboard their_queens = pos.pieces(them, QUEEN);
