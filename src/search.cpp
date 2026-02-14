@@ -3,7 +3,6 @@
 #include <algorithm>
 #include <chrono>
 #include <cstdio>
-#include <fstream>
 
 namespace luminex {
 
@@ -112,6 +111,7 @@ static int max_time = 0;    // Maximum time to use
 
 // Check time - returns true if time limit exceeded
 bool check_time() {
+    // Check for stop command from GUI (non-blocking stdin polling)
     check_for_stop_command();
 
     if (stop.load(std::memory_order_relaxed)) {
@@ -141,7 +141,20 @@ bool check_time() {
             stop = true;
             return true;
         }
-        if (elapsed >= max_time - 50) {
+        if (elapsed >= max_time) {
+            stop = true;
+            return true;
+        }
+    }
+
+    // SAFETY: For depth-only searches (no time limit), add a 30-minute maximum
+    // This prevents infinite hangs during debugging or unusual positions
+    // while allowing deep searches to complete
+    if (!limits.movetime && !limits.use_time_management() && limits.nodes == 0) {
+        auto now = std::chrono::steady_clock::now();
+        int elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
+            now - search_start).count();
+        if (elapsed >= 1800000) {  // 30 minutes
             stop = true;
             return true;
         }
@@ -157,9 +170,9 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
         return eval_cached(pos);
     }
 
-    // Don't search captures beyond a certain depth - limited to -8
-    // Allows deeper tactical resolution while preventing unbounded recursion
-    if (depth < -8) {
+    // Don't search captures beyond depth -1
+    // Very shallow qsearch to prevent tree explosion at high root depths
+    if (depth < -1) {
         return eval_cached(pos);
     }
 
@@ -169,7 +182,7 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
 
     ++nodes;
 
-    // Check time every 2048 nodes to reduce PeekNamedPipe overhead
+    // Check time every 2048 nodes - balance between responsiveness and overhead
     if ((nodes & 2047) == 0) {
         check_time();
     }
@@ -282,7 +295,7 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
     // Prevent stale PV data from being saved to TT on fail-low nodes
     ss->pv[ss->ply] = MOVE_NONE;
 
-    // Check time every 2048 nodes to reduce PeekNamedPipe overhead
+    // Check time every 2048 nodes - balance between responsiveness and overhead
     if ((nodes & 2047) == 0) {
         check_time();
     }
@@ -499,9 +512,11 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
             }
         }
 
-        // Late move pruning: standard threshold formula 3 + depth²
-        // At depth 4: 3+16=19 moves, not 4. This prevents pruning good moves too early.
-        if (!pv_node && ss->ply > 0 && moves_played >= 3 + depth * depth &&
+        // Late move pruning: prune quiet moves after examining a reasonable number
+        // Use depth-based threshold: at depth 1 allow 4 moves, depth 4 allow 16, depth 8 allow 24
+        // This is more aggressive than 3+depth² for high depths
+        int lmp_threshold = 4 + depth * 3;  // depth 1=7, depth 4=16, depth 8=28
+        if (!pv_node && ss->ply > 0 && moves_played >= lmp_threshold &&
             !m.is_capture() && !m.is_promotion() && !m.is_castling()) {
             continue;  // Skip very late quiet moves
         }
@@ -562,14 +577,15 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
         }
 
         // CRITICAL: Check evasion extension - when we're IN check, extend to find defensive moves
-        // This is the highest priority extension - being mated is the worst outcome
-        bool evasion_extension = (pos.is_check() && depth >= 2);
+        // LIMITED: Only extend at depth >= 5 to prevent search tree explosion
+        // At lower depths, qsearch handles evasions without needing extension
+        bool evasion_extension = (pos.is_check() && depth >= 5);
 
         // Check extension: extend by one ply if move gives check (helps find tactical sequences)
-        // LIMITED: Only extend at high depths and for dangerous checks to prevent explosion
+        // CONSERVATIVE: Only extend at depth >= 6 and for non-pawn pieces to prevent explosion
         bool gives_check = false;
         bool dangerous_check = false;
-        if (depth >= 3 && !pos.is_check()) {  // Lowered from 4 to 3 for better tactics
+        if (depth >= 6 && !pos.is_check()) {
             PieceType pt = pos.piece_type_on(m.from());
             Square to = m.to();
             Color opponent = Color(int(pos.side_to_move()) ^ 1);
@@ -610,7 +626,8 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
         bool extension = false;
 
         // Evasion extension: HIGHEST priority - we're being attacked!
-        if (evasion_extension) {
+        // LIMITED: Only extend evasions at depth >= 4 to prevent tree explosion
+        if (evasion_extension && depth >= 4) {
             extension = true;
         }
         // Singular extension: high priority (disabled for now)
@@ -794,13 +811,14 @@ Move search(Position& pos, Limits& lim) {
         // Hard bound: never use more than 1/3 of remaining time
         max_time = time_left / 3;
 
-        // Overhead buffer: account for communication latency (50ms)
-        const int overhead = 50;
+        // Overhead buffer: scale with time available
+        // At tc=1+0.01 (1000ms), overhead=10ms; at tc=60+0 (60000ms), overhead=50ms
+        const int overhead = std::max(5, std::min(50, time_left / 100));
         ideal_time = std::max(1, ideal_time - overhead);
         max_time = std::max(1, max_time - overhead);
 
-        // Never exceed remaining time minus overhead
-        max_time = std::min(max_time, std::max(1, time_left - overhead));
+        // Never exceed remaining time (overhead already subtracted above)
+        max_time = std::min(max_time, time_left);
         ideal_time = std::min(ideal_time, max_time);
 
         // Absolute floor: always have at least 10ms to search
@@ -843,18 +861,16 @@ Move search(Position& pos, Limits& lim) {
     int effective_depth = (limits.depth == 0) ? MAX_PLY : limits.depth;
     int start_depth = 1;
 
-    // Track previous score for aspiration windows
-    Value previous_score = VALUE_ZERO;
-
     for (root_depth = start_depth; root_depth <= effective_depth; ++root_depth) {
         // Time management: stop before starting a new depth if we've used significant time
-        // Be VERY conservative - depth N can take 10x longer than depth N-1
-        if (limits.use_time_management()) {
+        // Always complete depth 1, then be conservative for deeper depths
+        if (limits.use_time_management() && root_depth > 1) {
             auto now = std::chrono::steady_clock::now();
             int elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
                 now - search_start).count();
-            // Stop if we've used more than 1/8 of ideal time
-            if (elapsed > ideal_time / 8) {
+            // Don't start a new depth if we've used more than half of ideal time
+            // (the real time guard is in check_time() which fires during search)
+            if (elapsed > ideal_time / 2) {
                 break;
             }
         }
@@ -871,22 +887,12 @@ Move search(Position& pos, Limits& lim) {
         check_time();
         if (stop.load(std::memory_order_relaxed)) break;
 
-        // Aspiration window - ENABLED for faster root searches
-        // Use small window around previous score, widen only if fails
-        int aspiration_delta = 50;  // Initial window size
-        Value alpha;
-        Value beta;
-
-        if (root_depth > 1 && previous_score > -VALUE_INFINITE + 5000 && previous_score < VALUE_INFINITE - 5000) {
-            // Use aspiration window around previous score
-            alpha = std::max(Value(-VALUE_INFINITE), Value(previous_score - aspiration_delta));
-            beta = std::min(Value(VALUE_INFINITE), Value(previous_score + aspiration_delta));
-        } else {
-            // First depth or no previous score - use full window
-            alpha = -VALUE_INFINITE;
-            beta = VALUE_INFINITE;
-            aspiration_delta = 1000;  // Skip aspiration on next iteration
-        }
+        // Aspiration window - DISABLED
+        // Score oscillation between depths was causing excessive re-searches
+        // The overhead of re-searching outweighed the benefit of smaller windows
+        int aspiration_delta = 1000;
+        Value alpha = -VALUE_INFINITE;
+        Value beta = VALUE_INFINITE;
 
         // Generate moves
         ExtMove moves[MAX_MOVES];
@@ -1017,7 +1023,7 @@ Move search(Position& pos, Limits& lim) {
             }
 
             // Aspiration window check uses ORIGINAL alpha (not running_alpha)
-            if (depth_best_value <= alpha) {
+            if (depth_best_value < alpha) {
                 // Fail low - widen downward (lower alpha only, keep beta)
                 alpha = std::max(Value(-VALUE_INFINITE),
                                  Value(depth_best_value - aspiration_delta));
@@ -1050,10 +1056,6 @@ Move search(Position& pos, Limits& lim) {
             best_move = depth_best_move;
         }
 
-        // Update previous_score for next depth's aspiration window
-        if (depth_best_value > -VALUE_INFINITE + 5000 && depth_best_value < VALUE_INFINITE - 5000) {
-            previous_score = depth_best_value;
-        }
         root_score = depth_best_value;
 
         // Calculate elapsed time for NPS

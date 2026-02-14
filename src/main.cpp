@@ -2,6 +2,7 @@
 #include <chrono>
 #include <iostream>
 #include <cstdio>
+#include <fstream>
 
 namespace luminex {
 

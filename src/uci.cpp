@@ -17,32 +17,54 @@ namespace luminex {
 static Position pos;
 
 // Check for stop command with stdin polling (for Windows synchronous search)
-// Uses PeekNamedPipe to preview stdin without consuming non-stop commands
 bool check_for_stop_command() {
+    if (stop.load(std::memory_order_relaxed)) {
+        return true;
+    }
+
 #ifdef _WIN32
     HANDLE h = GetStdHandle(STD_INPUT_HANDLE);
     DWORD avail = 0;
     if (!PeekNamedPipe(h, nullptr, 0, nullptr, &avail, nullptr) || avail == 0) {
-        return stop.load(std::memory_order_relaxed);
+        return false;
     }
-    // Peek at the buffer content without consuming it
-    char buf[16];
+
+    // Peek at the buffer to see if there's a "stop" or "quit" command
+    char buf[64];
     DWORD bytesRead = 0;
-    if (PeekNamedPipe(h, buf, sizeof(buf) - 1, &bytesRead, nullptr, nullptr) && bytesRead > 0) {
-        buf[bytesRead] = '\0';
-        // Only consume the line if it starts with "stop" or "quit"
-        std::string preview(buf, bytesRead);
-        if (preview.find("stop") != std::string::npos ||
-            preview.find("quit") != std::string::npos) {
-            // Now actually consume the line
-            std::string line;
-            std::getline(std::cin, line);
-            stop.store(true, std::memory_order_relaxed);
-        }
-        // Otherwise leave it in the buffer for uci_loop to process
+    DWORD peekSize = (avail < sizeof(buf) - 1) ? avail : sizeof(buf) - 1;
+    if (!PeekNamedPipe(h, buf, peekSize, &bytesRead, nullptr, nullptr) || bytesRead == 0) {
+        return false;
     }
+    buf[bytesRead] = '\0';
+
+    // PREFIX match only - don't match "stop" inside "position startpos"
+    bool starts_with_stop = (bytesRead >= 4 && buf[0] == 's' && buf[1] == 't' && buf[2] == 'o' && buf[3] == 'p');
+    bool starts_with_quit = (bytesRead >= 4 && buf[0] == 'q' && buf[1] == 'u' && buf[2] == 'i' && buf[3] == 't');
+
+    if (!starts_with_stop && !starts_with_quit) {
+        return false;
+    }
+
+    // Verify newline exists before calling getline - otherwise it blocks forever
+    bool has_newline = false;
+    for (DWORD i = 0; i < bytesRead; ++i) {
+        if (buf[i] == '\n' || buf[i] == '\r') {
+            has_newline = true;
+            break;
+        }
+    }
+
+    if (has_newline) {
+        std::string line;
+        std::getline(std::cin, line);
+        stop.store(true, std::memory_order_relaxed);
+        return true;
+    }
+
+    // No newline yet - don't consume, wait for complete line
 #endif
-    return stop.load(std::memory_order_relaxed);
+    return false;
 }
 
 void handle_uci() {
@@ -168,13 +190,14 @@ void handle_position(Position& pos, const std::string& cmd) {
             }
 
             if (matched == MOVE_NONE) {
-                // Move not found - stop replaying but keep current position
-                // Resetting to startpos would desync with GUI
-                break;
+                // Move not found in legal moves - position may be corrupt
+                // Reset to startpos as a safety measure
+                pos.set("rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1");
+                return;
             }
             if (!pos.do_move(matched)) {
-                // do_move failed - stop replaying but keep current position
-                break;
+                pos.set("rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1");
+                return;
             }
         }
     }
