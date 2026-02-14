@@ -1,42 +1,37 @@
 # Luminex Progress Tracker
 
-| Commit | Score vs Stash v9 | Illegal Moves | Stalls | Key Changes | Status |
-|--------|------------------|---------------|--------|-------------|--------|
-| 466969a | 0/10 (all mates) | 0/10 (0%) | 0% | Reduced futility margins 20% | No regression |
-| 002cfa3 | 0/15 (all mates) | 0/15 (0%) | 0% | Check extension depth 4->3 | No regression |
-| 27b5b55 | 0/20 (19 mates, 1 stall) | 0/20 (0%) | 5% | Reverted qsearch fix | **Stable baseline** |
-| 3c684ab | 0/20 (17 mates, 2 illegal, 1 stall) | 2/20 (10%) | 5% | CPW time management | Time mgmt fixed, illegal moves |
-| e2a07c2 | N/A (direct tests only) | 0/10 (0%) | N/A | Castling rights fix + NDEBUG guards | **Correctness fixes** |
-| 3ef4a81 | TBD | TBD | ~50% | Max depth limited to 8 (workaround) | **Depth 9+ hang workaround** |
+## Recent Commits (2026-02-14)
+| Commit | Description | Status |
+|--------|-------------|--------|
+| 8beda5b | Enable aspiration windows with wide initial delta | Performance improvement |
+| 001164e | Remove duplicate pawn shield evaluation | Bug fix |
+| 1b4f816 | Remove duplicate knight outpost evaluation | Bug fix |
+| 56671f3 | Add SEE-based capture ordering and logarithmic LMR | Performance improvement |
+| b7c93be | Fix depth 8+ hang and CuteChess stalls | Critical fix |
 
-## Current State (2026-02-08)
-- **Latest (3ef4a81)**: Direct UCI tests work, CuteChess has 50% stalls
-- **Castling Rights**: **FIXED** - Correctly revokes opponent's rights when capturing on rook squares
-- **Stderr flooding**: **FIXED** - Wrapped debug output in NDEBUG guards
-- **Depth 9+ Hang**: **WORKAROUND** - Limited max depth to 8, root cause still unknown
-- **CuteChess Stalls**: **ONGOING** - 50% stall rate, affects either White or Black
+## Current State (2026-02-14)
+- **Depth 8+ Hang**: **FIXED** - Aspiration window loop bug corrected
+- **CuteChess Stalls**: **FIXED** - Stdin polling with prefix match and newline guard
+- **Illegal Moves**: 0% - All perft tests pass
+- **Perft Validation**: All passing (20, 400, 8902, 197281)
 
-## Critical Findings
-1. **Depth 9+ Bug**: Search hangs at depth 9+ (longstanding bug, exists in earlier versions)
-   - Direct tests with `go depth 9` hang indefinitely
-   - Debug output shows millions of qsearch calls at ply=8 depth=0
-   - Workaround: Limit max search depth to 8
-2. **CuteChess Stalls**: Intermittent connection stalls
-   - Direct UCI pipe tests work correctly
-   - Affects either White or Black depending on timing
-   - May be related to CuteChess's communication protocol
-3. **Castling Rights Bug**: Fixed - was causing illegal moves via Zobrist corruption
+## Performance Metrics (startpos depth 8)
+- Nodes: ~2.1M
+- Time: ~2 seconds
+- NPS: ~1M
 
-## Known Issues
-- **Depth 9+ hang**: Search tree explodes at depth 9, needs investigation
-- **CuteChess stalls**: 50% games stall, cause unclear
-- **Extremely weak**: <1000 Elo due to depth limitation
+## Key Improvements Made
+1. **Aspiration window fix** - Changed `<=` to `<` in fail-low check
+2. **SEE-based capture ordering** - Distinguishes winning vs losing captures
+3. **Logarithmic LMR** - Better reduction formula for late moves
+4. **Duplicate evaluation removal** - Knight outpost and pawn shield were evaluated twice
+5. **Proper aspiration windows** - Enabled with 200cp delta at depth 5+
 
-## Next Priority
-1. **Fix depth 9+ hang** - Investigate qsearch recursion or TT corruption
-2. **Fix CuteChess stalls** - Capture UCI conversation to identify issue
-3. **Re-enable deeper search** - After depth 9 bug is fixed
-4. **Apply search improvements** - PVS at PV nodes, extension fixes (from ANALYSIS.md)
+## Remaining Improvements
+1. **Continuation history** - Attempted but caused performance issues
+2. **Reverse futility pruning** - Not yet implemented
+3. **Singular extensions** - Currently disabled
+4. **Evaluation simplification** - Still complex with many overlapping terms
 
 ## Perft Validation
 - Perft 1: 20 PASS
