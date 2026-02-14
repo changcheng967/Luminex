@@ -1841,69 +1841,6 @@ Value evaluate(const Position& pos) {
         }
     }
 
-    // Knight outpost bonus: knight on square where it can't be attacked by enemy pawns
-    for (int c_idx = 0; c_idx < 2; ++c_idx) {
-        Color us = Color(c_idx);
-        Color them = Color(us ^ 1);
-        Sign sign = (us == WHITE) ? 1 : -1;
-
-        Bitboard our_knights = pos.pieces(us, KNIGHT);
-        Bitboard their_pawns = pos.pieces(them, PAWN);
-
-        while (our_knights) {
-            Square knight_sq = pop_lsb(our_knights);
-
-            // Check if knight is in enemy territory (rank 4-6 for white, 2-4 for black)
-            bool in_enemy_territory = (us == WHITE && rank_of(knight_sq) >= RANK_4 && rank_of(knight_sq) <= RANK_6) ||
-                                      (us == BLACK && rank_of(knight_sq) >= RANK_3 && rank_of(knight_sq) <= RANK_5);
-
-            if (!in_enemy_territory) continue;
-
-            // Check if enemy pawns can attack this square
-            Bitboard pawn_attacks = 0;
-            Bitboard tmp = their_pawns;
-            while (tmp) {
-                Square pawn_sq = pop_lsb(tmp);
-                Bitboard pb = square_bb(pawn_sq);
-                if (them == WHITE) {
-                    if (file_of(pawn_sq) > FILE_A) pawn_attacks |= shift_nw(pb);
-                    if (file_of(pawn_sq) < FILE_H) pawn_attacks |= shift_ne(pb);
-                } else {
-                    if (file_of(pawn_sq) > FILE_A) pawn_attacks |= shift_sw(pb);
-                    if (file_of(pawn_sq) < FILE_H) pawn_attacks |= shift_se(pb);
-                }
-            }
-
-            if (!(pawn_attacks & square_bb(knight_sq))) {
-                // Knight is safe from pawn attacks - it's an outpost
-                // Extra bonus if supported by our pawn
-                bool supported = false;
-                Bitboard our_pawns = pos.pieces(us, PAWN);
-                Bitboard pawn_support = 0;
-                tmp = our_pawns;
-                while (tmp) {
-                    Square pawn_sq = pop_lsb(tmp);
-                    Bitboard pb = square_bb(pawn_sq);
-                    if (us == WHITE) {
-                        if (file_of(pawn_sq) > FILE_A) pawn_support |= shift_nw(pb);
-                        if (file_of(pawn_sq) < FILE_H) pawn_support |= shift_ne(pb);
-                    } else {
-                        if (file_of(pawn_sq) > FILE_A) pawn_support |= shift_sw(pb);
-                        if (file_of(pawn_sq) < FILE_H) pawn_support |= shift_se(pb);
-                    }
-                }
-
-                if (pawn_support & square_bb(knight_sq)) {
-                    supported = true;
-                }
-
-                // Outpost bonus - higher if supported
-                mg_score += sign * (supported ? 40 : 25);
-                eg_score += sign * (supported ? 30 : 15);
-            }
-        }
-    }
-
     // Material imbalance penalty: losing material in opening is very bad
     int current_ply = pos.game_ply();
     if (current_ply < 30) {
