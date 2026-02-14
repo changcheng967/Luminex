@@ -887,11 +887,16 @@ Move search(Position& pos, Limits& lim) {
         check_time();
         if (stop.load(std::memory_order_relaxed)) break;
 
-        // Aspiration window - disabled for stability
-        // Score oscillation between depths was causing excessive re-searches
+        // Aspiration window - use previous depth's score
+        // Start with very wide window for stability
         Value alpha = -VALUE_INFINITE;
         Value beta = VALUE_INFINITE;
-        int aspiration_delta = 1000;  // Effectively disabled
+        int aspiration_delta = 200;  // Wide window to minimize re-searches
+
+        if (root_depth >= 5 && best_value > -VALUE_KNOWN_WIN && best_value < VALUE_KNOWN_WIN) {
+            alpha = std::max(Value(-VALUE_INFINITE), Value(best_value - aspiration_delta));
+            beta = std::min(Value(VALUE_INFINITE), Value(best_value + aspiration_delta));
+        }
 
         // Generate moves
         ExtMove moves[MAX_MOVES];
