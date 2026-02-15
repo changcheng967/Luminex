@@ -17,25 +17,9 @@ namespace luminex {
 static Position pos;
 
 // Check for stop command with stdin polling (for Windows synchronous search)
+// DISABLED: stdin polling is causing stalls. Rely on time management only.
 bool check_for_stop_command() {
-    if (stop.load(std::memory_order_relaxed)) {
-        return true;
-    }
-
-#ifdef _WIN32
-    // Simple non-blocking check for stdin
-    HANDLE h = GetStdHandle(STD_INPUT_HANDLE);
-    DWORD avail = 0;
-
-    // Check if there's any data available
-    if (PeekNamedPipe(h, nullptr, 0, nullptr, &avail, nullptr) && avail > 0) {
-        // There's data in the pipe - set stop flag to break out of search
-        // The UCI loop will process the actual command after search returns
-        stop.store(true, std::memory_order_relaxed);
-        return true;
-    }
-#endif
-    return false;
+    return stop.load(std::memory_order_relaxed);
 }
 
 void handle_uci() {
