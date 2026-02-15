@@ -81,6 +81,25 @@ int main(int argc, char* argv[]) {
         return 0;
     }
 
+    // Check for eval mode
+    if (argc > 1 && std::string(argv[1]) == "eval") {
+        Position pos;
+        if (argc > 2) {
+            // Use provided FEN
+            std::string fen;
+            for (int i = 2; i < argc; ++i) {
+                if (i > 2) fen += " ";
+                fen += argv[i];
+            }
+            pos.set(fen);
+        } else {
+            pos.set("rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1");
+        }
+        std::cout << "FEN: " << pos.fen() << std::endl;
+        std::cout << "Static eval: " << evaluate(pos) << std::endl;
+        return 0;
+    }
+
     // Check for bench mode
     if (argc > 1 && std::string(argv[1]) == "bench") {
         Position pos;
