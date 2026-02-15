@@ -201,10 +201,10 @@ constexpr Value VALUE_KNOWN_WIN = 15000;
 
 // Piece values for evaluation
 constexpr Value PAWN_VALUE   = 100;
-constexpr Value KNIGHT_VALUE = 320;
+constexpr Value KNIGHT_VALUE = 330;  // Increased from 320
 constexpr Value BISHOP_VALUE = 330;
 constexpr Value ROOK_VALUE   = 500;
-constexpr Value QUEEN_VALUE  = 900;
+constexpr Value QUEEN_VALUE  = 1000;  // Increased from 900
 
 // Piece-square table values
 constexpr Value PST_MG = 0;

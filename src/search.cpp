@@ -160,9 +160,9 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
         return eval_cached(pos);
     }
 
-    // Don't search captures beyond depth -1
-    // Very shallow qsearch to prevent tree explosion at high root depths
-    if (depth < -1) {
+    // Search captures to depth -4 to avoid horizon effect
+    // Balance between tactical vision and search time
+    if (depth < -4) {
         return eval_cached(pos);
     }
 
@@ -353,8 +353,9 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
     }
 
     // Razoring: at low depths, if eval is far below alpha, try qsearch to confirm
+    // Less aggressive margin to reduce tactical blindness
     if (!pv_node && !pos.is_check() && depth <= 3) {
-        Value razor_margin = 400 + depth * 100;  // More aggressive margin
+        Value razor_margin = 300 + depth * 50;  // Less aggressive: depth 1=350, depth 3=450
         if (eval + razor_margin < alpha) {
             // Try quiescence search to confirm the position is really losing
             Value qsearch_value = qsearch(pos, ss, alpha - 1, alpha, 0);
@@ -520,9 +521,8 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
         }
 
         // Late move pruning: prune quiet moves after examining a reasonable number
-        // Use depth-based threshold: at depth 1 allow 4 moves, depth 4 allow 16, depth 8 allow 24
-        // This is more aggressive than 3+depth² for high depths
-        int lmp_threshold = 4 + depth * 3;  // depth 1=7, depth 4=16, depth 8=28
+        // Less aggressive threshold to reduce tactical blindness
+        int lmp_threshold = 6 + depth * 4;  // depth 1=10, depth 4=22, depth 8=38
         if (!pv_node && ss->ply > 0 && moves_played >= lmp_threshold &&
             !m.is_capture() && !m.is_promotion() && !m.is_castling()) {
             continue;  // Skip very late quiet moves

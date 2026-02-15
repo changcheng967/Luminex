@@ -610,10 +610,10 @@ Value evaluate(const Position& pos) {
             mg_score += sign * PST_MG_TABLE[int(c)][int(KNIGHT)][int(sq)];
             eg_score += sign * PST_EG_TABLE[int(c)][int(KNIGHT)][int(sq)];
 
-            // Knight mobility - standard weights
+            // Knight mobility - increased weights for better piece activity
             int mobility = popcount(knight_attacks_bb(sq) & ~pos.pieces(c));
-            mg_score += sign * mobility * 4;
-            eg_score += sign * mobility * 6;
+            mg_score += sign * mobility * 5;  // Was 4
+            eg_score += sign * mobility * 10;  // Was 6
 
             // Knight outpost bonus: knight in enemy territory, supported by pawn, not attackable by enemy pawns
             Rank r = rank_of(sq);
@@ -676,10 +676,10 @@ Value evaluate(const Position& pos) {
             mg_score += sign * PST_MG_TABLE[int(c)][int(BISHOP)][int(sq)];
             eg_score += sign * PST_EG_TABLE[int(c)][int(BISHOP)][int(sq)];
 
-            // Bishop mobility - standard weights
+            // Bishop mobility - increased weights for better piece activity
             int mobility = popcount(bb_diag_attacks(sq, pos.pieces()) & ~pos.pieces(c));
-            mg_score += sign * mobility * 5;
-            eg_score += sign * mobility * 7;
+            mg_score += sign * mobility * 6;   // Was 5
+            eg_score += sign * mobility * 14;  // Was 7
 
             // Trapped bishop detection: bishop on starting square blocked by own pawns
             // White: c1 blocked by b2+d2 pawns, f1 blocked by e2+g2 pawns
@@ -753,11 +753,11 @@ Value evaluate(const Position& pos) {
             mg_score += sign * PST_MG_TABLE[int(c)][int(ROOK)][int(sq)];
             eg_score += sign * PST_EG_TABLE[int(c)][int(ROOK)][int(sq)];
 
-            // Rook mobility - standard weights
+            // Rook mobility - increased weights for better piece activity
             Bitboard occupied = pos.pieces();
             int mobility = popcount((bb_rank_attacks(sq, occupied) | bb_file_attacks(sq, occupied)) & ~pos.pieces(c));
-            mg_score += sign * mobility * 3;
-            eg_score += sign * mobility * 5;
+            mg_score += sign * mobility * 3;  // Keep MG same
+            eg_score += sign * mobility * 8;  // Was 5
 
             // Rook on open file bonus
             File f = file_of(sq);
@@ -803,11 +803,11 @@ Value evaluate(const Position& pos) {
             mg_score += sign * PST_MG_TABLE[int(c)][int(QUEEN)][int(sq)];
             eg_score += sign * PST_EG_TABLE[int(c)][int(QUEEN)][int(sq)];
 
-            // Queen mobility - standard weights
+            // Queen mobility - increased weights for better piece activity
             Bitboard occupied = pos.pieces();
             int mobility = popcount(queen_attacks_bb(sq, occupied) & ~pos.pieces(c));
-            mg_score += sign * mobility * 2;
-            eg_score += sign * mobility * 3;
+            mg_score += sign * mobility * 3;  // Was 2
+            eg_score += sign * mobility * 5;  // Was 3
         }
 
         // King (position only, no material value)
