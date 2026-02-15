@@ -584,15 +584,14 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
         }
 
         // CRITICAL: Check evasion extension - when we're IN check, extend to find defensive moves
-        // LIMITED: Only extend at depth >= 5 to prevent search tree explosion
-        // At lower depths, qsearch handles evasions without needing extension
-        bool evasion_extension = (pos.is_check() && depth >= 5);
+        // Limited to depth >= 3 to prevent search explosion
+        bool evasion_extension = (pos.is_check() && depth >= 3);
 
         // Check extension: extend by one ply if move gives check (helps find tactical sequences)
-        // CONSERVATIVE: Only extend at depth >= 6 and for non-pawn pieces to prevent explosion
+        // Extend at depth >= 5 for discovered checks and dangerous piece checks
         bool gives_check = false;
         bool dangerous_check = false;
-        if (depth >= 6 && !pos.is_check()) {
+        if (depth >= 5 && !pos.is_check()) {
             PieceType pt = pos.piece_type_on(m.from());
             Square to = m.to();
             Color opponent = Color(int(pos.side_to_move()) ^ 1);
@@ -633,15 +632,14 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
         bool extension = false;
 
         // Evasion extension: HIGHEST priority - we're being attacked!
-        // LIMITED: Only extend evasions at depth >= 4 to prevent tree explosion
-        if (evasion_extension && depth >= 4) {
+        if (evasion_extension && depth >= 3) {
             extension = true;
         }
         // Singular extension: high priority (disabled for now)
         else if (m == tt_move && tt_move_is_singular) {
             extension = true;
         }
-        // Check extension: ONLY for dangerous checks (was all checks)
+        // Check extension: for dangerous checks at sufficient depth
         else if (dangerous_check) {
             extension = true;
         }
