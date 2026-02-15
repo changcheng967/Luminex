@@ -803,10 +803,10 @@ Move search(Position& pos, Limits& lim) {
         if (time_inc < 0) time_inc = 0;
 
         // CPW formula: base/20 + inc/2
-        int movestogo = (limits.movestogo > 0) ? limits.movestogo + 2 : 20;
-        // The +2 is the CPW safety buffer: assume slightly more moves than told
+        // Use fewer expected moves to get more time per move
+        int movestogo = (limits.movestogo > 0) ? limits.movestogo + 2 : 10;
 
-        ideal_time = time_left / movestogo + time_inc / 2;
+        ideal_time = time_left / movestogo + time_inc;
 
         // Hard bound: never use more than 1/3 of remaining time
         max_time = time_left / 3;
