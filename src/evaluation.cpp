@@ -399,6 +399,14 @@ Value evaluate(const Position& pos) {
     Score mg_score = 0;
     Score eg_score = 0;
 
+    // Debug: log evaluation components
+    #ifdef EVAL_DEBUG
+    std::ofstream debug_log("eval_debug.txt", std::ios::app);
+    debug_log << "=== Evaluating position ===" << std::endl;
+    debug_log << "game_ply: " << pos.game_ply() << std::endl;
+    debug_log << "side_to_move: " << (pos.side_to_move() == WHITE ? "WHITE" : "BLACK") << std::endl;
+    #endif
+
     // Track bishop pairs and king danger
     int bishop_count[2] = {0, 0};
     int king_attackers[2] = {0, 0};
@@ -454,19 +462,8 @@ Value evaluate(const Position& pos) {
                 eg_score -= sign * 20;
             }
 
-            // Center pawn bonus: pawns on e4/d4 (white) or e5/d5 (black)
-            bool is_center_pawn = false;
-            if (c == WHITE) {
-                if ((sq == E4) || (sq == D4)) is_center_pawn = true;
-            } else {
-                if ((sq == E5) || (sq == D5)) is_center_pawn = true;
-            }
-
-            if (is_center_pawn) {
-                // Reduced bonus from 50/30 to 15/10 - less distortion, more realistic
-                mg_score += sign * 15;
-                eg_score += sign * 10;
-            }
+            // NOTE: Center pawn bonus removed to avoid double-counting with center occupation bonus
+            // (lines 1069-1070 already give +20 mg for occupying d4/e4/d5/e5)
         }
 
         // Advanced passed pawn evaluation - done after all pawns are processed
@@ -1014,13 +1011,15 @@ Value evaluate(const Position& pos) {
 
         controlled_squares = popcount(our_control);
 
-        // Bonus for space advantage
+        // Bonus for space advantage - scaled by game phase
+        // FIX: Reduce space bonus in opening (game_ply < 10) - pieces haven't developed yet
+        int space_scale = (pos.game_ply() < 10) ? 2 : (pos.game_ply() < 20) ? 4 : 6;
         if (controlled_squares >= 5) {
-            mg_score += sign * 50;
-            eg_score += sign * 10;
+            mg_score += sign * space_scale * 8;  // Max 48 cp in midgame
+            eg_score += sign * 2;
         } else if (controlled_squares >= 3) {
-            mg_score += sign * 15;
-            eg_score += sign * 5;
+            mg_score += sign * space_scale * 3;  // Max 18 cp in midgame
+            eg_score += sign * 1;
         }
     }
 
@@ -1094,10 +1093,11 @@ Value evaluate(const Position& pos) {
             // Penalty for missing center pawns - but reduced at game start for variety
             int missing = 2 - center_pawns;
             if (missing > 0) {
-                // Reduced penalty at start (game_ply < 6) to allow opening variety
-                // Full penalty kicks in after move 3
-                int base_penalty = (game_ply < 6) ? 40 : 120;
-                int scaling_penalty = (game_ply < 6) ? 10 : 30;
+                // FIX: Reduced penalty at game start to avoid excessive early penalties
+                // Early game (ply < 10): small penalty, scales up gradually
+                // Mid game (ply >= 10): moderate penalty
+                int base_penalty = (game_ply < 10) ? 10 : 40;
+                int scaling_penalty = (game_ply < 10) ? 3 : 10;
 
                 mg_score -= sign * missing * (base_penalty + game_ply * scaling_penalty);
                 eg_score -= sign * missing * ((base_penalty / 2) + game_ply * (scaling_penalty / 2));
@@ -1118,20 +1118,25 @@ Value evaluate(const Position& pos) {
                                   (us == BLACK && krank >= RANK_7 && krank <= RANK_8);
 
             if (!king_safe && king_in_center) {
-                // Check if e-pawn has moved from starting square
+                // Check if e-pawn has moved from starting square AND is on an advanced rank
+                // FIX: Actually check that the e-pawn (not just any pawn) has advanced
                 bool e_pawn_advanced = false;
                 if (us == WHITE) {
-                    // White e-pawn starts on e2
-                    e_pawn_advanced = !(our_pawns & square_bb(E2)) && (our_pawns & (BB_RANK_3 | BB_RANK_4 | BB_RANK_5));
+                    // White e-pawn starts on e2 - check if it's on ranks 3-5 (advanced)
+                    Bitboard e_file_pawns = our_pawns & file_bb(FILE_E);
+                    Bitboard advanced_e_pawn = e_file_pawns & (BB_RANK_3 | BB_RANK_4 | BB_RANK_5);
+                    e_pawn_advanced = (advanced_e_pawn != 0);
                 } else {
-                    // Black e-pawn starts on e7
-                    e_pawn_advanced = !(our_pawns & square_bb(E7)) && (our_pawns & (BB_RANK_3 | BB_RANK_4 | BB_RANK_5 | BB_RANK_6));
+                    // Black e-pawn starts on e7 - check if it's on ranks 3-6 (advanced from Black's perspective)
+                    Bitboard e_file_pawns = our_pawns & file_bb(FILE_E);
+                    Bitboard advanced_e_pawn = e_file_pawns & (BB_RANK_3 | BB_RANK_4 | BB_RANK_5 | BB_RANK_6);
+                    e_pawn_advanced = (advanced_e_pawn != 0);
                 }
 
                 if (e_pawn_advanced) {
                     // Penalty for opening e-file before king is safe
-                    // This is VERY dangerous - classic blunder
-                    int e_file_penalty = 150 + (game_ply * 20);
+                    // FIX: Reduced penalty - 150 is too harsh, use 60 base
+                    int e_file_penalty = 60 + (game_ply * 5);
                     mg_score -= sign * e_file_penalty;
                     eg_score -= sign * (e_file_penalty / 2);
                 }
@@ -1151,20 +1156,26 @@ Value evaluate(const Position& pos) {
             File f = file_of(sq);
             Rank r = rank_of(sq);
 
-            // Heavy penalty for a/h files (rim)
+            // Penalty for a/h files (rim) - only if developed there, not starting squares
             if (f == FILE_A || f == FILE_H) {
-                mg_score -= sign * 30;
-                eg_score -= sign * 15;
+                bool on_back_rank = (us == WHITE && r == RANK_1) || (us == BLACK && r == RANK_8);
+                if (!on_back_rank) {  // Don't penalize starting squares
+                    mg_score -= sign * 20;  // Reduced from 30
+                    eg_score -= sign * 10;
+                }
             }
-            // Lighter penalty for b/g files - discouraged in opening/middlegame
+            // Lighter penalty for b/g files - discouraged in opening but not terrible
+            // FIX: Only penalize if knight has LEFT the back rank (developed to b/g file)
             else if (f == FILE_B || f == FILE_G) {
-                // Strong penalty in early game when pieces should go to center
-                if (game_ply < 20) {  // Before move 10
-                    mg_score -= sign * 50;
-                    eg_score -= sign * 30;
-                } else if (game_ply < 40) {  // Before move 20
-                    mg_score -= sign * 30;
-                    eg_score -= sign * 15;
+                bool on_back_rank = (us == WHITE && r == RANK_1) || (us == BLACK && r == RANK_8);
+                if (!on_back_rank) {  // Don't penalize starting squares
+                    if (game_ply < 20) {  // Before move 10
+                        mg_score -= sign * 15;  // Reduced from 50
+                        eg_score -= sign * 10;
+                    } else if (game_ply < 40) {  // Before move 20
+                        mg_score -= sign * 10;
+                        eg_score -= sign * 5;
+                    }
                 }
             }
 
@@ -1882,6 +1893,14 @@ Value evaluate(const Position& pos) {
 
     // Interpolate between middle game and endgame
     Score score = (mg_score * phase + eg_score * (24 - phase)) / 24;
+
+    // DEBUG: Log score components
+    #ifdef EVAL_DEBUG
+    debug_log << "mg_score: " << mg_score << ", eg_score: " << eg_score << std::endl;
+    debug_log << "phase: " << phase << std::endl;
+    debug_log << "interpolated score: " << score << std::endl;
+    debug_log.close();
+    #endif
 
     // Tempo bonus: small advantage for having the move
     // Score is from WHITE'S perspective at this point
