@@ -178,7 +178,7 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
     ++nodes;
 
     // Check time every 2048 nodes - balance between responsiveness and overhead
-    if ((nodes & 2047) == 0) {
+    if ((nodes & 255) == 0) {
         check_time();
     }
 
@@ -291,7 +291,7 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
     ss->pv[ss->ply] = MOVE_NONE;
 
     // Check time every 2048 nodes - balance between responsiveness and overhead
-    if ((nodes & 2047) == 0) {
+    if ((nodes & 255) == 0) {
         check_time();
     }
 

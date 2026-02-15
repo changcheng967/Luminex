@@ -23,46 +23,17 @@ bool check_for_stop_command() {
     }
 
 #ifdef _WIN32
+    // Simple non-blocking check for stdin
     HANDLE h = GetStdHandle(STD_INPUT_HANDLE);
     DWORD avail = 0;
-    if (!PeekNamedPipe(h, nullptr, 0, nullptr, &avail, nullptr) || avail == 0) {
-        return false;
-    }
 
-    // Peek at the buffer to see if there's a "stop" or "quit" command
-    char buf[64];
-    DWORD bytesRead = 0;
-    DWORD peekSize = (avail < sizeof(buf) - 1) ? avail : sizeof(buf) - 1;
-    if (!PeekNamedPipe(h, buf, peekSize, &bytesRead, nullptr, nullptr) || bytesRead == 0) {
-        return false;
-    }
-    buf[bytesRead] = '\0';
-
-    // PREFIX match only - don't match "stop" inside "position startpos"
-    bool starts_with_stop = (bytesRead >= 4 && buf[0] == 's' && buf[1] == 't' && buf[2] == 'o' && buf[3] == 'p');
-    bool starts_with_quit = (bytesRead >= 4 && buf[0] == 'q' && buf[1] == 'u' && buf[2] == 'i' && buf[3] == 't');
-
-    if (!starts_with_stop && !starts_with_quit) {
-        return false;
-    }
-
-    // Verify newline exists before calling getline - otherwise it blocks forever
-    bool has_newline = false;
-    for (DWORD i = 0; i < bytesRead; ++i) {
-        if (buf[i] == '\n' || buf[i] == '\r') {
-            has_newline = true;
-            break;
-        }
-    }
-
-    if (has_newline) {
-        std::string line;
-        std::getline(std::cin, line);
+    // Check if there's any data available
+    if (PeekNamedPipe(h, nullptr, 0, nullptr, &avail, nullptr) && avail > 0) {
+        // There's data in the pipe - set stop flag to break out of search
+        // The UCI loop will process the actual command after search returns
         stop.store(true, std::memory_order_relaxed);
         return true;
     }
-
-    // No newline yet - don't consume, wait for complete line
 #endif
     return false;
 }
