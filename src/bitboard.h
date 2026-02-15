@@ -202,10 +202,10 @@ inline bool aligned(Square s1, Square s2, Square s3) {
 }
 
 // Distance between squares
-constexpr int distance(Square s1, Square s2) {
+inline int distance(Square s1, Square s2) {
     int f = std::abs(int(file_of(s1)) - int(file_of(s2)));
     int r = std::abs(int(rank_of(s1)) - int(rank_of(s2)));
-    return std::max(f, r);
+    return (f > r) ? f : r;
 }
 
 // Check if more than one bit is set

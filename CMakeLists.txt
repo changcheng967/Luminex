@@ -9,7 +9,7 @@ set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
 # Compiler flags for maximum performance
 if(MSVC)
-    add_compile_options(/W4 /WX /O2 /Ob2 /Ot /Oi /GL)
+    add_compile_options(/W4 /O2 /Ob2 /Ot /Oi /GL)
     add_link_options(/LTCG)
     # AVX-512 support
     add_compile_options(/arch:AVX512)

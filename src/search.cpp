@@ -106,9 +106,6 @@ static int max_time = 0;    // Maximum time to use
 
 // Check time - returns true if time limit exceeded
 bool check_time() {
-    // Check for stop command from GUI (non-blocking stdin polling)
-    check_for_stop_command();
-
     if (stop.load(std::memory_order_relaxed)) {
         return true;
     }
@@ -122,7 +119,7 @@ bool check_time() {
         auto now = std::chrono::steady_clock::now();
         int elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
             now - search_start).count();
-        if (elapsed >= (limits.movetime - 50)) {
+        if (elapsed >= limits.movetime) {
             stop = true;
             return true;
         }
@@ -143,8 +140,6 @@ bool check_time() {
     }
 
     // SAFETY: For depth-only searches (no time limit), add a 30-minute maximum
-    // This prevents infinite hangs during debugging or unusual positions
-    // while allowing deep searches to complete
     if (!limits.movetime && !limits.use_time_management() && limits.nodes == 0) {
         auto now = std::chrono::steady_clock::now();
         int elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
@@ -177,9 +172,15 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
 
     ++nodes;
 
-    // Check time every 2048 nodes - balance between responsiveness and overhead
-    if ((nodes & 255) == 0) {
+    // Check time every 64 nodes for better responsiveness
+    if ((nodes & 63) == 0) {
         check_time();
+    }
+
+    // SAFETY: Hard node limit to prevent runaway searches
+    if (nodes > 50000000) {  // 50 million nodes
+        stop = true;
+        return VALUE_ZERO;
     }
 
     // Check for draw
@@ -290,9 +291,15 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
     // Prevent stale PV data from being saved to TT on fail-low nodes
     ss->pv[ss->ply] = MOVE_NONE;
 
-    // Check time every 2048 nodes - balance between responsiveness and overhead
-    if ((nodes & 255) == 0) {
+    // Check time every 64 nodes for better responsiveness
+    if ((nodes & 63) == 0) {
         check_time();
+    }
+
+    // SAFETY: Hard node limit to prevent runaway searches
+    if (nodes > 50000000) {  // 50 million nodes
+        stop = true;
+        return VALUE_ZERO;
     }
 
     // Quiescence search at depth 0
@@ -790,6 +797,11 @@ Move search(Position& pos, Limits& lim) {
 
     TT.new_search();
     clear_eval_cache();
+
+    // Clear history and killer tables for new search
+    std::memset(history, 0, sizeof(history));
+    std::memset(killers, 0, sizeof(killers));
+    std::memset(counter_moves, 0, sizeof(counter_moves));
 
     // Initialize time management for tournament time controls
     // Using CPW formula: base/20 + inc/2
