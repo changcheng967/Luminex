@@ -60,8 +60,8 @@ uint64_t perft_divide(Position& pos, Depth depth) {
 int main(int argc, char* argv[]) {
     using namespace luminex;
 
-    // Disable output buffering for immediate UCI response
-    // Keep sync_with_stdio enabled for proper text mode handling
+    // CRITICAL: Unbuffered stdout for immediate UCI response
+    // Keep sync_with_stdio TRUE for proper getline/stdin interaction on Windows
     setvbuf(stdout, NULL, _IONBF, 0);
     std::ios_base::sync_with_stdio(true);
 

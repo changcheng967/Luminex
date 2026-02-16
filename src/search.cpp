@@ -4,6 +4,7 @@
 #include <chrono>
 #include <cmath>
 #include <cstdio>
+#include <sstream>
 
 namespace luminex {
 
@@ -106,6 +107,11 @@ static int max_time = 0;    // Maximum time to use
 
 // Check time - returns true if time limit exceeded
 bool check_time() {
+    // Check for stop command from GUI (stdin polling)
+    if (check_for_stop_command()) {
+        return true;
+    }
+
     if (stop.load(std::memory_order_relaxed)) {
         return true;
     }
@@ -171,8 +177,8 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
 
     ++nodes;
 
-    // Check time every 64 nodes for better responsiveness
-    if ((nodes & 63) == 0) {
+    // Check time every 8 nodes for quick response to stop commands
+    if ((nodes & 7) == 0) {
         check_time();
     }
 
@@ -499,11 +505,6 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
 
     // Singular extension DISABLED - too expensive, causes stalls
     bool tt_move_is_singular = false;
-
-    // Reverse futility pruning: if eval is far above beta, we can likely prune
-    if (!pv_node && !pos.is_check() && depth <= 6 && eval - 80 * depth >= beta) {
-        return eval;
-    }
 
     for (ExtMove* it = moves; it != end; ++it) {
         Move m = it->move;
@@ -1121,29 +1122,32 @@ Move search(Position& pos, Limits& lim) {
 }
 
 void uci_info([[maybe_unused]] const Position& pos, int depth, Value score, uint64_t node_count, int time_ms) {
-    std::cout << "info depth " << depth << " score ";
+    std::ostringstream oss;
+    oss << "info depth " << depth << " score ";
 
     // Handle mate scores
     // Note: -VALUE_INFINITE is not a mate score, it means no valid search result
     if (score >= VALUE_MATE_IN_MAX_PLY && score < VALUE_INFINITE) {
         // Mate in N moves (convert plies to moves)
         int mate_in = (VALUE_MATE - score + 1) / 2;
-        std::cout << "mate " << mate_in;
+        oss << "mate " << mate_in;
     } else if (score <= -VALUE_MATE_IN_MAX_PLY && score > -VALUE_INFINITE) {
         // Being mated in N moves
         int mate_in = -(VALUE_MATE + score + 1) / 2;
-        std::cout << "mate " << mate_in;
+        oss << "mate " << mate_in;
     } else {
         // Normal score in centipawns
         // Score is already from side-to-move's perspective (evaluate() returns side-to-move relative)
         int score_cp = score * 100 / PAWN_VALUE;
-        std::cout << "cp " << score_cp;
+        oss << "cp " << score_cp;
     }
 
-    std::cout << " nodes " << node_count
-              << " nps " << (time_ms > 0 ? node_count * 1000 / time_ms : 0)
-              << "\n";
-    std::cout.flush();
+    oss << " nodes " << node_count
+        << " nps " << (time_ms > 0 ? node_count * 1000 / time_ms : 0)
+        << "\n";
+
+    // Thread-safe output
+    uci_safe_output(oss.str());
 }
 
 } // namespace luminex

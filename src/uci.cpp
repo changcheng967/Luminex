@@ -3,22 +3,50 @@
 #include <chrono>
 #include <cstdarg>
 #include <iostream>
+#include <sstream>
 #include <string>
 #include <thread>
 #include <atomic>
-
-#ifdef _WIN32
-#include <windows.h>
-#endif
+#include <mutex>
 
 namespace luminex {
 
 // Position for UCI
 static Position pos;
 
-// Check for stop command - rely on time management, stdin polling causes stalls
+// Search thread management
+static std::thread search_thread;
+static std::mutex io_mutex;  // Mutex for stdout operations
+
+// Check for stop command - simply check the atomic flag
+// The main UCI loop handles receiving "stop" and setting this flag
 bool check_for_stop_command() {
     return stop.load(std::memory_order_relaxed);
+}
+
+// Thread-safe output
+static void safe_output(const std::string& msg) {
+    std::lock_guard<std::mutex> lock(io_mutex);
+    std::cout << msg << std::flush;
+}
+
+// Thread-safe output for search.cpp (exports the mutex functionality)
+void uci_safe_output(const std::string& msg) {
+    safe_output(msg);
+}
+
+// Worker function that runs search in a separate thread
+static void search_worker(Position pos_copy, Limits lim) {
+    Move best_move = search(pos_copy, lim);
+
+    // Output best move directly from search thread (thread-safe)
+    std::ostringstream oss;
+    if (best_move != MOVE_NONE) {
+        oss << "bestmove " << best_move << "\n";
+    } else {
+        oss << "bestmove 0000\n";
+    }
+    safe_output(oss.str());
 }
 
 void handle_uci() {
@@ -29,24 +57,17 @@ void handle_uci() {
     // CRITICAL: Initialize evaluation tables (PST mirroring)
     init_evaluation();
 
-    std::cout << "id name " << ENGINE_NAME << " " << ENGINE_VERSION << "\n";
-    std::cout.flush();
-    std::cout << "id author " << ENGINE_AUTHOR << "\n";
-    std::cout.flush();
-    // Declare UCI options
-    std::cout << "option name Hash type spin default 128 min 1 max 1048576\n";
-    std::cout.flush();
-    std::cout << "option name Contempt type spin default 0 min -1000 max 1000\n";
-    std::cout.flush();
-    std::cout << "option name Clear Hash type button\n";
-    std::cout.flush();
-    std::cout << "uciok\n";
-    std::cout.flush();
+    // CRITICAL: Send each line separately with immediate flush (thread-safe)
+    safe_output("id name " + std::string(ENGINE_NAME) + " " + ENGINE_VERSION + "\n");
+    safe_output("id author " + std::string(ENGINE_AUTHOR) + "\n");
+    safe_output("option name Hash type spin default 128 min 1 max 1048576\n");
+    safe_output("option name Contempt type spin default 0 min -1000 max 1000\n");
+    safe_output("option name Clear Hash type button\n");
+    safe_output("uciok\n");
 }
 
 void handle_isready() {
-    std::cout << "readyok\n";
-    std::cout.flush();
+    safe_output("readyok\n");
 }
 
 void handle_ucinewgame() {
@@ -158,6 +179,11 @@ void handle_position(Position& pos, const std::string& cmd) {
 }
 
 void handle_go(Position& pos, const std::string& cmd) {
+    // Wait for any previous search thread to finish and clean up
+    if (search_thread.joinable()) {
+        search_thread.join();
+    }
+
     TT.new_search();
 
     std::istringstream ss(cmd);
@@ -181,13 +207,10 @@ void handle_go(Position& pos, const std::string& cmd) {
         limits.depth = 6;
     }
 
-    Move best_move = search(pos, limits);
-    if (best_move != MOVE_NONE) {
-        std::cout << "bestmove " << best_move << "\n";
-    } else {
-        std::cout << "bestmove 0000\n";
-    }
-    std::cout.flush();
+    // Launch search thread - it will output bestmove when done
+    search_thread = std::thread(search_worker, pos, limits);
+
+    // Return immediately - main loop continues processing commands
 }
 
 void handle_setoption(const std::string& cmd) {
@@ -257,10 +280,23 @@ void uci_loop() {
         if (cmd == "uci") {
             handle_uci();
         } else if (cmd == "isready") {
-            handle_isready();
+            // Always respond to isready immediately, even during search
+            std::cout << "readyok\n" << std::flush;
         } else if (cmd == "ucinewgame") {
+            // Stop any running search
+            stop = true;
+            if (search_thread.joinable()) {
+                search_thread.join();
+            }
+            stop = false;
             handle_ucinewgame();
         } else if (cmd == "position") {
+            // If search is running, stop it first
+            stop = true;
+            if (search_thread.joinable()) {
+                search_thread.join();
+            }
+            stop = false;
             handle_position(pos, line);
         } else if (cmd == "go") {
             handle_go(pos, line);
@@ -268,13 +304,22 @@ void uci_loop() {
             handle_setoption(line);
         } else if (cmd == "stop") {
             stop = true;
+            // Don't wait - let search thread finish and output bestmove on its own
         } else if (cmd == "quit") {
+            stop = true;
+            if (search_thread.joinable()) {
+                search_thread.join();
+            }
             break;
         } else if (cmd == "d") {
             // Debug: print board
-            std::cout << pos.fen() << "\n";
-            std::cout.flush();
+            safe_output(pos.fen() + "\n");
         }
+    }
+
+    // Clean up search thread on exit
+    if (search_thread.joinable()) {
+        search_thread.join();
     }
 }
 

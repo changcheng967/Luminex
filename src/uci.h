@@ -22,4 +22,7 @@ void handle_quit();
 // UCI output
 void uci_send(const char* msg, ...);
 
+// Thread-safe output for use by search thread
+void uci_safe_output(const std::string& msg);
+
 } // namespace luminex
