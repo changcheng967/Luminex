@@ -304,7 +304,10 @@ void uci_loop() {
             handle_setoption(line);
         } else if (cmd == "stop") {
             stop = true;
-            // Don't wait - let search thread finish and output bestmove on its own
+            // Must join search thread to prevent CuteChess desync
+            if (search_thread.joinable()) {
+                search_thread.join();
+            }
         } else if (cmd == "quit") {
             stop = true;
             if (search_thread.joinable()) {

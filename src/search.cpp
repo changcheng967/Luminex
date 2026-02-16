@@ -34,6 +34,9 @@ int history[12][64];
 // Counter-move history: [prev_piece][prev_to][piece][to]
 int counter_moves[12][64][12][64];
 
+// Counter-move table: direct move suggestion [prev_piece][prev_to]
+Move counter_move_table[12][64];
+
 
 
 // Evaluation cache - store eval results to avoid recomputing expensive evals
@@ -345,6 +348,11 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
         return eval;
     }
 
+    // Reverse futility pruning: if eval is far above beta, prune immediately
+    if (!pv_node && !pos.is_check() && depth <= 7 && eval - 80 * depth >= beta) {
+        return eval;
+    }
+
     // Razoring: at low depths, if eval is far below alpha, try qsearch to confirm
     // Less aggressive margin to reduce tactical blindness
     if (!pv_node && !pos.is_check() && depth <= 3) {
@@ -464,6 +472,14 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
         else if (ss->ply < MAX_PLY) {
             if (m == killers[ss->ply][0]) score = 60000;
             else if (m == killers[ss->ply][1]) score = 50000;
+            // Counter-move table (direct move suggestion)
+            else if (ss->ply >= 1 && (ss - 1)->current_move != MOVE_NONE && (ss - 1)->moved_piece != NO_PIECE) {
+                Move prev_move = (ss - 1)->current_move;
+                Piece prev_pc = (ss - 1)->moved_piece;
+                if (m == counter_move_table[int(prev_pc)][int(prev_move.to())]) {
+                    score = 40000;
+                }
+            }
             // Counter-move history and history heuristic
             else {
                 Piece pc = pos.piece_on(m.from());
@@ -491,6 +507,10 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
     Value best_value = -VALUE_INFINITE;
     int moves_played = 0;
 
+    // Track quiet moves for history gravity (penalizing non-cutoff moves)
+    Move quiets_searched[64];
+    int quiet_count = 0;
+
     // Singular extension DISABLED - too expensive, causes stalls
     bool tt_move_is_singular = false;
 
@@ -508,8 +528,8 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
         }
 
         // Late move pruning: prune quiet moves after examining a reasonable number
-        // Less aggressive threshold to reduce tactical blindness
-        int lmp_threshold = 6 + depth * 4;  // depth 1=10, depth 4=22, depth 8=38
+        // Quadratic formula: more aggressive at high depths, permissive at low depths
+        int lmp_threshold = 3 + depth * depth;  // depth 1=4, depth 4=19, depth 8=67
         if (!pv_node && ss->ply > 0 && moves_played >= lmp_threshold &&
             !m.is_capture() && !m.is_promotion() && !m.is_castling()) {
             continue;  // Skip very late quiet moves
@@ -668,6 +688,11 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
 
         moves_played++;
 
+        // Track quiet moves for history gravity
+        if (!m.is_capture() && !m.is_promotion() && quiet_count < 64) {
+            quiets_searched[quiet_count++] = m;
+        }
+
         if (value > best_value) {
             best_value = value;
             best_move_found = m;
@@ -709,6 +734,18 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
 
                             // Clip individual counter-move entry to avoid expensive full table halving
                             if (cm > 8000) cm = 8000;
+
+                            // Update counter-move table (direct move suggestion)
+                            counter_move_table[int(prev_pc)][int(prev_move.to())] = m;
+                        }
+                    }
+
+                    // History gravity: penalize all previously searched quiet moves
+                    for (int i = 0; i < quiet_count - 1; ++i) {
+                        Move qm = quiets_searched[i];
+                        Piece qpc = pos.piece_on(qm.from());
+                        if (qpc != NO_PIECE) {
+                            history[int(qpc)][int(qm.to())] -= depth * depth;
                         }
                     }
                 }
