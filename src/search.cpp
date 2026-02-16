@@ -161,7 +161,6 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
     }
 
     // Search captures to depth -4 to avoid horizon effect
-    // Balance between tactical vision and search time
     if (depth < -4) {
         return eval_cached(pos);
     }
@@ -498,14 +497,8 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
     Value best_value = -VALUE_INFINITE;
     int moves_played = 0;
 
-    // Singular extension DISABLED for speed - expensive feature
+    // Singular extension DISABLED - too expensive, causes stalls
     bool tt_move_is_singular = false;
-    /*
-    if (depth >= 6 && pv_node && tt_move != MOVE_NONE && found &&
-        (tte->bound() & BOUND_LOWER) && tt_depth >= depth - 3) {
-        // ... singular extension code disabled ...
-    }
-    */
 
     for (ExtMove* it = moves; it != end; ++it) {
         Move m = it->move;

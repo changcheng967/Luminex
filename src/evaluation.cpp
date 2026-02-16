@@ -877,41 +877,6 @@ Value evaluate(const Position& pos) {
         }
 
         mg_score -= sign * open_file_penalty;
-
-        // Penalty for advanced pawns near king (weakening king safety)
-        // Especially bad in opening: pawns like g4 for white or g5 for black
-        if (pos.game_ply() < 40) {  // Opening phase
-            Bitboard king_side_pawns = pos.pieces(c, PAWN);
-            int advanced_pawn_penalty = 0;
-
-            while (king_side_pawns) {
-                Square psq = pop_lsb(king_side_pawns);
-                Rank pr = rank_of(psq);
-                File pf = file_of(psq);
-
-                // Check if pawn is advanced near the king
-                bool near_king = (pf >= kfile - 2 && pf <= kfile + 2);
-
-                if (near_king) {
-                    // White penalty: pawns on rank 3+ in front of king
-                    // Black penalty: pawns on rank 6- in front of king
-                    bool advanced = false;
-                    if (c == WHITE && pr >= RANK_3) advanced = true;
-                    if (c == BLACK && pr <= RANK_6) advanced = true;
-
-                    if (advanced) {
-                        // Extra penalty for f/g/h pawns (kingside)
-                        if (pf >= FILE_F) {
-                            advanced_pawn_penalty += 40;  // Large penalty for kingside pawn advances
-                        } else {
-                            advanced_pawn_penalty += 20;  // Smaller penalty for central pawn advances
-                        }
-                    }
-                }
-            }
-
-            mg_score -= sign * advanced_pawn_penalty;
-        }
     }
 
     // Bishop pair bonus
@@ -1011,21 +976,17 @@ Value evaluate(const Position& pos) {
 
         controlled_squares = popcount(our_control);
 
-        // Bonus for space advantage - scaled by game phase
-        // FIX: Reduce space bonus in opening (game_ply < 10) - pieces haven't developed yet
-        int space_scale = (pos.game_ply() < 10) ? 2 : (pos.game_ply() < 20) ? 4 : 6;
+        // Bonus for space advantage
         if (controlled_squares >= 5) {
-            mg_score += sign * space_scale * 8;  // Max 48 cp in midgame
+            mg_score += sign * 30;
             eg_score += sign * 2;
         } else if (controlled_squares >= 3) {
-            mg_score += sign * space_scale * 3;  // Max 18 cp in midgame
+            mg_score += sign * 15;
             eg_score += sign * 1;
         }
     }
 
     // Center control bonus: extra value for controlling center squares (d4, d5, e4, e5)
-    int game_ply = pos.game_ply();  // Get once for use in multiple sections
-
     Bitboard center_squares = 0;
     center_squares |= square_bb(D4);
     center_squares |= square_bb(D5);
@@ -1067,89 +1028,14 @@ Value evaluate(const Position& pos) {
 
         mg_score += sign * (center_control_count * 10 + center_occupation_count * 20);
         eg_score += sign * (center_control_count * 5 + center_occupation_count * 10);
-
-        // Penalty for not having center pawns (d4/e4 for white, d5/e5 for black) in opening
-        // But allow variety - reduce penalty at very start to avoid always playing d4/e4 immediately
-        // CRITICAL FIX: Only apply penalty to side that has had chance to move (don't penalize black at ply 1)
-        if (game_ply < 20) {  // Before move 10
-            // Skip penalty if this side hasn't had a full turn yet
-            // At ply 0 (white to move), white gets no penalty
-            // At ply 1 (black to move), white gets penalty but black doesn't (black hasn't moved yet)
-            // At ply 2+ (white to move), both sides get penalty
-            bool this_side_has_moved = (us == WHITE && game_ply >= 1) || (us == BLACK && game_ply >= 2);
-            if (!this_side_has_moved) {
-                // Don't penalize this side yet - they haven't had a chance to develop
-                continue;
-            }
-
-            Bitboard our_pawns = pos.pieces(us, PAWN);
-            bool has_d4 = (us == WHITE && (our_pawns & square_bb(D4))) ||
-                           (us == BLACK && (our_pawns & square_bb(D5)));
-            bool has_e4 = (us == WHITE && (our_pawns & square_bb(E4))) ||
-                           (us == BLACK && (our_pawns & square_bb(E5)));
-
-            int center_pawns = (has_d4 ? 1 : 0) + (has_e4 ? 1 : 0);
-
-            // Penalty for missing center pawns - but reduced at game start for variety
-            int missing = 2 - center_pawns;
-            if (missing > 0) {
-                // FIX: Reduced penalty at game start to avoid excessive early penalties
-                // Early game (ply < 10): small penalty, scales up gradually
-                // Mid game (ply >= 10): moderate penalty
-                int base_penalty = (game_ply < 10) ? 10 : 40;
-                int scaling_penalty = (game_ply < 10) ? 3 : 10;
-
-                mg_score -= sign * missing * (base_penalty + game_ply * scaling_penalty);
-                eg_score -= sign * missing * ((base_penalty / 2) + game_ply * (scaling_penalty / 2));
-            }
-
-            // Penalty for early e-pawn advance before castling - opens e-file against king
-            // This is a critical opening principle: don't open the e-file early if king is in center
-            Square ksq = pos.king_sq(us);
-            Rank krank = rank_of(ksq);
-            File kfile = file_of(ksq);
-
-            // Check if king has castled or is on safe back rank square
-            bool king_safe = (us == WHITE && krank == RANK_1 && (kfile == FILE_G || kfile == FILE_C)) ||
-                             (us == BLACK && krank == RANK_8 && (kfile == FILE_G || kfile == FILE_C));
-
-            // Also consider king still in center as unsafe
-            bool king_in_center = (us == WHITE && krank >= RANK_1 && krank <= RANK_2) ||
-                                  (us == BLACK && krank >= RANK_7 && krank <= RANK_8);
-
-            if (!king_safe && king_in_center) {
-                // Check if e-pawn has moved from starting square AND is on an advanced rank
-                // FIX: Actually check that the e-pawn (not just any pawn) has advanced
-                bool e_pawn_advanced = false;
-                if (us == WHITE) {
-                    // White e-pawn starts on e2 - check if it's on ranks 3-5 (advanced)
-                    Bitboard e_file_pawns = our_pawns & file_bb(FILE_E);
-                    Bitboard advanced_e_pawn = e_file_pawns & (BB_RANK_3 | BB_RANK_4 | BB_RANK_5);
-                    e_pawn_advanced = (advanced_e_pawn != 0);
-                } else {
-                    // Black e-pawn starts on e7 - check if it's on ranks 3-6 (advanced from Black's perspective)
-                    Bitboard e_file_pawns = our_pawns & file_bb(FILE_E);
-                    Bitboard advanced_e_pawn = e_file_pawns & (BB_RANK_3 | BB_RANK_4 | BB_RANK_5 | BB_RANK_6);
-                    e_pawn_advanced = (advanced_e_pawn != 0);
-                }
-
-                if (e_pawn_advanced) {
-                    // Penalty for opening e-file before king is safe
-                    // FIX: Reduced penalty - 150 is too harsh, use 60 base
-                    int e_file_penalty = 60 + (game_ply * 5);
-                    mg_score -= sign * e_file_penalty;
-                    eg_score -= sign * (e_file_penalty / 2);
-                }
-            }
-        }
     }
 
-    // Development and opening principles evaluation
+    // Development and opening principles evaluation - simplified without game_ply dependencies
     for (int c_idx = 0; c_idx < 2; ++c_idx) {
         Color us = Color(c_idx);
         Sign sign = (us == WHITE) ? 1 : -1;
 
-        // Knights on rim penalty (a/h and b/g files are suboptimal in opening)
+        // Knights on rim penalty (a/h files are suboptimal)
         Bitboard our_knights = pos.pieces(us, KNIGHT);
         while (our_knights) {
             Square sq = pop_lsb(our_knights);
@@ -1159,23 +1045,9 @@ Value evaluate(const Position& pos) {
             // Penalty for a/h files (rim) - only if developed there, not starting squares
             if (f == FILE_A || f == FILE_H) {
                 bool on_back_rank = (us == WHITE && r == RANK_1) || (us == BLACK && r == RANK_8);
-                if (!on_back_rank) {  // Don't penalize starting squares
-                    mg_score -= sign * 20;  // Reduced from 30
+                if (!on_back_rank) {
+                    mg_score -= sign * 15;
                     eg_score -= sign * 10;
-                }
-            }
-            // Lighter penalty for b/g files - discouraged in opening but not terrible
-            // FIX: Only penalize if knight has LEFT the back rank (developed to b/g file)
-            else if (f == FILE_B || f == FILE_G) {
-                bool on_back_rank = (us == WHITE && r == RANK_1) || (us == BLACK && r == RANK_8);
-                if (!on_back_rank) {  // Don't penalize starting squares
-                    if (game_ply < 20) {  // Before move 10
-                        mg_score -= sign * 15;  // Reduced from 50
-                        eg_score -= sign * 10;
-                    } else if (game_ply < 40) {  // Before move 20
-                        mg_score -= sign * 10;
-                        eg_score -= sign * 5;
-                    }
                 }
             }
 
@@ -1183,131 +1055,6 @@ Value evaluate(const Position& pos) {
             if ((f == FILE_D || f == FILE_E) && r >= RANK_3 && r <= RANK_6) {
                 mg_score += sign * 15;
                 eg_score += sign * 10;
-            }
-        }
-
-        // Bishop development penalty: bishops still on starting squares after move 6
-        if (game_ply > 12) {  // After move 6 (12 plies)
-            Bitboard our_bishops = pos.pieces(us, BISHOP);
-            while (our_bishops) {
-                Square sq = pop_lsb(our_bishops);
-                Rank r = rank_of(sq);
-                File f = file_of(sq);
-
-                // Check if bishop is on starting square
-                bool on_start = false;
-                if (us == WHITE && r == RANK_1) {
-                    if ((f == FILE_C) || (f == FILE_F)) on_start = true;
-                } else if (us == BLACK && r == RANK_8) {
-                    if ((f == FILE_C) || (f == FILE_F)) on_start = true;
-                }
-
-                if (on_start) {
-                    mg_score -= sign * 15;
-                    eg_score -= sign * 10;
-                }
-            }
-        }
-
-        // Undeveloped minor piece penalty after move 10
-        if (game_ply > 20) {  // After move 10 (20 plies)
-            int undeveloped_minors = 0;
-
-            // Check knights on back rank
-            our_knights = pos.pieces(us, KNIGHT);
-            while (our_knights) {
-                Square sq = pop_lsb(our_knights);
-                Rank r = rank_of(sq);
-                if ((us == WHITE && r == RANK_1) || (us == BLACK && r == RANK_8)) {
-                    undeveloped_minors++;
-                }
-            }
-
-            // Check bishops on back rank
-            Bitboard our_bishops = pos.pieces(us, BISHOP);
-            while (our_bishops) {
-                Square sq = pop_lsb(our_bishops);
-                Rank r = rank_of(sq);
-                if ((us == WHITE && r == RANK_1) || (us == BLACK && r == RANK_8)) {
-                    undeveloped_minors++;
-                }
-            }
-
-            if (undeveloped_minors > 0) {
-                mg_score -= sign * undeveloped_minors * 20;
-                eg_score -= sign * undeveloped_minors * 10;
-            }
-        }
-
-        // Early queen development penalty - critical opening principle
-        // Developing queen early loses tempo and exposes it to attack
-        if (game_ply < 20) {  // Before move 10
-            Bitboard our_queens = pos.pieces(us, QUEEN);
-            while (our_queens) {
-                Square qsq = pop_lsb(our_queens);
-                Rank qrank = rank_of(qsq);
-
-                // Check if queen has left starting square (developed)
-                // White queen starts on d8 (which is d1 in relative terms, square index 3)
-                // Black queen starts on d0 (which is d8 in relative terms, square index 59)
-                bool queen_developed = false;
-                if (us == WHITE && qsq != D1) queen_developed = true;
-                if (us == BLACK && qsq != D8) queen_developed = true;
-
-                if (queen_developed) {
-                    // Count undeveloped minor pieces
-                    int undeveloped_minors_for_queen = 0;
-
-                    // White knights start on b1(g1) = squares 1, 6
-                    // Black knights start on b8(g8) = squares 57, 62
-                    Bitboard our_knights = pos.pieces(us, KNIGHT);
-                    while (our_knights) {
-                        Square nsq = pop_lsb(our_knights);
-                        bool knight_on_start = false;
-                        if (us == WHITE) {
-                            if (nsq == B1 || nsq == G1) knight_on_start = true;
-                        } else {
-                            if (nsq == B8 || nsq == G8) knight_on_start = true;
-                        }
-                        if (knight_on_start) undeveloped_minors_for_queen++;
-                    }
-
-                    // White bishops start on c1(f1) = squares 2, 5
-                    // Black bishops start on c8(f8) = squares 58, 61
-                    Bitboard our_bishops = pos.pieces(us, BISHOP);
-                    while (our_bishops) {
-                        Square bsq = pop_lsb(our_bishops);
-                        bool bishop_on_start = false;
-                        if (us == WHITE) {
-                            if (bsq == C1 || bsq == F1) bishop_on_start = true;
-                        } else {
-                            if (bsq == C8 || bsq == F8) bishop_on_start = true;
-                        }
-                        if (bishop_on_start) undeveloped_minors_for_queen++;
-                    }
-
-                    // Heavy penalty if queen developed before minor pieces
-                    // This is a classic opening mistake
-                    if (undeveloped_minors_for_queen >= 2) {
-                        int queen_penalty = 200;  // Very strong penalty
-                        // Scale by how early in the game
-                        int early_bonus = (20 - game_ply) * 10;
-                        mg_score -= sign * (queen_penalty + early_bonus);
-                        eg_score -= sign * (queen_penalty / 2 + early_bonus / 2);
-                    } else if (undeveloped_minors_for_queen == 1) {
-                        // Still bad, but less severe
-                        mg_score -= sign * 100;
-                        eg_score -= sign * 50;
-                    }
-
-                    // Extra penalty for queen on d3/d6 (common but usually bad early)
-                    File qfile = file_of(qsq);
-                    if ((us == WHITE && qrank == RANK_3 && qfile == FILE_D) ||
-                        (us == BLACK && qrank == RANK_6 && qfile == FILE_D)) {
-                        mg_score -= sign * 80;
-                        eg_score -= sign * 40;
-                    }
-                }
             }
         }
 
@@ -1346,109 +1093,33 @@ Value evaluate(const Position& pos) {
             eg_score -= sign * 20;
         }
 
-        // King in center penalty - apply earlier and stronger
-        if (game_ply > 4) {  // After just 2 moves - apply earlier!
-            bool king_in_center = (us == WHITE && krank >= RANK_3 && krank <= RANK_5) ||
-                                  (us == BLACK && krank >= RANK_4 && krank <= RANK_6);
+        // King in center penalty - simplified without game_ply
+        bool king_in_center = (us == WHITE && krank >= RANK_3 && krank <= RANK_5) ||
+                              (us == BLACK && krank >= RANK_4 && krank <= RANK_6);
 
-            if (king_in_center) {
-                // King in center is VERY dangerous - especially early
-                // Massive penalty that scales with how early it is
-                int base_penalty = 200;  // Increased from 120
-                int early_bonus = (40 - game_ply) * 10;  // More penalty for early king moves
-                int extra_penalty = (game_ply - 10) * 5;  // Grows as game progresses
-                mg_score -= sign * (base_penalty + early_bonus + extra_penalty);
-                eg_score -= sign * (100 + extra_penalty / 2);
+        if (king_in_center) {
+            mg_score -= sign * 100;
+            eg_score -= sign * 50;
 
-                // Extra penalty when enemy queen/rook is in our half
-                Color them = Color(us ^ 1);
-                Bitboard their_queens = pos.pieces(them, QUEEN);
-                Bitboard their_rooks = pos.pieces(them, ROOK);
-
-                // Check if enemy queen is in our half
-                if (us == WHITE) {
-                    // Our half is ranks 1-4
-                    if (their_queens & (BB_RANK_1 | BB_RANK_2 | BB_RANK_3 | BB_RANK_4)) {
-                        mg_score -= sign * 60;  // Enemy queen in our half = very bad
-                    }
-                    if (their_rooks & (BB_RANK_1 | BB_RANK_2 | BB_RANK_3 | BB_RANK_4)) {
-                        mg_score -= sign * 30;  // Enemy rooks in our half = bad
-                    }
-                } else {
-                    // Our half is ranks 5-8
-                    if (their_queens & (BB_RANK_5 | BB_RANK_6 | BB_RANK_7 | BB_RANK_8)) {
-                        mg_score -= sign * 60;
-                    }
-                    if (their_rooks & (BB_RANK_5 | BB_RANK_6 | BB_RANK_7 | BB_RANK_8)) {
-                        mg_score -= sign * 30;
-                    }
-                }
-
-                // Count open files near king (existing code)
-                Bitboard all_pawns = pos.pieces(PAWN);
-                int open_files_near_king = 0;
-
-                if (kfile > FILE_A && !(all_pawns & file_bb(File(kfile - 1)))) {
-                    open_files_near_king++;
-                }
-                if (!(all_pawns & file_bb(kfile))) {
-                    open_files_near_king++;
-                }
-                if (kfile < FILE_H && !(all_pawns & file_bb(File(kfile + 1)))) {
-                    open_files_near_king++;
-                }
-
-                mg_score -= sign * open_files_near_king * 40;
-                eg_score -= sign * open_files_near_king * 20;
-            }
-        }
-
-        // Unsafe king squares: d7/e7 for Black, d2/e2 for White
-        // These squares expose the king to central files without castling safety
-        // Also applies to d8/e8 for Black (king hasn't moved from back rank but is blocking)
-        if (!has_castled && game_ply > 4) {  // After move 2 - earlier to catch Kd7 issues
-            bool on_unsafe_square = false;
-            bool king_moved_from_back = false;
+            // Extra penalty when enemy queen/rook is in our half
+            Color them = Color(us ^ 1);
+            Bitboard their_queens = pos.pieces(them, QUEEN);
+            Bitboard their_rooks = pos.pieces(them, ROOK);
 
             if (us == WHITE) {
-                // d2 or e2 is dangerous - king blocks center pawns
-                if ((krank == RANK_2) && ((kfile == FILE_D) || (kfile == FILE_E))) {
-                    on_unsafe_square = true;
+                if (their_queens & (BB_RANK_1 | BB_RANK_2 | BB_RANK_3 | BB_RANK_4)) {
+                    mg_score -= sign * 40;
                 }
-                // King moved from e1 (hasn't castled but moved)
-                if (krank == RANK_1 && kfile != FILE_E) {
-                    king_moved_from_back = true;
+                if (their_rooks & (BB_RANK_1 | BB_RANK_2 | BB_RANK_3 | BB_RANK_4)) {
+                    mg_score -= sign * 20;
                 }
             } else {
-                // d7 or e7 is dangerous - same issue for Black
-                if ((krank == RANK_7) && ((kfile == FILE_D) || (kfile == FILE_E))) {
-                    on_unsafe_square = true;
+                if (their_queens & (BB_RANK_5 | BB_RANK_6 | BB_RANK_7 | BB_RANK_8)) {
+                    mg_score -= sign * 40;
                 }
-                // King moved from e8 (hasn't castled but moved)
-                // This catches Kd7 which is especially dangerous
-                if (krank != RANK_8) {
-                    king_moved_from_back = true;
+                if (their_rooks & (BB_RANK_5 | BB_RANK_6 | BB_RANK_7 | BB_RANK_8)) {
+                    mg_score -= sign * 20;
                 }
-            }
-
-            if (on_unsafe_square || king_moved_from_back) {
-                // Check if enemy has developed pieces that can attack
-                Color them = Color(us ^ 1);
-                bool enemy_has_queen = pos.pieces(them, QUEEN) != 0;
-                bool enemy_has_rook = pos.pieces(them, ROOK) != 0;
-                bool enemy_has_bishop = pos.pieces(them, BISHOP) != 0;
-
-                int unsafe_penalty = 100;  // Base penalty
-                if (king_moved_from_back) unsafe_penalty += 50;  // Extra for moved king
-                if (enemy_has_queen) unsafe_penalty += 80;
-                if (enemy_has_rook) unsafe_penalty += 40;
-                if (enemy_has_bishop) unsafe_penalty += 20;
-
-                // Extra penalty when game is still very young
-                if (game_ply < 10) unsafe_penalty += 50;
-
-                mg_score -= sign * unsafe_penalty;
-                eg_score -= sign * (unsafe_penalty / 2);
             }
         }
     }
@@ -1846,48 +1517,6 @@ Value evaluate(const Position& pos) {
                 mg_score += sign * 30;  // Significant bonus in middlegame
                 eg_score += sign * 30;
             }
-        }
-    }
-
-    // Material imbalance penalty: losing material in opening is very bad
-    int current_ply = pos.game_ply();
-    if (current_ply < 30) {
-        // Count material value for each side (excluding pawns)
-        int white_material = 0;
-        int black_material = 0;
-
-        Bitboard white_pieces = pos.pieces(WHITE);
-        while (white_pieces) {
-            Square sq = pop_lsb(white_pieces);
-            PieceType pt = pos.piece_type_on(sq);
-            if (pt == KNIGHT) white_material += 300;
-            else if (pt == BISHOP) white_material += 320;
-            else if (pt == ROOK) white_material += 500;
-            else if (pt == QUEEN) white_material += 900;
-        }
-
-        Bitboard black_pieces = pos.pieces(BLACK);
-        while (black_pieces) {
-            Square sq = pop_lsb(black_pieces);
-            PieceType pt = pos.piece_type_on(sq);
-            if (pt == KNIGHT) black_material += 300;
-            else if (pt == BISHOP) black_material += 320;
-            else if (pt == ROOK) black_material += 500;
-            else if (pt == QUEEN) black_material += 900;
-        }
-
-        // Large penalty for being down material in opening
-        int material_diff = white_material - black_material;
-        if (material_diff < 0) {
-            // White is down - penalize heavily
-            int penalty = -material_diff * (30 - current_ply) / 10;
-            mg_score -= penalty * 2;
-            eg_score -= penalty;
-        } else if (material_diff > 0) {
-            // White is up - bonus
-            int bonus = material_diff * (30 - current_ply) / 15;
-            mg_score += bonus;
-            eg_score += bonus / 2;
         }
     }
 
