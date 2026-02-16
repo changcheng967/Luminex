@@ -280,8 +280,8 @@ void uci_loop() {
         if (cmd == "uci") {
             handle_uci();
         } else if (cmd == "isready") {
-            // Always respond to isready immediately, even during search
-            std::cout << "readyok\n" << std::flush;
+            // Always respond to isready immediately, even during search (thread-safe)
+            safe_output("readyok\n");
         } else if (cmd == "ucinewgame") {
             // Stop any running search
             stop = true;
