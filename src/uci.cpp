@@ -16,8 +16,7 @@ namespace luminex {
 // Position for UCI
 static Position pos;
 
-// Check for stop command with stdin polling (for Windows synchronous search)
-// DISABLED: stdin polling is causing stalls. Rely on time management only.
+// Check for stop command - rely on time management, stdin polling causes stalls
 bool check_for_stop_command() {
     return stop.load(std::memory_order_relaxed);
 }

@@ -500,6 +500,11 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
     // Singular extension DISABLED - too expensive, causes stalls
     bool tt_move_is_singular = false;
 
+    // Reverse futility pruning: if eval is far above beta, we can likely prune
+    if (!pv_node && !pos.is_check() && depth <= 6 && eval - 80 * depth >= beta) {
+        return eval;
+    }
+
     for (ExtMove* it = moves; it != end; ++it) {
         Move m = it->move;
 
@@ -788,11 +793,6 @@ Move search(Position& pos, Limits& lim) {
 
     TT.new_search();
     clear_eval_cache();
-
-    // Clear history and killer tables for new search
-    std::memset(history, 0, sizeof(history));
-    std::memset(killers, 0, sizeof(killers));
-    std::memset(counter_moves, 0, sizeof(counter_moves));
 
     // Initialize time management for tournament time controls
     // Using CPW formula: base/20 + inc/2
