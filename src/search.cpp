@@ -177,15 +177,9 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
 
     ++nodes;
 
-    // Check time every 8 nodes for quick response to stop commands
-    if ((nodes & 7) == 0) {
+    // Check time every 2048 nodes - thread model means stop is set externally
+    if ((nodes & 2047) == 0) {
         check_time();
-    }
-
-    // SAFETY: Hard node limit to prevent runaway searches
-    if (nodes > 50000000) {  // 50 million nodes
-        stop = true;
-        return VALUE_ZERO;
     }
 
     // Check for draw
@@ -296,15 +290,9 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
     // Prevent stale PV data from being saved to TT on fail-low nodes
     ss->pv[ss->ply] = MOVE_NONE;
 
-    // Check time every 64 nodes for better responsiveness
-    if ((nodes & 63) == 0) {
+    // Check time every 2048 nodes - thread model means stop is set externally
+    if ((nodes & 2047) == 0) {
         check_time();
-    }
-
-    // SAFETY: Hard node limit to prevent runaway searches
-    if (nodes > 50000000) {  // 50 million nodes
-        stop = true;
-        return VALUE_ZERO;
     }
 
     // Quiescence search at depth 0
@@ -771,12 +759,10 @@ Move search(Position& pos, Limits& lim) {
         bool is_checkmate = pos.is_check();
         if (is_checkmate) {
             // We are checkmated
-            std::cout << "info depth 1 score mate 0 nodes 0 nps 0" << std::endl;
-            std::cout.flush();
+            uci_safe_output("info depth 1 score mate 0 nodes 0 nps 0\n");
         } else {
             // We are stalemated
-            std::cout << "info depth 1 score cp 0 nodes 0 nps 0" << std::endl;
-            std::cout.flush();
+            uci_safe_output("info depth 1 score cp 0 nodes 0 nps 0\n");
         }
 
         return MOVE_NONE;  // No move to make
