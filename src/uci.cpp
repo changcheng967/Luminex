@@ -16,10 +16,9 @@ static Position pos;
 
 // Search thread management
 static std::thread search_thread;
-static std::mutex io_mutex;  // Mutex for stdout operations
+static std::mutex io_mutex;
 
 // Check for stop command - simply check the atomic flag
-// The main UCI loop handles receiving "stop" and setting this flag
 bool check_for_stop_command() {
     return stop.load(std::memory_order_relaxed);
 }
@@ -50,14 +49,9 @@ static void search_worker(Position pos_copy, Limits lim) {
 }
 
 void handle_uci() {
-    // CRITICAL FIX: Initialize TT with default size (128MB)
-    // Without this, table.empty() is true and all probes return dummy entry
     TT.resize(128);
-
-    // CRITICAL: Initialize evaluation tables (PST mirroring)
     init_evaluation();
 
-    // CRITICAL: Send each line separately with immediate flush (thread-safe)
     safe_output("id name " + std::string(ENGINE_NAME) + " " + ENGINE_VERSION + "\n");
     safe_output("id author " + std::string(ENGINE_AUTHOR) + "\n");
     safe_output("option name Hash type spin default 128 min 1 max 1048576\n");
@@ -71,11 +65,8 @@ void handle_isready() {
 }
 
 void handle_ucinewgame() {
-    // Clear transposition table
     TT.clear();
     TT.new_search();
-
-    // Reset position to starting position
     pos.set("rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1");
 }
 
@@ -91,24 +82,19 @@ void handle_position(Position& pos, const std::string& cmd) {
         fen = cmd.substr(pos_idx + 8);
     }
 
-    // Trim leading whitespace
     size_t start = fen.find_first_not_of(" \t\r\n");
     if (start != std::string::npos) {
         fen = fen.substr(start);
     }
 
-    // Trim trailing whitespace (including \r from Windows line endings)
     size_t end = fen.find_last_not_of(" \t\r\n");
     if (end != std::string::npos) {
         fen = fen.substr(0, end + 1);
     }
 
-    // Remove "startpos" prefix
     if (fen == "startpos") {
         fen = "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1";
-    }
-    // Remove "fen" prefix if present
-    else if (fen.size() >= 3 && fen.substr(0, 3) == "fen") {
+    } else if (fen.size() >= 3 && fen.substr(0, 3) == "fen") {
         size_t fen_start = fen.find_first_not_of(" \t", 3);
         if (fen_start != std::string::npos) {
             fen = fen.substr(fen_start);
@@ -119,21 +105,17 @@ void handle_position(Position& pos, const std::string& cmd) {
 
     pos.set(fen);
 
-    // Replay moves using legal move generation
-    // This ensures correct move flags and prevents position corruption
     if (moves_idx != std::string::npos) {
         std::string moves_str = cmd.substr(moves_idx + 6);
         std::istringstream ss(moves_str);
         std::string move_str;
 
         while (ss >> move_str) {
-            // Parse move directly from UCI string
             if (move_str.length() < 4) continue;
 
             Square from = Square((move_str[1] - '1') * 8 + (move_str[0] - 'a'));
             Square to = Square((move_str[3] - '1') * 8 + (move_str[2] - 'a'));
 
-            // Determine promotion type if present
             PieceType promo_pt = PT_NONE;
             if (move_str.length() > 4) {
                 switch (move_str[4]) {
@@ -144,9 +126,6 @@ void handle_position(Position& pos, const std::string& cmd) {
                 }
             }
 
-            // Match the UCI move against the legal move list to get correct flags
-            // This is the standard approach (used by Stockfish) and avoids all
-            // flag-construction bugs for castling, en passant, captures, promotions, etc.
             ExtMove legal_moves[MAX_MOVES];
             ExtMove* legal_end = generate<GEN_LEGAL>(pos, legal_moves);
             Move matched = MOVE_NONE;
@@ -165,8 +144,6 @@ void handle_position(Position& pos, const std::string& cmd) {
             }
 
             if (matched == MOVE_NONE) {
-                // Move not found in legal moves - position may be corrupt
-                // Reset to startpos as a safety measure
                 pos.set("rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1");
                 return;
             }
@@ -179,7 +156,7 @@ void handle_position(Position& pos, const std::string& cmd) {
 }
 
 void handle_go(Position& pos, const std::string& cmd) {
-    // Wait for any previous search thread to finish and clean up
+    // Wait for any previous search thread to finish
     if (search_thread.joinable()) {
         search_thread.join();
     }
@@ -207,34 +184,29 @@ void handle_go(Position& pos, const std::string& cmd) {
         limits.depth = 6;
     }
 
-    // Launch search thread - it will output bestmove when done
+    // Launch search thread
     search_thread = std::thread(search_worker, pos, limits);
-
-    // Return immediately - main loop continues processing commands
 }
 
 void handle_setoption(const std::string& cmd) {
     std::istringstream ss(cmd);
     std::string token;
-    ss >> token; // "setoption"
-    ss >> token; // "name"
+    ss >> token;
+    ss >> token;
 
     std::string name;
     std::string value;
 
-    // Get the option name (may contain spaces)
     while (ss >> token && token != "value") {
         if (!name.empty()) name += " ";
         name += token;
     }
 
-    // Get the option value
     while (ss >> token) {
         if (!value.empty()) value += " ";
         value += token;
     }
 
-    // Handle known options
     if (name == "Contempt" || name == "UCI_AnalyseMode") {
         if (name == "Contempt") {
             params.contempt = std::stoi(value);
@@ -242,32 +214,21 @@ void handle_setoption(const std::string& cmd) {
     } else if (name == "Clear Hash") {
         TT.clear();
     } else if (name == "Hash") {
-        // CRITICAL FIX: Actually resize the TT when Hash option is set
         if (!value.empty()) {
             size_t hash_size = std::stoi(value);
             TT.resize(hash_size);
         }
-    } else if (name == "Threads") {
-        // Threads not implemented yet
     }
-}
-
-void handle_stop() {
-    stop = true;
-    // With synchronous search, the stop flag will be checked on next check_time()
-    // No need to wait for search or send bestmove - search() handles that
 }
 
 void handle_quit() {
     stop = true;
-    // Exit will be handled by uci_loop breaking
 }
 
 void uci_loop() {
     std::string line;
 
     while (std::getline(std::cin, line)) {
-        // Strip trailing \r (Windows line endings from GUIs)
         if (!line.empty() && line.back() == '\r') {
             line.pop_back();
         }
@@ -280,10 +241,8 @@ void uci_loop() {
         if (cmd == "uci") {
             handle_uci();
         } else if (cmd == "isready") {
-            // Always respond to isready immediately, even during search (thread-safe)
             safe_output("readyok\n");
         } else if (cmd == "ucinewgame") {
-            // Stop any running search
             stop = true;
             if (search_thread.joinable()) {
                 search_thread.join();
@@ -291,7 +250,6 @@ void uci_loop() {
             stop = false;
             handle_ucinewgame();
         } else if (cmd == "position") {
-            // If search is running, stop it first
             stop = true;
             if (search_thread.joinable()) {
                 search_thread.join();
@@ -304,9 +262,10 @@ void uci_loop() {
             handle_setoption(line);
         } else if (cmd == "stop") {
             stop = true;
-            // CRITICAL FIX: Do NOT join here - joining blocks the main UCI loop
-            // and prevents CuteChess from receiving bestmove in time.
-            // Thread is cleaned up in handle_go() before next search.
+            // Join the search thread on stop to ensure it's cleaned up
+            if (search_thread.joinable()) {
+                search_thread.join();
+            }
         } else if (cmd == "quit") {
             stop = true;
             if (search_thread.joinable()) {
@@ -314,12 +273,10 @@ void uci_loop() {
             }
             break;
         } else if (cmd == "d") {
-            // Debug: print board
             safe_output(pos.fen() + "\n");
         }
     }
 
-    // Clean up search thread on exit
     if (search_thread.joinable()) {
         search_thread.join();
     }
