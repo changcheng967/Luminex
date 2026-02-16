@@ -304,10 +304,9 @@ void uci_loop() {
             handle_setoption(line);
         } else if (cmd == "stop") {
             stop = true;
-            // Must join search thread to prevent CuteChess desync
-            if (search_thread.joinable()) {
-                search_thread.join();
-            }
+            // CRITICAL FIX: Do NOT join here - joining blocks the main UCI loop
+            // and prevents CuteChess from receiving bestmove in time.
+            // Thread is cleaned up in handle_go() before next search.
         } else if (cmd == "quit") {
             stop = true;
             if (search_thread.joinable()) {

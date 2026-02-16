@@ -44,7 +44,7 @@ struct EvalCacheEntry {
     uint64_t key;
     int32_t value;  // Changed from int16_t to match Value type
 };
-constexpr int EVAL_CACHE_SIZE = 8192;  // Power of 2 for fast indexing
+constexpr int EVAL_CACHE_SIZE = 65536;  // Power of 2 for fast indexing (increased for better hit rate)
 EvalCacheEntry eval_cache[EVAL_CACHE_SIZE];
 
 inline Value eval_cached(const Position& pos) {
@@ -180,9 +180,9 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
 
     ++nodes;
 
-    // Check time every 2048 nodes - thread model means stop is set externally
-    if ((nodes & 2047) == 0) {
-        check_time();
+    // Check time every 512 nodes for faster response to stop commands
+    if ((nodes & 511) == 0) {
+        if (check_time()) return VALUE_ZERO;
     }
 
     // Check for draw
@@ -220,6 +220,9 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
     int moves_searched = 0;
 
     for (ExtMove* it = moves; it != end; ++it) {
+        // FIX: Check for stop at top of move loop for faster response
+        if (stop.load(std::memory_order_relaxed)) break;
+
         if (in_check) {
             // For evasions, legal() check already done by GEN_LEGAL
         } else if (!pos.legal(it->move)) {
@@ -245,6 +248,13 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
         moves_searched++;
 
         Value value = -qsearch(pos, ss + 1, -beta, -alpha, depth - 1);
+
+        // CRITICAL: Check stop immediately after recursive call
+        if (stop.load(std::memory_order_relaxed)) {
+            pos.undo_move(it->move);
+            return VALUE_ZERO;
+        }
+
         pos.undo_move(it->move);
 
         if (value >= beta) {
@@ -293,9 +303,9 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
     // Prevent stale PV data from being saved to TT on fail-low nodes
     ss->pv[ss->ply] = MOVE_NONE;
 
-    // Check time every 2048 nodes - thread model means stop is set externally
-    if ((nodes & 2047) == 0) {
-        check_time();
+    // Check time every 512 nodes for faster response to stop commands
+    if ((nodes & 511) == 0) {
+        if (check_time()) return VALUE_ZERO;
     }
 
     // Quiescence search at depth 0
@@ -402,6 +412,9 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
         ExtMove* probcut_end = generate<GEN_CAPTURE>(pos, probcut_moves);
 
         for (ExtMove* it = probcut_moves; it != probcut_end; ++it) {
+            // FIX: Check for stop at top of move loop for faster response
+            if (stop.load(std::memory_order_relaxed)) break;
+
             Move m = it->move;
 
             // Skip losing captures
@@ -470,28 +483,28 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
         }
         // Killer moves and history for quiet moves
         else if (ss->ply < MAX_PLY) {
-            if (m == killers[ss->ply][0]) score = 60000;
-            else if (m == killers[ss->ply][1]) score = 50000;
-            // Counter-move table (direct move suggestion)
+            // FIX: Start with history as base for ALL quiet moves
+            Piece pc = pos.piece_on(m.from());
+            if (pc != NO_PIECE) {
+                score = history[int(pc)][int(m.to())];
+
+                // Add counter-move history bonus if we have a previous move
+                if (ss->ply >= 1 && (ss - 1)->current_move != MOVE_NONE && (ss - 1)->moved_piece != NO_PIECE) {
+                    Move prev_move = (ss - 1)->current_move;
+                    Piece prev_pc = (ss - 1)->moved_piece;
+                    score += counter_moves[int(prev_pc)][int(prev_move.to())][int(pc)][int(m.to())];
+                }
+            }
+
+            // Killer moves get bonus ON TOP of history (not instead of)
+            if (m == killers[ss->ply][0]) score += 60000;
+            else if (m == killers[ss->ply][1]) score += 50000;
+            // Counter-move table gets bonus ON TOP of history
             else if (ss->ply >= 1 && (ss - 1)->current_move != MOVE_NONE && (ss - 1)->moved_piece != NO_PIECE) {
                 Move prev_move = (ss - 1)->current_move;
                 Piece prev_pc = (ss - 1)->moved_piece;
                 if (m == counter_move_table[int(prev_pc)][int(prev_move.to())]) {
-                    score = 40000;
-                }
-            }
-            // Counter-move history and history heuristic
-            else {
-                Piece pc = pos.piece_on(m.from());
-                if (pc != NO_PIECE) {
-                    score = history[int(pc)][int(m.to())];
-
-                    // Add counter-move history bonus if we have a previous move
-                    if (ss->ply >= 2 && (ss - 1)->current_move != MOVE_NONE && (ss - 1)->moved_piece != NO_PIECE) {
-                        Move prev_move = (ss - 1)->current_move;
-                        Piece prev_pc = (ss - 1)->moved_piece;
-                        score += counter_moves[int(prev_pc)][int(prev_move.to())][int(pc)][int(m.to())];
-                    }
+                    score += 40000;
                 }
             }
         }
@@ -515,6 +528,9 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
     bool tt_move_is_singular = false;
 
     for (ExtMove* it = moves; it != end; ++it) {
+        // FIX: Check for stop at top of move loop for faster response
+        if (stop.load(std::memory_order_relaxed)) break;
+
         Move m = it->move;
 
         // SEE-based capture pruning: skip captures that lose material
@@ -669,19 +685,42 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
         if (do_lmr && new_depth > 0) {
             // Search with reduced depth first
             value = -search_worker(pos, ss + 1, -alpha - 1, -alpha, new_depth, !cut_node);
+            // CRITICAL: Check stop immediately after recursive call
+            if (stop.load(std::memory_order_relaxed)) {
+                pos.undo_move(m);
+                return VALUE_ZERO;
+            }
             if (value > alpha) {
                 // Failed high, re-search at full depth
                 value = -search_worker(pos, ss + 1, -beta, -alpha, depth - 1, !cut_node);
+                if (stop.load(std::memory_order_relaxed)) {
+                    pos.undo_move(m);
+                    return VALUE_ZERO;
+                }
             }
         } else if (!pv_node && moves_played > 0 && depth >= 3 && best_value > -VALUE_MATE_IN_MAX_PLY) {
             // PVS for non-PV nodes only - use zero-window scout for moves after the first
             value = -search_worker(pos, ss + 1, -alpha - 1, -alpha, depth - 1, !cut_node);
+            // CRITICAL: Check stop immediately after recursive call
+            if (stop.load(std::memory_order_relaxed)) {
+                pos.undo_move(m);
+                return VALUE_ZERO;
+            }
             if (value > alpha) {
                 value = -search_worker(pos, ss + 1, -beta, -alpha, depth - 1, !cut_node);
+                if (stop.load(std::memory_order_relaxed)) {
+                    pos.undo_move(m);
+                    return VALUE_ZERO;
+                }
             }
         } else {
             // Full window search
             value = -search_worker(pos, ss + 1, -beta, -alpha, depth - 1, !cut_node);
+            // CRITICAL: Check stop immediately after recursive call
+            if (stop.load(std::memory_order_relaxed)) {
+                pos.undo_move(m);
+                return VALUE_ZERO;
+            }
         }
 
         pos.undo_move(m);
@@ -831,16 +870,16 @@ Move search(Position& pos, Limits& lim) {
 
         // CPW formula: base/20 + inc/2
         // Use fewer expected moves to get more time per move
-        int movestogo = (limits.movestogo > 0) ? limits.movestogo + 2 : 10;
+        int movestogo = (limits.movestogo > 0) ? limits.movestogo + 2 : 20;
 
-        ideal_time = time_left / movestogo + time_inc;
+        ideal_time = time_left / movestogo + time_inc / 2;
 
-        // Hard bound: never use more than 1/3 of remaining time
-        max_time = time_left / 3;
+        // Hard bound: never use more than 1/4 of remaining time
+        max_time = time_left / 4;
 
-        // Overhead buffer: scale with time available
-        // At tc=1+0.01 (1000ms), overhead=10ms; at tc=60+0 (60000ms), overhead=50ms
-        const int overhead = std::max(5, std::min(50, time_left / 100));
+        // Larger overhead buffer for better stop response
+        // Need extra time to respond to stop command
+        const int overhead = std::max(20, std::min(100, time_left / 50));
         ideal_time = std::max(1, ideal_time - overhead);
         max_time = std::max(1, max_time - overhead);
 
@@ -1024,11 +1063,22 @@ Move search(Position& pos, Limits& lim) {
                     // Zero-window scout search
                     value = -search_worker(pos, stack + 1, -running_alpha - 1, -running_alpha,
                                            root_depth - 1, true);
+                    // CRITICAL: Check stop immediately after recursive call
+                    if (stop.load(std::memory_order_relaxed)) {
+                        pos.undo_move(it->move);
+                        break;
+                    }
                     // Re-search with full window only if scout found something better
                     if (value > running_alpha && value < beta) {
                         value = -search_worker(pos, stack + 1, -beta, -running_alpha,
                                                root_depth - 1, false);
                     }
+                }
+
+                // CRITICAL: Check stop after recursive search
+                if (stop.load(std::memory_order_relaxed)) {
+                    pos.undo_move(it->move);
+                    break;
                 }
 
                 pos.undo_move(it->move);
