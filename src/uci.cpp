@@ -8,8 +8,16 @@
 #include <thread>
 #include <atomic>
 #include <mutex>
+#include <cstdio>
+#ifdef _WIN32
+#include <windows.h>
+#include <process.h>
+#endif
 
 namespace luminex {
+
+// Global volatile stop flag - defined in search.cpp
+extern volatile bool g_stop_requested;
 
 // Position for UCI
 static Position pos;
@@ -18,14 +26,18 @@ static Position pos;
 static std::thread search_thread;
 static std::mutex io_mutex;
 
+// Debug logging
+static FILE* dbglog = nullptr;
+
 // Check for stop command - simply check the atomic flag
 bool check_for_stop_command() {
-    return stop.load(std::memory_order_relaxed);
+    return stop.load(std::memory_order_seq_cst);
 }
 
 // Thread-safe output
 static void safe_output(const std::string& msg) {
     std::lock_guard<std::mutex> lock(io_mutex);
+    if (dbglog) { fprintf(dbglog, "SEND: [%s]\n", msg.c_str()); fflush(dbglog); }
     std::cout << msg << std::flush;
 }
 
@@ -34,9 +46,25 @@ void uci_safe_output(const std::string& msg) {
     safe_output(msg);
 }
 
+// Debug log function for search.cpp
+void uci_debug_log(const char* format, ...) {
+    if (dbglog) {
+        va_list args;
+        va_start(args, format);
+        vfprintf(dbglog, format, args);
+        va_end(args);
+        fflush(dbglog);
+    }
+}
+
 // Worker function that runs search in a separate thread
 static void search_worker(Position pos_copy, Limits lim) {
+    if (dbglog) { fprintf(dbglog, "SEARCH_START: depth=%d time[W]=%d time[B]=%d movetime=%d\n",
+        lim.depth, lim.time[0], lim.time[1], lim.movetime); fflush(dbglog); }
+
     Move best_move = search(pos_copy, lim);
+
+    if (dbglog) { fprintf(dbglog, "SEARCH_DONE: about to send bestmove\n"); fflush(dbglog); }
 
     // Output best move directly from search thread (thread-safe)
     std::ostringstream oss;
@@ -51,7 +79,6 @@ static void search_worker(Position pos_copy, Limits lim) {
 void handle_uci() {
     TT.resize(128);
     init_evaluation();
-
     safe_output("id name " + std::string(ENGINE_NAME) + " " + ENGINE_VERSION + "\n");
     safe_output("id author " + std::string(ENGINE_AUTHOR) + "\n");
     safe_output("option name Hash type spin default 128 min 1 max 1048576\n");
@@ -222,13 +249,20 @@ void handle_setoption(const std::string& cmd) {
 }
 
 void handle_quit() {
-    stop = true;
+    g_stop_requested = true;
+    stop.store(true, std::memory_order_seq_cst);
 }
 
 void uci_loop() {
+    // Debug logging disabled - remove comment to enable
+    // dbglog = fopen("luminex_debug.log", "w");
+
     std::string line;
 
     while (std::getline(std::cin, line)) {
+        // Log received command
+        if (dbglog) { fprintf(dbglog, "RECV: [%s]\n", line.c_str()); fflush(dbglog); }
+
         if (!line.empty() && line.back() == '\r') {
             line.pop_back();
         }
@@ -243,31 +277,33 @@ void uci_loop() {
         } else if (cmd == "isready") {
             safe_output("readyok\n");
         } else if (cmd == "ucinewgame") {
-            stop = true;
+            stop.store(true, std::memory_order_seq_cst);
             if (search_thread.joinable()) {
                 search_thread.join();
             }
-            stop = false;
+            stop.store(false, std::memory_order_seq_cst);
             handle_ucinewgame();
         } else if (cmd == "position") {
-            stop = true;
+            stop.store(true, std::memory_order_seq_cst);
             if (search_thread.joinable()) {
                 search_thread.join();
             }
-            stop = false;
+            stop.store(false, std::memory_order_seq_cst);
             handle_position(pos, line);
         } else if (cmd == "go") {
             handle_go(pos, line);
         } else if (cmd == "setoption") {
             handle_setoption(line);
         } else if (cmd == "stop") {
-            stop = true;
-            // Join the search thread on stop to ensure it's cleaned up
-            if (search_thread.joinable()) {
-                search_thread.join();
-            }
+            if (dbglog) { fprintf(dbglog, "STOP_HANDLER: setting stop=true\n"); fflush(dbglog); }
+            g_stop_requested = true;  // Set volatile flag first for immediate visibility
+            stop.store(true, std::memory_order_seq_cst);
+            std::atomic_thread_fence(std::memory_order_seq_cst);  // Ensure visibility
+            // Do NOT join here - search thread will see flag and terminate
         } else if (cmd == "quit") {
-            stop = true;
+            g_stop_requested = true;
+            stop.store(true, std::memory_order_seq_cst);
+            std::atomic_thread_fence(std::memory_order_seq_cst);
             if (search_thread.joinable()) {
                 search_thread.join();
             }
@@ -280,6 +316,8 @@ void uci_loop() {
     if (search_thread.joinable()) {
         search_thread.join();
     }
+
+    if (dbglog) { fclose(dbglog); }
 }
 
 void uci_send(const char* msg, ...) {

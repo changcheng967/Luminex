@@ -10,6 +10,11 @@ namespace luminex {
 
 // Forward declaration - defined in uci.cpp
 extern bool check_for_stop_command();
+extern void uci_debug_log(const char* format, ...);
+
+// Global volatile stop flag for immediate response
+// This is set by the main thread when "stop" is received
+volatile bool g_stop_requested = false;
 
 // Search globals
 Limits limits;
@@ -110,6 +115,14 @@ static int max_time = 0;    // Maximum time to use
 
 // Check time - returns true if time limit exceeded
 bool check_time() {
+    // Memory barrier to ensure we see the latest stop flag
+    std::atomic_thread_fence(std::memory_order_seq_cst);
+
+    // Check volatile stop flag first for fastest response
+    if (g_stop_requested) {
+        return true;
+    }
+
     // Check for stop command from GUI (stdin polling)
     if (check_for_stop_command()) {
         return true;
@@ -174,15 +187,18 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
         return eval_cached(pos);
     }
 
-    if (stop.load(std::memory_order_relaxed)) {
+    // Memory barrier to ensure we see the latest stop flag
+    std::atomic_thread_fence(std::memory_order_seq_cst);
+
+    if (g_stop_requested || stop.load(std::memory_order_relaxed)) {
         return VALUE_ZERO;
     }
 
     ++nodes;
 
-    // Check time every 512 nodes for faster response to stop commands
-    if ((nodes & 511) == 0) {
-        if (check_time()) return VALUE_ZERO;
+    // Check stop every node for instant response
+    if (g_stop_requested || stop.load(std::memory_order_relaxed)) {
+        return VALUE_ZERO;
     }
 
     // Check for draw
@@ -284,7 +300,10 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
         return eval_cached(pos);
     }
 
-    if (stop.load(std::memory_order_relaxed)) {
+    // Memory barrier to ensure we see the latest stop flag
+    std::atomic_thread_fence(std::memory_order_seq_cst);
+
+    if (g_stop_requested || stop.load(std::memory_order_relaxed)) {
         return VALUE_ZERO;
     }
 
@@ -303,9 +322,9 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
     // Prevent stale PV data from being saved to TT on fail-low nodes
     ss->pv[ss->ply] = MOVE_NONE;
 
-    // Check time every 512 nodes for faster response to stop commands
-    if ((nodes & 511) == 0) {
-        if (check_time()) return VALUE_ZERO;
+    // Check stop every node for instant response
+    if (g_stop_requested || stop.load(std::memory_order_relaxed)) {
+        return VALUE_ZERO;
     }
 
     // Quiescence search at depth 0
@@ -816,6 +835,7 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
 // Root search with iterative deepening
 Move search(Position& pos, Limits& lim) {
     limits = lim;
+    g_stop_requested = false;
     stop = false;
     nodes = 0;
 
@@ -874,8 +894,9 @@ Move search(Position& pos, Limits& lim) {
 
         ideal_time = time_left / movestogo + time_inc / 2;
 
-        // Hard bound: never use more than 1/4 of remaining time
-        max_time = time_left / 4;
+        // Hard bound: never use more than 1/8 of remaining time
+        // Leave extra buffer to respond to stop before CuteChess timeout
+        max_time = time_left / 8;
 
         // Larger overhead buffer for better stop response
         // Need extra time to respond to stop command
@@ -928,15 +949,21 @@ Move search(Position& pos, Limits& lim) {
     int start_depth = 1;
 
     for (root_depth = start_depth; root_depth <= effective_depth; ++root_depth) {
+        // Check stop at the very start of each depth iteration
+        std::atomic_thread_fence(std::memory_order_seq_cst);
+        if (g_stop_requested || stop.load(std::memory_order_relaxed)) {
+            break;
+        }
+
         // Time management: stop before starting a new depth if we've used significant time
         // Always complete depth 1, then be conservative for deeper depths
         if (limits.use_time_management() && root_depth > 1) {
             auto now = std::chrono::steady_clock::now();
             int elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
                 now - search_start).count();
-            // Don't start a new depth if we've used more than half of ideal time
-            // (the real time guard is in check_time() which fires during search)
-            if (elapsed > ideal_time / 2) {
+            // Be very conservative: don't start a new depth if we've used more than 25% of ideal time
+            // This leaves time for the search to respond to stop
+            if (elapsed > ideal_time / 4) {
                 break;
             }
         }
@@ -1049,10 +1076,16 @@ Move search(Position& pos, Limits& lim) {
             Value running_alpha = alpha;  // PVS window only, NOT the aspiration bound
 
             for (ExtMove* it = moves; it != end; ++it) {
-                if (stop.load(std::memory_order_relaxed)) break;
+                if (g_stop_requested || stop.load(std::memory_order_relaxed)) break;
                 if (check_time()) break;
 
                 if (!pos.do_move(it->move)) continue;
+
+                // Check stop immediately after do_move
+                if (g_stop_requested || stop.load(std::memory_order_relaxed)) {
+                    pos.undo_move(it->move);
+                    break;
+                }
 
                 Value value;
                 // PVS: first move gets full window, rest get zero-window scout
@@ -1064,7 +1097,7 @@ Move search(Position& pos, Limits& lim) {
                     value = -search_worker(pos, stack + 1, -running_alpha - 1, -running_alpha,
                                            root_depth - 1, true);
                     // CRITICAL: Check stop immediately after recursive call
-                    if (stop.load(std::memory_order_relaxed)) {
+                    if (g_stop_requested || stop.load(std::memory_order_relaxed)) {
                         pos.undo_move(it->move);
                         break;
                     }
