@@ -42,6 +42,13 @@ test_*.exe
 # debug information files
 *.dwo
 
+# NNUE files (not used in HCE build)
+*.bin
+*.pt
+
+# Claude Code
+.claude/
+
 # Ignore the build directory
 build/
 

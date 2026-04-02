@@ -971,15 +971,14 @@ bool Position::see_ge(Move m, Value threshold) const {
     Square from = m.from();
     Square to = m.to();
 
-    // Piece value array (index by PieceType)
+    // Piece value array (index by PieceType: PAWN=0, KNIGHT=1, ...)
     constexpr Value piece_value[] = {
-        0,              // PT_NONE
         PAWN_VALUE,     // PAWN
         KNIGHT_VALUE,   // KNIGHT
         BISHOP_VALUE,   // BISHOP
         ROOK_VALUE,     // ROOK
         QUEEN_VALUE,    // QUEEN
-        0,              // KING (not used in SEE)
+        0,              // KING (infinite in reality, but 0 for SEE loop termination)
     };
 
     // Assume the move is made

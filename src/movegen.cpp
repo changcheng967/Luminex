@@ -58,7 +58,7 @@ ExtMove* generate_moves(const Position& pos, ExtMove* moveList) {
         if (pos.ep_square() != SQUARE_NONE) {
             ep_bb = square_bb(pos.ep_square());
         }
-        Bitboard targets = their_pieces | (T == GEN_EVASION ? 0 : ep_bb);
+        Bitboard targets = their_pieces | ep_bb;
         Bitboard attacks = pawn_attacks_bb(us, from) & targets;
 
         while (attacks) {
@@ -74,7 +74,7 @@ ExtMove* generate_moves(const Position& pos, ExtMove* moveList) {
                 }
             } else if (to == pos.ep_square()) {
                 // En passant
-                if constexpr (T == GEN_CAPTURE || T == GEN_ALL || T == GEN_LEGAL || T == GEN_NON_EVASION) {
+                if constexpr (T == GEN_CAPTURE || T == GEN_ALL || T == GEN_LEGAL || T == GEN_EVASION || T == GEN_NON_EVASION) {
                     *moveList++ = Move(from, to, MF_EN_PASSANT);
                 }
             } else {

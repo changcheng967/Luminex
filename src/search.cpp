@@ -214,7 +214,7 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
 
     if (!in_check) {
         // Stand pat only when NOT in check
-        Value eval = evaluate(pos);
+        Value eval = eval_cached(pos);
         if (eval >= beta) {
             return beta;
         }
@@ -489,8 +489,8 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
             PieceType captured = pos.piece_type_on(m.to());
             PieceType attacker = pos.piece_type_on(m.from());
 
-            // MVV-LVA as base score
-            static constexpr int piece_value[] = {0, 100, 320, 330, 500, 900, 0};
+            // MVV-LVA as base score (indexed by PieceType: PAWN=0, KNIGHT=1, ...)
+            static constexpr int piece_value[] = {100, 320, 330, 500, 900, 20000, 0};
             int mvv_lva = piece_value[captured] * 10 - piece_value[attacker];
 
             // Use SEE to distinguish winning/losing captures
@@ -543,14 +543,27 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
     Move quiets_searched[64];
     int quiet_count = 0;
 
-    // Singular extension DISABLED - too expensive, causes stalls
+    // Singular extension: check if TT move is significantly better than alternatives
     bool tt_move_is_singular = false;
+    if (tt_move != MOVE_NONE && !pv_node && found && tt_depth >= depth - 3 && depth >= 8 &&
+        (tte->bound() & BOUND_LOWER) && abs(tt_value) < VALUE_KNOWN_WIN) {
+        Value sBeta = Value(tt_value - depth * 2);
+        ss->excluded_move = tt_move;
+        Value singular_value = search_worker(pos, ss, sBeta - 1, sBeta, (depth - 1) / 2, cut_node);
+        ss->excluded_move = MOVE_NONE;
+        if (singular_value < sBeta) {
+            tt_move_is_singular = true;
+        }
+    }
 
     for (ExtMove* it = moves; it != end; ++it) {
         // FIX: Check for stop at top of move loop for faster response
         if (stop.load(std::memory_order_relaxed)) break;
 
         Move m = it->move;
+
+        // Skip excluded move (used by singular extension)
+        if (m == ss->excluded_move) continue;
 
         // SEE-based capture pruning: skip captures that lose material
         // More conservative than before - use SEE to evaluate actual exchange
@@ -758,9 +771,13 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
             if (value > alpha) {
                 alpha = value;
 
-                // Update PV
+                // Update PV - copy from child node
                 ss->pv[ss->ply] = it->move;
-                ss->pv[ss->ply + 1] = MOVE_NONE;
+                int i = 0;
+                for (; (ss + 1)->pv[(ss + 1)->ply + i] != MOVE_NONE && i < 60; ++i) {
+                    ss->pv[ss->ply + 1 + i] = (ss + 1)->pv[(ss + 1)->ply + i];
+                }
+                ss->pv[ss->ply + 1 + i] = MOVE_NONE;
             }
 
             if (value >= beta) {
@@ -888,23 +905,19 @@ Move search(Position& pos, Limits& lim) {
         if (time_left < 0) time_left = 0;
         if (time_inc < 0) time_inc = 0;
 
-        // CPW formula: base/20 + inc/2
-        // Use fewer expected moves to get more time per move
-        int movestogo = (limits.movestogo > 0) ? limits.movestogo + 2 : 20;
+        // Time allocation: use a reasonable fraction of remaining time
+        int movestogo = (limits.movestogo > 0) ? limits.movestogo + 2 : 30;
 
         ideal_time = time_left / movestogo + time_inc / 2;
 
-        // Hard bound: never use more than 1/8 of remaining time
-        // Leave extra buffer to respond to stop before CuteChess timeout
-        max_time = time_left / 8;
+        // Hard bound: never use more than 1/4 of remaining time
+        max_time = time_left / 4;
 
-        // Larger overhead buffer for better stop response
-        // Need extra time to respond to stop command
-        const int overhead = std::max(20, std::min(100, time_left / 50));
+        // Overhead for stop response latency
+        const int overhead = std::max(10, std::min(50, time_left / 100));
         ideal_time = std::max(1, ideal_time - overhead);
         max_time = std::max(1, max_time - overhead);
 
-        // Never exceed remaining time (overhead already subtracted above)
         max_time = std::min(max_time, time_left);
         ideal_time = std::min(ideal_time, max_time);
 
@@ -930,16 +943,8 @@ Move search(Position& pos, Limits& lim) {
         }
     }
 
-    // Age counter-move history
-    for (int i = 0; i < 12; ++i) {
-        for (int j = 0; j < 64; ++j) {
-            for (int k = 0; k < 12; ++k) {
-                for (int l = 0; l < 64; ++l) {
-                    counter_moves[i][j][k][l] /= 8;
-                }
-            }
-        }
-    }
+    // Clear counter-move history
+    std::memset(counter_moves, 0, sizeof(counter_moves));
 
     // Iterative deepening
     // When depth=0, search until time runs out (tournament time control)
@@ -961,9 +966,8 @@ Move search(Position& pos, Limits& lim) {
             auto now = std::chrono::steady_clock::now();
             int elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
                 now - search_start).count();
-            // Be very conservative: don't start a new depth if we've used more than 25% of ideal time
-            // This leaves time for the search to respond to stop
-            if (elapsed > ideal_time / 4) {
+            // Don't start a new depth if we've used more than 60% of ideal time
+            if (elapsed > ideal_time * 6 / 10) {
                 break;
             }
         }
@@ -984,7 +988,7 @@ Move search(Position& pos, Limits& lim) {
         // Start with very wide window for stability
         Value alpha = -VALUE_INFINITE;
         Value beta = VALUE_INFINITE;
-        int aspiration_delta = 200;  // Wide window to minimize re-searches
+        int aspiration_delta = 30;
 
         if (root_depth >= 5 && best_value > -VALUE_KNOWN_WIN && best_value < VALUE_KNOWN_WIN) {
             alpha = std::max(Value(-VALUE_INFINITE), Value(best_value - aspiration_delta));
@@ -1170,6 +1174,14 @@ Move search(Position& pos, Limits& lim) {
             best_move = depth_best_move;
         }
 
+        // Save root position to TT for PV extraction
+        if (depth_best_move != MOVE_NONE && !stop.load(std::memory_order_relaxed)) {
+            bool root_found;
+            TTEntry* root_tte = TT.probe(pos.key(), root_found);
+            root_tte->save(pos.key(), depth_best_value, true, BOUND_EXACT,
+                           root_depth, depth_best_move, VALUE_ZERO, TT.generation());
+        }
+
         root_score = depth_best_value;
 
         // Calculate elapsed time for NPS
@@ -1249,8 +1261,42 @@ void uci_info([[maybe_unused]] const Position& pos, int depth, Value score, uint
     }
 
     oss << " nodes " << node_count
-        << " nps " << (time_ms > 0 ? node_count * 1000 / time_ms : 0)
-        << "\n";
+        << " nps " << (time_ms > 0 ? node_count * 1000 / time_ms : 0);
+
+    // Extract PV from TT
+    oss << " pv";
+    Position pv_pos = pos;
+    Move pv_moves[64];
+    int pv_count = 0;
+    uint64_t pv_keys[64];
+
+    for (int i = 0; i < 64; ++i) {
+        bool found;
+        TTEntry* pv_tte = TT.probe(pv_pos.key(), found);
+        if (!found || pv_tte->move() == MOVE_NONE) break;
+
+        Move m = pv_tte->move();
+        // Validate move is legal
+        if (!pv_pos.legal(m)) break;
+
+        // Cycle detection
+        for (int j = 0; j < pv_count; ++j) {
+            if (pv_keys[j] == pv_pos.key()) { pv_count = -1; break; }
+        }
+        if (pv_count < 0) break;
+
+        pv_keys[pv_count] = pv_pos.key();
+        pv_moves[pv_count++] = m;
+        oss << " " << m;
+        pv_pos.do_move(m);
+    }
+
+    // Undo PV moves to restore position
+    for (int i = pv_count - 1; i >= 0; --i) {
+        pv_pos.undo_move(pv_moves[i]);
+    }
+
+    oss << "\n";
 
     // Thread-safe output
     uci_safe_output(oss.str());

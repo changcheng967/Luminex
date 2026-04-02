@@ -298,101 +298,17 @@ Score PST_EG_TABLE[2][8][64] = {
 
 using Score = Value;
 
-// Helper: get king danger zone (3x3 area around king, plus pawn attack squares)
+// Helper: get king danger zone (3x3 area around king + expanded)
 inline Bitboard king_danger_zone(Square ksq) {
     Bitboard zone = 0;
-    // 3x3 area around king
     Bitboard kbb = square_bb(ksq);
     zone |= kbb;
     if (file_of(ksq) > FILE_A) zone |= shift_w(kbb) | shift_nw(kbb) | shift_sw(kbb);
     if (file_of(ksq) < FILE_H) zone |= shift_e(kbb) | shift_ne(kbb) | shift_se(kbb);
     zone |= shift_n(kbb) | shift_s(kbb);
-    // Also include squares that pawns could attack the king from
-    if (rank_of(ksq) > RANK_1) zone |= shift_s(zone);  // One rank below
-    if (rank_of(ksq) < RANK_8) zone |= shift_n(zone);  // One rank above
+    if (rank_of(ksq) > RANK_1) zone |= shift_s(zone);
+    if (rank_of(ksq) < RANK_8) zone |= shift_n(zone);
     return zone;
-}
-
-// Helper: evaluate pawn shield for king safety
-inline Score evaluate_pawn_shield(const Position& pos, Color c, Square ksq) {
-    Score shield_mg = 0;
-    Score shield_eg = 0;
-    Sign sign = (c == WHITE) ? 1 : -1;
-
-    // Only evaluate pawn shield when king is on ranks 1-3 (white) or 6-8 (black)
-    // i.e., when king hasn't castled or castled short/long
-    Rank kr = rank_of(ksq);
-    bool king_on_back_rank = (c == WHITE && kr <= RANK_3) || (c == BLACK && kr >= RANK_6);
-
-    if (!king_on_back_rank) return 0;
-
-    File kf = file_of(ksq);
-
-    // Get squares in front of king (pawn shield squares)
-    Bitboard shield_squares = 0;
-
-    if (c == WHITE) {
-        // For white, squares ahead are ranks 2 and 3 in front of king
-        if (kr < RANK_8) {
-            Square ahead1 = make_square(kf, Rank(kr + 1));
-            shield_squares |= square_bb(ahead1);
-            if (kf > FILE_A) shield_squares |= square_bb(make_square(File(kf - 1), Rank(kr + 1)));
-            if (kf < FILE_H) shield_squares |= square_bb(make_square(File(kf + 1), Rank(kr + 1)));
-
-            if (kr < RANK_7) {
-                Square ahead2 = make_square(kf, Rank(kr + 2));
-                shield_squares |= square_bb(ahead2);
-                if (kf > FILE_A) shield_squares |= square_bb(make_square(File(kf - 1), Rank(kr + 2)));
-                if (kf < FILE_H) shield_squares |= square_bb(make_square(File(kf + 1), Rank(kr + 2)));
-            }
-        }
-    } else {
-        // For black, squares ahead are ranks 1 and 2 in front (from black's perspective)
-        if (kr > RANK_1) {
-            Square ahead1 = make_square(kf, Rank(kr - 1));
-            shield_squares |= square_bb(ahead1);
-            if (kf > FILE_A) shield_squares |= square_bb(make_square(File(kf - 1), Rank(kr - 1)));
-            if (kf < FILE_H) shield_squares |= square_bb(make_square(File(kf + 1), Rank(kr - 1)));
-
-            if (kr > RANK_2) {
-                Square ahead2 = make_square(kf, Rank(kr - 2));
-                shield_squares |= square_bb(ahead2);
-                if (kf > FILE_A) shield_squares |= square_bb(make_square(File(kf - 1), Rank(kr - 2)));
-                if (kf < FILE_H) shield_squares |= square_bb(make_square(File(kf + 1), Rank(kr - 2)));
-            }
-        }
-    }
-
-    // Count how many shield squares are occupied by our pawns
-    Bitboard our_pawns = pos.pieces(c, PAWN);
-    Bitboard shield_pawns = shield_squares & our_pawns;
-    int pawn_count = popcount(shield_pawns);
-
-    // Bonus for pawn shield
-    shield_mg += sign * pawn_count * 15;
-    shield_eg += sign * pawn_count * 10;
-
-    // Penalty for missing pawns in front of king
-    int missing_shield = 6 - pawn_count;  // At most 6 shield squares
-    if (missing_shield > 0) {
-        shield_mg -= sign * missing_shield * 10;
-        shield_eg -= sign * missing_shield * 5;
-    }
-
-    // Penalty for open files near king (no friendly pawn, no enemy pawn)
-    Bitboard file_mask = 0;
-    if (kf > FILE_A) file_mask |= file_bb(File(kf - 1));
-    file_mask |= file_bb(kf);
-    if (kf < FILE_H) file_mask |= file_bb(File(kf + 1));
-
-    Bitboard pawns_on_files = our_pawns & file_mask;
-    if (pawns_on_files == 0) {
-        // No pawns on these files at all - very dangerous
-        shield_mg -= sign * 30;
-        shield_eg -= sign * 20;
-    }
-
-    return shield_mg + shield_eg;
 }
 
 Value evaluate(const Position& pos) {
@@ -516,43 +432,15 @@ Value evaluate(const Position& pos) {
                     eg_score += sign * 30;
                 }
 
-                // Outside passed pawn bonus: passed pawns on queenside when opponent has no passed pawns there
-                bool is_outside = (f <= FILE_C);
+                // Outside passed pawn bonus: passed pawn on wing (a-c files) when
+                // opponent king is far away
+                bool is_outside = (f <= FILE_C || f >= FILE_F);
                 if (is_outside) {
-                    // Check if opponent has any passed pawns on the same side
-                    Bitboard their_passed_on_queenside = 0;
-
-                    // Find their passed pawns
-                    Bitboard tp = their_pawns;
-                    while (tp) {
-                        Square tp_sq = pop_lsb(tp);
-                        Rank tr = relative_rank(Color(c ^ 1), tp_sq);
-                        File tf = file_of(tp_sq);
-
-                        Bitboard t_ahead = 0;
-                        if (tr < RANK_7) {
-                            for (int trr = int(tr) + 1; trr <= int(RANK_7); ++trr) {
-                                Square t_rank_sq = relative_square(Color(c ^ 1), make_square(tf, Rank(trr)));
-                                t_ahead |= square_bb(t_rank_sq);
-                                if (tf > FILE_A) {
-                                    Square t_left_sq = relative_square(Color(c ^ 1), make_square(File(tf - 1), Rank(trr)));
-                                    t_ahead |= square_bb(t_left_sq);
-                                }
-                                if (tf < FILE_H) {
-                                    Square t_right_sq = relative_square(Color(c ^ 1), make_square(File(tf + 1), Rank(trr)));
-                                    t_ahead |= square_bb(t_right_sq);
-                                }
-                            }
-                        }
-
-                        if (!(t_ahead & pos.pieces(c, PAWN))) {
-                            if (tf <= FILE_C) their_passed_on_queenside |= square_bb(tp_sq);
-                        }
-                    }
-
-                    // If we have outside passed pawn and they don't, big bonus
-                    if (is_outside && !their_passed_on_queenside) {
-                        eg_score += sign * 50;
+                    Square their_king = king_sq[int(c ^ 1)];
+                    int their_king_dist = std::abs(int(file_of(their_king)) - int(f)) +
+                                          std::abs(int(rank_of(their_king)) - int(r));
+                    if (their_king_dist >= 3) {
+                        eg_score += sign * 30;
                     }
                 }
 
@@ -1093,70 +981,24 @@ Value evaluate(const Position& pos) {
             eg_score -= sign * 20;
         }
 
-        // King in center penalty - simplified without game_ply
-        bool king_in_center = (us == WHITE && krank >= RANK_3 && krank <= RANK_5) ||
-                              (us == BLACK && krank >= RANK_4 && krank <= RANK_6);
-
-        if (king_in_center) {
-            mg_score -= sign * 100;
-            eg_score -= sign * 50;
-
-            // Extra penalty when enemy queen/rook is in our half
-            Color them = Color(us ^ 1);
-            Bitboard their_queens = pos.pieces(them, QUEEN);
-            Bitboard their_rooks = pos.pieces(them, ROOK);
-
-            if (us == WHITE) {
-                if (their_queens & (BB_RANK_1 | BB_RANK_2 | BB_RANK_3 | BB_RANK_4)) {
-                    mg_score -= sign * 40;
-                }
-                if (their_rooks & (BB_RANK_1 | BB_RANK_2 | BB_RANK_3 | BB_RANK_4)) {
-                    mg_score -= sign * 20;
-                }
-            } else {
-                if (their_queens & (BB_RANK_5 | BB_RANK_6 | BB_RANK_7 | BB_RANK_8)) {
-                    mg_score -= sign * 40;
-                }
-                if (their_rooks & (BB_RANK_5 | BB_RANK_6 | BB_RANK_7 | BB_RANK_8)) {
-                    mg_score -= sign * 20;
-                }
-            }
-        }
     }
 
-    // King danger and queen tropism evaluation
+    // King danger evaluation - two pass: first compute attackers, then apply
+    int king_danger_value[2] = {0, 0};
     for (int c_idx = 0; c_idx < 2; ++c_idx) {
         Color us = Color(c_idx);
         Color them = Color(us ^ 1);
         Square their_king = king_sq[int(them)];
-        Square our_king = king_sq[int(us)];
 
-        // Note: Pawn shield is already evaluated inline during king piece loop
-
-        // Queen tropism: penalty when enemy queen is close to our king
-        Bitboard their_queens = pos.pieces(them, QUEEN);
-        while (their_queens) {
-            Square qsq = pop_lsb(their_queens);
-            int dist = distance(our_king, qsq);
-            if (dist <= 3) {
-                mg_score -= (us == WHITE ? 1 : -1) * (50 * (4 - dist));
-                eg_score -= (us == WHITE ? 1 : -1) * (30 * (4 - dist));
-            } else if (dist <= 5) {
-                mg_score -= (us == WHITE ? 1 : -1) * (20 * (6 - dist));
-            }
-        }
-
-        // King danger: count attackers and their weight - INCREASED FOR BETTER KING SAFETY
         Bitboard danger_zone = king_danger_zone(their_king);
-        int danger = 0;
 
-        // Count pieces attacking king zone
+        // Count pieces attacking enemy king zone
         Bitboard our_knights = pos.pieces(us, KNIGHT);
         while (our_knights) {
             Square sq = pop_lsb(our_knights);
             if (knight_attacks_bb(sq) & danger_zone) {
                 king_attackers[int(us)]++;
-                danger += 80;  // Knight attacks (increased from 40)
+                king_danger_value[int(us)] += 4;
             }
         }
 
@@ -1165,7 +1007,7 @@ Value evaluate(const Position& pos) {
             Square sq = pop_lsb(our_bishops);
             if (bb_diag_attacks(sq, pos.pieces()) & danger_zone) {
                 king_attackers[int(us)]++;
-                danger += 100;  // Bishop attacks (increased from 50)
+                king_danger_value[int(us)] += 5;
             }
         }
 
@@ -1175,7 +1017,7 @@ Value evaluate(const Position& pos) {
             Bitboard attacks = (bb_rank_attacks(sq, pos.pieces()) | bb_file_attacks(sq, pos.pieces()));
             if (attacks & danger_zone) {
                 king_attackers[int(us)]++;
-                danger += 140;  // Rook attacks are dangerous (increased from 70)
+                king_danger_value[int(us)] += 7;
             }
         }
 
@@ -1184,126 +1026,56 @@ Value evaluate(const Position& pos) {
             Square sq = pop_lsb(our_queens);
             if (queen_attacks_bb(sq, pos.pieces()) & danger_zone) {
                 king_attackers[int(us)]++;
-                danger += 250;  // Queen attacks are very dangerous (increased from 120)
+                king_danger_value[int(us)] += 12;
             }
         }
 
-        // Bonus for multiple attackers (coordination)
+        // Quadratic bonus for multiple attackers
         if (king_attackers[int(us)] >= 2) {
-            danger += (king_attackers[int(us)] - 1) * 60;  // Increased from 30
-        }
-
-        // Penalty when we have no safe king position (king in center) - INCREASED
-        Rank krank = rank_of(our_king);
-        if ((us == WHITE && krank >= RANK_3 && krank <= RANK_5) ||
-            (us == BLACK && krank >= RANK_4 && krank <= RANK_6)) {
-            // King in center - very dangerous in middle game
-            mg_score -= (us == WHITE ? 1 : -1) * 80;  // Increased from 40
-            // Even worse when under attack
-            if (king_attackers[int(them)] > 0) {
-                mg_score -= (us == WHITE ? 1 : -1) * 150 * king_attackers[int(them)];  // Increased from 60
-            }
-        }
-
-        // Apply king danger score (scaled by number of attackers)
-        if (king_attackers[int(us)] >= 2) {
-            mg_score += (us == WHITE ? 1 : -1) * danger;
-        } else if (king_attackers[int(us)] == 1 && danger > 50) {
-            mg_score += (us == WHITE ? 1 : -1) * (danger / 2);
+            king_danger_value[int(us)] += king_attackers[int(us)] * king_attackers[int(us)];
         }
     }
 
-    // Weak square evaluation: find squares that can't be defended by pawns
+    // Apply king danger and tropism
+    for (int c_idx = 0; c_idx < 2; ++c_idx) {
+        Color us = Color(c_idx);
+        Color them = Color(us ^ 1);
+        Sign sign = (us == WHITE) ? 1 : -1;
+        Square our_king = king_sq[int(us)];
+
+        // Queen tropism
+        Bitboard their_queens = pos.pieces(them, QUEEN);
+        while (their_queens) {
+            Square qsq = pop_lsb(their_queens);
+            int dist = distance(our_king, qsq);
+            if (dist <= 3) {
+                mg_score -= sign * (20 * (4 - dist));
+                eg_score -= sign * (10 * (4 - dist));
+            }
+        }
+
+        // King in center penalty
+        Rank krank = rank_of(our_king);
+        if ((us == WHITE && krank >= RANK_3 && krank <= RANK_5) ||
+            (us == BLACK && krank >= RANK_4 && krank <= RANK_6)) {
+            mg_score -= sign * 30;
+            if (king_attackers[int(them)] >= 2) {
+                mg_score -= sign * 20 * king_attackers[int(them)];
+            }
+        }
+
+        // Apply king danger (only when 2+ attackers for real attack)
+        if (king_attackers[int(us)] >= 2) {
+            mg_score += sign * king_danger_value[int(us)] * 8;
+        }
+    }
+
+    // Backward pawn penalty: pawn that can't be defended by other pawns
     for (int c_idx = 0; c_idx < 2; ++c_idx) {
         Color us = Color(c_idx);
         Color them = Color(us ^ 1);
         Sign sign = (us == WHITE) ? 1 : -1;
 
-        // For each file, check if we have pawn weak points
-        for (int fi = int(FILE_A); fi <= int(FILE_H); ++fi) {
-            File f = File(fi);
-            Bitboard file_bb_f = file_bb(f);
-
-            // Find our pawns on this file
-            Bitboard our_pawns_on_file = pos.pieces(us, PAWN) & file_bb_f;
-
-            // Check if we have pawn weak points in the middle ranks (3-6 for white, 3-6 for black)
-            Bitboard weak_squares = 0;
-
-            if (!our_pawns_on_file) {
-                // No pawns on this file - all squares are potentially weak
-                for (int ri = int(RANK_3); ri <= int(RANK_6); ++ri) {
-                    Square sq = make_square(f, Rank(ri));
-                    weak_squares |= square_bb(sq);
-                }
-            } else {
-                // Check for holes in our pawn structure
-                Square frontmost_pawn = us == WHITE ?
-                    msb(our_pawns_on_file) :  // White: highest rank pawn
-                    lsb(our_pawns_on_file);   // Black: lowest rank pawn
-
-                Rank front_rank = relative_rank(us, frontmost_pawn);
-
-                // Squares ahead of our frontmost pawn are weak
-                if (us == WHITE) {
-                    for (int ri = int(front_rank) + 1; ri <= int(RANK_6); ++ri) {
-                        Square sq = make_square(f, Rank(ri));
-                        weak_squares |= square_bb(sq);
-                    }
-                } else {
-                    for (int ri = int(RANK_6); ri >= int(front_rank) + 1; --ri) {
-                        Square sq = relative_square(us, make_square(f, Rank(ri)));
-                        weak_squares |= square_bb(sq);
-                    }
-                }
-            }
-
-            // Check if enemy pieces can control these weak squares
-            if (weak_squares) {
-                Bitboard enemy_knights = pos.pieces(them, KNIGHT);
-                Bitboard enemy_bishops = pos.pieces(them, BISHOP);
-
-                int weak_square_count = 0;
-                while (weak_squares) {
-                    Square sq = pop_lsb(weak_squares);
-
-                    // Check if enemy minor pieces can attack this square
-                    bool attacked = false;
-
-                    Bitboard temp_knights = enemy_knights;
-                    while (temp_knights) {
-                        Square ksq = pop_lsb(temp_knights);
-                        if (knight_attacks_bb(ksq) & square_bb(sq)) {
-                            attacked = true;
-                            break;
-                        }
-                    }
-
-                    if (!attacked) {
-                        Bitboard temp_bishops = enemy_bishops;
-                        while (temp_bishops) {
-                            Square bsq = pop_lsb(temp_bishops);
-                            if (bb_diag_attacks(bsq, pos.pieces()) & square_bb(sq)) {
-                                attacked = true;
-                                break;
-                            }
-                        }
-                    }
-
-                    if (attacked) {
-                        weak_square_count++;
-                    }
-                }
-
-                if (weak_square_count >= 2) {
-                    // Multiple weak squares on this file
-                    mg_score -= sign * 20 * weak_square_count;
-                    eg_score -= sign * 10 * weak_square_count;
-                }
-            }
-        }
-
-        // Backward pawn penalty: pawn that can't be defended by other pawns
         Bitboard our_pawns = pos.pieces(us, PAWN);
         while (our_pawns) {
             Square pawn_sq = pop_lsb(our_pawns);
@@ -1313,7 +1085,6 @@ Value evaluate(const Position& pos) {
             // Check if this pawn has friendly pawn support behind it
             bool has_support = false;
             if (us == WHITE && r > RANK_2) {
-                // Check for pawns on adjacent files on rank below
                 Bitboard support_rank = rank_bb(Rank(int(r) - 1));
                 Bitboard adjacent_files = 0;
                 if (f > FILE_A) adjacent_files |= file_bb(File(f - 1));
@@ -1322,7 +1093,6 @@ Value evaluate(const Position& pos) {
                     has_support = true;
                 }
             } else if (us == BLACK && r < RANK_7) {
-                // Check for pawns on adjacent files on rank above
                 Bitboard support_rank = rank_bb(Rank(int(r) + 1));
                 Bitboard adjacent_files = 0;
                 if (f > FILE_A) adjacent_files |= file_bb(File(f - 1));
@@ -1359,7 +1129,6 @@ Value evaluate(const Position& pos) {
             }
 
             if (!has_support && stopped_by_enemy) {
-                // Backward pawn
                 mg_score -= sign * 15;
                 eg_score -= sign * 25;
             }
@@ -1450,26 +1219,6 @@ Value evaluate(const Position& pos) {
         // White is behind - discourage simplification (add negative becomes positive for black)
         mg_score += piece_diff * 5;
         eg_score += piece_diff * 3;
-    }
-
-    // Simplified threat detection - just check king proximity for tactical awareness
-    for (int c_idx = 0; c_idx < 2; ++c_idx) {
-        Color us = Color(c_idx);
-        Color them = Color(us ^ 1);
-        Sign sign = (us == WHITE) ? 1 : -1;
-
-        Square our_king = pos.king_sq(us);
-
-        // Penalty if our king is close to enemy pieces (danger)
-        Bitboard their_pieces = pos.pieces(them) & ~pos.pieces(them, PAWN);
-        int danger = 0;
-        while (their_pieces) {
-            Square sq = pop_lsb(their_pieces);
-            int d = distance(our_king, sq);
-            if (d <= 2) danger += (3 - d) * 20;
-        }
-        mg_score -= sign * danger;
-        eg_score -= sign * danger;
     }
 
     // Connected rooks bonus: two rooks on the same rank or file without pieces between them
