@@ -7,6 +7,10 @@ namespace luminex {
 
 class Position;
 
+// Piece-square tables (MG and EG phases)
+extern Score PST_MG_TABLE[2][8][64];
+extern Score PST_EG_TABLE[2][8][64];
+
 // Main evaluation function
 Value evaluate(const Position& pos);
 
