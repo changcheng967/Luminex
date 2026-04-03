@@ -97,8 +97,7 @@ public:
 
     bool see_ge(Move m, Value threshold = VALUE_ZERO) const;
 
-    bool legal(Move m) const;
-    bool pseudo_legal(const Move m) const;
+    bool legal(Move m, bool skip_pseudo = false) const;    bool pseudo_legal(const Move m) const;
     bool capture(Move m) const;
     bool capture_or_promotion(Move m) const;
 

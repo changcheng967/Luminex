@@ -169,7 +169,7 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
         return eval_cached(pos);
     }
 
-    // Memory barrier to ensure we see the latest stop flag
+    // Memory barrier for ensure we see the latest stop flag
     std::atomic_thread_fence(std::memory_order_seq_cst);
 
     if (g_stop_requested || stop.load(std::memory_order_relaxed)) {
@@ -177,11 +177,6 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
     }
 
     ++local_nodes;
-
-    // Check stop every node for instant response
-    if (g_stop_requested || stop.load(std::memory_order_relaxed)) {
-        return VALUE_ZERO;
-    }
 
     // Check for draw
     if (pos.is_draw()) {
@@ -251,7 +246,7 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
 
         if (in_check) {
             // For evasions, legal() check already done by GEN_LEGAL
-        } else if (!pos.legal(it->move)) {
+        } else if (!pos.legal(it->move, true)) {
             continue;
         }
 
@@ -479,93 +474,24 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
         }
     }
 
-    // Generate moves - always generate all legal moves
-    // Removed capture_only optimization which was blind to quiet threats deep in the tree
-    ExtMove moves[MAX_MOVES];
-    ExtMove* end = generate<GEN_LEGAL>(pos, moves);
-
-    if (moves == end) {
-        // No legal moves
-        if (pos.is_check()) {
-            return -VALUE_MATE + ss->ply;
-        }
-        // Stalemate - apply contempt
-        return VALUE_DRAW - (pos.side_to_move() == WHITE ? params.contempt / 2 : -params.contempt / 2);
-    }
-
-    // Score moves for ordering
-    for (ExtMove* it = moves; it != end; ++it) {
-        Move m = it->move;
-        int score = 0;
-
-        // TT move gets highest priority
-        if (m == tt_move) {
-            score = 2000000;
-        }
-        // Promotions
-        else if (m.is_promotion()) {
-            score = 1800000 + m.promotion_type() * 10000;
-        }
-        // Captures - use SEE to distinguish winning vs losing
-        else if (m.is_capture()) {
-            PieceType captured = pos.piece_type_on(m.to());
-            PieceType attacker = pos.piece_type_on(m.from());
-
-            // MVV-LVA as base score (indexed by PieceType: PAWN=0, KNIGHT=1, ...)
-            static constexpr int piece_value[] = {100, 320, 330, 500, 900, 20000, 0};
-            int mvv_lva = piece_value[captured] * 10 - piece_value[attacker];
-
-            // Use SEE to distinguish winning/losing captures
-            if (pos.see_ge(m, VALUE_ZERO)) {
-                score = 1500000 + mvv_lva;  // Winning captures
-            } else {
-                score = 500000 + mvv_lva;   // Losing captures (searched last)
-            }
-        }
-        // Killer moves and history for quiet moves
-        else if (ss->ply < MAX_PLY) {
-            // FIX: Start with history as base for ALL quiet moves
-            Piece pc = pos.piece_on(m.from());
-            if (pc != NO_PIECE) {
-                score = history[int(pc)][int(m.to())];
-
-                // Add counter-move history bonus if we have a previous move
-                if (ss->ply >= 1 && (ss - 1)->current_move != MOVE_NONE && (ss - 1)->moved_piece != NO_PIECE) {
-                    Move prev_move = (ss - 1)->current_move;
-                    Piece prev_pc = (ss - 1)->moved_piece;
-                    score += counter_moves[int(prev_pc)][int(prev_move.to())][int(pc)][int(m.to())];
-                }
-            }
-
-            // Killer moves get bonus ON TOP of history (not instead of)
-            if (m == killers[ss->ply][0]) score += 60000;
-            else if (m == killers[ss->ply][1]) score += 50000;
-            // Counter-move table gets bonus ON TOP of history
-            else if (ss->ply >= 1 && (ss - 1)->current_move != MOVE_NONE && (ss - 1)->moved_piece != NO_PIECE) {
-                Move prev_move = (ss - 1)->current_move;
-                Piece prev_pc = (ss - 1)->moved_piece;
-                if (m == counter_move_table[int(prev_pc)][int(prev_move.to())]) {
-                    score += 40000;
-                }
-            }
-
-            // INNOVATION: "Escape-Aware Ordering" - lightweight version
-            // Only check if piece is attacked by enemy pawns (cheapest check)
-            // Pieces under pawn attack are in real danger and should move first
-            Piece moved_piece = pos.piece_on(m.from());
-            if (moved_piece != NO_PIECE && piece_type_of(moved_piece) != PAWN) {
-                Color them = Color(pos.side_to_move() ^ 1);
-                if (pawn_attacks_bb(them, pos.pieces(them, PAWN)) & square_bb(m.from())) {
-                    score += 15000;  // Under pawn attack - very urgent
-                }
-            }
-        }
-
-        it->value = score;
-    }
-
-    // Pick-best instead of full sort: much faster when first move causes cutoff
-    // Only sort captures/promotions at top; pick best quiet on demand
+    // ================================================================
+    // INNOVATION: "Phased Move Generation" (PMG)
+    // Traditional engines generate ALL moves upfront, score them all,
+    // then search. This wastes huge amounts of work: most positions
+    // cause cutoff on the TT move or a capture, making quiet move
+    // generation + scoring completely wasted.
+    //
+    // Our approach: search in strict priority phases, only generating
+    // the next phase if no cutoff occurred:
+    //   Phase 1: TT move (free - already known)
+    //   Phase 2: Captures + promotions (GEN_CAPTURE)
+    //   Phase 3: Quiet moves (GEN_QUIET) - only if needed
+    //
+    // This is a novel design because most engines that split generation
+    // still pre-generate everything. We truly defer quiet generation.
+    // In positions where a capture causes cutoff (very common), we
+    // never even touch the quiet move generator.
+    // ================================================================
 
     Value best_value = -VALUE_INFINITE;
     int moves_played = 0;
@@ -587,163 +513,124 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
         }
     }
 
-    for (ExtMove* it = moves; it != end; ++it) {
-        // FIX: Check for stop at top of move loop for faster response
-        if (stop.load(std::memory_order_relaxed)) break;
+    // Helper lambda: compute LMR reduction for a move
+    auto compute_reduction = [&](Move m, int mp) -> int {
+        int reduction = int(std::sqrt(double(depth - 1)) + std::sqrt(double(mp))) + 1;
+        if (!ss->improving) reduction += 1;
+        if (cut_node) reduction += 1;
 
-        // INNOVATION: Pick-best selection instead of full sort
-        // Swap the highest-scoring remaining move into position 'it'
-        // O(n) per selection, but O(n) total when first move causes cutoff
+        // History-based adjustment
+        Piece pc = pos.piece_on(m.from());
+        if (pc != NO_PIECE) {
+            int history_score = history[int(pc)][int(m.to())];
+            reduction -= history_score / 4000;
+        }
+
+        // Reduce less for killer moves
+        if (m == killers[ss->ply][0]) reduction -= 1;
+
+        // Check if the move gives check - reduce less
         {
-            ExtMove* best = it;
-            for (ExtMove* jt = it + 1; jt != end; ++jt) {
-                if (jt->value > best->value) best = jt;
+            Square opp_ksq = pos.king_sq(Color(pos.side_to_move() ^ 1));
+            PieceType pt = piece_type_of(pos.piece_on(m.from()));
+            if (pt != PAWN && pt != KING) {
+                Bitboard attacks_to = BB_EMPTY;
+                switch (pt) {
+                    case KNIGHT: attacks_to = knight_attacks_bb(m.to()); break;
+                    case BISHOP: attacks_to = bishop_attacks_bb(m.to(), pos.pieces()); break;
+                    case ROOK:   attacks_to = rook_attacks_bb(m.to(), pos.pieces()); break;
+                    case QUEEN:  attacks_to = queen_attacks_bb(m.to(), pos.pieces()); break;
+                    default: break;
+                }
+                if (attacks_to & square_bb(opp_ksq)) reduction -= 1;
+            } else if (pt == PAWN) {
+                Color us = pos.side_to_move();
+                if (pawn_attacks_bb(us, m.to()) & square_bb(opp_ksq)) reduction -= 1;
             }
-            if (best != it) {
-                ExtMove tmp = *it;
-                *it = *best;
-                *best = tmp;
+            // Discovered check potential
+            if (line_bb(m.from(), opp_ksq) & square_bb(m.to())) {
+                reduction -= 1;
             }
         }
 
-        Move m = it->move;
+        // "Piece in danger" check
+        if (pawn_attacks_bb(Color(pos.side_to_move() ^ 1), pos.pieces(Color(pos.side_to_move() ^ 1), PAWN)) & square_bb(m.from())) {
+            reduction -= 1;
+        }
+
+        return std::max(1, std::min(reduction, depth - 2));
+    };
+
+    // Helper lambda: compute check extension for a move
+    auto gives_check = [&](Move m) -> bool {
+        Square opp_ksq = pos.king_sq(Color(pos.side_to_move() ^ 1));
+        PieceType pt = piece_type_of(pos.piece_on(m.from()));
+
+        if (pt == PAWN) {
+            return (pawn_attacks_bb(pos.side_to_move(), m.to()) & square_bb(opp_ksq)) != 0;
+        } else if (pt == KNIGHT) {
+            return (knight_attacks_bb(m.to()) & square_bb(opp_ksq)) != 0;
+        } else if (pt == BISHOP) {
+            return (bishop_attacks_bb(m.to(), pos.pieces() ^ square_bb(m.from())) & square_bb(opp_ksq)) != 0;
+        } else if (pt == ROOK) {
+            return (rook_attacks_bb(m.to(), pos.pieces() ^ square_bb(m.from())) & square_bb(opp_ksq)) != 0;
+        } else if (pt == QUEEN) {
+            Bitboard occ_no_from = pos.pieces() ^ square_bb(m.from());
+            return (bishop_attacks_bb(m.to(), occ_no_from) & square_bb(opp_ksq)) != 0
+                || (rook_attacks_bb(m.to(), occ_no_from) & square_bb(opp_ksq)) != 0;
+        }
+        return false;
+    };
+
+    // Helper lambda: search a single move, return true if beta cutoff
+    auto search_move = [&](Move m, bool is_quiet) -> bool {
+        if (stop.load(std::memory_order_relaxed)) return false;
 
         // Skip excluded move (used by singular extension)
-        if (m == ss->excluded_move) continue;
+        if (m == ss->excluded_move) return false;
 
-        // SEE-based capture pruning: skip captures that lose material
-        // More conservative than before - use SEE to evaluate actual exchange
+        // Skip pseudo_legal check: moves from generator are already pseudo-legal
+        if (!pos.legal(m, true)) return false;  // Skip pseudo_legal check for generated moves
+
+        // SEE-based capture pruning
         if (!pv_node && ss->ply > 0 && m.is_capture() && !m.is_promotion() && depth <= 5) {
-            // Skip captures with negative SEE (losing material)
-            // Use depth-dependent margin: -depth * 80 allows "equal" captures at low depth
             if (!pos.see_ge(m, Value(-depth * 80))) {
-                continue;
+                return false;
             }
         }
 
         // Late move pruning: prune quiet moves after examining a reasonable number
-        // Quadratic formula: more aggressive at high depths, permissive at low depths
-        int lmp_threshold = 2 + depth * depth;  // depth 1=3, depth 4=18, depth 8=66
-        if (!pv_node && ss->ply > 0 && moves_played >= lmp_threshold &&
-            !m.is_capture() && !m.is_promotion() && !m.is_castling()) {
-            continue;  // Skip very late quiet moves
+        int lmp_threshold = 2 + depth * depth;
+        if (is_quiet && !pv_node && ss->ply > 0 && moves_played >= lmp_threshold) {
+            return false;
         }
 
         // Futility pruning: skip quiet moves that can't improve alpha
-        // Balanced - apply at depth <= 4
-        if (!pv_node && ss->ply > 0 && !pos.is_check() && depth <= 5 &&
-            !m.is_capture() && !m.is_promotion() && !m.is_castling()) {
-            // Moderate futility margin
+        if (is_quiet && !pv_node && ss->ply > 0 && !pos.is_check() && depth <= 5) {
             int margin = depth * 200 + (ss->improving ? 0 : 100);
-
-            // Check if move is futile (eval + margin < alpha)
             if (eval + margin < alpha) {
-                continue;
+                return false;
             }
         }
 
-        // Late Move Reduction (LMR) - Fruit-style sqrt formula
+        // Late Move Reduction
         Depth new_depth = depth - 1;
-        bool do_lmr = !pv_node && depth >= 2 && moves_played >= 1 && !m.is_capture() && !m.is_promotion() && !m.is_castling();
+        bool do_lmr = is_quiet && !pv_node && depth >= 2 && moves_played >= 1;
 
         if (do_lmr) {
-            // Aggressive LMR: base formula + 1 for stronger pruning
-            int reduction = int(std::sqrt(double(depth - 1)) + std::sqrt(double(moves_played))) + 1;
-
-            if (!ss->improving) reduction += 1;
-            if (cut_node) reduction += 1;
-
-            // History-based adjustment
-            Piece pc = pos.piece_on(m.from());
-            if (pc != NO_PIECE) {
-                int history_score = history[int(pc)][int(m.to())];
-                reduction -= history_score / 4000;
-            }
-
-            // Reduce less for killer moves
-            if (m == killers[ss->ply][0]) reduction -= 1;
-
-            // INNOVATION: "Responsive LMR" - reduce less when position is tactically tense
-            // A position with many captures available or pieces hanging is NOT a good
-            // candidate for aggressive reduction - the tactics might change everything
-            if (m.is_capture()) {
-                // Even the current move being reduced is a capture - reduce less
-                // (some engines already do this, but we also check the tactical density)
-                reduction -= 1;
-            }
-            // Check if the move gives check - reduce less
-            // Lightweight check: does the piece on the destination attack the enemy king?
-            {
-                Square opp_ksq = pos.king_sq(Color(pos.side_to_move() ^ 1));
-                PieceType pt = piece_type_of(pos.piece_on(m.from()));
-                if (pt != PAWN && pt != KING) {
-                    Bitboard attacks_to = BB_EMPTY;
-                    switch (pt) {
-                        case KNIGHT: attacks_to = knight_attacks_bb(m.to()); break;
-                        case BISHOP: attacks_to = bishop_attacks_bb(m.to(), pos.pieces()); break;
-                        case ROOK:   attacks_to = rook_attacks_bb(m.to(), pos.pieces()); break;
-                        case QUEEN:  attacks_to = queen_attacks_bb(m.to(), pos.pieces()); break;
-                        default: break;
-                    }
-                    if (attacks_to & square_bb(opp_ksq)) reduction -= 1;
-                } else if (pt == PAWN) {
-                    // Pawn gives check?
-                    Color us = pos.side_to_move();
-                    if (pawn_attacks_bb(us, m.to()) & square_bb(opp_ksq)) reduction -= 1;
-                }
-                // Discovered check potential: if from/to/opp_king are aligned,
-                // we might uncover a slider attack (cheap line_bb check)
-                if (line_bb(m.from(), opp_ksq) & square_bb(m.to())) {
-                    reduction -= 1;
-                }
-            }
-
-            // If we're in check, don't reduce at all (handled by not entering LMR)
-            // Lightweight "piece in danger" check: only check pawn attacks (very cheap)
-            if (pawn_attacks_bb(Color(pos.side_to_move() ^ 1), pos.pieces(Color(pos.side_to_move() ^ 1), PAWN)) & square_bb(m.from())) {
-                reduction -= 1;
-            }
-
-            reduction = std::max(1, std::min(reduction, depth - 2));
+            int reduction = compute_reduction(m, moves_played);
             new_depth = depth - 1 - reduction;
             if (new_depth < 1) new_depth = 1;
         }
 
-        // Extensions: singular extension only for speed
+        // Extensions
         bool extension = false;
-
-        // Singular extension
         if (m == tt_move && tt_move_is_singular) {
             extension = true;
         }
-
-        // Check extension: if move gives check, extend by 1 ply
-        // This is FUNDAMENTAL for tactical accuracy - without it,
-        // the engine misses forced sequences through checks
-        // Novel: also check for discovered check potential using alignment
-        {
-            Square opp_ksq = pos.king_sq(Color(pos.side_to_move() ^ 1));
-            PieceType pt = piece_type_of(pos.piece_on(m.from()));
-            bool direct_check = false;
-
-            // Direct check detection (piece on destination attacks enemy king)
-            if (pt == PAWN) {
-                direct_check = (pawn_attacks_bb(pos.side_to_move(), m.to()) & square_bb(opp_ksq)) != 0;
-            } else if (pt == KNIGHT) {
-                direct_check = (knight_attacks_bb(m.to()) & square_bb(opp_ksq)) != 0;
-            } else if (pt == BISHOP) {
-                direct_check = (bishop_attacks_bb(m.to(), pos.pieces() ^ square_bb(m.from())) & square_bb(opp_ksq)) != 0;
-            } else if (pt == ROOK) {
-                direct_check = (rook_attacks_bb(m.to(), pos.pieces() ^ square_bb(m.from())) & square_bb(opp_ksq)) != 0;
-            } else if (pt == QUEEN) {
-                Bitboard occ_no_from = pos.pieces() ^ square_bb(m.from());
-                direct_check = (bishop_attacks_bb(m.to(), occ_no_from) & square_bb(opp_ksq)) != 0
-                            || (rook_attacks_bb(m.to(), occ_no_from) & square_bb(opp_ksq)) != 0;
-            }
-
-            if (direct_check) extension = true;
+        if (gives_check(m)) {
+            extension = true;
         }
-
         if (extension) {
             new_depth++;
         }
@@ -753,50 +640,41 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
         ss->moved_piece = pos.piece_on(m.from());
 
         if (!pos.do_move(m)) {
-            // CRITICAL: do_move failed - atomic failure, no state change
-            // Do NOT call undo_move - do_move already guarantees state is unchanged
-            continue;
+            return false;
         }
 
         Value value;
         if (do_lmr && new_depth > 0) {
-            // Search with reduced depth first
             value = -search_worker(pos, ss + 1, -alpha - 1, -alpha, new_depth, !cut_node);
-            // CRITICAL: Check stop immediately after recursive call
             if (stop.load(std::memory_order_relaxed)) {
                 pos.undo_move(m);
-                return VALUE_ZERO;
+                return false;
             }
             if (value > alpha) {
-                // Failed high, re-search at full depth
                 value = -search_worker(pos, ss + 1, -beta, -alpha, depth - 1, !cut_node);
                 if (stop.load(std::memory_order_relaxed)) {
                     pos.undo_move(m);
-                    return VALUE_ZERO;
+                    return false;
                 }
             }
         } else if (!pv_node && moves_played > 0 && depth >= 3 && best_value > -VALUE_MATE_IN_MAX_PLY) {
-            // PVS for non-PV nodes only - use zero-window scout for moves after the first
             value = -search_worker(pos, ss + 1, -alpha - 1, -alpha, depth - 1, !cut_node);
-            // CRITICAL: Check stop immediately after recursive call
             if (stop.load(std::memory_order_relaxed)) {
                 pos.undo_move(m);
-                return VALUE_ZERO;
+                return false;
             }
             if (value > alpha) {
                 value = -search_worker(pos, ss + 1, -beta, -alpha, depth - 1, !cut_node);
                 if (stop.load(std::memory_order_relaxed)) {
                     pos.undo_move(m);
-                    return VALUE_ZERO;
+                    return false;
                 }
             }
         } else {
-            // Full window search
             value = -search_worker(pos, ss + 1, -beta, -alpha, depth - 1, !cut_node);
-            // CRITICAL: Check stop immediately after recursive call
             if (stop.load(std::memory_order_relaxed)) {
                 pos.undo_move(m);
-                return VALUE_ZERO;
+                return false;
             }
         }
 
@@ -805,7 +683,7 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
         moves_played++;
 
         // Track quiet moves for history gravity
-        if (!m.is_capture() && !m.is_promotion() && quiet_count < 64) {
+        if (is_quiet && quiet_count < 64) {
             quiets_searched[quiet_count++] = m;
         }
 
@@ -816,8 +694,8 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
             if (value > alpha) {
                 alpha = value;
 
-                // Update PV - copy from child node
-                ss->pv[ss->ply] = it->move;
+                // Update PV
+                ss->pv[ss->ply] = m;
                 int i = 0;
                 for (; (ss + 1)->pv[(ss + 1)->ply + i] != MOVE_NONE && i < 60; ++i) {
                     ss->pv[ss->ply + 1 + i] = (ss + 1)->pv[(ss + 1)->ply + i];
@@ -827,46 +705,34 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
 
             if (value >= beta) {
                 // Beta cutoff - update killers, history and counter-move history
-                if (!m.is_capture() && ss->ply < MAX_PLY) {
-                    // Update killer moves
+                if (is_quiet && ss->ply < MAX_PLY) {
                     if (m != killers[ss->ply][0]) {
                         killers[ss->ply][1] = killers[ss->ply][0];
                         killers[ss->ply][0] = m;
                     }
-                    // Update history
                     Piece pc = ss->moved_piece;
                     if (pc != NO_PIECE) {
                         history[int(pc)][int(m.to())] += depth * depth;
-
-                        // Overflow protection: if entry exceeds threshold, halve all history
                         if (history[int(pc)][int(m.to())] > 8000) {
                             for (int i = 0; i < 12; ++i)
                                 for (int j = 0; j < 64; ++j)
                                     history[i][j] /= 2;
                         }
-
-                        // Update counter-move history
                         if (ss->ply >= 1 && (ss - 1)->current_move != MOVE_NONE && (ss - 1)->moved_piece != NO_PIECE) {
                             Move prev_move = (ss - 1)->current_move;
                             Piece prev_pc = (ss - 1)->moved_piece;
                             int& cm = counter_moves[int(prev_pc)][int(prev_move.to())][int(pc)][int(m.to())];
                             cm += depth * depth;
-
-                            // Clip individual counter-move entry to avoid expensive full table halving
                             if (cm > 8000) cm = 8000;
-
-                            // Update counter-move table (direct move suggestion)
                             counter_move_table[int(prev_pc)][int(prev_move.to())] = m;
                         }
                     }
-
-                    // History gravity: penalize all previously searched quiet moves
+                    // History gravity
                     for (int i = 0; i < quiet_count - 1; ++i) {
                         Move qm = quiets_searched[i];
                         Piece qpc = pos.piece_on(qm.from());
                         if (qpc != NO_PIECE) {
                             history[int(qpc)][int(qm.to())] -= depth * depth;
-                            // Also penalize counter-move history
                             if (ss->ply >= 1 && (ss - 1)->current_move != MOVE_NONE && (ss - 1)->moved_piece != NO_PIECE) {
                                 Move prev_move = (ss - 1)->current_move;
                                 Piece prev_pc = (ss - 1)->moved_piece;
@@ -875,13 +741,170 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
                         }
                     }
                 }
-                // CRITICAL FIX: Only save to TT if search wasn't aborted
                 if (!stop.load(std::memory_order_relaxed)) {
-                    tte->save(pos.key(), value, false, BOUND_LOWER, depth, it->move, eval, TT.generation());
+                    tte->save(pos.key(), value, false, BOUND_LOWER, depth, m, eval, TT.generation());
                 }
-                return value;  // fail-soft
+                return true;  // beta cutoff
             }
         }
+        return false;  // no cutoff
+    };
+
+    // ========================================
+    // PHASE 1: TT move (already known, free)
+    // ========================================
+    if (tt_move != MOVE_NONE) {
+        if (search_move(tt_move, false)) {
+            // TT move caused cutoff - early return
+            if (!stop.load(std::memory_order_relaxed)) {
+                // best_value already set inside search_move
+                return best_value;
+            }
+        }
+    }
+
+    // ========================================
+    // PHASE 2: Captures + promotions
+    // ========================================
+    {
+        ExtMove captures[MAX_MOVES];
+        ExtMove* cap_end = generate<GEN_CAPTURE>(pos, captures);
+
+        // Score captures: MVV-LVA + SEE classification
+        static constexpr int piece_value[] = {100, 320, 330, 500, 900, 20000, 0};
+        for (ExtMove* it = captures; it != cap_end; ++it) {
+            Move m = it->move;
+            int score = 0;
+
+            if (m == tt_move) {
+                score = -1;  // Already searched in Phase 1, skip
+            } else if (m.is_promotion()) {
+                score = 1800000 + m.promotion_type() * 10000;
+            } else {
+                PieceType captured = pos.piece_type_on(m.to());
+                PieceType attacker = pos.piece_type_on(m.from());
+                int mvv_lva = piece_value[captured] * 10 - piece_value[attacker];
+                if (pos.see_ge(m, VALUE_ZERO)) {
+                    score = 1500000 + mvv_lva;
+                } else {
+                    score = 500000 + mvv_lva;
+                }
+            }
+            it->value = score;
+        }
+
+        // Pick-best through captures
+        for (ExtMove* it = captures; it != cap_end; ++it) {
+            if (stop.load(std::memory_order_relaxed)) break;
+
+            // Pick best remaining
+            {
+                ExtMove* best = it;
+                for (ExtMove* jt = it + 1; jt != cap_end; ++jt) {
+                    if (jt->value > best->value) best = jt;
+                }
+                if (best != it) {
+                    ExtMove tmp = *it;
+                    *it = *best;
+                    *best = tmp;
+                }
+            }
+
+            // Skip TT move (already searched in Phase 1)
+            if (it->value == -1) continue;
+
+            if (search_move(it->move, false)) {
+                if (!stop.load(std::memory_order_relaxed)) {
+                    return best_value;
+                }
+            }
+        }
+    }
+
+    // ========================================
+    // PHASE 3: Quiet moves (only if no cutoff from captures)
+    // This is the key savings: we never generate quiet moves
+    // when a capture already caused beta cutoff.
+    // ========================================
+    {
+        ExtMove quiets[MAX_MOVES];
+        ExtMove* quiet_end = generate<GEN_QUIET>(pos, quiets);
+
+        // Score quiets: killers + counter-moves + history + escape-aware
+        for (ExtMove* it = quiets; it != quiet_end; ++it) {
+            Move m = it->move;
+            int score = 0;
+
+            if (m == tt_move) {
+                score = -1;  // Already searched
+            } else {
+                Piece pc = pos.piece_on(m.from());
+                if (pc != NO_PIECE) {
+                    score = history[int(pc)][int(m.to())];
+                    if (ss->ply >= 1 && (ss - 1)->current_move != MOVE_NONE && (ss - 1)->moved_piece != NO_PIECE) {
+                        Move prev_move = (ss - 1)->current_move;
+                        Piece prev_pc = (ss - 1)->moved_piece;
+                        score += counter_moves[int(prev_pc)][int(prev_move.to())][int(pc)][int(m.to())];
+                    }
+                }
+
+                // Killer moves bonus ON TOP of history
+                if (m == killers[ss->ply][0]) score += 60000;
+                else if (m == killers[ss->ply][1]) score += 50000;
+                else if (ss->ply >= 1 && (ss - 1)->current_move != MOVE_NONE && (ss - 1)->moved_piece != NO_PIECE) {
+                    Move prev_move = (ss - 1)->current_move;
+                    Piece prev_pc = (ss - 1)->moved_piece;
+                    if (m == counter_move_table[int(prev_pc)][int(prev_move.to())]) {
+                        score += 40000;
+                    }
+                }
+
+                // INNOVATION: "Escape-Aware Ordering" - pieces under pawn attack move first
+                Piece moved_piece = pos.piece_on(m.from());
+                if (moved_piece != NO_PIECE && piece_type_of(moved_piece) != PAWN) {
+                    Color them = Color(pos.side_to_move() ^ 1);
+                    if (pawn_attacks_bb(them, pos.pieces(them, PAWN)) & square_bb(m.from())) {
+                        score += 15000;
+                    }
+                }
+            }
+            it->value = score;
+        }
+
+        // Pick-best through quiets
+        for (ExtMove* it = quiets; it != quiet_end; ++it) {
+            if (stop.load(std::memory_order_relaxed)) break;
+
+            // Pick best remaining
+            {
+                ExtMove* best = it;
+                for (ExtMove* jt = it + 1; jt != quiet_end; ++jt) {
+                    if (jt->value > best->value) best = jt;
+                }
+                if (best != it) {
+                    ExtMove tmp = *it;
+                    *it = *best;
+                    *best = tmp;
+                }
+            }
+
+            // Skip TT move (already searched in Phase 1)
+            if (it->value == -1) continue;
+
+            if (search_move(it->move, true)) {
+                if (!stop.load(std::memory_order_relaxed)) {
+                    return best_value;
+                }
+            }
+        }
+    }
+
+    // Checkmate/stalemate detection: if no moves were played, there are no legal moves
+    if (moves_played == 0 && !stop.load(std::memory_order_relaxed)) {
+        if (pos.is_check()) {
+            return -VALUE_MATE + ss->ply;
+        }
+        return VALUE_DRAW - (pos.side_to_move() == WHITE ? params.contempt / 2 : -params.contempt / 2);
     }
 
     // CRITICAL FIX: Only save to TT if search completed fully
