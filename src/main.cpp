@@ -7,6 +7,8 @@
 namespace luminex {
 
 void init() {
+    init_magic_bitboards();
+    init_line_tables();
     init_zobrist();
     init_evaluation();
     TT.resize(256); // 256 MB transposition table

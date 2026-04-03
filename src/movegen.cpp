@@ -118,11 +118,12 @@ ExtMove* generate_moves(const Position& pos, ExtMove* moveList) {
     Bitboard bishops = pos.pieces(us, BISHOP);
     while (bishops) {
         Square from = pop_lsb(bishops);
+        Bitboard all_attacks = bishop_attacks_bb(from, pos.pieces());
         // Captures: enemy pieces except king
         Bitboard their_pieces = pos.pieces(them) & ~pos.pieces(them, KING);
-        Bitboard attacks = bb_diag_attacks(from, pos.pieces()) & their_pieces;
+        Bitboard attacks = all_attacks & their_pieces;
         // Quiets: empty squares only
-        Bitboard quiets = bb_diag_attacks(from, pos.pieces()) & ~pos.pieces();
+        Bitboard quiets = all_attacks & ~pos.pieces();
 
         // Captures
         if constexpr (T == GEN_CAPTURE || T == GEN_ALL || T == GEN_LEGAL || T == GEN_EVASION || T == GEN_NON_EVASION) {
@@ -146,11 +147,12 @@ ExtMove* generate_moves(const Position& pos, ExtMove* moveList) {
     Bitboard rooks = pos.pieces(us, ROOK);
     while (rooks) {
         Square from = pop_lsb(rooks);
+        Bitboard all_attacks = rook_attacks_bb(from, pos.pieces());
         // Captures: enemy pieces except king (kings cannot be captured)
         Bitboard their_pieces = pos.pieces(them) & ~pos.pieces(them, KING);
-        Bitboard attacks = (bb_rank_attacks(from, pos.pieces()) | bb_file_attacks(from, pos.pieces())) & their_pieces;
+        Bitboard attacks = all_attacks & their_pieces;
         // Quiets: empty squares only (king squares are NOT valid destinations)
-        Bitboard quiets = (bb_rank_attacks(from, pos.pieces()) | bb_file_attacks(from, pos.pieces())) & ~pos.pieces();
+        Bitboard quiets = all_attacks & ~pos.pieces();
 
         // Captures
         if constexpr (T == GEN_CAPTURE || T == GEN_ALL || T == GEN_LEGAL || T == GEN_EVASION || T == GEN_NON_EVASION) {
@@ -174,11 +176,12 @@ ExtMove* generate_moves(const Position& pos, ExtMove* moveList) {
     Bitboard queens = pos.pieces(us, QUEEN);
     while (queens) {
         Square from = pop_lsb(queens);
+        Bitboard all_attacks = queen_attacks_bb(from, pos.pieces());
         // Captures: enemy pieces except king
         Bitboard their_pieces = pos.pieces(them) & ~pos.pieces(them, KING);
-        Bitboard attacks = queen_attacks_bb(from, pos.pieces()) & their_pieces;
+        Bitboard attacks = all_attacks & their_pieces;
         // Quiets: empty squares only
-        Bitboard quiets = queen_attacks_bb(from, pos.pieces()) & ~pos.pieces();
+        Bitboard quiets = all_attacks & ~pos.pieces();
 
         // Captures
         if constexpr (T == GEN_CAPTURE || T == GEN_ALL || T == GEN_LEGAL || T == GEN_EVASION || T == GEN_NON_EVASION) {

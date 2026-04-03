@@ -372,13 +372,13 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
     }
 
     // Futility pruning - use improving for better pruning decisions
-    // Depth <= 5 for balance between pruning and tactical accuracy
-    if (!pv_node && !pos.is_check() && depth <= 5 && eval - futility_margin(depth, ss->improving) >= beta) {
+    // Depth <= 6 for balance between pruning and tactical accuracy
+    if (!pv_node && !pos.is_check() && depth <= 6 && eval - futility_margin(depth, ss->improving) >= beta) {
         return eval;
     }
 
-    // Reverse futility pruning: if eval is far above beta, prune immediately
-    if (!pv_node && !pos.is_check() && depth <= 7 && eval - 80 * depth >= beta) {
+    // Reverse futility pruning (static null move): if eval is far above beta, prune immediately
+    if (!pv_node && !pos.is_check() && depth <= 8 && eval - 70 * depth >= beta) {
         return eval;
     }
 
@@ -529,6 +529,20 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
                     score += 40000;
                 }
             }
+
+            // INNOVATION: "Escape-Aware Ordering" - if the piece being moved is
+            // currently under attack, boost the move's priority. A piece in danger
+            // is more likely to need moving urgently. Also boost moves that
+            // defend an attacked friendly piece (moving to a square that
+            // adds a defender to an attacked piece).
+            Piece moved_piece = pos.piece_on(m.from());
+            if (moved_piece != NO_PIECE && piece_type_of(moved_piece) != PAWN) {
+                Color them = Color(pos.side_to_move() ^ 1);
+                // Is the piece we're moving currently attacked?
+                if (pos.attackers_to(m.from(), pos.pieces()) & pos.pieces(them)) {
+                    score += 15000;  // Moving attacked piece is urgent
+                }
+            }
         }
 
         it->value = score;
@@ -599,12 +613,13 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
             }
         }
 
-        // Late Move Reduction (LMR)
+        // Late Move Reduction (LMR) - Fruit-style sqrt formula
         Depth new_depth = depth - 1;
         bool do_lmr = !pv_node && depth >= 2 && moves_played >= 1 && !m.is_capture() && !m.is_promotion() && !m.is_castling();
 
         if (do_lmr) {
-            int reduction = int(0.75 + std::log(double(depth)) * std::log(double(moves_played + 1)) / 1.75);
+            // Fruit Reloaded formula: sqrt(depth-1) + sqrt(moves-1)
+            int reduction = int(std::sqrt(double(depth - 1)) + std::sqrt(double(moves_played)));
 
             if (!ss->improving) reduction += 1;
             if (cut_node) reduction += 1;
@@ -613,16 +628,55 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
             Piece pc = pos.piece_on(m.from());
             if (pc != NO_PIECE) {
                 int history_score = history[int(pc)][int(m.to())];
-                if (ss->ply >= 2 && (ss - 1)->current_move != MOVE_NONE && (ss - 1)->moved_piece != NO_PIECE) {
-                    Move prev_move = (ss - 1)->current_move;
-                    Piece prev_pc = (ss - 1)->moved_piece;
-                    history_score += counter_moves[int(prev_pc)][int(prev_move.to())][int(pc)][int(m.to())];
-                }
                 reduction -= history_score / 4000;
             }
 
             // Reduce less for killer moves
             if (m == killers[ss->ply][0]) reduction -= 1;
+
+            // INNOVATION: "Responsive LMR" - reduce less when position is tactically tense
+            // A position with many captures available or pieces hanging is NOT a good
+            // candidate for aggressive reduction - the tactics might change everything
+            if (m.is_capture()) {
+                // Even the current move being reduced is a capture - reduce less
+                // (some engines already do this, but we also check the tactical density)
+                reduction -= 1;
+            }
+            // Check if the move gives check - reduce less
+            // Lightweight check: does the piece on the destination attack the enemy king?
+            {
+                Square opp_ksq = pos.king_sq(Color(pos.side_to_move() ^ 1));
+                PieceType pt = piece_type_of(pos.piece_on(m.from()));
+                if (pt != PAWN && pt != KING) {
+                    Bitboard attacks_to = BB_EMPTY;
+                    switch (pt) {
+                        case KNIGHT: attacks_to = knight_attacks_bb(m.to()); break;
+                        case BISHOP: attacks_to = bishop_attacks_bb(m.to(), pos.pieces()); break;
+                        case ROOK:   attacks_to = rook_attacks_bb(m.to(), pos.pieces()); break;
+                        case QUEEN:  attacks_to = queen_attacks_bb(m.to(), pos.pieces()); break;
+                        default: break;
+                    }
+                    if (attacks_to & square_bb(opp_ksq)) reduction -= 1;
+                } else if (pt == PAWN) {
+                    // Pawn gives check?
+                    Color us = pos.side_to_move();
+                    if (pawn_attacks_bb(us, m.to()) & square_bb(opp_ksq)) reduction -= 1;
+                }
+                // Discovered check: if the piece was blocking a slider attack on king
+                Bitboard sliders = (pos.pieces(Color(pos.side_to_move()), BISHOP, QUEEN) | pos.pieces(Color(pos.side_to_move()), ROOK, QUEEN));
+                if (sliders && aligned(m.from(), opp_ksq, m.to())) {
+                    // We're moving a piece that was on the line between our slider and their king
+                    // This might be a discovered check
+                    reduction -= 1;
+                }
+            }
+
+            // If we're in check, don't reduce at all (handled by not entering LMR)
+            // But also: if moving a piece that is currently attacked, reduce less
+            // (the piece was in danger, so moving it is more likely critical)
+            if (pos.attackers_to(m.from(), pos.pieces()) & pos.pieces(Color(pos.side_to_move() ^ 1))) {
+                reduction -= 1;
+            }
 
             reduction = std::max(1, std::min(reduction, depth - 2));
             new_depth = depth - 1 - reduction;
@@ -846,7 +900,7 @@ Move search(Position& pos, Limits& lim) {
 
 
 
-    // Using CPW formula: base/20 + inc/2
+    // Time management
     if (limits.use_time_management()) {
         Color us = pos.side_to_move();
         int time_left = limits.time[int(us)];
@@ -859,22 +913,21 @@ Move search(Position& pos, Limits& lim) {
         // Time allocation
         int movestogo = (limits.movestogo > 0) ? limits.movestogo : 25;
 
-        // Use more time per move for deeper search
-        // At 10+0.1 this gives ~500ms ideal, enough for depth 9-10
-        ideal_time = time_left / movestogo + time_inc * 9 / 10;
-        ideal_time = std::max(100, ideal_time);  // minimum 100ms
-        // Hard bound: never use more than 1/2 of remaining time
-        max_time = time_left / 2;
+        // Aggressive time allocation: use more time per move for deeper search
+        // With 10+0.1 and 25 moves, this gives ~500ms ideal time
+        ideal_time = time_left / movestogo + time_inc;
+        ideal_time = std::max(100, ideal_time);
+        // Hard bound: never use more than 2/3 of remaining time
+        max_time = time_left * 2 / 3;
 
-        // Overhead for stop response latency - be generous to avoid time losses
-        const int overhead = std::max(30, std::min(100, time_left / 50));
+        // Small overhead for stop response latency
+        const int overhead = std::max(10, std::min(30, time_left / 200));
         ideal_time = std::max(1, ideal_time - overhead);
         max_time = std::max(1, max_time - overhead);
 
         max_time = std::min(max_time, time_left);
         ideal_time = std::min(ideal_time, max_time);
 
-        // Absolute floor: always have at least 10ms to search
         ideal_time = std::max(10, ideal_time);
         max_time = std::max(10, max_time);
     } else {
@@ -918,13 +971,14 @@ Move search(Position& pos, Limits& lim) {
         }
 
         // Time management: stop before starting a new depth if we've used significant time
-        // Always complete depth 1, then be conservative for deeper depths
+        // Always complete depth 1, then be more aggressive about continuing deeper
         if (limits.use_time_management() && root_depth > 1) {
             auto now = std::chrono::steady_clock::now();
             int elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
                 now - search_start).count();
-            // Don't start a new depth if we've used more than 60% of ideal time
-            if (elapsed > ideal_time * 3 / 5) {
+            // Don't start a new depth if we've used more than 85% of ideal time
+            // This allows searching 1-2 depths deeper than before
+            if (elapsed > ideal_time * 85 / 100) {
                 break;
             }
         }

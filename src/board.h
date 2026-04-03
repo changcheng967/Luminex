@@ -105,6 +105,9 @@ public:
     Direction pawn_push(Color c) const;
     void assert_consistency(const char* location);  // Debug: check board consistency (made public for uci.cpp)
 
+    Bitboard attackers_to(Square s) const;
+    Bitboard attackers_to(Square s, Bitboard occupied) const;
+
     static constexpr int MAX_MOVES = 256;
     static constexpr int MAX_PLY = 246;
 
@@ -119,8 +122,6 @@ private:
 
     bool see_gen(Bitboard stmAttackers, Bitboard occupied) const;
 
-    Bitboard attackers_to(Square s) const;
-    Bitboard attackers_to(Square s, Bitboard occupied) const;
     Bitboard slider_blockers(Bitboard sliders, Bitboard& pinners) const;
 
     Bitboard pieces_by_type[ALL_PIECES] = {};

@@ -400,8 +400,8 @@ Bitboard Position::attackers_to(Square s, Bitboard occupied) const {
          | (pawn_attacks_bb(BLACK, s) & pieces(WHITE, PAWN))
          | (knight_attacks_bb(s) & pieces(KNIGHT))
          | (king_attacks_bb(s) & pieces(KING))
-         | ((bb_rank_attacks(s, occupied) | bb_file_attacks(s, occupied)) & (pieces(ROOK) | pieces(QUEEN)))
-         | ((bb_diag_attacks(s, occupied)) & (pieces(BISHOP) | pieces(QUEEN)));
+         | (rook_attacks_bb(s, occupied) & (pieces(ROOK) | pieces(QUEEN)))
+         | (bishop_attacks_bb(s, occupied) & (pieces(BISHOP) | pieces(QUEEN)));
 }
 
 Bitboard Position::slider_blockers([[maybe_unused]] Bitboard sliders, Bitboard& pinners) const {
@@ -413,8 +413,8 @@ Bitboard Position::slider_blockers([[maybe_unused]] Bitboard sliders, Bitboard& 
     // CRITICAL FIX: Find all enemy sliders that could potentially pin through our king
     // Use attack functions with empty occupancy (0) to get all squares along each ray
     // Then filter by actual enemy sliders to find potential snipers
-    Bitboard snipers = ((bb_rank_attacks(ksq, 0) | bb_file_attacks(ksq, 0)) & pieces(Color(side_to_move_ ^ 1), ROOK, QUEEN))
-                     | (bb_diag_attacks(ksq, 0) & pieces(Color(side_to_move_ ^ 1), BISHOP, QUEEN));
+    Bitboard snipers = (rook_attacks_bb(ksq, 0) & pieces(Color(side_to_move_ ^ 1), ROOK, QUEEN))
+                     | (bishop_attacks_bb(ksq, 0) & pieces(Color(side_to_move_ ^ 1), BISHOP, QUEEN));
 
     Bitboard occupancy = pieces();
 
@@ -459,14 +459,14 @@ void Position::set_check_info(StateInfo* si) {
     Color them = Color(side_to_move_ ^ 1);
     Bitboard bishop_queens = pieces(them, BISHOP, QUEEN);
     if (bishop_queens) {
-        Bitboard diag_attacks = bb_diag_attacks(ksq, pieces());
+        Bitboard diag_attacks = bishop_attacks_bb(ksq, pieces());
         si->checkers |= diag_attacks & bishop_queens;
     }
 
     // Rook/Queen straight checks
     Bitboard rook_queens = pieces(Color(side_to_move_ ^ 1), ROOK, QUEEN);
     if (rook_queens) {
-        Bitboard straight_attacks = (bb_rank_attacks(ksq, pieces()) | bb_file_attacks(ksq, pieces()));
+        Bitboard straight_attacks = rook_attacks_bb(ksq, pieces());
         si->checkers |= straight_attacks & rook_queens;
     }
 
@@ -1222,8 +1222,8 @@ bool Position::pseudo_legal(const Move m) const {
     Bitboard attacks = BB_EMPTY;
     switch (pt) {
         case KNIGHT: attacks = knight_attacks_bb(from); break;
-        case BISHOP: attacks = bb_diag_attacks(from, pieces()); break;
-        case ROOK: attacks = bb_rank_attacks(from, pieces()) | bb_file_attacks(from, pieces()); break;
+        case BISHOP: attacks = bishop_attacks_bb(from, pieces()); break;
+        case ROOK: attacks = rook_attacks_bb(from, pieces()); break;
         case QUEEN: attacks = queen_attacks_bb(from, pieces()); break;
         case KING: attacks = king_attacks_bb(from); break;
         default: break;
@@ -1238,99 +1238,6 @@ bool Position::capture(Move m) const {
 
 bool Position::capture_or_promotion(Move m) const {
     return m.is_capture() || m.is_promotion();
-}
-
-// Sliding attack helpers using simple ray casting
-Bitboard bb_rank_attacks(Square s, Bitboard occupied) {
-    Bitboard attacks = BB_EMPTY;
-    Rank r = rank_of(s);
-    File f = file_of(s);
-
-    // Scan east
-    for (int ff = int(f) + 1; ff <= int(FILE_H); ++ff) {
-        Square sq = make_square(File(ff), r);
-        attacks |= square_bb(sq);
-        if (occupied & square_bb(sq)) break;
-    }
-
-    // Scan west
-    for (int ff = int(f) - 1; ff >= int(FILE_A); --ff) {
-        Square sq = make_square(File(ff), r);
-        attacks |= square_bb(sq);
-        if (occupied & square_bb(sq)) break;
-    }
-
-    return attacks;
-}
-
-Bitboard bb_file_attacks(Square s, Bitboard occupied) {
-    Bitboard attacks = BB_EMPTY;
-    Rank r = rank_of(s);
-    File f = file_of(s);
-
-    // Scan north
-    for (int rr = int(r) + 1; rr <= int(RANK_8); ++rr) {
-        Square sq = make_square(f, Rank(rr));
-        attacks |= square_bb(sq);
-        if (occupied & square_bb(sq)) break;
-    }
-
-    // Scan south
-    for (int rr = int(r) - 1; rr >= int(RANK_1); --rr) {
-        Square sq = make_square(f, Rank(rr));
-        attacks |= square_bb(sq);
-        if (occupied & square_bb(sq)) break;
-    }
-
-    return attacks;
-}
-
-Bitboard bb_diag_attacks(Square s, Bitboard occupied) {
-    Bitboard attacks = BB_EMPTY;
-    Rank r = rank_of(s);
-    File f = file_of(s);
-
-    // Scan northeast
-    for (int d = 1; d <= 7; ++d) {
-        int ff = int(f) + d;
-        int rr = int(r) + d;
-        if (ff > int(FILE_H) || rr > int(RANK_8)) break;
-        Square sq = make_square(File(ff), Rank(rr));
-        attacks |= square_bb(sq);
-        if (occupied & square_bb(sq)) break;
-    }
-
-    // Scan northwest
-    for (int d = 1; d <= 7; ++d) {
-        int ff = int(f) - d;
-        int rr = int(r) + d;
-        if (ff < int(FILE_A) || rr > int(RANK_8)) break;
-        Square sq = make_square(File(ff), Rank(rr));
-        attacks |= square_bb(sq);
-        if (occupied & square_bb(sq)) break;
-    }
-
-    // Scan southeast
-    for (int d = 1; d <= 7; ++d) {
-        int ff = int(f) + d;
-        int rr = int(r) - d;
-        if (ff > int(FILE_H) || rr < int(RANK_1)) break;
-        Square sq = make_square(File(ff), Rank(rr));
-        attacks |= square_bb(sq);
-        if (occupied & square_bb(sq)) break;
-    }
-
-    // Scan southwest
-    for (int d = 1; d <= 7; ++d) {
-        int ff = int(f) - d;
-        int rr = int(r) - d;
-        if (ff < int(FILE_A) || rr < int(RANK_1)) break;
-        Square sq = make_square(File(ff), Rank(rr));
-        attacks |= square_bb(sq);
-        if (occupied & square_bb(sq)) break;
-    }
-
-    return attacks;
 }
 
 bool Position::validate_move(Move m, Square from, Square to, Piece moved_pc, PieceType captured) const {

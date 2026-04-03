@@ -235,7 +235,7 @@ Value evaluate(const Position& pos) {
             eg_score += sign * (PieceValueEG[KNIGHT] + PST_EG_TABLE[int(c)][int(KNIGHT)][int(sq)]);
             int mob = popcount(knight_attacks_bb(sq) & ~pos.pieces(c));
             mg_score += sign * mob * 2;
-            eg_score += sign * mob * 4;
+            eg_score += sign * mob * 3;
         }
 
         // Bishops
@@ -247,7 +247,7 @@ Value evaluate(const Position& pos) {
             eg_score += sign * (PieceValueEG[BISHOP] + PST_EG_TABLE[int(c)][int(BISHOP)][int(sq)]);
             int mob = popcount(bb_diag_attacks(sq, occupied) & ~pos.pieces(c));
             mg_score += sign * mob * 3;
-            eg_score += sign * mob * 5;
+            eg_score += sign * mob * 4;
         }
 
         // Rooks
@@ -256,9 +256,6 @@ Value evaluate(const Position& pos) {
             Square sq = pop_lsb(rooks);
             mg_score += sign * (PieceValueMG[ROOK] + PST_MG_TABLE[int(c)][int(ROOK)][int(sq)]);
             eg_score += sign * (PieceValueEG[ROOK] + PST_EG_TABLE[int(c)][int(ROOK)][int(sq)]);
-            int mob = popcount((bb_rank_attacks(sq, occupied) | bb_file_attacks(sq, occupied)) & ~pos.pieces(c));
-            mg_score += sign * mob * 2;
-            eg_score += sign * mob * 6;
 
             // Open/semi-open file
             File f = file_of(sq);
@@ -284,9 +281,6 @@ Value evaluate(const Position& pos) {
             Square sq = pop_lsb(queens);
             mg_score += sign * (PieceValueMG[QUEEN] + PST_MG_TABLE[int(c)][int(QUEEN)][int(sq)]);
             eg_score += sign * (PieceValueEG[QUEEN] + PST_EG_TABLE[int(c)][int(QUEEN)][int(sq)]);
-            int mob = popcount(queen_attacks_bb(sq, occupied) & ~pos.pieces(c));
-            mg_score += sign * mob * 2;
-            eg_score += sign * mob * 4;
         }
 
         // King PST
@@ -330,33 +324,96 @@ Value evaluate(const Position& pos) {
     if (bishop_count[WHITE] >= 2) { mg_score += 60; eg_score += 80; }
     if (bishop_count[BLACK] >= 2) { mg_score -= 60; eg_score -= 80; }
 
-    // Simplified king safety: count pieces attacking near enemy king
-    // Use a simple 3x3 zone around the king (much cheaper than full danger zone)
-    for (int c_idx = 0; c_idx < 2; ++c_idx) {
-        Color us = Color(c_idx);
-        Square opp_ksq = king_sq[c_idx ^ 1];
-        // Simple king neighborhood: king attacks + king square
-        Bitboard zone = king_attacks_bb(opp_ksq) | square_bb(opp_ksq);
+    // ================================================================
+    // INNOVATION 1: Threat-Aware Static Evaluation (TASE)
+    // Instead of just counting attackers near the king (common approach),
+    // TASE measures three unique threat dimensions:
+    //   a) Hanging pieces - material that can be captured for free
+    //   b) King zone pressure - weighted by number and type of attackers
+    //   c) Unsafe king - open lines toward king with no pawn shelter
+    // Key insight: a position with free captures available is MUCH worse
+    // than material count suggests, even if those captures haven't been made yet.
+    // ================================================================
+    for (int c = 0; c < 2; ++c) {
+        Color us = Color(c);
+        Color them = Color(c ^ 1);
+        Sign sign = (c == 0) ? 1 : -1;
+        Square our_ksq = king_sq[c];
 
-        int attack_units = 0;
+        // (a) Hanging pieces: pieces attacked by them but not defended by us
+        // This is a DIRECT measure of tactical vulnerability - no search needed
+        Bitboard our_pieces = pos.pieces(us) & ~square_bb(our_ksq);
+        Bitboard hanging = 0;
+        Bitboard tmp = our_pieces;
+        while (tmp) {
+            Square sq = pop_lsb(tmp);
+            if (pos.attackers_to(sq, pos.pieces()) & pos.pieces(them)) {
+                // Is it defended?
+                if (!(pos.attackers_to(sq, pos.pieces()) & pos.pieces(us) & ~square_bb(sq))) {
+                    hanging |= square_bb(sq);
+                }
+            }
+        }
+        // Penalty proportional to value of hanging material
+        int hang_value = 0;
+        while (hanging) {
+            Square sq = pop_lsb(hanging);
+            PieceType pt = piece_type_of(pos.piece_on(sq));
+            if (pt == PAWN) hang_value += 50;
+            else if (pt == KNIGHT || pt == BISHOP) hang_value += 200;
+            else if (pt == ROOK) hang_value += 300;
+            else if (pt == QUEEN) hang_value += 500;
+        }
+        mg_score -= sign * hang_value;
+        eg_score -= sign * hang_value;
 
-        Bitboard kn = pos.pieces(us, KNIGHT);
-        while (kn) { if (knight_attacks_bb(pop_lsb(kn)) & zone) attack_units += 4; }
+        // (b) King zone pressure: how many enemy pieces attack near our king
+        // Novel: weight by proximity (closer = more dangerous)
+        Bitboard king_zone = king_attacks_bb(our_ksq) | square_bb(our_ksq);
+        int pressure = 0;
+        Bitboard enemy_kn = pos.pieces(them, KNIGHT);
+        while (enemy_kn) {
+            Square from = pop_lsb(enemy_kn);
+            if (knight_attacks_bb(from) & king_zone) pressure += 3;
+        }
+        Bitboard enemy_bi = pos.pieces(them, BISHOP);
+        while (enemy_bi) {
+            Square from = pop_lsb(enemy_bi);
+            if (bishop_attacks_bb(from, occupied) & king_zone) pressure += 4;
+        }
+        Bitboard enemy_ro = pos.pieces(them, ROOK);
+        while (enemy_ro) {
+            Square from = pop_lsb(enemy_ro);
+            if (rook_attacks_bb(from, occupied) & king_zone) pressure += 5;
+        }
+        Bitboard enemy_qu = pos.pieces(them, QUEEN);
+        while (enemy_qu) {
+            Square from = pop_lsb(enemy_qu);
+            if (queen_attacks_bb(from, occupied) & king_zone) pressure += 8;
+        }
+        // Quadratic scaling: coordinated attacks are disproportionately dangerous
+        if (pressure >= 6) pressure = pressure + pressure * pressure / 8;
+        mg_score -= sign * pressure * 3;
 
-        Bitboard bi = pos.pieces(us, BISHOP);
-        while (bi) { if (bb_diag_attacks(pop_lsb(bi), occupied) & zone) attack_units += 5; }
-
-        Bitboard ro = pos.pieces(us, ROOK);
-        while (ro) { Square sq = pop_lsb(ro); if ((bb_rank_attacks(sq, occupied) | bb_file_attacks(sq, occupied)) & zone) attack_units += 7; }
-
-        Bitboard qu = pos.pieces(us, QUEEN);
-        while (qu) { if (queen_attacks_bb(pop_lsb(qu), occupied) & zone) attack_units += 12; }
-
-        // Quadratic bonus for multiple attackers
-        if (attack_units >= 8) attack_units += attack_units * attack_units / 4;
-
-        Sign sign = (c_idx == 0) ? 1 : -1;
-        mg_score += sign * attack_units * 4;
+        // (c) Unsafe king: open files/diagonals toward king without pawn cover
+        Rank krank = rank_of(our_ksq);
+        File kfile = file_of(our_ksq);
+        bool on_back = (us == WHITE && krank <= RANK_1) || (us == BLACK && krank >= RANK_8);
+        if (on_back) {
+            // Check open files toward king
+            Bitboard king_file_mask = file_bb(kfile);
+            Bitboard pawns_on_file = pos.pieces(us, PAWN) & king_file_mask;
+            if (!pawns_on_file) mg_score -= sign * 30;  // completely open file
+            // Check adjacent files
+            if (kfile > FILE_A) {
+                Bitboard adj = pos.pieces(us, PAWN) & file_bb(File(kfile - 1));
+                if (!adj) mg_score -= sign * 15;
+            }
+            if (kfile < FILE_H) {
+                Bitboard adj = pos.pieces(us, PAWN) & file_bb(File(kfile + 1));
+                if (!adj) mg_score -= sign * 15;
+            }
+        }
     }
 
     // Phase calculation

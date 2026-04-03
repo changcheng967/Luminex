@@ -28,6 +28,7 @@ set(SOURCES
     src/search.cpp
     src/evaluation.cpp
     src/transposition.cpp
+    src/magic.cpp
 )
 
 set(HEADERS

@@ -130,75 +130,21 @@ constexpr Bitboard king_attacks_bb(Square s) {
          | ((b << 1) & ~BB_FILE_A) | ((b >> 1) & ~BB_FILE_H);
 }
 
-// Runtime line computation
+// Precomputed line and between tables
+extern Bitboard LineBB[64][64];
+extern Bitboard BetweenBB[64][64];
+
 inline Bitboard line_bb(Square s1, Square s2) {
-    if (s1 == s2) return BB_EMPTY;
-
-    int f1 = file_of(s1);
-    int r1 = rank_of(s1);
-    int f2 = file_of(s2);
-    int r2 = rank_of(s2);
-
-    int df = f2 - f1;
-    int dr = r2 - r1;
-
-    Bitboard line = 0;
-    Square s = s1;
-
-    // Check if aligned
-    if (df == 0 || dr == 0 || (df < 0 ? -df : df) == (dr < 0 ? -dr : dr)) {
-        int step_f = df == 0 ? 0 : (df > 0 ? 1 : -1);
-        int step_r = dr == 0 ? 0 : (dr > 0 ? 1 : -1);
-
-        do {
-            s = Square(s + step_r * 8 + step_f);
-            line |= square_bb(s);
-        } while (s != s2);
-    }
-
-    return line;
+    return LineBB[int(s1)][int(s2)];
 }
 
-// Runtime between squares computation
 inline Bitboard between_bb(Square s1, Square s2) {
-    Bitboard b = line_bb(s1, s2);
-    return b & ~(square_bb(s1) | square_bb(s2));
-}
-
-// Bishop attacks (uses runtime line computation)
-inline Bitboard bishop_attacks_bb(Square s) {
-    Bitboard attacks = BB_EMPTY;
-
-    // Scan along diagonals
-    for (int d : {-1, 1}) {
-        for (int dr : {-1, 1}) {
-            Square sq = s;
-            while (true) {
-                int f = file_of(sq) + d;
-                int r = rank_of(sq) + dr;
-                if (f < 0 || f > 7 || r < 0 || r > 7) break;
-                sq = make_square(File(f), Rank(r));
-                attacks |= square_bb(sq);
-            }
-        }
-    }
-
-    return attacks;
-}
-
-// Rook attacks
-inline Bitboard rook_attacks_bb(Square s) {
-    return rank_bb(rank_of(s)) | file_bb(file_of(s));
-}
-
-// Queen attacks (no blocking - for when you want all squares on rank/file/diag)
-inline Bitboard queen_attacks_bb(Square s) {
-    return rook_attacks_bb(s) | bishop_attacks_bb(s);
+    return BetweenBB[int(s1)][int(s2)];
 }
 
 // Check if two squares are aligned
 inline bool aligned(Square s1, Square s2, Square s3) {
-    return line_bb(s1, s2) & square_bb(s3);
+    return LineBB[int(s1)][int(s2)] & square_bb(s3);
 }
 
 // Distance between squares
@@ -213,22 +159,79 @@ constexpr bool more_than_one(Bitboard b) {
     return b & (b - 1);
 }
 
-// Forward declarations for sliding attacks with occupied (defined in board.cpp)
-Bitboard bb_rank_attacks(Square s, Bitboard occupied);
-Bitboard bb_file_attacks(Square s, Bitboard occupied);
-Bitboard bb_diag_attacks(Square s, Bitboard occupied);
+// ============================================================
+// Magic Bitboard tables for sliding piece attacks
+// ============================================================
 
-// Sliding piece attacks with blocking pieces
-inline Bitboard bishop_attacks_occ(Square s, Bitboard occupied) {
-    return bb_diag_attacks(s, occupied);
+struct Magic {
+    Bitboard mask;
+    Bitboard magic;
+    Bitboard* attacks;
+    unsigned shift;
+};
+
+extern Magic RookMagics[64];
+extern Magic BishopMagics[64];
+extern Bitboard RookTable[262144];   // Large enough for all rook entries
+extern Bitboard BishopTable[65536];  // Large enough for all bishop entries
+
+// Magic bitboard attack lookups - O(1) table lookup
+inline Bitboard rook_attacks_bb(Square s, Bitboard occupied) {
+    const Magic& m = RookMagics[int(s)];
+    return m.attacks[((occupied & m.mask) * m.magic) >> m.shift];
 }
 
-inline Bitboard rook_attacks_occ(Square s, Bitboard occupied) {
-    return bb_rank_attacks(s, occupied) | bb_file_attacks(s, occupied);
+inline Bitboard bishop_attacks_bb(Square s, Bitboard occupied) {
+    const Magic& m = BishopMagics[int(s)];
+    return m.attacks[((occupied & m.mask) * m.magic) >> m.shift];
+}
+
+inline Bitboard rook_attacks_bb(Square s) {
+    return rank_bb(rank_of(s)) | file_bb(file_of(s));
+}
+
+inline Bitboard bishop_attacks_bb(Square s) {
+    Bitboard attacks = BB_EMPTY;
+    for (int d : {-1, 1}) {
+        for (int dr : {-1, 1}) {
+            Square sq = s;
+            while (true) {
+                int f = file_of(sq) + d;
+                int r = rank_of(sq) + dr;
+                if (f < 0 || f > 7 || r < 0 || r > 7) break;
+                sq = make_square(File(f), Rank(r));
+                attacks |= square_bb(sq);
+            }
+        }
+    }
+    return attacks;
 }
 
 inline Bitboard queen_attacks_bb(Square s, Bitboard occupied) {
-    return bb_rank_attacks(s, occupied) | bb_file_attacks(s, occupied) | bb_diag_attacks(s, occupied);
+    return rook_attacks_bb(s, occupied) | bishop_attacks_bb(s, occupied);
 }
+
+inline Bitboard queen_attacks_bb(Square s) {
+    return rook_attacks_bb(s) | bishop_attacks_bb(s);
+}
+
+// Legacy compatibility aliases
+inline Bitboard bb_rank_attacks(Square s, Bitboard occupied) {
+    return rook_attacks_bb(s, occupied);
+}
+
+inline Bitboard bb_file_attacks(Square s, Bitboard occupied) {
+    return rook_attacks_bb(s, occupied);
+}
+
+inline Bitboard bb_diag_attacks(Square s, Bitboard occupied) {
+    return bishop_attacks_bb(s, occupied);
+}
+
+// Initialize magic bitboard tables - call once at startup
+void init_magic_bitboards();
+
+// Initialize line/between tables
+void init_line_tables();
 
 } // namespace luminex
