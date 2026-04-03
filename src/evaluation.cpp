@@ -2,314 +2,173 @@
 
 namespace luminex {
 
-// Piece-square tables for middle game
+// PeSTO piece values (MG and EG)
+static constexpr int PieceValueMG[8] = { 82, 337, 365, 477, 1025, 0, 0, 0 };
+static constexpr int PieceValueEG[8] = { 94, 281, 297, 512, 936, 0, 0, 0 };
+
+// PeSTO piece-square tables (WHITE, standard layout a1=0)
+// These are positional-only bonuses; material is added separately
 Score PST_MG_TABLE[2][8][64] = {
     // WHITE
     {
         // PAWN
-        {0, 0, 0, 0, 0, 0, 0, 0,
-         50, 50, 50, 50, 50, 50, 50, 50,
-         10, 10, 20, 30, 30, 20, 10, 10,
-         5,  5, 10, 25, 25, 10,  5,  5,
-         0,  0,  0, 20, 20,  0,  0,  0,
-         5, -5,-10,  0,  0,-10, -5,  5,
-         5, 10, 10,-20,-20, 10, 10,  5,
-         0,  0,  0,  0,  0,  0,  0,  0
+        {
+              0,   0,   0,   0,   0,   0,   0,   0,
+            -35,  -1, -20, -23, -15,  24,  38, -22,
+            -26,  -4,  -4, -10,   3,   3,  33, -12,
+            -27,  -2,  -5,  12,  17,   6,  10, -25,
+            -14,  13,   6,  21,  23,  12,  17, -23,
+              -6,   7,  26,  31,  65,  56,  25, -20,
+             98, 134,  61,  95,  68, 126,  34, -11,
+              0,   0,   0,   0,   0,   0,   0,   0
         },
         // KNIGHT
         {
-            -50,-40,-30,-30,-30,-30,-40,-50,
-            -40,-20,  0,  0,  0,  0,-20,-40,
-            -30,  0, 10, 15, 15, 10,  0,-30,
-            -30,  5, 15, 20, 20, 15,  5,-30,
-            -30,  0, 15, 20, 20, 15,  0,-30,
-            -30,  5, 10, 15, 15, 10,  5,-30,
-            -40,-20,  0,  5,  5,  0,-20,-40,
-            -50,-40,-30,-30,-30,-30,-40,-50
+            -105, -21, -58, -33, -17, -28, -19,-105,
+             -29, -53, -12,  -3,  -1,  18, -14, -19,
+             -23,  -9,  12,  10,  19,  17,  25, -16,
+             -13,   4,  16,  13,  28,  19,  21,  -8,
+              -9,  17,  19,  53,  37,  69,  18,  22,
+             -47,  60,  37,  65,  84,  71,  62,   7,
+             -73,  41,  72,  36,  23,  62,   7, -17,
+            -167, -89, -34, -49,  61, -97, -40,-162
         },
         // BISHOP
         {
-            -20,-10,-10,-10,-10,-10,-10,-20,
-            -10,  0,  0,  0,  0,  0,  0,-10,
-            -10,  0,  5, 10, 10,  5,  0,-10,
-            -10,  5,  5, 10, 10,  5,  5,-10,
-            -10,  0, 10, 10, 10, 10,  0,-10,
-            -10, 10, 10, 10, 10, 10, 10,-10,
-            -10,  5,  0,  0,  0,  0,  5,-10,
-            -20,-10,-10,-10,-10,-10,-10,-20
+            -24,  -1, -20, -23,  -9, -24, -14, -30,
+              -3,  14,  21,  28,  32,  43,  27, -13,
+               0,   8,  28,  29,  37,  32,  26,  -3,
+              -6,  13,  13,  26,  34,  23,  12,  -6,
+              -4,   5,  19,  50,  37,  67,  26,  -3,
+            -16,  37,  43,  40,  35,  50,  37,  -2,
+            -26,  16, -18, -13,  30,  59,  18, -47,
+            -29,   4, -82, -37, -25, -42,   7,  -8
         },
         // ROOK
         {
-            0,  0,  0,  0,  0,  0,  0,  0,
-            5, 10, 10, 10, 10, 10, 10,  5,
-            -5,  0,  0,  0,  0,  0,  0, -5,
-            -5,  0,  0,  0,  0,  0,  0, -5,
-            -5,  0,  0,  0,  0,  0,  0, -5,
-            -5,  0,  0,  0,  0,  0,  0, -5,
-            -5,  0,  0,  0,  0,  0,  0, -5,
-            0,  0,  0,  5,  5,  0,  0,  0
+            -21,  -3,  -7,  12,  22,  28,  46, -14,
+            -31,  -4,   9,  17,  21,  43,  52, -25,
+            -25,  -6,  10,  14,  23,  49,  52, -17,
+            -20,   1,  12,  17,  15,  55,  52, -14,
+            -24,  -7,  26,  25,  24,  49,  55, -24,
+             -5,  19,  26,  36,  17,  45,  61,  16,
+             27,  32,  58,  62,  80,  67,  26,  44,
+             32,  42,  32,  51,  63,   9,  31,  43
         },
         // QUEEN
         {
-            -20,-10,-10, -5, -5,-10,-10,-20,
-            -10,  0,  0,  0,  0,  0,  0,-10,
-            -10,  0,  5,  5,  5,  5,  0,-10,
-            -5,  0,  5,  5,  5,  5,  0, -5,
-            0,  0,  5,  5,  5,  5,  0, -5,
-            -10,  5,  5,  5,  5,  5,  0,-10,
-            -10,  0,  5,  0,  0,  0,  0,-10,
-            -20,-10,-10, -5, -5,-10,-10,-20
+             -1, -18,  -9,  10, -15, -25, -31, -50,
+            -35,  -8,  11,   2,   8,  15,  -3,   1,
+            -14,   2, -11,  -2,  -5,   2,  14,   5,
+             -9, -26,  -9, -10,  -2,  -4,   3,  -3,
+            -27, -27, -16, -16,  -1,  17,  -2,   1,
+            -13, -17,   7,   8,  29,  56,  47,  57,
+            -24, -39,  -5,   1, -16,  57,  28,  54,
+            -28,   0,  29,  12,  59,  44,  43,  45
         },
-        // KING (middle game - wants safety in corners/castled)
+        // KING (MG - safety-oriented)
         {
-            50, 60, 40, 30, 30, 40, 60, 50,
-            40, 50, 30, 20, 20, 30, 50, 40,
-            10, 20, 10,  0,  0, 10, 20, 10,
-            -20,-10,-10,-20,-20,-10,-10,-20,
-            -30,-30,-30,-40,-40,-30,-30,-30,
-            -40,-40,-40,-50,-50,-40,-40,-40,
-            -50,-50,-50,-50,-50,-50,-50,-50,
-            -50,-50,-50,-50,-50,-50,-50,-50
+            -15,  36,  12, -54,   8, -28,  24,  14,
+              1,   7,  -8, -64, -43, -16,   9,   8,
+            -14, -14, -22, -46, -44, -30, -15, -27,
+            -49,  -1, -27, -39, -46, -44, -33, -51,
+            -17, -20, -12, -27, -30, -25, -14, -36,
+              -9,  24,   2, -16, -20,   6,  22, -22,
+             29,  -1, -20,  -7,  -8,  -4, -38, -29,
+            -65,  23,  16, -15, -56, -34,   2,  13
         },
         // NONE
         {0},
         // ALL
         {0}
     },
-    // BLACK (mirrored from WHITE - flip vertically: sq ^ 56)
+    // BLACK (will be populated by init_evaluation via mirroring)
     {
-        // PAWN (rank 7 corresponds to white rank 2)
-        {0,  0,  0,  0,  0,  0,  0,  0,
-         5, 10, 10,-20,-20, 10, 10,  5,
-         5, -5,-10,  0,  0,-10, -5,  5,
-         0,  0,  0, 20, 20,  0,  0,  0,
-         5,  5, 10, 25, 25, 10,  5,  5,
-         10, 10, 20, 30, 30, 20, 10, 10,
-         50, 50, 50, 50, 50, 50, 50, 50,
-         0, 0, 0, 0, 0, 0, 0, 0
-        },
-        // KNIGHT
-        {
-            -50,-40,-30,-30,-30,-30,-40,-50,
-            -40,-20,  0,  5,  5,  0,-20,-40,
-            -30,  5, 10, 15, 15, 10,  5,-30,
-            -30,  0, 15, 20, 20, 15,  0,-30,
-            -30,  5, 15, 20, 20, 15,  5,-30,
-            -30,  0, 10, 15, 15, 10,  0,-30,
-            -40,-20,  0,  0,  0,  0,-20,-40,
-            -50,-40,-30,-30,-30,-30,-40,-50
-        },
-        // BISHOP
-        {
-            -20,-10,-10,-10,-10,-10,-10,-20,
-            -10,  5,  0,  0,  0,  0,  5,-10,
-            -10, 10, 10, 10, 10, 10, 10,-10,
-            -10,  0, 10, 10, 10, 10,  0,-10,
-            -10,  5,  5, 10, 10,  5,  5,-10,
-            -10,  0,  5, 10, 10,  5,  0,-10,
-            -10,  0,  0,  0,  0,  0,  0,-10,
-            -20,-10,-10,-10,-10,-10,-10,-20
-        },
-        // ROOK
-        {
-            0,  0,  0,  5,  5,  0,  0,  0,
-            -5,  0,  0,  0,  0,  0,  0, -5,
-            -5,  0,  0,  0,  0,  0,  0, -5,
-            -5,  0,  0,  0,  0,  0,  0, -5,
-            -5,  0,  0,  0,  0,  0,  0, -5,
-            -5,  0,  0,  0,  0,  0,  0, -5,
-            5, 10, 10, 10, 10, 10, 10,  5,
-            0,  0,  0,  0,  0,  0,  0,  0
-        },
-        // QUEEN
-        {
-            -20,-10,-10, -5, -5,-10,-10,-20,
-            -10,  0,  5,  0,  0,  5,  0,-10,
-            -10,  5,  5,  5,  5,  5,  5,-10,
-            -5,  0,  5,  5,  5,  5,  0, -5,
-            -10,  0,  5,  5,  5,  5,  0,-10,
-            -10,  0,  5,  5,  5,  5,  0,-10,
-            -10,  0,  0,  0,  0,  0,  0,-10,
-            -20,-10,-10, -5, -5,-10,-10,-20
-        },
-        // KING
-        {
-            -50,-50,-50,-50,-50,-50,-50,-50,
-            -50,-50,-50,-50,-50,-50,-50,-50,
-            -40,-40,-40,-50,-50,-40,-40,-40,
-            -30,-30,-30,-40,-40,-30,-30,-30,
-            -20,-10,-10,-20,-20,-10,-10,-20,
-            10, 20, 10,  0,  0, 10, 20, 10,
-            40, 50, 30, 20, 20, 30, 50, 40,
-            50, 60, 40, 30, 30, 40, 60, 50
-        },
-        {0},
-        {0}
+        {0}, {0}, {0}, {0}, {0}, {0}, {0}, {0}
     }
 };
 
-// Piece-square tables for endgame
 Score PST_EG_TABLE[2][8][64] = {
     // WHITE
     {
         // PAWN
         {
-            0,  0,  0,  0,  0,  0,  0,  0,
-            100, 100, 100, 100, 100, 100, 100, 100,
-            90, 90, 90, 90, 90, 90, 90, 90,
-            70, 70, 70, 70, 70, 70, 70, 70,
-            50, 50, 50, 50, 50, 50, 50, 50,
-            30, 30, 30, 30, 30, 30, 30, 30,
-            10, 10, 10, 10, 10, 10, 10, 10,
-            0,  0,  0,  0,  0,  0,  0,  0
+              0,   0,   0,   0,   0,   0,   0,   0,
+             13,   8,   8, -10,  -6,  -1,  -2,   6,
+              4,   7,  -6,   1,   0,  -5,  -1,   8,
+             13,   9,  -3,  -7,  -7,  -8,   3,  -1,
+             32,  24,  13,   5,  -2,   4,  17,  17,
+             94, 100,  85,  67,  56,  53,  82,  84,
+            178, 173, 158, 134, 147, 132, 165, 187,
+              0,   0,   0,   0,   0,   0,   0,   0
         },
         // KNIGHT
         {
-            -50,-40,-30,-30,-30,-30,-40,-50,
-            -40,-20,  0,  5,  5,  0,-20,-40,
-            -30,  5, 15, 20, 20, 15,  5,-30,
-            -30,  5, 20, 25, 25, 20,  5,-30,
-            -30,  5, 20, 25, 25, 20,  5,-30,
-            -30,  5, 15, 20, 20, 15,  5,-30,
-            -40,-20,  0,  5,  5,  0,-20,-40,
-            -50,-40,-30,-30,-30,-30,-40,-50
+            -47, -14, -25, -17, -14, -21, -28, -52,
+            -23,  -9,   0,  -3,  -3,  -9, -10,  -7,
+            -25,  -2,  -6,   0,   1,  -4,  -6,  -5,
+            -27,   0,  -3,   0,  -3,   1,  -3,  -2,
+            -23,   2,  -5,  -1,  -5,  -2,  -1,   1,
+            -21,  -2,  -7, -10,  -8,  -6,  -3,  -4,
+            -30,  -7, -14, -22, -14, -11, -18,  -9,
+            -58, -38, -13, -28,  31, -27, -30, -68
         },
         // BISHOP
         {
-            -20,-10,-10,-10,-10,-10,-10,-20,
-            -10,  0,  5, 10, 10,  5,  0,-10,
-            -10, 10, 15, 15, 15, 15, 10,-10,
-            -10, 10, 15, 20, 20, 15, 10,-10,
-            -10, 10, 15, 20, 20, 15, 10,-10,
-            -10, 10, 15, 15, 15, 15, 10,-10,
-            -10,  0, 10, 10, 10, 10,  0,-10,
-            -20,-10,-10,-10,-10,-10,-10,-20
+             -8,   0,  -5,  -1,  -3,  -1,  -5, -10,
+              0,   2,  -1,   0,   0,   1,   1,   2,
+              2,   4,   2,   3,   2,   4,   3,   3,
+              2,   4,   2,   1,   0,   3,   2,   1,
+              3,  -1,  -1,   0,  -1,   4,   0,   0,
+              2,  -8,   0,  -1,  -2,   0,  -4,   1,
+             -8,  -4,   7,  -5,  -4,  -8, -16,  -9,
+            -14, -21, -11,  -8,  -7,  -9, -17, -19
         },
         // ROOK
         {
-            0,  0,  0,  0,  0,  0,  0,  0,
-            5, 10, 10, 10, 10, 10, 10,  5,
-            -5,  0,  0,  0,  0,  0,  0, -5,
-            -5,  0,  0,  0,  0,  0,  0, -5,
-            -5,  0,  0,  0,  0,  0,  0, -5,
-            -5,  0,  0,  0,  0,  0,  0, -5,
-            -5,  0,  0,  0,  0,  0,  0, -5,
-            0,  0,  0,  5,  5,  0,  0,  0
+              0,   0,   0,   0,   0,   0,   0,   1,
+              0,   0,  -1,   0,   0,   0,   0,   1,
+              1,   0,  -1,  -1,   0,   0,  -1,   2,
+              1,   0,   0,  -1,   0,   0,  -1,   3,
+              2,   0,   0,   0,   0,  -1,   0,   3,
+              3,   1,   0,   1,   0,   0,   0,   2,
+              6,   1,   0,   1,   1,   0,  -1,   2,
+              7,  -1,  -1,   1,   1,  -1,   0,   0
         },
         // QUEEN
         {
-            -20,-10,-10, -5, -5,-10,-10,-20,
-            -10,  0,  0,  0,  0,  0,  0,-10,
-            -10,  0,  5,  5,  5,  5,  0,-10,
-            -5,  0,  5,  5,  5,  5,  0, -5,
-            0,  0,  5,  5,  5,  5,  0, -5,
-            -10,  5,  5,  5,  5,  5,  0,-10,
-            -10,  0,  5,  0,  0,  0,  0,-10,
-            -20,-10,-10, -5, -5,-10,-10,-20
+             -6,   1,  -3,   0,  -1,  -5,  -3,  -6,
+              3,  -4,  -2,  -6,  -2,  -6,  -2,  -4,
+              0,  -3,  -6,  -8,  -6,  -9,  -5,  -3,
+            -10,  -5, -12,  -9,  -4,  -7,  -8,  -6,
+            -16,  -3, -11,  -6,   3,   0,  -3,  -3,
+            -17,  -3,  12,  -1,   5,  -1,  -7,   6,
+            -17,  20,  22,  18,  22,  13, -10,   1,
+             -9,  22,  22,  27,  27,  19,  10,  20
         },
-        // KING (endgame - wants activity and center)
+        // KING (EG - center-oriented)
         {
-            -60,-40,-20,-10,-10,-20,-40,-60,
-            -40,-20, 10, 20, 20, 10,-20,-40,
-            -20, 10, 30, 40, 40, 30, 10,-20,
-            -10, 20, 40, 50, 50, 40, 20,-10,
-            -10, 20, 40, 50, 50, 40, 20,-10,
-            -20, 10, 30, 40, 40, 30, 10,-20,
-            -40,-20, 10, 20, 20, 10,-20,-40,
-            -60,-40,-20,-10,-10,-20,-40,-60
+            -53, -34, -21, -11, -28, -14, -24, -43,
+            -27, -11,   4,  13,  14,   4,  -5, -17,
+            -19,  -3,  11,  21,  23,  16,   7,  -9,
+            -18,  -4,  21,  24,  27,  23,   9, -11,
+             -8,  22,  24,  27,  26,  33,  26,   3,
+             10,  17,  23,  15,  20,  45,  44,  13,
+            -12,  17,  14,  17,  17,  38,  23,  11,
+            -74, -35, -18, -18, -11,  15,   4, -17
         },
         // NONE
         {0},
         // ALL
         {0}
     },
-    // BLACK (mirrored from WHITE)
+    // BLACK (will be populated by init_evaluation via mirroring)
     {
-        // PAWN
-        {
-            0,  0,  0,  0,  0,  0,  0,  0,
-            10, 10, 10, 10, 10, 10, 10, 10,
-            30, 30, 30, 30, 30, 30, 30, 30,
-            50, 50, 50, 50, 50, 50, 50, 50,
-            70, 70, 70, 70, 70, 70, 70, 70,
-            90, 90, 90, 90, 90, 90, 90, 90,
-            100, 100, 100, 100, 100, 100, 100, 100,
-            0,  0,  0,  0,  0,  0,  0,  0
-        },
-        // KNIGHT
-        {
-            -50,-40,-30,-30,-30,-30,-40,-50,
-            -40,-20,  0,  5,  5,  0,-20,-40,
-            -30,  5, 15, 20, 20, 15,  5,-30,
-            -30,  5, 20, 25, 25, 20,  5,-30,
-            -30,  5, 20, 25, 25, 20,  5,-30,
-            -30,  5, 15, 20, 20, 15,  5,-30,
-            -40,-20,  0,  5,  5,  0,-20,-40,
-            -50,-40,-30,-30,-30,-30,-40,-50
-        },
-        // BISHOP
-        {
-            -20,-10,-10,-10,-10,-10,-10,-20,
-            -10,  0, 10, 10, 10, 10,  0,-10,
-            -10, 10, 15, 15, 15, 15, 10,-10,
-            -10, 10, 15, 20, 20, 15, 10,-10,
-            -10, 10, 15, 20, 20, 15, 10,-10,
-            -10, 10, 15, 15, 15, 15, 10,-10,
-            -10,  0,  5, 10, 10,  5,  0,-10,
-            -20,-10,-10,-10,-10,-10,-10,-20
-        },
-        // ROOK
-        {
-            0,  0,  0,  5,  5,  0,  0,  0,
-            -5,  0,  0,  0,  0,  0,  0, -5,
-            -5,  0,  0,  0,  0,  0,  0, -5,
-            -5,  0,  0,  0,  0,  0,  0, -5,
-            -5,  0,  0,  0,  0,  0,  0, -5,
-            -5,  0,  0,  0,  0,  0,  0, -5,
-            5, 10, 10, 10, 10, 10, 10,  5,
-            0,  0,  0,  0,  0,  0,  0,  0
-        },
-        // QUEEN
-        {
-            -20,-10,-10, -5, -5,-10,-10,-20,
-            -10,  0,  5,  0,  0,  5,  0,-10,
-            -10,  5,  5,  5,  5,  5,  5,-10,
-            -5,  0,  5,  5,  5,  5,  0, -5,
-            0,  0,  5,  5,  5,  5,  0, -5,
-            -10,  5,  5,  5,  5,  5,  0,-10,
-            -10,  0,  5,  0,  0,  0,  0,-10,
-            -20,-10,-10, -5, -5,-10,-10,-20
-        },
-        // KING (endgame - mirrored)
-        {
-            -60,-40,-20,-10,-10,-20,-40,-60,
-            -40,-20, 10, 20, 20, 10,-20,-40,
-            -20, 10, 30, 40, 40, 30, 10,-20,
-            -10, 20, 40, 50, 50, 40, 20,-10,
-            -10, 20, 40, 50, 50, 40, 20,-10,
-            -20, 10, 30, 40, 40, 30, 10,-20,
-            -40,-20, 10, 20, 20, 10,-20,-40,
-            -60,-40,-20,-10,-10,-20,-40,-60
-        },
-        {0},
-        {0}
+        {0}, {0}, {0}, {0}, {0}, {0}, {0}, {0}
     }
 };
 
 using Score = Value;
-
-// King danger zone: 3x3 around king expanded by 1 rank
-inline Bitboard king_danger_zone(Square ksq) {
-    Bitboard zone = 0;
-    Bitboard kbb = square_bb(ksq);
-    zone |= kbb;
-    if (file_of(ksq) > FILE_A) zone |= shift_w(kbb) | shift_nw(kbb) | shift_sw(kbb);
-    if (file_of(ksq) < FILE_H) zone |= shift_e(kbb) | shift_ne(kbb) | shift_se(kbb);
-    zone |= shift_n(kbb) | shift_s(kbb);
-    if (rank_of(ksq) > RANK_1) zone |= shift_s(zone);
-    if (rank_of(ksq) < RANK_8) zone |= shift_n(zone);
-    return zone;
-}
 
 Value evaluate(const Position& pos) {
     Score mg_score = 0;
@@ -337,24 +196,24 @@ Value evaluate(const Position& pos) {
             File f = file_of(sq);
             Rank r = relative_rank(c, sq);
 
-            mg_score += sign * (PAWN_VALUE + PST_MG_TABLE[int(c)][int(PAWN)][int(sq)]);
-            eg_score += sign * (PAWN_VALUE + PST_EG_TABLE[int(c)][int(PAWN)][int(sq)]);
+            mg_score += sign * (PieceValueMG[PAWN] + PST_MG_TABLE[int(c)][int(PAWN)][int(sq)]);
+            eg_score += sign * (PieceValueEG[PAWN] + PST_EG_TABLE[int(c)][int(PAWN)][int(sq)]);
 
-            // Doubled pawn
+            // Doubled pawn penalty
             if (file_count[f] > 1) {
-                mg_score -= sign * 10;
-                eg_score -= sign * 20;
+                mg_score -= sign * 11;
+                eg_score -= sign * 22;
             }
 
-            // Isolated pawn
+            // Isolated pawn penalty
             bool left = (f > FILE_A && file_count[f - 1] > 0);
             bool right = (f < FILE_H && file_count[f + 1] > 0);
             if (!left && !right) {
-                mg_score -= sign * 15;
-                eg_score -= sign * 20;
+                mg_score -= sign * 14;
+                eg_score -= sign * 18;
             }
 
-            // Passed pawn
+            // Passed pawn bonus
             Bitboard ahead = 0;
             for (int rr = r + 1; rr <= RANK_7; ++rr) {
                 Square rsq = relative_square(c, make_square(f, Rank(rr)));
@@ -363,8 +222,8 @@ Value evaluate(const Position& pos) {
                 if (f < FILE_H) ahead |= square_bb(relative_square(c, make_square(File(f + 1), Rank(rr))));
             }
             if (!(ahead & their_pawns)) {
-                mg_score += sign * (15 + r * 8);
-                eg_score += sign * (30 + r * 20);
+                mg_score += sign * (15 + r * 10);
+                eg_score += sign * (30 + r * 25);
             }
         }
 
@@ -372,8 +231,8 @@ Value evaluate(const Position& pos) {
         Bitboard knights = pos.pieces(c, KNIGHT);
         while (knights) {
             Square sq = pop_lsb(knights);
-            mg_score += sign * (KNIGHT_VALUE + PST_MG_TABLE[int(c)][int(KNIGHT)][int(sq)]);
-            eg_score += sign * (KNIGHT_VALUE + PST_EG_TABLE[int(c)][int(KNIGHT)][int(sq)]);
+            mg_score += sign * (PieceValueMG[KNIGHT] + PST_MG_TABLE[int(c)][int(KNIGHT)][int(sq)]);
+            eg_score += sign * (PieceValueEG[KNIGHT] + PST_EG_TABLE[int(c)][int(KNIGHT)][int(sq)]);
             int mob = popcount(knight_attacks_bb(sq) & ~pos.pieces(c));
             mg_score += sign * mob * 4;
             eg_score += sign * mob * 8;
@@ -384,8 +243,8 @@ Value evaluate(const Position& pos) {
         bishop_count[c_idx] = popcount(bishops);
         while (bishops) {
             Square sq = pop_lsb(bishops);
-            mg_score += sign * (BISHOP_VALUE + PST_MG_TABLE[int(c)][int(BISHOP)][int(sq)]);
-            eg_score += sign * (BISHOP_VALUE + PST_EG_TABLE[int(c)][int(BISHOP)][int(sq)]);
+            mg_score += sign * (PieceValueMG[BISHOP] + PST_MG_TABLE[int(c)][int(BISHOP)][int(sq)]);
+            eg_score += sign * (PieceValueEG[BISHOP] + PST_EG_TABLE[int(c)][int(BISHOP)][int(sq)]);
             int mob = popcount(bb_diag_attacks(sq, occupied) & ~pos.pieces(c));
             mg_score += sign * mob * 5;
             eg_score += sign * mob * 10;
@@ -395,8 +254,8 @@ Value evaluate(const Position& pos) {
         Bitboard rooks = pos.pieces(c, ROOK);
         while (rooks) {
             Square sq = pop_lsb(rooks);
-            mg_score += sign * (ROOK_VALUE + PST_MG_TABLE[int(c)][int(ROOK)][int(sq)]);
-            eg_score += sign * (ROOK_VALUE + PST_EG_TABLE[int(c)][int(ROOK)][int(sq)]);
+            mg_score += sign * (PieceValueMG[ROOK] + PST_MG_TABLE[int(c)][int(ROOK)][int(sq)]);
+            eg_score += sign * (PieceValueEG[ROOK] + PST_EG_TABLE[int(c)][int(ROOK)][int(sq)]);
             int mob = popcount((bb_rank_attacks(sq, occupied) | bb_file_attacks(sq, occupied)) & ~pos.pieces(c));
             mg_score += sign * mob * 2;
             eg_score += sign * mob * 6;
@@ -404,11 +263,18 @@ Value evaluate(const Position& pos) {
             // Open/semi-open file
             File f = file_of(sq);
             if (!(pos.pieces(PAWN) & file_bb(f))) {
-                mg_score += sign * 40;
-                eg_score += sign * 40;
+                mg_score += sign * 38;
+                eg_score += sign * 38;
             } else if (!(pos.pieces(c, PAWN) & file_bb(f))) {
                 mg_score += sign * 15;
-                eg_score += sign * 20;
+                eg_score += sign * 18;
+            }
+
+            // Rook on 7th rank bonus
+            Rank rr = relative_rank(c, rank_of(sq));
+            if (rr == RANK_7) {
+                mg_score += sign * 25;
+                eg_score += sign * 30;
             }
         }
 
@@ -416,8 +282,8 @@ Value evaluate(const Position& pos) {
         Bitboard queens = pos.pieces(c, QUEEN);
         while (queens) {
             Square sq = pop_lsb(queens);
-            mg_score += sign * (QUEEN_VALUE + PST_MG_TABLE[int(c)][int(QUEEN)][int(sq)]);
-            eg_score += sign * (QUEEN_VALUE + PST_EG_TABLE[int(c)][int(QUEEN)][int(sq)]);
+            mg_score += sign * (PieceValueMG[QUEEN] + PST_MG_TABLE[int(c)][int(QUEEN)][int(sq)]);
+            eg_score += sign * (PieceValueEG[QUEEN] + PST_EG_TABLE[int(c)][int(QUEEN)][int(sq)]);
             int mob = popcount(queen_attacks_bb(sq, occupied) & ~pos.pieces(c));
             mg_score += sign * mob * 2;
             eg_score += sign * mob * 4;
@@ -425,8 +291,8 @@ Value evaluate(const Position& pos) {
 
         // King PST
         Square ksq = king_sq[c_idx];
-        mg_score += sign * PST_MG_TABLE[int(c)][int(KING)][int(ksq)];
-        eg_score += sign * PST_EG_TABLE[int(c)][int(KING)][int(ksq)];
+        mg_score += sign * (PieceValueMG[KING] + PST_MG_TABLE[int(c)][int(KING)][int(ksq)]);
+        eg_score += sign * (PieceValueEG[KING] + PST_EG_TABLE[int(c)][int(KING)][int(ksq)]);
 
         // King pawn shield (MG only)
         Rank krank = rank_of(ksq);
@@ -452,9 +318,9 @@ Value evaluate(const Position& pos) {
         if (c == BLACK && krank == RANK_8 && (kfile == FILE_G || kfile == FILE_C)) castled = true;
         if (castled) { mg_score += sign * 30; eg_score += sign * 10; }
 
-        CastlingRight ks = c == WHITE ? WHITE_KINGSIDE : BLACK_KINGSIDE;
-        CastlingRight qs = c == WHITE ? WHITE_QUEENSIDE : BLACK_QUEENSIDE;
-        if (!pos.castling_allowed(c, ks) && !pos.castling_allowed(c, qs) && !castled) {
+        CastlingRight ks_cr = c == WHITE ? WHITE_KINGSIDE : BLACK_KINGSIDE;
+        CastlingRight qs_cr = c == WHITE ? WHITE_QUEENSIDE : BLACK_QUEENSIDE;
+        if (!pos.castling_allowed(c, ks_cr) && !pos.castling_allowed(c, qs_cr) && !castled) {
             mg_score -= sign * 25;
             eg_score -= sign * 10;
         }
@@ -464,54 +330,39 @@ Value evaluate(const Position& pos) {
     if (bishop_count[WHITE] >= 2) { mg_score += 60; eg_score += 80; }
     if (bishop_count[BLACK] >= 2) { mg_score -= 60; eg_score -= 80; }
 
-    // King danger: count pieces attacking enemy king zone
-    int king_danger_val[2] = {0, 0};
-    int attackers[2] = {0, 0};
+    // Simplified king safety: count pieces attacking near enemy king
+    // Use a simple 3x3 zone around the king (much cheaper than full danger zone)
     for (int c_idx = 0; c_idx < 2; ++c_idx) {
         Color us = Color(c_idx);
-        Bitboard dz = king_danger_zone(king_sq[c_idx ^ 1]);
+        Square opp_ksq = king_sq[c_idx ^ 1];
+        // Simple king neighborhood: king attacks + king square
+        Bitboard zone = king_attacks_bb(opp_ksq) | square_bb(opp_ksq);
+
+        int attack_units = 0;
 
         Bitboard kn = pos.pieces(us, KNIGHT);
-        while (kn) { if (knight_attacks_bb(pop_lsb(kn)) & dz) { attackers[c_idx]++; king_danger_val[c_idx] += 4; } }
+        while (kn) { if (knight_attacks_bb(pop_lsb(kn)) & zone) attack_units += 4; }
 
         Bitboard bi = pos.pieces(us, BISHOP);
-        while (bi) { if (bb_diag_attacks(pop_lsb(bi), occupied) & dz) { attackers[c_idx]++; king_danger_val[c_idx] += 5; } }
+        while (bi) { if (bb_diag_attacks(pop_lsb(bi), occupied) & zone) attack_units += 5; }
 
         Bitboard ro = pos.pieces(us, ROOK);
-        while (ro) { Square sq = pop_lsb(ro); if ((bb_rank_attacks(sq, occupied) | bb_file_attacks(sq, occupied)) & dz) { attackers[c_idx]++; king_danger_val[c_idx] += 7; } }
+        while (ro) { Square sq = pop_lsb(ro); if ((bb_rank_attacks(sq, occupied) | bb_file_attacks(sq, occupied)) & zone) attack_units += 7; }
 
         Bitboard qu = pos.pieces(us, QUEEN);
-        while (qu) { if (queen_attacks_bb(pop_lsb(qu), occupied) & dz) { attackers[c_idx]++; king_danger_val[c_idx] += 12; } }
+        while (qu) { if (queen_attacks_bb(pop_lsb(qu), occupied) & zone) attack_units += 12; }
 
-        if (attackers[c_idx] >= 2) king_danger_val[c_idx] += attackers[c_idx] * attackers[c_idx];
-    }
+        // Quadratic bonus for multiple attackers
+        if (attack_units >= 8) attack_units += attack_units * attack_units / 4;
 
-    for (int c_idx = 0; c_idx < 2; ++c_idx) {
         Sign sign = (c_idx == 0) ? 1 : -1;
-        if (attackers[c_idx] >= 2) mg_score += sign * king_danger_val[c_idx] * 8;
+        mg_score += sign * attack_units * 4;
     }
 
     // Phase calculation
     int phase = popcount(pos.pieces(KNIGHT)) + popcount(pos.pieces(BISHOP))
               + popcount(pos.pieces(ROOK)) * 2 + popcount(pos.pieces(QUEEN)) * 4;
     phase = std::min(24, phase);
-
-    // Endgame king activity
-    if (phase <= 8) {
-        for (int c_idx = 0; c_idx < 2; ++c_idx) {
-            Sign sign = (c_idx == 0) ? 1 : -1;
-            Square ksq = king_sq[c_idx];
-            File kf = file_of(ksq);
-            Rank kr = rank_of(ksq);
-            int center_dist = std::min({
-                std::max(std::abs(int(kf) - 3), std::abs(int(kr) - 3)),
-                std::max(std::abs(int(kf) - 3), std::abs(int(kr) - 4)),
-                std::max(std::abs(int(kf) - 4), std::abs(int(kr) - 3)),
-                std::max(std::abs(int(kf) - 4), std::abs(int(kr) - 4))
-            });
-            eg_score += sign * (4 - center_dist) * 15;
-        }
-    }
 
     // Interpolate MG/EG
     Score score = (mg_score * phase + eg_score * (24 - phase)) / 24;

@@ -66,7 +66,7 @@ inline Value eval_cached(const Position& pos) {
     return eval;
 }
 
-inline void clear_eval_cache() {
+[[maybe_unused]] inline void clear_eval_cache() {
     std::memset(eval_cache, 0, sizeof(eval_cache));
 }
 
@@ -85,27 +85,6 @@ constexpr int futility_margin(int depth, bool improving) {
     else base += 50;  // Was 60
 
     return base;
-}
-
-// LMR reduction computation - logarithmic formula (Stockfish-style)
-inline int lmr_reduction(int depth, int moves_played, bool improving, bool pv_node) {
-    // Logarithmic LMR formula: reduction increases with depth and move count
-    // but at a decreasing rate (logarithmic)
-    int reduction = 0;
-    if (depth >= 2 && moves_played >= 2) {
-        // Main formula: log(depth) * log(moves) / scaling_factor
-        reduction = int(0.5 + std::log(double(depth)) * std::log(double(moves_played)) / 2.0);
-    }
-
-    // Node type adjustments
-    if (!pv_node) reduction += 1;
-    if (!improving) reduction += 1;
-
-    // Cap reduction - don't reduce too much
-    if (reduction > depth - 2) reduction = depth - 2;
-    if (reduction < 0) reduction = 0;
-
-    return reduction;
 }
 
 // Search start time for time management
@@ -211,15 +190,24 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
 
     // Evaluate position
     bool in_check = pos.is_check();
+    Value eval = VALUE_ZERO;
 
     if (!in_check) {
         // Stand pat only when NOT in check
-        Value eval = eval_cached(pos);
+        eval = eval_cached(pos);
         if (eval >= beta) {
             return beta;
         }
         if (eval > alpha) {
             alpha = eval;
+        }
+    }
+
+    // Delta pruning: if best possible capture can't raise alpha, skip captures
+    if (!in_check) {
+        Value delta = 200 + QUEEN_VALUE;  // Assume best case: can capture a queen
+        if (eval + delta < alpha) {
+            return alpha;
         }
     }
 
@@ -395,27 +383,30 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
         }
     }
 
-    // Null move pruning - moderate reduction
-    int piece_count = popcount(pos.pieces()) - popcount(pos.pieces(PAWN)) - 2;  // Exclude kings and pawns
-    bool null_move_ok = !pv_node && !pos.is_check() && depth >= 2 && piece_count >= 4 &&
-                          eval >= beta && ss->ply >= 1;  // Don't do at root
+    // Null move pruning with verification in endgames
+    int piece_count = popcount(pos.pieces()) - popcount(pos.pieces(PAWN)) - 2;
+    bool null_move_ok = !pv_node && !pos.is_check() && depth >= 2 && piece_count >= 1 &&
+                          eval >= beta && ss->ply >= 1;
 
     if (null_move_ok) {
         pos.do_null_move();
 
-        // Adaptive null move reduction: deeper at higher depths
-        // R=3 at depth 2-5, R=4 at depth 6-11, R=5 at depth 12+, etc.
-        int R = 3 + depth / 6;
+        int R = 3 + (depth > 6 ? 1 : 0) + (piece_count < 4 ? -1 : 0);
+        R = std::max(2, std::min(R, depth - 1));
         Value null_value = -search_worker(pos, ss + 1, -beta, -beta + 1, depth - R, !cut_node);
 
         pos.undo_null_move();
 
         if (null_value >= beta) {
-            // Don't return mate scores from null move pruning
-            if (null_value >= VALUE_MATE_IN_MAX_PLY) {
-                null_value = beta;
+            if (null_value >= VALUE_MATE_IN_MAX_PLY) null_value = beta;
+
+            // Verification search in endgames (few non-pawn pieces = zugzwang risk)
+            if (piece_count < 4 && depth >= 6) {
+                Value verify = search_worker(pos, ss, beta - 1, beta, depth - R - 1, !cut_node);
+                if (verify >= beta) return null_value;
+            } else {
+                return null_value;
             }
-            return null_value;
         }
     }
 
@@ -598,104 +589,39 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
 
         // Late Move Reduction (LMR)
         Depth new_depth = depth - 1;
-        // LMR: apply from move 4 at depth 2+ for quiet moves only (standard threshold)
-        bool do_lmr = !pv_node && depth >= 2 && moves_played >= 3 && !m.is_capture() && !m.is_promotion() && !m.is_castling();
+        bool do_lmr = !pv_node && depth >= 2 && moves_played >= 1 && !m.is_capture() && !m.is_promotion() && !m.is_castling();
 
         if (do_lmr) {
-            // Use unified LMR reduction function
-            int reduction = lmr_reduction(depth, moves_played, ss->improving, pv_node);
+            int reduction = int(0.75 + std::log(double(depth)) * std::log(double(moves_played + 1)) / 1.75);
 
-            // Additional cut node reduction
+            if (!ss->improving) reduction += 1;
             if (cut_node) reduction += 1;
 
-            // History-based adjustment: reduce less for moves with good history
+            // History-based adjustment
             Piece pc = pos.piece_on(m.from());
-            int history_score = 0;
             if (pc != NO_PIECE) {
-                history_score = history[int(pc)][int(m.to())];
-
-                // Add counter-move history if available
+                int history_score = history[int(pc)][int(m.to())];
                 if (ss->ply >= 2 && (ss - 1)->current_move != MOVE_NONE && (ss - 1)->moved_piece != NO_PIECE) {
                     Move prev_move = (ss - 1)->current_move;
                     Piece prev_pc = (ss - 1)->moved_piece;
                     history_score += counter_moves[int(prev_pc)][int(prev_move.to())][int(pc)][int(m.to())];
                 }
+                reduction -= history_score / 4000;
             }
 
-            // Adjust reduction based on history: good history = less reduction
-            if (history_score > 2000) {
-                reduction -= 1;
-            } else if (history_score < -1000) {
-                // Bad history = more reduction
-                reduction += 1;
-            }
+            // Reduce less for killer moves
+            if (m == killers[ss->ply][0]) reduction -= 1;
 
-            // Limit reduction
-            if (reduction > depth - 2) reduction = depth - 2;
-            if (reduction < 1) reduction = 1;  // Minimum reduction
-
+            reduction = std::max(1, std::min(reduction, depth - 2));
             new_depth = depth - 1 - reduction;
             if (new_depth < 1) new_depth = 1;
         }
 
-        // CRITICAL: Check evasion extension - when we're IN check, extend to find defensive moves
-        // Limited to depth >= 3 to prevent search explosion
-        bool evasion_extension = (pos.is_check() && depth >= 3);
-
-        // Check extension: extend by one ply if move gives check (helps find tactical sequences)
-        // Extend at depth >= 5 for discovered checks and dangerous piece checks
-        bool gives_check = false;
-        bool dangerous_check = false;
-        if (depth >= 5 && !pos.is_check()) {
-            PieceType pt = pos.piece_type_on(m.from());
-            Square to = m.to();
-            Color opponent = Color(int(pos.side_to_move()) ^ 1);
-            Square king_sq = pos.king_sq(opponent);
-
-            if (pt == KNIGHT) {
-                gives_check = (knight_attacks_bb(to) & square_bb(king_sq)) != 0;
-                // Knight checks are often dangerous
-                dangerous_check = gives_check;
-            } else if (pt == BISHOP) {
-                gives_check = (bb_diag_attacks(to, pos.pieces()) & square_bb(king_sq)) != 0;
-                dangerous_check = gives_check;
-            } else if (pt == ROOK) {
-                gives_check = ((bb_rank_attacks(to, pos.pieces()) | bb_file_attacks(to, pos.pieces())) & square_bb(king_sq)) != 0;
-                // Rook checks are dangerous
-                dangerous_check = gives_check;
-            } else if (pt == QUEEN) {
-                gives_check = (queen_attacks_bb(to, pos.pieces()) & square_bb(king_sq)) != 0;
-                // Queen checks are very dangerous
-                dangerous_check = gives_check;
-            } else if (pt == PAWN) {
-                Bitboard pawn_attacks = 0;
-                Bitboard pb = square_bb(to);
-                if (pos.side_to_move() == WHITE) {
-                    if (file_of(to) > FILE_A) pawn_attacks |= shift_nw(pb);
-                    if (file_of(to) < FILE_H) pawn_attacks |= shift_ne(pb);
-                } else {
-                    if (file_of(to) > FILE_A) pawn_attacks |= shift_sw(pb);
-                    if (file_of(to) < FILE_H) pawn_attacks |= shift_se(pb);
-                }
-                gives_check = (pawn_attacks & square_bb(king_sq)) != 0;
-                // Pawn checks are less dangerous, only extend if deep
-                dangerous_check = (depth >= 8 && gives_check);
-            }
-        }
-
-        // Single extension: at most one extension per move to prevent explosion
+        // Extensions: singular extension only for speed
         bool extension = false;
 
-        // Evasion extension: HIGHEST priority - we're being attacked!
-        if (evasion_extension && depth >= 3) {
-            extension = true;
-        }
-        // Singular extension: high priority (disabled for now)
-        else if (m == tt_move && tt_move_is_singular) {
-            extension = true;
-        }
-        // Check extension: for dangerous checks at sufficient depth
-        else if (dangerous_check) {
+        // Singular extension
+        if (m == tt_move && tt_move_is_singular) {
             extension = true;
         }
 
@@ -891,10 +817,22 @@ Move search(Position& pos, Limits& lim) {
         stack[i].pv[0] = MOVE_NONE;
     }
 
-    TT.new_search();
-    clear_eval_cache();
+    // === Opening Book ===
+    // Simple opening: play e2e4 from the starting position
+    {
+        if (popcount(pos.pieces()) == 32 && pos.side_to_move() == WHITE) {
+            for (ExtMove* it = initial_moves; it != initial_end; ++it) {
+                if (it->move.from() == E2 && it->move.to() == E4) {
+                    best_move = it->move;
+                    uci_info(pos, 1, VALUE_ZERO, 0, 0);
+                    return best_move;
+                }
+            }
+        }
+    }
 
-    // Initialize time management for tournament time controls
+
+
     // Using CPW formula: base/20 + inc/2
     if (limits.use_time_management()) {
         Color us = pos.side_to_move();
@@ -905,16 +843,18 @@ Move search(Position& pos, Limits& lim) {
         if (time_left < 0) time_left = 0;
         if (time_inc < 0) time_inc = 0;
 
-        // Time allocation: use a reasonable fraction of remaining time
-        int movestogo = (limits.movestogo > 0) ? limits.movestogo + 2 : 30;
+        // Time allocation
+        int movestogo = (limits.movestogo > 0) ? limits.movestogo : 25;
 
-        ideal_time = time_left / movestogo + time_inc / 2;
+        // Use more time per move for deeper search
+        // At 10+0.1 this gives ~500ms ideal, enough for depth 9-10
+        ideal_time = time_left / movestogo + time_inc * 9 / 10;
+        ideal_time = std::max(100, ideal_time);  // minimum 100ms
+        // Hard bound: never use more than 1/2 of remaining time
+        max_time = time_left / 2;
 
-        // Hard bound: never use more than 1/4 of remaining time
-        max_time = time_left / 4;
-
-        // Overhead for stop response latency
-        const int overhead = std::max(10, std::min(50, time_left / 100));
+        // Overhead for stop response latency - be generous to avoid time losses
+        const int overhead = std::max(30, std::min(100, time_left / 50));
         ideal_time = std::max(1, ideal_time - overhead);
         max_time = std::max(1, max_time - overhead);
 
@@ -935,16 +875,20 @@ Move search(Position& pos, Limits& lim) {
         killers[i][1] = MOVE_NONE;
     }
 
-    // Age history tables (divide by 8) instead of clearing
+    // Age history tables (divide by 2) instead of clearing
     // This preserves valuable information between searches
     for (int i = 0; i < 12; ++i) {
         for (int j = 0; j < 64; ++j) {
-            history[i][j] /= 8;
+            history[i][j] /= 2;
         }
     }
 
-    // Clear counter-move history
-    std::memset(counter_moves, 0, sizeof(counter_moves));
+    // Age counter-move history (divide by 4) instead of clearing
+    for (int i = 0; i < 12; ++i)
+        for (int j = 0; j < 64; ++j)
+            for (int k = 0; k < 12; ++k)
+                for (int l = 0; l < 64; ++l)
+                    counter_moves[i][j][k][l] /= 4;
 
     // Iterative deepening
     // When depth=0, search until time runs out (tournament time control)
@@ -967,7 +911,7 @@ Move search(Position& pos, Limits& lim) {
             int elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
                 now - search_start).count();
             // Don't start a new depth if we've used more than 60% of ideal time
-            if (elapsed > ideal_time * 6 / 10) {
+            if (elapsed > ideal_time * 3 / 5) {
                 break;
             }
         }
@@ -990,7 +934,7 @@ Move search(Position& pos, Limits& lim) {
         Value beta = VALUE_INFINITE;
         int aspiration_delta = 30;
 
-        if (root_depth >= 5 && best_value > -VALUE_KNOWN_WIN && best_value < VALUE_KNOWN_WIN) {
+        if (root_depth >= 4 && best_value > -VALUE_KNOWN_WIN && best_value < VALUE_KNOWN_WIN) {
             alpha = std::max(Value(-VALUE_INFINITE), Value(best_value - aspiration_delta));
             beta = std::min(Value(VALUE_INFINITE), Value(best_value + aspiration_delta));
         }
@@ -1005,54 +949,19 @@ Move search(Position& pos, Limits& lim) {
             int score = 0;
 
             // CRITICAL: Prioritize previous iteration's best move (PV move)
-            // This improves search stability and helps maintain good lines
             if (root_depth > 1 && m == best_move) {
                 score = 2000000;  // Highest priority - previous PV move
             }
-            // Prioritize winning captures
+            // Prioritize winning captures (MVV-LVA)
             else if (m.is_capture()) {
                 PieceType captured = pos.piece_type_on(m.to());
-                Value cap_value = 0;
-                if (captured == PAWN) cap_value = PAWN_VALUE;
-                else if (captured == KNIGHT) cap_value = KNIGHT_VALUE;
-                else if (captured == BISHOP) cap_value = BISHOP_VALUE;
-                else if (captured == ROOK) cap_value = ROOK_VALUE;
-                else if (captured == QUEEN) cap_value = QUEEN_VALUE;
-
-                score = 1000000 + int(cap_value);
+                PieceType attacker = pos.piece_type_on(m.from());
+                static constexpr int piece_value[] = {100, 320, 330, 500, 900, 20000, 0};
+                score = 1000000 + piece_value[captured] * 10 - piece_value[attacker];
             }
-            // Checks
-            else if (!pos.is_check()) {
-                PieceType pt = pos.piece_type_on(m.from());
-                Square to = m.to();
-                Color opponent = Color(int(pos.side_to_move()) ^ 1);
-                Square king_sq = pos.king_sq(opponent);
-
-                bool gives_check = false;
-                if (pt == KNIGHT) {
-                    gives_check = (knight_attacks_bb(to) & square_bb(king_sq)) != 0;
-                } else if (pt == BISHOP) {
-                    gives_check = (bb_diag_attacks(to, pos.pieces()) & square_bb(king_sq)) != 0;
-                } else if (pt == ROOK) {
-                    gives_check = ((bb_rank_attacks(to, pos.pieces()) | bb_file_attacks(to, pos.pieces())) & square_bb(king_sq)) != 0;
-                } else if (pt == QUEEN) {
-                    gives_check = (queen_attacks_bb(to, pos.pieces()) & square_bb(king_sq)) != 0;
-                } else if (pt == PAWN) {
-                    Bitboard pawn_attacks = 0;
-                    Bitboard pb = square_bb(to);
-                    if (pos.side_to_move() == WHITE) {
-                        if (file_of(to) > FILE_A) pawn_attacks |= shift_nw(pb);
-                        if (file_of(to) < FILE_H) pawn_attacks |= shift_ne(pb);
-                    } else {
-                        if (file_of(to) > FILE_A) pawn_attacks |= shift_sw(pb);
-                        if (file_of(to) < FILE_H) pawn_attacks |= shift_se(pb);
-                    }
-                    gives_check = (pawn_attacks & square_bb(king_sq)) != 0;
-                }
-
-                if (gives_check) {
-                    score = 500000;
-                }
+            // Promotions
+            else if (m.is_promotion()) {
+                score = 900000 + m.promotion_type() * 10000;
             }
 
             it->value = score;
