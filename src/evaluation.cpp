@@ -234,8 +234,8 @@ Value evaluate(const Position& pos) {
             mg_score += sign * (PieceValueMG[KNIGHT] + PST_MG_TABLE[int(c)][int(KNIGHT)][int(sq)]);
             eg_score += sign * (PieceValueEG[KNIGHT] + PST_EG_TABLE[int(c)][int(KNIGHT)][int(sq)]);
             int mob = popcount(knight_attacks_bb(sq) & ~pos.pieces(c));
-            mg_score += sign * mob * 4;
-            eg_score += sign * mob * 8;
+            mg_score += sign * mob * 2;
+            eg_score += sign * mob * 4;
         }
 
         // Bishops
@@ -246,8 +246,8 @@ Value evaluate(const Position& pos) {
             mg_score += sign * (PieceValueMG[BISHOP] + PST_MG_TABLE[int(c)][int(BISHOP)][int(sq)]);
             eg_score += sign * (PieceValueEG[BISHOP] + PST_EG_TABLE[int(c)][int(BISHOP)][int(sq)]);
             int mob = popcount(bb_diag_attacks(sq, occupied) & ~pos.pieces(c));
-            mg_score += sign * mob * 5;
-            eg_score += sign * mob * 10;
+            mg_score += sign * mob * 3;
+            eg_score += sign * mob * 5;
         }
 
         // Rooks

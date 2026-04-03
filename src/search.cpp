@@ -52,6 +52,9 @@ struct EvalCacheEntry {
 constexpr int EVAL_CACHE_SIZE = 524288;  // 512K entries for better hit rate
 EvalCacheEntry eval_cache[EVAL_CACHE_SIZE];
 
+// Thread-local node counter to avoid atomic overhead on every node
+static thread_local uint64_t local_nodes = 0;
+
 inline Value eval_cached(const Position& pos) {
     uint64_t key = pos.key();
     uint32_t idx = uint32_t(key) & (EVAL_CACHE_SIZE - 1);
@@ -173,7 +176,7 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
         return VALUE_ZERO;
     }
 
-    ++nodes;
+    ++local_nodes;
 
     // Check stop every node for instant response
     if (g_stop_requested || stop.load(std::memory_order_relaxed)) {
@@ -303,7 +306,16 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
         return VALUE_DRAW - (pos.side_to_move() == WHITE ? params.contempt / 2 : -params.contempt / 2);
     }
 
-    ++nodes;
+    ++local_nodes;
+
+    // Check time every 4096 nodes for better time control
+    // Use local_nodes for cheap counting, flush to atomic periodically
+    if ((local_nodes & 4095) == 0) {
+        nodes.store(local_nodes, std::memory_order_relaxed);
+        if (check_time()) {
+            return VALUE_ZERO;
+        }
+    }
 
     const bool pv_node = (beta - alpha > 1);
 
@@ -781,6 +793,7 @@ Move search(Position& pos, Limits& lim) {
     g_stop_requested = false;
     stop = false;
     nodes = 0;
+    local_nodes = 0;
 
     // Track search start time for time management
     search_start = std::chrono::steady_clock::now();
