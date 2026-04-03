@@ -87,30 +87,39 @@ TTEntry* TranspositionTable::probe(uint64_t key, bool& found) {
 void TranspositionTable::write(uint64_t key, Value v, bool pv, Bound b, Depth d, Move m, Value ev) {
     if (table.empty()) return;
 
-    // Use bitwise AND instead of modulo
     size_t idx = (size_t)key & (table.size() - 1);
-    TTEntry* entry = &table[idx].entry[0];
 
-    // Find an entry to replace
-    for (int i = 0; i < 3; ++i, ++entry) {
-        if (entry->key32 == uint32_t(key >> 32) || entry->depth_ == 127 ||
-            (entry->gen_bound & 0xFC) != generation8 || d >= entry->depth()) {
-            break;
+    // First pass: find exact key match - always update
+    for (int i = 0; i < 3; ++i) {
+        TTEntry* e = &table[idx].entry[i];
+        if (e->key32 == uint32_t(key >> 32)) {
+            e->save(key, v, pv, b, d, m, ev, generation8);
+            return;
         }
     }
 
-    // Don't overwrite more valuable entries
-    if (b != BOUND_EXACT && entry->key32 == uint32_t(key >> 32)) {
-        if (entry->depth_ != 127 &&
-            (b == BOUND_LOWER ? entry->bound() == BOUND_UPPER : entry->bound() == BOUND_LOWER)) {
-            // Don't overwrite with opposite bound at same or lower depth
-            if (d <= entry->depth()) {
-                return;
-            }
+    // Second pass: find best replacement candidate (depth-preferred with aging)
+    TTEntry* replace = &table[idx].entry[0];
+    for (int i = 1; i < 3; ++i) {
+        TTEntry* e = &table[idx].entry[i];
+
+        // Prefer replacing entries from old searches (different generation)
+        int r_gen = (replace->gen_bound & 0xFC) == generation8 ? 0 : 1;
+        int e_gen = (e->gen_bound & 0xFC) == generation8 ? 0 : 1;
+
+        int r_score = r_gen * 256 + replace->depth_;
+        int e_score = e_gen * 256 + e->depth_;
+
+        // For same generation, prefer replacing shallower entries
+        if (r_gen == e_gen && e->depth_ < replace->depth_) {
+            replace = e;
+        }
+        else if (e_score > r_score) {
+            replace = e;
         }
     }
 
-    entry->save(key, v, pv, b, d, m, ev, generation8);
+    replace->save(key, v, pv, b, d, m, ev, generation8);
 }
 
 size_t TranspositionTable::hashfull() const {
