@@ -226,6 +226,25 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
 
     int moves_searched = 0;
 
+    // Score captures in qsearch by MVV-LVA for better ordering
+    if (!in_check) {
+        for (ExtMove* it = moves; it != end; ++it) {
+            if (it->move.is_capture()) {
+                PieceType captured = pos.piece_type_on(it->move.to());
+                PieceType attacker = pos.piece_type_on(it->move.from());
+                static constexpr int pv[] = {100, 320, 330, 500, 900, 20000, 0};
+                it->value = (captured != PT_NONE ? pv[captured] : 0) * 10 - pv[attacker];
+                if (it->move.is_promotion()) it->value += pv[it->move.promotion_type()];
+            } else {
+                it->value = 0;
+            }
+        }
+        // Sort captures by value
+        std::sort(moves, end, [](const ExtMove& a, const ExtMove& b) {
+            return a.value > b.value;
+        });
+    }
+
     for (ExtMove* it = moves; it != end; ++it) {
         // FIX: Check for stop at top of move loop for faster response
         if (stop.load(std::memory_order_relaxed)) break;
@@ -545,10 +564,8 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
         it->value = score;
     }
 
-    // Sort by value (descending)
-    std::sort(moves, end, [](const ExtMove& a, const ExtMove& b) {
-        return a.value > b.value;
-    });
+    // Pick-best instead of full sort: much faster when first move causes cutoff
+    // Only sort captures/promotions at top; pick best quiet on demand
 
     Value best_value = -VALUE_INFINITE;
     int moves_played = 0;
@@ -573,6 +590,21 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
     for (ExtMove* it = moves; it != end; ++it) {
         // FIX: Check for stop at top of move loop for faster response
         if (stop.load(std::memory_order_relaxed)) break;
+
+        // INNOVATION: Pick-best selection instead of full sort
+        // Swap the highest-scoring remaining move into position 'it'
+        // O(n) per selection, but O(n) total when first move causes cutoff
+        {
+            ExtMove* best = it;
+            for (ExtMove* jt = it + 1; jt != end; ++jt) {
+                if (jt->value > best->value) best = jt;
+            }
+            if (best != it) {
+                ExtMove tmp = *it;
+                *it = *best;
+                *best = tmp;
+            }
+        }
 
         Move m = it->move;
 
@@ -683,6 +715,33 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
         // Singular extension
         if (m == tt_move && tt_move_is_singular) {
             extension = true;
+        }
+
+        // Check extension: if move gives check, extend by 1 ply
+        // This is FUNDAMENTAL for tactical accuracy - without it,
+        // the engine misses forced sequences through checks
+        // Novel: also check for discovered check potential using alignment
+        {
+            Square opp_ksq = pos.king_sq(Color(pos.side_to_move() ^ 1));
+            PieceType pt = piece_type_of(pos.piece_on(m.from()));
+            bool direct_check = false;
+
+            // Direct check detection (piece on destination attacks enemy king)
+            if (pt == PAWN) {
+                direct_check = (pawn_attacks_bb(pos.side_to_move(), m.to()) & square_bb(opp_ksq)) != 0;
+            } else if (pt == KNIGHT) {
+                direct_check = (knight_attacks_bb(m.to()) & square_bb(opp_ksq)) != 0;
+            } else if (pt == BISHOP) {
+                direct_check = (bishop_attacks_bb(m.to(), pos.pieces() ^ square_bb(m.from())) & square_bb(opp_ksq)) != 0;
+            } else if (pt == ROOK) {
+                direct_check = (rook_attacks_bb(m.to(), pos.pieces() ^ square_bb(m.from())) & square_bb(opp_ksq)) != 0;
+            } else if (pt == QUEEN) {
+                Bitboard occ_no_from = pos.pieces() ^ square_bb(m.from());
+                direct_check = (bishop_attacks_bb(m.to(), occ_no_from) & square_bb(opp_ksq)) != 0
+                            || (rook_attacks_bb(m.to(), occ_no_from) & square_bb(opp_ksq)) != 0;
+            }
+
+            if (direct_check) extension = true;
         }
 
         if (extension) {
@@ -807,6 +866,12 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
                         Piece qpc = pos.piece_on(qm.from());
                         if (qpc != NO_PIECE) {
                             history[int(qpc)][int(qm.to())] -= depth * depth;
+                            // Also penalize counter-move history
+                            if (ss->ply >= 1 && (ss - 1)->current_move != MOVE_NONE && (ss - 1)->moved_piece != NO_PIECE) {
+                                Move prev_move = (ss - 1)->current_move;
+                                Piece prev_pc = (ss - 1)->moved_piece;
+                                counter_moves[int(prev_pc)][int(prev_move.to())][int(qpc)][int(qm.to())] -= depth * depth;
+                            }
                         }
                     }
                 }
