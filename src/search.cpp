@@ -378,7 +378,7 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
     }
 
     // Reverse futility pruning (static null move): if eval is far above beta, prune immediately
-    if (!pv_node && !pos.is_check() && depth <= 8 && eval - 70 * depth >= beta) {
+    if (!pv_node && !pos.is_check() && depth <= 9 && eval - 75 * depth >= beta) {
         return eval;
     }
 
@@ -403,7 +403,7 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
     if (null_move_ok) {
         pos.do_null_move();
 
-        int R = 3 + (depth > 6 ? 1 : 0) + (piece_count < 4 ? -1 : 0);
+        int R = 3 + (depth > 6 ? 1 : 0) + (depth > 12 ? 1 : 0) + (piece_count < 4 ? -1 : 0);
         R = std::max(2, std::min(R, depth - 1));
         Value null_value = -search_worker(pos, ss + 1, -beta, -beta + 1, depth - R, !cut_node);
 
@@ -530,17 +530,14 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
                 }
             }
 
-            // INNOVATION: "Escape-Aware Ordering" - if the piece being moved is
-            // currently under attack, boost the move's priority. A piece in danger
-            // is more likely to need moving urgently. Also boost moves that
-            // defend an attacked friendly piece (moving to a square that
-            // adds a defender to an attacked piece).
+            // INNOVATION: "Escape-Aware Ordering" - lightweight version
+            // Only check if piece is attacked by enemy pawns (cheapest check)
+            // Pieces under pawn attack are in real danger and should move first
             Piece moved_piece = pos.piece_on(m.from());
             if (moved_piece != NO_PIECE && piece_type_of(moved_piece) != PAWN) {
                 Color them = Color(pos.side_to_move() ^ 1);
-                // Is the piece we're moving currently attacked?
-                if (pos.attackers_to(m.from(), pos.pieces()) & pos.pieces(them)) {
-                    score += 15000;  // Moving attacked piece is urgent
+                if (pawn_attacks_bb(them, pos.pieces(them, PAWN)) & square_bb(m.from())) {
+                    score += 15000;  // Under pawn attack - very urgent
                 }
             }
         }
@@ -594,7 +591,7 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
 
         // Late move pruning: prune quiet moves after examining a reasonable number
         // Quadratic formula: more aggressive at high depths, permissive at low depths
-        int lmp_threshold = 3 + depth * depth;  // depth 1=4, depth 4=19, depth 8=67
+        int lmp_threshold = 2 + depth * depth;  // depth 1=3, depth 4=18, depth 8=66
         if (!pv_node && ss->ply > 0 && moves_played >= lmp_threshold &&
             !m.is_capture() && !m.is_promotion() && !m.is_castling()) {
             continue;  // Skip very late quiet moves
@@ -602,7 +599,7 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
 
         // Futility pruning: skip quiet moves that can't improve alpha
         // Balanced - apply at depth <= 4
-        if (!pv_node && ss->ply > 0 && !pos.is_check() && depth <= 4 &&
+        if (!pv_node && ss->ply > 0 && !pos.is_check() && depth <= 5 &&
             !m.is_capture() && !m.is_promotion() && !m.is_castling()) {
             // Moderate futility margin
             int margin = depth * 200 + (ss->improving ? 0 : 100);
@@ -618,8 +615,8 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
         bool do_lmr = !pv_node && depth >= 2 && moves_played >= 1 && !m.is_capture() && !m.is_promotion() && !m.is_castling();
 
         if (do_lmr) {
-            // Fruit Reloaded formula: sqrt(depth-1) + sqrt(moves-1)
-            int reduction = int(std::sqrt(double(depth - 1)) + std::sqrt(double(moves_played)));
+            // Aggressive LMR: base formula + 1 for stronger pruning
+            int reduction = int(std::sqrt(double(depth - 1)) + std::sqrt(double(moves_played))) + 1;
 
             if (!ss->improving) reduction += 1;
             if (cut_node) reduction += 1;
@@ -662,19 +659,16 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
                     Color us = pos.side_to_move();
                     if (pawn_attacks_bb(us, m.to()) & square_bb(opp_ksq)) reduction -= 1;
                 }
-                // Discovered check: if the piece was blocking a slider attack on king
-                Bitboard sliders = (pos.pieces(Color(pos.side_to_move()), BISHOP, QUEEN) | pos.pieces(Color(pos.side_to_move()), ROOK, QUEEN));
-                if (sliders && aligned(m.from(), opp_ksq, m.to())) {
-                    // We're moving a piece that was on the line between our slider and their king
-                    // This might be a discovered check
+                // Discovered check potential: if from/to/opp_king are aligned,
+                // we might uncover a slider attack (cheap line_bb check)
+                if (line_bb(m.from(), opp_ksq) & square_bb(m.to())) {
                     reduction -= 1;
                 }
             }
 
             // If we're in check, don't reduce at all (handled by not entering LMR)
-            // But also: if moving a piece that is currently attacked, reduce less
-            // (the piece was in danger, so moving it is more likely critical)
-            if (pos.attackers_to(m.from(), pos.pieces()) & pos.pieces(Color(pos.side_to_move() ^ 1))) {
+            // Lightweight "piece in danger" check: only check pawn attacks (very cheap)
+            if (pawn_attacks_bb(Color(pos.side_to_move() ^ 1), pos.pieces(Color(pos.side_to_move() ^ 1), PAWN)) & square_bb(m.from())) {
                 reduction -= 1;
             }
 
