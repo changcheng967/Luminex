@@ -970,25 +970,12 @@ Move search(Position& pos, Limits& lim) {
         if (time_inc < 0) time_inc = 0;
 
         // Time allocation
-        int movestogo = (limits.movestogo > 0) ? limits.movestogo : 25;
+        int movestogo = (limits.movestogo > 0) ? limits.movestogo : 30;
 
-        // Aggressive time allocation: use more time per move for deeper search
-        // With 10+0.1 and 25 moves, this gives ~500ms ideal time
-        ideal_time = time_left / movestogo + time_inc;
+        // Use more time for deeper search - this is critical for strength
+        ideal_time = time_left / movestogo + time_inc * 2;
         ideal_time = std::max(100, ideal_time);
-        // Hard bound: never use more than 2/3 of remaining time
-        max_time = time_left * 2 / 3;
-
-        // Small overhead for stop response latency
-        const int overhead = std::max(10, std::min(30, time_left / 200));
-        ideal_time = std::max(1, ideal_time - overhead);
-        max_time = std::max(1, max_time - overhead);
-
-        max_time = std::min(max_time, time_left);
-        ideal_time = std::min(ideal_time, max_time);
-
-        ideal_time = std::max(10, ideal_time);
-        max_time = std::max(10, max_time);
+        max_time = time_left * 3 / 4;
     } else {
         ideal_time = 0;
         max_time = 0;
