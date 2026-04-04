@@ -47,9 +47,68 @@ int continuation_history[12][64][12][64];
 // Counter-move table: direct move suggestion [prev_piece][prev_to]
 Move counter_move_table[12][64];
 
+// ============================================================
+// CORRECTION HISTORY ("Third Generation" Innovation)
+// Instead of a static eval, we correct the static evaluation
+// based on what the search learns. Corrections are indexed by
+// pawn structure (pawn hash) and piece configuration, so the
+// engine learns position-specific eval adjustments during search.
+// This is more "dynamic contextual evaluation" — the eval adapts
+// to the specific position being searched.
+// ============================================================
+struct CorrectionHistory {
+    // Pawn-structure-indexed correction: [color][pawn_hash_index]
+    static constexpr int CORRECTION_SIZE = 16384;
+    static constexpr int CORRECTION_LIMIT = 512;
+    int pawn_correction[2][CORRECTION_SIZE];
+
+    // Material-indexed correction: [non_pawn_material_hash]
+    static constexpr int MATERIAL_SIZE = 4096;
+    int material_correction[2][MATERIAL_SIZE];
+
+    void clear() {
+        std::memset(pawn_correction, 0, sizeof(pawn_correction));
+        std::memset(material_correction, 0, sizeof(material_correction));
+    }
+
+    void update(Color c, uint32_t pawn_idx, uint32_t mat_idx, Value eval_diff, Depth depth) {
+        // Gravity-based update: larger corrections resist further changes
+        int bonus = eval_diff * depth * 16 / 128;
+        bonus = std::max(-CORRECTION_LIMIT, std::min(CORRECTION_LIMIT, bonus));
+
+        // Pawn correction update
+        int& pc = pawn_correction[c][pawn_idx & (CORRECTION_SIZE - 1)];
+        pc += bonus - pc * std::abs(bonus) / CORRECTION_LIMIT;
+
+        // Material correction update
+        int& mc = material_correction[c][mat_idx & (MATERIAL_SIZE - 1)];
+        mc += bonus - mc * std::abs(bonus) / CORRECTION_LIMIT;
+    }
+
+    Value correct(const Position& pos, Value static_eval) const {
+        // Use position hash to index into correction tables
+        uint32_t key = uint32_t(pos.key());
+        Color stm = pos.side_to_move();
+
+        int pawn_corr = (pawn_correction[stm][key & (CORRECTION_SIZE - 1)]
+                       - pawn_correction[~stm][(key >> 13) & (CORRECTION_SIZE - 1)]);
+
+        int mat_corr = (material_correction[stm][(key >> 3) & (MATERIAL_SIZE - 1)]
+                      - material_correction[~stm][(key >> 16) & (MATERIAL_SIZE - 1)]);
+
+        int total_correction = (pawn_corr * 3 + mat_corr) / 4;
+
+        // Clamp correction to reasonable range
+        total_correction = std::max(-200, std::min(200, total_correction));
+
+        return static_eval + total_correction;
+    }
+};
+
+CorrectionHistory correction_history;
 
 
-// Evaluation cache - store eval results to avoid recomputing expensive evals
+
 struct EvalCacheEntry {
     uint64_t key;
     int32_t value;  // Changed from int16_t to match Value type
@@ -65,13 +124,13 @@ inline Value eval_cached(const Position& pos) {
     uint32_t idx = uint32_t(key) & (EVAL_CACHE_SIZE - 1);
 
     if (eval_cache[idx].key == key) {
-        return Value(eval_cache[idx].value);
+        return correction_history.correct(pos, Value(eval_cache[idx].value));
     }
 
     Value eval = evaluate(pos);
     eval_cache[idx].key = key;
     eval_cache[idx].value = int32_t(eval);
-    return eval;
+    return correction_history.correct(pos, eval);
 }
 
 [[maybe_unused]] inline void clear_eval_cache() {
@@ -662,6 +721,12 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
         if (gives_check(m)) {
             extension = true;
         }
+        // Recapture extension: recapturing on the same square is often forced/tactical
+        if (ss->ply >= 1 && (ss - 1)->current_move != MOVE_NONE && m.to() == (ss - 1)->current_move.to()) {
+            if (m.is_capture()) {
+                extension = true;
+            }
+        }
         if (extension) {
             new_depth++;
         }
@@ -974,6 +1039,15 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
         else bound = BOUND_UPPER;
         // Use best_move_found instead of ss->pv[ss->ply] to avoid stale PV corruption
         tte->save(pos.key(), best_value, pv_node, bound, depth, best_move_found, eval, TT.generation());
+
+        // Update correction history: if search result differs from static eval, learn
+        if (abs(best_value - eval) > 10 && abs(best_value) < VALUE_KNOWN_WIN && ss->ply >= 1) {
+            Value diff = best_value - eval;
+            uint32_t pawn_idx = uint32_t(pos.key());
+            uint32_t mat_idx = uint32_t(pos.key() >> 3);
+            Color stm = pos.side_to_move();
+            correction_history.update(stm, pawn_idx, mat_idx, diff, depth);
+        }
     }
 
     return best_value;
@@ -1099,6 +1173,9 @@ Move search(Position& pos, Limits& lim) {
     // The gravity formula (bonus - h * abs(bonus) / 16384) already handles
     // natural decay within each search. Aging 1M+ entries is too expensive
     // and provides marginal benefit over gravity-based decay.
+
+    // Clear correction history for new search
+    correction_history.clear();
 
     // Iterative deepening
     // When depth=0, search until time runs out (tournament time control)
