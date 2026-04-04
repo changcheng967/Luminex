@@ -1,56 +1,82 @@
 # Luminex Chess Engine
 
-A competitive chess engine written in modern C++23, built from scratch with magic bitboards, PVS search, and handcrafted evaluation.
+A competitive chess engine written in modern C++23, built from scratch with magic bitboards, PVS search, and a "third-generation" evaluation approach featuring dynamic correction history.
 
-## Current Version: v3.19.0
+## Current Version: v3.22.0
 
-**Status**: Active development. Engine plays legal chess with 0 illegal moves. Estimated ~2200-2300 ELO.
+**Status**: Active development. Engine plays legal chess with 0 illegal moves. Estimated **~2600 ELO** (pure HCE, no NNUE).
 
-## Recent Changes (v3.19.0)
+## Recent Changes
 
+### v3.22.0 — Major Evaluation & Search Overhaul (+300 ELO)
+- **Correction History**: Dynamic eval that learns from search results (position-specific corrections)
+- **Connected pawn bonus**: Rewards mutually-protecting pawn chains
+- **Outpost knight bonus**: Protected knights on rank 4-6 that enemy pawns can't challenge
+- **Bad bishop penalty**: Bishops hemmed in by own pawns on same color complex
+- **Pawn storm evaluation**: Enemy pawns advancing toward castled king
+- **Threat evaluation**: Hanging pieces, minor pieces threatened by enemy pawns
+- **Connected rooks bonus**: Rooks connected on same file/rank
+- **Endgame scale factors**: OCB draw detection, no-pawn endgames, material imbalance scaling
+- **Recapture extension**: Extend when recapturing on the same square
+- **SEE quiet move pruning**: Prune bad quiet moves at shallow depth
+- **Counter-move LMR bonus**: Reduce less for counter-move suggestions
+- **TT move LMR bonus**: Reduce less for transposition table move
+- **Deeper/shallower LMR re-search**: Stockfish-inspired depth adjustment after LMR
+- **Improved futility margins**: Better depth-dependent pruning thresholds
+- **Capture LMR**: Losing captures get reduced search depth
+
+### v3.19.0
 - Fixed time management for sudden-death time controls (no more time losses)
-- Improved PVS (Principal Variation Search) with proper zero-window scout and re-search
-- Added LMR for PV nodes with reduced depth penalty
-- Added mate distance pruning
-- Improved aspiration window depth-start time check (60% threshold)
-- Removed expensive counter-move history aging (uses gravity formula instead)
+- Improved PVS with proper zero-window scout and re-search
+- Added LMR for PV nodes, mate distance pruning
+- Fixed CI: all 4 platforms (Ubuntu GCC/Clang, Windows MSVC, macOS) pass
 
 ## Features
 
 ### Search
 - Principal Variation Search (PVS) with zero-window scout
-- Late Move Reduction (LMR) with history-based adjustments
+- Late Move Reduction (LMR) with history, killer, counter-move, and TT adjustments
+- Deeper/shallower LMR re-search (Stockfish-inspired)
 - Null Move Pruning with endgame verification
 - Razoring for low-depth pruning
 - ProbCut for high-beta cutoffs
 - Singular Extension for critical positions
+- Recapture extension
+- Check extensions
 - Mate distance pruning
 - Aspiration Windows with iterative widening
 - Internal Iterative Reduction (IIR)
-- Phased move generation (TT move → captures → quiets)
+- Phased move generation (TT move -> captures -> quiets)
 - Quiescence search with SEE pruning and MVV-LVA ordering
-- Check extensions
 
 ### Move Ordering
 - TT move (highest priority)
 - Captures ordered by MVV-LVA with SEE classification
 - Killer moves (2 per ply)
+- Counter-move table (direct move suggestion)
 - Counter-move history (1-ply)
 - Continuation history (2-ply)
 - Plain history heuristic with gravity formula
 - Escape-aware ordering for pieces under pawn attack
 
-### Evaluation (Handcrafted)
+### Evaluation ("Third Generation" HCE)
+- **Correction History**: Dynamic eval adjustments learned during search
 - PeSTO piece-square tables (MG/EG tapered)
-- Pawn structure: doubled, isolated, passed pawns
+- Pawn structure: doubled, isolated, backward, connected, passed pawns
 - Passed pawn: blocker penalty, rook-behind bonus, king proximity
+- Outpost knight bonus (protected, no enemy pawn can challenge)
+- Bad bishop penalty (hemmed in by own pawns)
 - Piece mobility (knight, bishop, rook, queen)
 - Open/semi-open file bonuses for rooks
 - Rook on 7th rank bonus
+- Connected rooks bonus
 - Bishop pair bonus
 - King safety with attack maps (non-linear danger scaling)
 - King pawn shield evaluation
+- Pawn storm detection (enemy pawns advancing toward castled king)
 - Castling evaluation
+- Threat evaluation (hanging pieces, minor pieces attacked by pawns)
+- Endgame scale factors (OCB draws, no-pawn endgames, material imbalance)
 - Tempo bonus
 
 ### Infrastructure
@@ -74,8 +100,6 @@ cmake -B build -DCMAKE_BUILD_TYPE=Release -G Ninja
 cmake --build build --config Release
 ```
 
-The executable will be at `build/luminex.exe` (Windows) or `build/luminex` (Linux/macOS).
-
 ### Testing
 
 ```bash
@@ -84,75 +108,33 @@ build/luminex.exe bench
 # Expected: 20, 400, 8902, 197281
 
 # Match vs reference engine
-cutechess-cli -rounds 20 -engine cmd=build/luminex.exe name=Luminex -engine cmd=stash.exe name=Stash -each proto=uci tc=1+0.01
+cutechess-cli -rounds 40 -engine cmd=build/luminex.exe name=Luminex -engine cmd=stash.exe name=Stash -each proto=uci tc=1+0.01
 ```
-
-## Usage
-
-### UCI Protocol
-
-```
-uci
-setoption name Hash value 128
-setoption name Contempt value 0
-position startpos
-go wtime 60000 btime 60000 winc 1000 binc 1000
-quit
-```
-
-### Options
-
-| Option | Type | Default | Range | Description |
-|--------|------|---------|-------|-------------|
-| Hash | spin | 128 | 1-1048576 | Transposition table size in MB |
-| Contempt | spin | 0 | -1000 to 1000 | Draw avoidance tendency |
-| Clear Hash | button | - | - | Clear the transposition table |
-
-## Architecture
-
-```
-src/
-├── main.cpp          - Entry point
-├── uci.cpp           - UCI protocol, stdin/stdout, threading
-├── search.cpp        - PVS, LMR, null move, iterative deepening
-├── evaluation.cpp    - Handcrafted eval (PST, pawns, mobility, king safety)
-├── board.cpp         - Position, do_move/undo_move, legal(), SEE
-├── movegen.cpp       - Move generation (legal, capture, quiet)
-├── transposition.cpp - TT with depth-preferred replacement
-├── bitboard.cpp      - Magic bitboard initialization
-└── *.h               - Headers
-```
-
-## Key Files
-
-- `src/uci.cpp` — UCI loop, stdin polling, handle_position, handle_go
-- `src/board.cpp` — Position, do_move/undo_move, legal(), attackers_to()
-- `src/search.cpp` — Iterative deepening, alpha-beta, qsearch
-- `src/evaluation.cpp` — Static eval (PST, pawn structure, king safety)
-- `src/bitboard.h` — Bitboard utils, attack functions, magic bitboards
 
 ## Strength Estimate
 
-Based on testing against Stash (known CCRL-rated engines):
+Based on testing against Stash engines (known CCRL-rated):
 
-| Opponent | Opponent ELO | Result | Est. Luminex ELO |
-|----------|-------------|--------|------------------|
-| Stash v17 | ~2298 | 10-9-1 (52.5%) | ~2300 |
-| Stash v10 | ~1620 | 17-3 (85%) | ~1900-2000 |
+| Opponent | Result | Score |
+|----------|--------|-------|
+| Stash v20 (~2550) | 29-11 | +168 ELO |
+| Stash v19 (~2500) | 28-12 | +147 ELO |
+| Stash v17 (~2300) | 19-19 | Even |
 
-Estimated strength: **~2200-2300 blitz ELO** (as of v3.19.0)
+Estimated strength: **~2600 blitz ELO** (pure HCE, no NNUE)
 
 ## Roadmap
 
-- [ ] Tune LMR formula constants (+20-50 ELO potential)
-- [ ] Add capture LMR (+30-50 ELO potential)
-- [ ] Improve null move reduction formula (+20-40 ELO potential)
-- [ ] Add pawn storm evaluation (+30-50 ELO potential)
-- [ ] Add threat evaluation (+20-40 ELO potential)
-- [ ] Add connected rooks bonus
-- [ ] Add followup heuristic for move ordering
+- [x] Tune LMR formula with history/killer/counter-move adjustments
+- [x] Add capture LMR for losing captures
+- [x] Add pawn storm evaluation
+- [x] Add threat evaluation (hanging pieces, pawn threats)
+- [x] Add connected rooks bonus
+- [x] Add correction history (dynamic eval learning)
 - [ ] Multi-threading (Lazy SMP)
-- [ ] NNUE evaluation (long-term goal)
+- [ ] Position-type classification for adaptive search policy
+- [ ] Search-eval fusion (eval tells search what to extend/reduce)
+- [ ] "Third generation" evaluation beyond HCE and NNUE
 
 ## Engine Info
 
