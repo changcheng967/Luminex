@@ -591,10 +591,13 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
 
     // Helper lambda: compute LMR reduction for a move
     auto compute_reduction = [&](Move m, int mp) -> int {
-        // Logarithmic formula: better scaling than sqrt
+        // Logarithmic LMR formula with history-based adjustments
         int reduction = int(1.35 + std::log(double(std::max(depth - 1, 1))) * std::log(double(std::max(mp, 1))) / 2.75);
         if (!ss->improving) reduction += 1;
         if (cut_node) reduction += 1;
+
+        // TT move gets less reduction
+        if (m == tt_move) reduction -= 1;
 
         // History-based adjustment: combine plain + counter + continuation
         Piece pc = pos.piece_on(m.from());
@@ -615,11 +618,19 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
                 history_score += continuation_history[int(prev2_pc)][int(prev2_move.to())][int(pc)][int(m.to())];
             }
 
-            reduction -= history_score / 4000;
+            // Stronger history influence on reduction
+            reduction -= history_score / 3000;
         }
 
         // Reduce less for killer moves
         if (m == killers[ss->ply][0]) reduction -= 1;
+
+        // Counter-move bonus
+        if (ss->ply >= 1 && (ss - 1)->current_move != MOVE_NONE && (ss - 1)->moved_piece != NO_PIECE) {
+            Move prev_move = (ss - 1)->current_move;
+            Piece prev_pc = (ss - 1)->moved_piece;
+            if (m == counter_move_table[int(prev_pc)][int(prev_move.to())]) reduction -= 1;
+        }
 
         // Check if the move gives check - reduce less
         {
@@ -640,6 +651,9 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
                 if (pawn_attacks_bb(us, m.to()) & square_bb(opp_ksq)) reduction -= 1;
             }
         }
+
+        // Promotion moves: reduce less
+        if (m.is_promotion()) reduction -= 1;
 
         return std::max(1, std::min(reduction, depth - 2));
     };

@@ -473,6 +473,36 @@ Value evaluate(const Position& pos) {
                 }
             }
         }
+
+        // Minor pieces threatened by enemy pawns
+        {
+            Bitboard enemy_pawn_attacks = pawn_attacks_bb(them, their_pawns);
+            Bitboard minors = pos.pieces(c, KNIGHT, BISHOP);
+            Bitboard threatened = minors & enemy_pawn_attacks;
+            while (threatened) {
+                pop_lsb(threatened);
+                mg_score -= sign * 10;
+                eg_score -= sign * 5;
+            }
+        }
+
+        // Connected rooks bonus: two rooks on the same file or rank
+        {
+            Bitboard our_rooks = pos.pieces(c, ROOK);
+            if (popcount(our_rooks) >= 2) {
+                Bitboard r1 = our_rooks;
+                while (r1) {
+                    Square sq1 = pop_lsb(r1);
+                    Bitboard rook_attacks_from_sq1 = rook_attacks_bb(sq1, occupied);
+                    // Check if another rook is connected (same rank or file, no pieces between)
+                    Bitboard connected = rook_attacks_from_sq1 & (our_rooks ^ square_bb(sq1));
+                    if (connected) {
+                        mg_score += sign * 15;
+                        eg_score += sign * 10;
+                    }
+                }
+            }
+        }
     }
 
     // Bishop pair bonus
