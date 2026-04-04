@@ -995,10 +995,11 @@ Move search(Position& pos, Limits& lim) {
         // Time allocation
         int movestogo = (limits.movestogo > 0) ? limits.movestogo : 30;
 
-        // Use more time for deeper search - this is critical for strength
-        ideal_time = time_left / movestogo + time_inc * 2;
-        ideal_time = std::max(100, ideal_time);
-        max_time = time_left * 3 / 4;
+        // Time allocation: spread time over expected moves, with increment buffer
+        int overhead = 10;  // Safety margin for processing time
+        ideal_time = time_left / movestogo + time_inc - overhead;
+        ideal_time = std::max(50, std::min(ideal_time, time_left - overhead));
+        max_time = std::max(ideal_time, std::min(time_left - overhead, time_left * 3 / 4));
     } else {
         ideal_time = 0;
         max_time = 0;
@@ -1115,6 +1116,9 @@ Move search(Position& pos, Limits& lim) {
         int aspiration_attempts = 0;
         while (true) {
             aspiration_attempts++;
+            // Reset on each aspiration iteration to avoid stale values
+            depth_best_value = -VALUE_INFINITE;
+            depth_best_move = MOVE_NONE;
             if (aspiration_attempts > 5) {
                 alpha = -VALUE_INFINITE;
                 beta = VALUE_INFINITE;

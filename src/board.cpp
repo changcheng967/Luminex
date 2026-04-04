@@ -1232,7 +1232,7 @@ bool Position::pseudo_legal(const Move m) const {
 }
 
 bool Position::capture(Move m) const {
-    return m.is_capture() || m.is_promotion();
+    return m.is_capture();
 }
 
 bool Position::capture_or_promotion(Move m) const {
