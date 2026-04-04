@@ -512,9 +512,7 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
         }
     }
 
-    // ProbCut - ENABLED with legality check
-    // If a capture is obviously good enough to cause beta cutoff, verify with shallow search
-    // FIXED: Added pos.legal(m) check to prevent analyzing illegal positions
+    // ProbCut - if a capture is obviously good enough, verify with shallow search
     if (!pv_node && depth >= 5 && !pos.is_check() && ss->ply >= 2) {
         Value rbeta = std::min(beta + 200, VALUE_INFINITE - 200);
         int rdepth = depth - 3;
@@ -689,9 +687,17 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
         // Skip pseudo_legal check: moves from generator are already pseudo-legal
         if (!pos.legal(m, true)) return false;  // Skip pseudo_legal check for generated moves
 
-        // SEE-based capture pruning
+        // SEE-based capture pruning with depth-scaled margin
         if (!pv_node && ss->ply > 0 && m.is_capture() && !m.is_promotion() && depth <= 5) {
-            if (!pos.see_ge(m, Value(-depth * 80))) {
+            int see_margin = depth * 80;
+            if (!pos.see_ge(m, Value(-see_margin))) {
+                return false;
+            }
+        }
+
+        // SEE-based quiet move pruning at shallow depth
+        if (is_quiet && !pv_node && ss->ply > 0 && depth <= 3) {
+            if (!pos.see_ge(m, Value(-25 * depth * depth))) {
                 return false;
             }
         }
