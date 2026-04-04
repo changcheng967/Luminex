@@ -139,17 +139,16 @@ inline Value eval_cached(const Position& pos) {
 
 // Reduction constants
 constexpr int futility_margin(int depth, bool improving) {
-    // Reduced futility margins for better tactical vision
-    // Lowered by ~20% to prune less and search more positions
-    int base = 100;  // Was 120
-    if (depth == 1) base = 125;  // Was 150
-    else if (depth == 2) base = 160;  // Was 200
-    else if (depth == 3) base = 200;  // Was 250
-    else base = 225 + (depth - 3) * 40;  // Was 280 + 50, depth >= 4
+    // Depth-dependent futility margins
+    int base = 100 * depth;
+    if (depth == 1) base = 150;
+    else if (depth == 2) base = 220;
+    else if (depth == 3) base = 300;
+    else base = 300 + (depth - 3) * 60;
 
-    // Adjust based on improving flag
-    if (improving) base -= 30;  // Was 40
-    else base += 50;  // Was 60
+    // Improving positions can tolerate larger margins (more likely to recover)
+    if (improving) base -= 30;
+    else base += 50;
 
     return base;
 }
@@ -747,9 +746,15 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
                 pos.undo_move(m);
                 return false;
             }
-            // Re-search at full depth with full window if LMR found something
+            // Deeper/shallower re-search adjustment
+            // If LMR found something close to best, search deeper than normal
+            // If LMR found something clearly worse, search shallower
             if (value > alpha) {
-                value = -search_worker(pos, ss + 1, -beta, -alpha, depth - 1, !cut_node);
+                bool do_deeper = value > best_value + 48;
+                bool do_shallower = value < best_value + 9;
+                int re_depth = depth - 1 + (do_deeper ? 1 : 0) - (do_shallower ? 1 : 0);
+                re_depth = std::max(1, re_depth);
+                value = -search_worker(pos, ss + 1, -beta, -alpha, re_depth, !cut_node);
                 if (stop.load(std::memory_order_relaxed)) {
                     pos.undo_move(m);
                     return false;
