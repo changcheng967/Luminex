@@ -430,7 +430,12 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
     if (null_move_ok) {
         pos.do_null_move();
 
-        int R = 3 + (depth > 6 ? 1 : 0) + (depth > 12 ? 1 : 0) + (piece_count < 4 ? -1 : 0);
+        // Adaptive null move reduction
+        int R = 3 + (depth > 6 ? 1 : 0) + (depth > 12 ? 1 : 0);
+        // Reduce less in endgames (fewer non-pawn pieces = more zugzwang risk)
+        if (piece_count < 4) R -= 1;
+        // Increase reduction when eval is far above beta
+        if (eval - beta > 150) R += 1;
         R = std::max(2, std::min(R, depth - 1));
         Value null_value = -search_worker(pos, ss + 1, -beta, -beta + 1, depth - R, !cut_node);
 

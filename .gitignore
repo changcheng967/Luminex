@@ -64,6 +64,7 @@ mate_test.txt
 *.bat
 *.py
 *.cpp
+!src/*.cpp
 test_*.txt
 *.txt
 !src/*.txt

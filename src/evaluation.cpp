@@ -430,11 +430,9 @@ Value evaluate(const Position& pos) {
         // More attackers = exponentially more dangerous
         int danger = 0;
         if (attacker_count >= 2) {
-            // Sigmoid-like lookup: grows slowly with 1-2 attackers,
-            // accelerates with 3+, caps at high values
-            danger = attack_units * attack_units / 4;
+            danger = attack_units * attack_units / 2;
         } else if (attacker_count == 1) {
-            danger = attack_units;  // Linear for single attacker
+            danger = attack_units;
         }
 
         // Scale by opponent attacking material (queen and rooks present = more dangerous)
@@ -442,7 +440,7 @@ Value evaluate(const Position& pos) {
         if (attacking_material < 4) danger = danger * attacking_material / 4;
 
         // Cap to prevent insane values
-        danger = std::min(danger, 300);
+        danger = std::min(danger, 400);
 
         mg_score -= sign * danger;
     }

@@ -1,4 +1,4 @@
-name: Build
+name: Build and Test
 
 on:
   push:
@@ -7,49 +7,64 @@ on:
     branches: [ main ]
 
 jobs:
+  ubuntu-gcc:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v4
+    - name: Install dependencies
+      run: sudo apt-get update && sudo apt-get install -y ninja-build
+    - name: Configure
+      run: cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_CXX_COMPILER=g++
+    - name: Build
+      run: cmake --build build --config Release
+    - name: Run Bench
+      run: ./build/luminex bench
+    - name: Test UCI
+      run: printf 'uci\nisready\nquit\n' | ./build/luminex
+
   ubuntu-clang:
     runs-on: ubuntu-latest
     steps:
     - uses: actions/checkout@v4
     - name: Install dependencies
       run: sudo apt-get update && sudo apt-get install -y ninja-build clang
+    - name: Configure
+      run: cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_CXX_COMPILER=clang++ -DCMAKE_C_COMPILER=clang
     - name: Build
-      run: |
-        cmake -B build -G Ninja -DCMAKE_CXX_COMPILER=clang++ -DCMAKE_C_COMPILER=clang
-        cmake --build build
-    - name: Test
-      run: echo -e "uci\nisready\nquit" | ./build/luminex
+      run: cmake --build build --config Release
+    - name: Run Bench
+      run: ./build/luminex bench
+    - name: Test UCI
+      run: printf 'uci\nisready\nquit\n' | ./build/luminex
 
-  windows:
+  windows-msvc:
     runs-on: windows-latest
     defaults:
       run:
         shell: cmd
     steps:
     - uses: actions/checkout@v4
-    - name: Install Ninja
-      run: choco install ninja
+    - name: Configure
+      run: cmake -B build -G "Visual Studio 17 2022" -A x64
     - name: Build
+      run: cmake --build build --config Release
+    - name: Run Bench
+      run: build\Release\luminex.exe bench
+    - name: Test UCI
       run: |
-        cmake -B build -G Ninja -DCMAKE_CXX_COMPILER=clang++ -DCMAKE_C_COMPILER=clang
-        cmake --build build
-    - name: Test
-      run: |
-        echo. > test_input.txt
-        echo uci >> test_input.txt
-        echo isready >> test_input.txt
-        echo quit >> test_input.txt
-        type test_input.txt | build\luminex.exe
+        (echo uci & echo isready & echo quit) | build\Release\luminex.exe
 
   macos:
     runs-on: macos-latest
     steps:
     - uses: actions/checkout@v4
     - name: Install dependencies
-      run: brew install ninja cmake || true
+      run: brew install ninja
+    - name: Configure
+      run: cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
     - name: Build
-      run: |
-        cmake -B build -G Ninja
-        cmake --build build
-    - name: Test
-      run: echo -e "uci\nisready\nquit" | ./build/luminex
+      run: cmake --build build --config Release
+    - name: Run Bench
+      run: ./build/luminex bench
+    - name: Test UCI
+      run: printf 'uci\nisready\nquit\n' | ./build/luminex
