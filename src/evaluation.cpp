@@ -522,23 +522,59 @@ Value evaluate(const Position& pos) {
         }
     }
 
-    // Bishop pair bonus
-    if (bishop_count[WHITE] >= 2) { mg_score += 60; eg_score += 80; }
-    if (bishop_count[BLACK] >= 2) { mg_score -= 60; eg_score -= 80; }
+    // Bishop pair bonus (Stash values: 21/93)
+    if (bishop_count[WHITE] >= 2) { mg_score += 21; eg_score += 93; }
+    if (bishop_count[BLACK] >= 2) { mg_score -= 21; eg_score -= 93; }
 
-    // King safety using attack maps
-    for (int c = 0; c < 2; ++c) {
-        Color them = Color(c ^ 1);
-        Sign sign = (c == 0) ? 1 : -1;
-        Square our_ksq = ksq_arr[c];
+    // King safety using Stockfish-style SafetyTable (from chessprogramming.org)
+    // Smooth S-curve scaling instead of crude quadratic
+    static const int SafetyTable[100] = {
+        0, 0, 1, 2, 3, 5, 7, 9, 12, 15, 18, 22, 26, 30, 35, 39,
+        44, 50, 56, 62, 68, 75, 82, 85, 89, 97, 105, 113, 122, 131, 140,
+        150, 169, 180, 191, 202, 213, 225, 237, 248, 260, 272, 283, 295,
+        307, 319, 330, 342, 354, 366, 377, 389, 401, 412, 424, 436, 448,
+        459, 471, 483, 494, 500, 500, 500, 500, 500, 500, 500, 500, 500,
+        500, 500, 500, 500, 500, 500, 500, 500, 500, 500, 500, 500, 500,
+        500, 500, 500, 500, 500, 500, 500, 500, 500, 500, 500, 500, 500,
+        500, 500
+    };
 
-        // King zone: 3x3 area
+    for (int c_idx = 0; c_idx < 2; ++c_idx) {
+        Color c = Color(c_idx);
+        Color them = Color(c_idx ^ 1);
+        Sign sign = (c_idx == 0) ? 1 : -1;
+        Square our_ksq = ksq_arr[c_idx];
+
+        // King zone: king attacks + one rank toward enemy (like Stockfish)
         Bitboard king_zone = king_attacks_bb(our_ksq) | square_bb(our_ksq);
+        Rank fwd = (c == WHITE) ? Rank(rank_of(our_ksq) + 1) : Rank(rank_of(our_ksq) - 1);
+        if (fwd >= RANK_1 && fwd <= RANK_8) {
+            for (File f = FILE_A; f <= FILE_H; f = File(f + 1)) {
+                king_zone |= square_bb(make_square(f, fwd));
+            }
+        }
+        // Extend zone for edge kings (mirror to adjacent file)
+        File kfile = file_of(our_ksq);
+        if (kfile == FILE_A) {
+            Bitboard mirror = 0;
+            for (Square s = A1; s <= H8; s = Square(int(s) + 1)) {
+                if (file_of(s) == FILE_B && (king_zone & square_bb(s))) {
+                    mirror |= square_bb(make_square(FILE_A, rank_of(s)));
+                }
+            }
+            king_zone |= mirror;
+        } else if (kfile == FILE_H) {
+            for (Square s = A1; s <= H8; s = Square(int(s) + 1)) {
+                if (file_of(s) == FILE_G && (king_zone & square_bb(s))) {
+                    king_zone |= square_bb(make_square(FILE_H, rank_of(s)));
+                }
+            }
+        }
 
         int attack_units = 0;
         int attacker_count = 0;
 
-        // Pawn attacks on king zone
+        // Pawn attacks on king zone (2 units per pawn)
         Bitboard enemy_pawns = pos.pieces(them, PAWN);
         Bitboard ep = enemy_pawns;
         while (ep) {
@@ -549,62 +585,86 @@ Value evaluate(const Position& pos) {
             }
         }
 
-        // Knight attacks on king zone
+        // Knight attacks on king zone (2 units per knight, like Stockfish)
         Bitboard enemy_kn = pos.pieces(them, KNIGHT);
         while (enemy_kn) {
             if (knight_attacks_bb(pop_lsb(enemy_kn)) & king_zone) {
-                attack_units += 3;
+                attack_units += 2;
                 attacker_count++;
             }
         }
 
-        // Bishop attacks on king zone
+        // Bishop attacks on king zone (2 units per bishop)
         Bitboard enemy_bi = pos.pieces(them, BISHOP);
         while (enemy_bi) {
             if (bishop_attacks_bb(pop_lsb(enemy_bi), occupied) & king_zone) {
+                attack_units += 2;
+                attacker_count++;
+            }
+        }
+
+        // Rook attacks on king zone (3 units per rook)
+        Bitboard enemy_ro = pos.pieces(them, ROOK);
+        while (enemy_ro) {
+            if (rook_attacks_bb(pop_lsb(enemy_ro), occupied) & king_zone) {
                 attack_units += 3;
                 attacker_count++;
             }
         }
 
-        // Rook attacks on king zone
-        Bitboard enemy_ro = pos.pieces(them, ROOK);
-        while (enemy_ro) {
-            if (rook_attacks_bb(pop_lsb(enemy_ro), occupied) & king_zone) {
-                attack_units += 4;
-                attacker_count++;
-            }
-        }
-
-        // Queen attacks on king zone
+        // Queen attacks on king zone (5 units per queen, like Stockfish)
         Bitboard enemy_qu = pos.pieces(them, QUEEN);
         while (enemy_qu) {
             if (queen_attacks_bb(pop_lsb(enemy_qu), occupied) & king_zone) {
-                attack_units += 6;
+                attack_units += 5;
                 attacker_count++;
             }
         }
 
-        // Non-linear danger
-        int danger = 0;
-        if (attacker_count >= 2) {
-            danger = attack_units * attack_units / 2;
-        } else if (attacker_count == 1) {
-            danger = attack_units;
+        // Count attacked squares in king zone for bonus
+        Bitboard enemy_attacks = 0;
+        ep = enemy_pawns;
+        while (ep) { enemy_attacks |= pawn_attacks_bb(them, square_bb(pop_lsb(ep))); }
+        enemy_kn = pos.pieces(them, KNIGHT);
+        while (enemy_kn) { enemy_attacks |= knight_attacks_bb(pop_lsb(enemy_kn)); }
+        enemy_bi = pos.pieces(them, BISHOP);
+        while (enemy_bi) { enemy_attacks |= bb_diag_attacks(pop_lsb(enemy_bi), occupied); }
+        enemy_ro = pos.pieces(them, ROOK);
+        while (enemy_ro) { enemy_attacks |= rook_attacks_bb(pop_lsb(enemy_ro), occupied); }
+        enemy_qu = pos.pieces(them, QUEEN);
+        while (enemy_qu) { enemy_attacks |= queen_attacks_bb(pop_lsb(enemy_qu), occupied); }
+        int attacked_squares = popcount(enemy_attacks & king_zone);
+        attack_units += attacked_squares;  // bonus per attacked square
+
+        // Safe queen contact check bonus (Stockfish adds 6 attack units)
+        if (enemy_qu) {
+            Bitboard queens = pos.pieces(them, QUEEN);
+            while (queens) {
+                Square qsq = pop_lsb(queens);
+                Bitboard queen_att = queen_attacks_bb(qsq, occupied);
+                if ((queen_att & square_bb(our_ksq)) &&
+                    !(pos.attackers_to(our_ksq) & pos.pieces(c) & ~square_bb(our_ksq))) {
+                    attack_units += 6;
+                    break;  // Only count once
+                }
+            }
         }
 
-        // Scale by attacking material
-        int attacking_material = popcount(enemy_qu) * 4 + popcount(enemy_ro) * 2;
-        if (attacking_material < 4) danger = danger * attacking_material / 4;
+        // Only evaluate king safety if we have enough attackers
+        if (attacker_count >= 1) {
+            int idx = std::min(attack_units, 99);
+            int danger = SafetyTable[idx];
 
-        // CRITICAL Third Gen insight: no queen = almost no mating potential
-        // Reduce danger dramatically when no enemy queen (inspired by Ethereal's SafetyNoEnemyQueens)
-        if (!enemy_qu) danger = danger / 4;
-        if (!enemy_qu && !enemy_ro) danger = danger / 4;
+            // Scale by attacking material
+            int attacking_material = popcount(enemy_qu) * 4 + popcount(enemy_ro) * 2;
+            if (attacking_material < 4) danger = danger * attacking_material / 4;
 
-        danger = std::min(danger, 600);
+            // No queen = much less danger
+            if (!enemy_qu) danger = danger / 4;
+            if (!enemy_qu && !enemy_ro) danger = danger / 4;
 
-        mg_score -= sign * danger;
+            mg_score -= sign * danger;
+        }
     }
 
     // Phase calculation
