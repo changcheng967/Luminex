@@ -806,11 +806,13 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
 
         // Late Move Reduction: reduce moves that are unlikely to be best
         // Apply LMR to quiet moves and losing captures (SEE < 0)
+        // But NEVER reduce moves that give check — they are forcing
         Depth new_depth = depth - 1;
+        bool gives_chk = gives_check(m);
         bool is_losing_capture = m.is_capture() && !m.is_promotion() && depth >= 1 &&
                                   !pos.see_ge(m, Value(-depth * 80));
         bool do_lmr = depth >= 2 && moves_played >= (pv_node ? 2 : 1) &&
-                      (is_quiet || is_losing_capture);
+                      (is_quiet || is_losing_capture) && !gives_chk;
 
         if (do_lmr) {
             int reduction = compute_reduction(m, moves_played);
@@ -829,7 +831,7 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
                 ext_count++;  // Total +2 extension
             }
         }
-        if (gives_check(m)) {
+        if (gives_chk) {
             ext_count++;
         }
         // Recapture extension: recapturing on the same square is often forced/tactical
