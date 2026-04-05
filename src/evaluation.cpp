@@ -6,15 +6,15 @@ namespace luminex {
 static constexpr int PieceValueMG[8] = { 82, 337, 365, 477, 1025, 0, 0, 0 };
 static constexpr int PieceValueEG[8] = { 94, 281, 297, 512, 936, 0, 0, 0 };
 
-// Stash-style mobility tables (MG, EG) - tuned non-linear values
-static constexpr int KnightMobilityMG[9] = { -56, -45, -35, -26, -19, -13, -8, 0, 4 };
-static constexpr int KnightMobilityEG[9] = {  20, -28,  36,  58,  76,  95,104,109,103 };
-static constexpr int BishopMobilityMG[14] = { -56, -44, -27, -25, -17, -13, -10, -8, -7, -5, -2, 7, 9, 35 };
-static constexpr int BishopMobilityEG[14] = { -44, -39, -15,  15,  32,  46,  56, 61, 64, 67, 61, 56, 57, 48 };
-static constexpr int RookMobilityMG[15] = { -88, -39, -27, -31, -29, -33, -34, -29, -26, -18, -17, -13, -6, 4, 23 };
-static constexpr int RookMobilityEG[15] = { -47,  40,  76,  92, 103, 117, 125, 131, 140, 149, 156, 163, 167, 169, 161 };
-static constexpr int QueenMobilityMG[28] = { -14, 19, 0, -6, 1, -2, -4, -3, -2, -2, -1, 2, 2, 5, 5, 5, 6, 9, 14, 12, 36, 39, 48, 34, 59, 11, 11, 36 };
-static constexpr int QueenMobilityEG[28] = { -93, 216, 147, 95, 65, 118, 151, 175, 185, 205, 214, 219, 228, 232, 237, 243, 244, 241, 232, 234, 204, 198, 183, 163, 156, 164, 170, 141 };
+// Ethereal-style mobility tables (MG, EG) - better tuned non-linear values
+static constexpr int KnightMobilityMG[9] = { -104, -45, -22, -8, 6, 11, 19, 30, 43 };
+static constexpr int KnightMobilityEG[9] = { -139, -114, -37, 3, 15, 34, 38, 37, 17 };
+static constexpr int BishopMobilityMG[14] = { -99, -46, -16, -4, 6, 14, 17, 19, 19, 27, 26, 52, 55, 83 };
+static constexpr int BishopMobilityEG[14] = { -186, -124, -54, -14, 1, 20, 35, 39, 49, 48, 48, 32, 47, 2 };
+static constexpr int RookMobilityMG[15] = { -127, -56, -25, -12, -10, -12, -11, -4, 4, 9, 11, 19, 19, 37, 97 };
+static constexpr int RookMobilityEG[15] = { -148, -127, -85, -28, 2, 27, 42, 46, 52, 55, 64, 68, 73, 60, 15 };
+static constexpr int QueenMobilityMG[28] = { -111, -253, -127, -46, -18, 10, 9, 13, 7, 7, 7, 16, 21, 27, 24, 31, 32, 35, 38, 41, 35, 35, 35, 42, 44, 47, 50, 52 };
+static constexpr int QueenMobilityEG[28] = { -273, -401, -228, -236, -144, -81, -41, 13, 32, 62, 79, 96, 110, 114, 115, 120, 122, 113, 101, 96, 83, 74, 62, 50, 36, 25, 18, 7 };
 
 // PeSTO piece-square tables (WHITE, a1=0 layout)
 // Transposed from original a8=0 layout by reversing row order.
@@ -237,6 +237,21 @@ Value evaluate(const Position& pos) {
                 int connected_bonus = 4 + r * 3;
                 mg_score += sign * connected_bonus;
                 eg_score += sign * (2 + r * 2);
+            }
+
+            // Pawn phalanx: side-by-side pawns on same rank (Weiss-style)
+            {
+                Bitboard neighbors = our_pawns & (file_bb(File(f - 1)) | file_bb(File(f + 1)));
+                Bitboard same_rank = neighbors & rank_bb(rank_of(sq));
+                if (same_rank) {
+                    // Phalanx bonuses by rank (from Weiss)
+                    static constexpr int PhalanxMG[8] = { 0, 10, 20, 35, 72, 231, 168, 0 };
+                    static constexpr int PhalanxEG[8] = { 0, -2, 14, 37, 121, 367, 394, 0 };
+                    if (r >= RANK_2 && r <= RANK_7) {
+                        mg_score += sign * PhalanxMG[r];
+                        eg_score += sign * PhalanxEG[r];
+                    }
+                }
             }
 
             // Pawn lever bonus: can capture an adjacent enemy pawn
@@ -559,6 +574,11 @@ Value evaluate(const Position& pos) {
         Sign sign = (c_idx == 0) ? 1 : -1;
         Square our_ksq = ksq_arr[c_idx];
 
+        // Skip king safety entirely in endgames (no enemy queen + no enemy rooks)
+        Bitboard enemy_qu = pos.pieces(them, QUEEN);
+        Bitboard enemy_ro = pos.pieces(them, ROOK);
+        if (!enemy_qu && !enemy_ro) continue;
+
         // King zone: king attacks + one rank toward enemy
         Bitboard king_zone = king_attacks_bb(our_ksq) | square_bb(our_ksq);
         Rank fwd = (c == WHITE) ? Rank(rank_of(our_ksq) + 1) : Rank(rank_of(our_ksq) - 1);
@@ -574,6 +594,11 @@ Value evaluate(const Position& pos) {
         // Safe squares: not defended by our pawns
         Bitboard our_pawn_attacks = pawn_attacks_bb(c, pos.pieces(c, PAWN));
         Bitboard safe = ~our_pawn_attacks;
+
+        // Precompute king check rays (where sliders could give check)
+        Bitboard king_diag = bb_diag_attacks(our_ksq, Bitboard(0));
+        Bitboard king_orth = rook_attacks_bb(our_ksq, Bitboard(0));
+        Bitboard king_knights = knight_attacks_bb(our_ksq);
 
         // Pawn attacks on king zone (2 units per pawn)
         Bitboard enemy_pawns = pos.pieces(them, PAWN);
@@ -595,9 +620,8 @@ Value evaluate(const Position& pos) {
                 attack_units += 2;
                 attacker_count++;
             }
-            // Safe check: knight can give check and the check square is not defended
-            Bitboard kn_checks = kn_attacks & king_attacks_bb(our_ksq);
-            if (kn_checks & safe) attack_units += 3;
+            // Safe check: knight can give check on an undefended square
+            if (kn_attacks & king_knights & safe) attack_units += 3;
         }
 
         // Bishop attacks on king zone + safe check bonus
@@ -609,12 +633,10 @@ Value evaluate(const Position& pos) {
                 attack_units += 2;
                 attacker_count++;
             }
-            Bitboard bi_checks = bi_attacks & bb_diag_attacks(our_ksq, Bitboard(0));
-            if (bi_checks & safe) attack_units += 2;
+            if (bi_attacks & king_diag & safe) attack_units += 2;
         }
 
         // Rook attacks on king zone + safe check bonus
-        Bitboard enemy_ro = pos.pieces(them, ROOK);
         while (enemy_ro) {
             Square rsq = pop_lsb(enemy_ro);
             Bitboard ro_attacks = rook_attacks_bb(rsq, occupied);
@@ -622,12 +644,10 @@ Value evaluate(const Position& pos) {
                 attack_units += 3;
                 attacker_count++;
             }
-            Bitboard ro_checks = ro_attacks & rook_attacks_bb(our_ksq, Bitboard(0));
-            if (ro_checks & safe) attack_units += 4;
+            if (ro_attacks & king_orth & safe) attack_units += 4;
         }
 
         // Queen attacks on king zone + safe check bonus
-        Bitboard enemy_qu = pos.pieces(them, QUEEN);
         while (enemy_qu) {
             Square qsq = pop_lsb(enemy_qu);
             Bitboard qu_attacks = queen_attacks_bb(qsq, occupied);
@@ -635,9 +655,7 @@ Value evaluate(const Position& pos) {
                 attack_units += 5;
                 attacker_count++;
             }
-            // Queen checks are devastating
-            Bitboard qu_checks = qu_attacks & (bb_diag_attacks(our_ksq, Bitboard(0)) | rook_attacks_bb(our_ksq, Bitboard(0)));
-            if (qu_checks & safe) attack_units += 5;
+            if (qu_attacks & (king_diag | king_orth) & safe) attack_units += 5;
         }
 
         // Only evaluate king safety if we have enough attackers
@@ -646,8 +664,7 @@ Value evaluate(const Position& pos) {
             int danger = SafetyTable[idx];
 
             // No queen = much less danger
-            if (!enemy_qu) danger = danger / 4;
-            if (!enemy_qu && !enemy_ro) danger = danger / 4;
+            if (!pos.pieces(them, QUEEN)) danger = danger / 4;
 
             mg_score -= sign * danger;
         }
