@@ -24,7 +24,9 @@ static Position pos;
 
 // Search thread management
 static std::thread search_thread;
+#ifdef _WIN32
 static HANDLE native_thread_handle = nullptr;
+#endif
 static std::mutex io_mutex;
 
 // Debug logging
@@ -58,6 +60,9 @@ void uci_debug_log(const char* format, ...) {
     }
 }
 
+// Forward declaration
+static void search_worker(Position pos_copy, Limits lim);
+
 // Wait for search thread to finish (handles both std::thread and native thread)
 static void wait_for_search_thread() {
     if (search_thread.joinable()) {
@@ -69,6 +74,35 @@ static void wait_for_search_thread() {
         CloseHandle(native_thread_handle);
         native_thread_handle = nullptr;
     }
+#endif
+}
+
+// Launch search with large stack (4MB on Windows, default on other platforms)
+static void launch_search_thread(Position pos_copy, Limits lim) {
+#ifdef _WIN32
+    // Wait for previous native thread if any
+    if (native_thread_handle) {
+        WaitForSingleObject(native_thread_handle, INFINITE);
+        CloseHandle(native_thread_handle);
+        native_thread_handle = nullptr;
+    }
+    auto* thread_args = new std::pair<Position, Limits>(pos_copy, lim);
+    native_thread_handle = reinterpret_cast<HANDLE>(_beginthreadex(
+        nullptr, 4 * 1024 * 1024,  // 4MB stack
+        [](void* arg) -> unsigned {
+            auto* p = static_cast<std::pair<Position, Limits>*>(arg);
+            search_worker(p->first, p->second);
+            delete p;
+            return 0;
+        },
+        thread_args, 0, nullptr));
+    if (!native_thread_handle) {
+        delete thread_args;
+        // Fallback to std::thread
+        search_thread = std::thread(search_worker, pos_copy, lim);
+    }
+#else
+    search_thread = std::thread(search_worker, pos_copy, lim);
 #endif
 }
 
@@ -224,32 +258,7 @@ void handle_go(Position& pos, const std::string& cmd) {
     }
 
     // Launch search thread with 4MB stack to prevent stack overflow
-    // at deep search depths (each recursive frame uses ~6.4KB)
-#ifdef _WIN32
-    // Wait for previous native thread if any
-    if (native_thread_handle) {
-        WaitForSingleObject(native_thread_handle, INFINITE);
-        CloseHandle(native_thread_handle);
-        native_thread_handle = nullptr;
-    }
-    auto* thread_args = new std::pair<Position, Limits>(pos, limits);
-    native_thread_handle = reinterpret_cast<HANDLE>(_beginthreadex(
-        nullptr, 4 * 1024 * 1024,  // 4MB stack
-        [](void* arg) -> unsigned {
-            auto* p = static_cast<std::pair<Position, Limits>*>(arg);
-            search_worker(p->first, p->second);
-            delete p;
-            return 0;
-        },
-        thread_args, 0, nullptr));
-    if (!native_thread_handle) {
-        delete thread_args;
-        // Fallback to std::thread
-        search_thread = std::thread(search_worker, pos, limits);
-    }
-#else
-    search_thread = std::thread(search_worker, pos, limits);
-#endif
+    launch_search_thread(pos, limits);
 }
 
 void handle_setoption(const std::string& cmd) {
