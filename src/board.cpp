@@ -219,6 +219,17 @@ void Position::set(const std::string& fen) {
 
     st_->key = k;
 
+    // Compute pawn key for pawn hash table
+    Key pk = 0;
+    for (Color c : {WHITE, BLACK}) {
+        Bitboard pb = pieces(c, PAWN);
+        while (pb) {
+            Square s = pop_lsb(pb);
+            pk ^= Zobrist::psq[int(c)][int(PAWN)][int(s)];
+        }
+    }
+    st_->pawn_key = pk;
+
     // CRITICAL: game_ply_ is already computed from FEN fullmove above (line 186)
     // Do NOT reset to 0 here, or fen() will output wrong fullmove number
 
@@ -515,6 +526,7 @@ bool Position::do_move(Move m) {
 
     // Save state for undo - copy current state to next slot in state_stack
     next_st.key = st_->key;
+    next_st.pawn_key = st_->pawn_key;
     next_st.checkers = st_->checkers;
     next_st.pinned = st_->pinned;
     next_st.block_checkers = st_->block_checkers;
@@ -573,33 +585,33 @@ bool Position::do_move(Move m) {
     PieceType captured = piece_type_on(to);
     if (captured != PT_NONE) {
         if (captured == KING) {
-            // "Capturing" the king means checkmate
-            // Remove the king from the board so the checkmate detection works
             remove_piece(to);
             st_->key ^= Zobrist::psq[int(them)][int(KING)][int(to)];
         } else {
-            // Normal capture
             remove_piece(to);
             st_->key ^= Zobrist::psq[int(them)][int(captured)][int(to)];
+            if (captured == PAWN) {
+                st_->pawn_key ^= Zobrist::psq[int(them)][int(PAWN)][int(to)];
+            }
         }
     }
 
     // Handle promotion
     if (m.is_promotion()) {
-        // CRITICAL FIX: XOR out pawn from origin BEFORE removing it
-        // Without this, Zobrist key is corrupted after promotion
         st_->key ^= Zobrist::psq[int(us)][int(PAWN)][int(from)];
+        st_->pawn_key ^= Zobrist::psq[int(us)][int(PAWN)][int(from)];
         remove_piece(from);
         PieceType promoted = m.promotion_type();
         put_piece(us, promoted, to);
-        // XOR in promoted piece at destination
         st_->key ^= Zobrist::psq[int(us)][int(promoted)][int(to)];
     } else {
-        // CRITICAL FIX: Update Zobrist key for the moving piece
-        // XOR out the piece from its old square, XOR in at the new square
         st_->key ^= Zobrist::psq[int(us)][int(pt)][int(from)];
         move_piece(from, to);
         st_->key ^= Zobrist::psq[int(us)][int(pt)][int(to)];
+        if (pt == PAWN) {
+            st_->pawn_key ^= Zobrist::psq[int(us)][int(PAWN)][int(from)];
+            st_->pawn_key ^= Zobrist::psq[int(us)][int(PAWN)][int(to)];
+        }
     }
 
     // Handle castling
@@ -623,6 +635,7 @@ bool Position::do_move(Move m) {
         Square cap_sq = Square(to - (us == WHITE ? 8 : -8));
         remove_piece(cap_sq);
         st_->key ^= Zobrist::psq[int(them)][int(PAWN)][int(cap_sq)];
+        st_->pawn_key ^= Zobrist::psq[int(them)][int(PAWN)][int(cap_sq)];
     }
 
     // Update en passant square (check piece type before move)

@@ -9,6 +9,7 @@ namespace luminex {
 // Position state for undo
 struct StateInfo {
     Key key = 0;
+    Key pawn_key = 0;
     Bitboard checkers = 0;
     Bitboard pinned = 0;
     Bitboard block_checkers = 0;
@@ -85,6 +86,7 @@ public:
     void set_game_ply(int ply);
 
     Key key() const;
+    Key pawn_key() const;
 
     bool is_draw() const;
     bool is_check() const;
@@ -174,6 +176,7 @@ inline int Position::game_ply() const { return game_ply_; }
 inline void Position::set_game_ply(int ply) { game_ply_ = ply; }
 
 inline Key Position::key() const { return st_->key; }
+inline Key Position::pawn_key() const { return st_->pawn_key; }
 
 inline bool Position::is_check() const { return checkers() != 0; }
 

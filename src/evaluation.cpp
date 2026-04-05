@@ -195,15 +195,8 @@ static PawnEntry pawn_table[PAWN_HASH_SIZE];
 // Evaluate pawn-only terms and cache the result in pawn_table.
 // Returns true on cache hit, false on cache miss (but fills mg_out/eg_out either way).
 static void evaluate_pawns(const Position& pos, int32_t& mg_out, int32_t& eg_out) {
-    // Compute pawn hash key from Zobrist pawn keys
-    uint64_t pawn_key = 0;
-    for (int c = 0; c < 2; ++c) {
-        Bitboard pb = pos.pieces(Color(c), PAWN);
-        while (pb) {
-            Square sq = pop_lsb(pb);
-            pawn_key ^= Zobrist::psq[c][int(PAWN)][int(sq)];
-        }
-    }
+    // Use incrementally maintained pawn key
+    uint64_t pawn_key = pos.pawn_key();
 
     int idx = int(pawn_key & uint64_t(PAWN_HASH_SIZE - 1));
     PawnEntry& entry = pawn_table[idx];
