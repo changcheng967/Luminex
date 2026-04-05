@@ -1189,40 +1189,31 @@ Move search(Position& pos, Limits& lim) {
 
 
 
-    // Time management
+    // Time management — Third Generation: Stability + Score Progression
     if (limits.use_time_management()) {
         Color us = pos.side_to_move();
         int time_left = limits.time[int(us)];
         int time_inc = limits.inc[int(us)];
 
-        // Safety: clamp negatives
         if (time_left < 0) time_left = 0;
         if (time_inc < 0) time_inc = 0;
 
-        int overhead = 10;  // Safety margin for processing/communication latency
+        int overhead = 10;
 
         if (limits.movestogo > 0) {
-            // Tournament mode with known moves-to-go: spread time evenly
-            ideal_time = time_left / limits.movestogo + time_inc - overhead;
-            max_time = time_left / std::max(1, limits.movestogo / 2) + time_inc - overhead;
+            int mtg = std::max(1, limits.movestogo);
+            ideal_time = time_left / mtg + time_inc - overhead;
+            max_time = time_left / std::max(1, mtg / 2) + time_inc - overhead;
         } else {
-            // Sudden death (increment) time control
-            // Use a fraction of remaining time + most of increment
-            // The fraction depends on how much time we have:
-            // - Lots of time: use ~1/30 (long game ahead)
-            // - Low time: use ~1/10 (emergency mode)
-            int mtg = 25;  // assume ~25 moves left
+            // Sudden death: simple fraction + increment
+            int mtg = 25;
             int opt_time = (time_left + time_inc * mtg * 3 / 4) / mtg;
-            ideal_time = std::min(opt_time, time_left / 2);  // never use more than half
-            // max_time: allow using up to 3x ideal for critical positions, but never all time
+            ideal_time = std::min(opt_time, time_left / 2);
             max_time = std::min(time_left - overhead, std::max(ideal_time * 3, time_inc + 50));
         }
 
-        // Hard floor: always at least 10ms so we can respond
         ideal_time = std::max(10, ideal_time);
         max_time = std::max(ideal_time, max_time);
-
-        // Never exceed remaining time minus overhead
         ideal_time = std::min(ideal_time, time_left - overhead);
         max_time = std::min(max_time, time_left - overhead);
     } else {
@@ -1272,8 +1263,6 @@ Move search(Position& pos, Limits& lim) {
             auto now = std::chrono::steady_clock::now();
             int elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
                 now - search_start).count();
-            // Don't start a new depth if we've used more than ideal_time
-            // (a new depth could take as long as all previous depths combined)
             if (elapsed > ideal_time) {
                 break;
             }
