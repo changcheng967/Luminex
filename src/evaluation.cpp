@@ -1,4 +1,5 @@
 #include "luminex.h"
+#include <cstring>
 
 namespace luminex {
 
@@ -181,14 +182,40 @@ Score PST_EG_TABLE[2][8][64] = {
 
 using Score = Value;
 
-Value evaluate(const Position& pos) {
-    Score mg_score = 0;
-    Score eg_score = 0;
+// ============================================================
+// Pawn hash table
+// ============================================================
+struct PawnEntry {
+    uint64_t key;
+    int32_t mg, eg;
+};
+static constexpr int PAWN_HASH_SIZE = 16384;
+static PawnEntry pawn_table[PAWN_HASH_SIZE];
 
-    Square ksq_arr[2] = {pos.king_sq(WHITE), pos.king_sq(BLACK)};
-    int bishop_count[2] = {0, 0};
+// Evaluate pawn-only terms and cache the result in pawn_table.
+// Returns true on cache hit, false on cache miss (but fills mg_out/eg_out either way).
+static void evaluate_pawns(const Position& pos, int32_t& mg_out, int32_t& eg_out) {
+    // Compute pawn hash key from Zobrist pawn keys
+    uint64_t pawn_key = 0;
+    for (int c = 0; c < 2; ++c) {
+        Bitboard pb = pos.pieces(Color(c), PAWN);
+        while (pb) {
+            Square sq = pop_lsb(pb);
+            pawn_key ^= Zobrist::psq[c][int(PAWN)][int(sq)];
+        }
+    }
 
-    Bitboard occupied = pos.pieces();
+    int idx = int(pawn_key & uint64_t(PAWN_HASH_SIZE - 1));
+    PawnEntry& entry = pawn_table[idx];
+    if (entry.key == pawn_key) {
+        mg_out = entry.mg;
+        eg_out = entry.eg;
+        return;
+    }
+
+    // Cache miss: compute pawn-only eval from scratch
+    int32_t mg = 0;
+    int32_t eg = 0;
 
     for (int c_idx = 0; c_idx < 2; ++c_idx) {
         Color c = Color(c_idx);
@@ -205,38 +232,34 @@ Value evaluate(const Position& pos) {
         // Adjacent file pawn support lookup (for connected pawns)
         Bitboard supported_by_adj = pawn_attacks_bb(c, our_pawns);
 
-        // Mobility area: exclude squares attacked by enemy pawns
-        Bitboard mob_area = ~pawn_attacks_bb(them, their_pawns);
-
-        // Pawns: material + PST + structure
         Bitboard pawns = our_pawns;
         while (pawns) {
             Square sq = pop_lsb(pawns);
             File f = file_of(sq);
             Rank r = relative_rank(c, sq);
 
-            mg_score += sign * (PieceValueMG[PAWN] + PST_MG_TABLE[int(c)][int(PAWN)][int(sq)]);
-            eg_score += sign * (PieceValueEG[PAWN] + PST_EG_TABLE[int(c)][int(PAWN)][int(sq)]);
+            mg += sign * (PieceValueMG[PAWN] + PST_MG_TABLE[int(c)][int(PAWN)][int(sq)]);
+            eg += sign * (PieceValueEG[PAWN] + PST_EG_TABLE[int(c)][int(PAWN)][int(sq)]);
 
             // Doubled pawn penalty
             if (file_count[f] > 1) {
-                mg_score -= sign * 11;
-                eg_score -= sign * 22;
+                mg -= sign * 11;
+                eg -= sign * 22;
             }
 
             // Isolated pawn penalty
             bool left = (f > FILE_A && file_count[f - 1] > 0);
             bool right = (f < FILE_H && file_count[f + 1] > 0);
             if (!left && !right) {
-                mg_score -= sign * 14;
-                eg_score -= sign * 18;
+                mg -= sign * 14;
+                eg -= sign * 18;
             }
 
             // Connected pawn bonus: pawn protected by another pawn
             if (square_bb(sq) & supported_by_adj) {
                 int connected_bonus = 4 + r * 3;
-                mg_score += sign * connected_bonus;
-                eg_score += sign * (2 + r * 2);
+                mg += sign * connected_bonus;
+                eg += sign * (2 + r * 2);
             }
 
             // Pawn phalanx: side-by-side pawns on same rank (Weiss-style)
@@ -248,8 +271,8 @@ Value evaluate(const Position& pos) {
                     static constexpr int PhalanxMG[8] = { 0, 10, 20, 35, 72, 231, 168, 0 };
                     static constexpr int PhalanxEG[8] = { 0, -2, 14, 37, 121, 367, 394, 0 };
                     if (r >= RANK_2 && r <= RANK_7) {
-                        mg_score += sign * PhalanxMG[r];
-                        eg_score += sign * PhalanxEG[r];
+                        mg += sign * PhalanxMG[r];
+                        eg += sign * PhalanxEG[r];
                     }
                 }
             }
@@ -259,46 +282,40 @@ Value evaluate(const Position& pos) {
                 Bitboard lever_targets = pawn_attacks_bb(c, sq) & their_pawns;
                 if (lever_targets) {
                     int lever_bonus = 3 + r * 2;
-                    mg_score += sign * lever_bonus;
+                    mg += sign * lever_bonus;
                     // Extra for central levers
                     if (f >= FILE_C && f <= FILE_F) {
-                        mg_score += sign * 3;
+                        mg += sign * 3;
                     }
                 }
             }
 
-            // Backward pawn detection: a pawn that cannot advance safely
-            // because the push square is attacked by enemy pawns, and no
-            // adjacent-file friendly pawn can defend the push square
+            // Backward pawn detection
             {
                 Square push = relative_square(c, make_square(f, Rank(r + 1)));
                 if (push < SQUARE_NONE && r >= RANK_2 && r <= RANK_5) {
-                    // Check if push square is attacked by enemy pawns
                     bool push_attacked = (pawn_attacks_bb(them, their_pawns) & square_bb(push)) != 0;
                     if (push_attacked) {
-                        // Check if our pawns attack the push square (can defend it)
                         Bitboard our_pawn_attacks = pawn_attacks_bb(c, our_pawns);
                         bool defended = (our_pawn_attacks & square_bb(push)) != 0;
                         if (!defended) {
-                            mg_score -= sign * 10;
-                            eg_score -= sign * 12;
+                            mg -= sign * 10;
+                            eg -= sign * 12;
                         }
                     }
                 }
             }
 
-            // Passed pawn bonus with table-based evaluation (Stash-inspired)
+            // Passed pawn detection + BASE bonus (table values only, no rook/king terms)
             Bitboard ahead = 0;
-            Bitboard ahead_file = 0;
             for (int rr = r + 1; rr <= RANK_7; ++rr) {
                 Square rsq = relative_square(c, make_square(f, Rank(rr)));
                 ahead |= square_bb(rsq);
-                ahead_file |= square_bb(rsq);
                 if (f > FILE_A) ahead |= square_bb(relative_square(c, make_square(File(f - 1), Rank(rr))));
                 if (f < FILE_H) ahead |= square_bb(relative_square(c, make_square(File(f + 1), Rank(rr))));
             }
 
-            // Candidate passed pawn: would be passed if stoppers were exchanged
+            // Candidate passed pawn
             if ((ahead & their_pawns) && r >= RANK_2 && r <= RANK_6) {
                 Bitboard stoppers = ahead & their_pawns;
                 Bitboard threats = their_pawns & pawn_attacks_bb(c, sq);
@@ -317,17 +334,77 @@ Value evaluate(const Position& pos) {
                         { 0,   5,  12,  25,  50, 70, 0, 0 },
                         { 0,  12,  25,  50,  85,120, 0, 0 }
                     };
-                    mg_score += sign * CandMG[supported ? 1 : 0][r];
-                    eg_score += sign * CandEG[supported ? 1 : 0][r];
+                    mg += sign * CandMG[supported ? 1 : 0][r];
+                    eg += sign * CandEG[supported ? 1 : 0][r];
                 }
             }
 
+            // Base passed pawn bonus (PassedMG/PassedEG tables only)
             if (!(ahead & their_pawns)) {
-                // Stash-style table bonuses by rank
                 static constexpr int PassedMG[8] = { 0, -10, -14, -27, 16, 67, 107, 0 };
                 static constexpr int PassedEG[8] = { 0,   7,  15,  41, 99,189, 350, 0 };
-                int mg_passer = PassedMG[r];
-                int eg_passer = PassedEG[r];
+                mg += sign * PassedMG[r];
+                eg += sign * PassedEG[r];
+            }
+        }
+    }
+
+    // Store in pawn hash table
+    entry.key = pawn_key;
+    entry.mg = mg;
+    entry.eg = eg;
+
+    mg_out = mg;
+    eg_out = eg;
+}
+
+Value evaluate(const Position& pos) {
+    Score mg_score = 0;
+    Score eg_score = 0;
+
+    Square ksq_arr[2] = {pos.king_sq(WHITE), pos.king_sq(BLACK)};
+    int bishop_count[2] = {0, 0};
+
+    Bitboard occupied = pos.pieces();
+
+    // Pawn evaluation via pawn hash table
+    {
+        int32_t pawn_mg = 0, pawn_eg = 0;
+        evaluate_pawns(pos, pawn_mg, pawn_eg);
+        mg_score += pawn_mg;
+        eg_score += pawn_eg;
+    }
+
+    for (int c_idx = 0; c_idx < 2; ++c_idx) {
+        Color c = Color(c_idx);
+        Color them = Color(c_idx ^ 1);
+        Sign sign = (c == WHITE) ? 1 : -1;
+        Bitboard our_pawns = pos.pieces(c, PAWN);
+        Bitboard their_pawns = pos.pieces(them, PAWN);
+
+        // Mobility area: exclude squares attacked by enemy pawns
+        Bitboard mob_area = ~pawn_attacks_bb(them, their_pawns);
+
+        // Non-pawn passed pawn bonuses (rook behind, enemy rook, king proximity, blocked by pieces)
+        Bitboard pawns = our_pawns;
+        while (pawns) {
+            Square sq = pop_lsb(pawns);
+            File f = file_of(sq);
+            Rank r = relative_rank(c, sq);
+
+            Bitboard ahead = 0;
+            Bitboard ahead_file = 0;
+            for (int rr = r + 1; rr <= RANK_7; ++rr) {
+                Square rsq = relative_square(c, make_square(f, Rank(rr)));
+                ahead |= square_bb(rsq);
+                ahead_file |= square_bb(rsq);
+                if (f > FILE_A) ahead |= square_bb(relative_square(c, make_square(File(f - 1), Rank(rr))));
+                if (f < FILE_H) ahead |= square_bb(relative_square(c, make_square(File(f + 1), Rank(rr))));
+            }
+
+            if (!(ahead & their_pawns)) {
+                int mg_passer = 0;
+                int eg_passer = 0;
 
                 // Rook behind passed pawn bonus
                 Bitboard behind = file_bb(f) & pos.pieces(c, ROOK);
@@ -732,6 +809,9 @@ void init_evaluation() {
             PST_EG_TABLE[BLACK][pt][s] = PST_EG_TABLE[WHITE][pt][s ^ 56];
         }
     }
+
+    // Zero-initialize pawn hash table
+    std::memset(pawn_table, 0, sizeof(pawn_table));
 }
 
 } // namespace luminex
