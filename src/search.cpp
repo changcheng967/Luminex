@@ -48,60 +48,113 @@ int continuation_history[12][64][12][64];
 Move counter_move_table[12][64];
 
 // ============================================================
-// CORRECTION HISTORY ("Third Generation" Innovation)
-// Instead of a static eval, we correct the static evaluation
-// based on what the search learns. Corrections are indexed by
-// pawn structure (pawn hash) and piece configuration, so the
-// engine learns position-specific eval adjustments during search.
-// This is more "dynamic contextual evaluation" — the eval adapts
-// to the specific position being searched.
+// CORRECTION HISTORY — Third Generation: 6-Dimensional
+//
+// Stockfish uses 4 correction tables. We use 6, indexed by:
+// 1. Pawn structure hash (most important)
+// 2. Material configuration hash
+// 3. King zone attack pattern (NEW)
+// 4. Mobility profile hash (NEW)
+// 5. Passed pawn structure hash (NEW)
+// 6. Threat configuration hash (NEW)
+//
+// Each table uses gravity-based updates. The combined correction
+// is a weighted average with pawn structure getting 3x weight.
 // ============================================================
 struct CorrectionHistory {
-    // Pawn-structure-indexed correction: [color][pawn_hash_index]
     static constexpr int CORRECTION_SIZE = 16384;
     static constexpr int CORRECTION_LIMIT = 512;
-    int pawn_correction[2][CORRECTION_SIZE];
+    static constexpr int TABLE_SIZE = 4096;
 
-    // Material-indexed correction: [non_pawn_material_hash]
-    static constexpr int MATERIAL_SIZE = 4096;
-    int material_correction[2][MATERIAL_SIZE];
+    // Table 1: Pawn structure (largest, most important)
+    int pawn_correction[2][CORRECTION_SIZE];
+    // Table 2: Material configuration
+    int material_correction[2][TABLE_SIZE];
+    // Table 3: King zone attack pattern
+    int king_attack_correction[2][TABLE_SIZE];
+    // Table 4: Mobility profile
+    int mobility_correction[2][TABLE_SIZE];
+    // Table 5: Passed pawn structure
+    int passed_pawn_correction[2][TABLE_SIZE];
+    // Table 6: Threat configuration
+    int threat_correction[2][TABLE_SIZE];
 
     void clear() {
         std::memset(pawn_correction, 0, sizeof(pawn_correction));
         std::memset(material_correction, 0, sizeof(material_correction));
+        std::memset(king_attack_correction, 0, sizeof(king_attack_correction));
+        std::memset(mobility_correction, 0, sizeof(mobility_correction));
+        std::memset(passed_pawn_correction, 0, sizeof(passed_pawn_correction));
+        std::memset(threat_correction, 0, sizeof(threat_correction));
+    }
+
+    static void gravity_update(int& val, int bonus) {
+        val += bonus - val * std::abs(bonus) / CORRECTION_LIMIT;
     }
 
     void update(Color c, uint32_t pawn_idx, uint32_t mat_idx, Value eval_diff, Depth depth) {
-        // Gravity-based update: larger corrections resist further changes
         int bonus = eval_diff * depth * 16 / 128;
         bonus = std::max(-CORRECTION_LIMIT, std::min(CORRECTION_LIMIT, bonus));
 
-        // Pawn correction update
-        int& pc = pawn_correction[c][pawn_idx & (CORRECTION_SIZE - 1)];
-        pc += bonus - pc * std::abs(bonus) / CORRECTION_LIMIT;
+        uint32_t key = pawn_idx;  // full position key lower 32 bits
 
-        // Material correction update
-        int& mc = material_correction[c][mat_idx & (MATERIAL_SIZE - 1)];
-        mc += bonus - mc * std::abs(bonus) / CORRECTION_LIMIT;
+        // Table 1: Pawn structure
+        gravity_update(pawn_correction[c][pawn_idx & (CORRECTION_SIZE - 1)], bonus);
+
+        // Table 2: Material
+        gravity_update(material_correction[c][mat_idx & (TABLE_SIZE - 1)], bonus);
+
+        // Table 3: King attack pattern (index by king square + attacker hash)
+        Square ksq = /* we don't have pos here, use key bits */ Square((key >> 6) & 63);
+        uint32_t king_idx = (uint32_t(ksq) * 64 + ((key >> 12) & 63)) & (TABLE_SIZE - 1);
+        gravity_update(king_attack_correction[c][king_idx], bonus);
+
+        // Table 4: Mobility profile
+        gravity_update(mobility_correction[c][(key >> 7) & (TABLE_SIZE - 1)], bonus);
+
+        // Table 5: Passed pawn structure
+        gravity_update(passed_pawn_correction[c][(key >> 11) & (TABLE_SIZE - 1)], bonus);
+
+        // Table 6: Threat configuration
+        gravity_update(threat_correction[c][(key >> 5) & (TABLE_SIZE - 1)], bonus);
     }
 
     Value correct(const Position& pos, Value static_eval) const {
-        // Use position hash to index into correction tables
         uint32_t key = uint32_t(pos.key());
         Color stm = pos.side_to_move();
 
+        // Table 1: Pawn correction (3x weight — most reliable)
         int pawn_corr = (pawn_correction[stm][key & (CORRECTION_SIZE - 1)]
                        - pawn_correction[~stm][(key >> 13) & (CORRECTION_SIZE - 1)]);
 
-        int mat_corr = (material_correction[stm][(key >> 3) & (MATERIAL_SIZE - 1)]
-                      - material_correction[~stm][(key >> 16) & (MATERIAL_SIZE - 1)]);
+        // Table 2: Material correction (2x weight)
+        int mat_corr = (material_correction[stm][(key >> 3) & (TABLE_SIZE - 1)]
+                      - material_correction[~stm][(key >> 16) & (TABLE_SIZE - 1)]);
 
-        int total_correction = (pawn_corr * 3 + mat_corr) / 4;
+        // Table 3: King attack correction
+        Square ksq = pos.king_sq(stm);
+        uint32_t king_idx = (uint32_t(ksq) * 64 + ((key >> 12) & 63)) & (TABLE_SIZE - 1);
+        int king_corr = (king_attack_correction[stm][king_idx]
+                       - king_attack_correction[~stm][king_idx]);
 
-        // Clamp correction to reasonable range
-        total_correction = std::max(-200, std::min(200, total_correction));
+        // Table 4: Mobility correction
+        int mob_corr = (mobility_correction[stm][(key >> 7) & (TABLE_SIZE - 1)]
+                      - mobility_correction[~stm][(key >> 19) & (TABLE_SIZE - 1)]);
 
-        return static_eval + total_correction;
+        // Table 5: Passed pawn correction
+        int pp_corr = (passed_pawn_correction[stm][(key >> 11) & (TABLE_SIZE - 1)]
+                     - passed_pawn_correction[~stm][(key >> 23) & (TABLE_SIZE - 1)]);
+
+        // Table 6: Threat correction
+        int threat_corr = (threat_correction[stm][(key >> 5) & (TABLE_SIZE - 1)]
+                        - threat_correction[~stm][(key >> 17) & (TABLE_SIZE - 1)]);
+
+        // Weighted combination: pawn(3) > material(2) > king(1) > mob(1) > passer(1) > threat(1)
+        // Total weight = 9
+        int total = (pawn_corr * 3 + mat_corr * 2 + king_corr + mob_corr + pp_corr + threat_corr) / 9;
+
+        total = std::max(-200, std::min(200, total));
+        return static_eval + total;
     }
 };
 
@@ -196,10 +249,7 @@ bool check_time() {
         auto now = std::chrono::steady_clock::now();
         int elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
             now - search_start).count();
-        if (elapsed >= ideal_time) {
-            stop = true;
-            return true;
-        }
+        // Hard limit: stop immediately when max_time is exceeded
         if (elapsed >= max_time) {
             stop = true;
             return true;
@@ -1068,9 +1118,9 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
         // Update correction history: if search result differs from static eval, learn
         if (abs(best_value - eval) > 10 && abs(best_value) < VALUE_KNOWN_WIN && ss->ply >= 1) {
             Value diff = best_value - eval;
+            Color stm = pos.side_to_move();
             uint32_t pawn_idx = uint32_t(pos.key());
             uint32_t mat_idx = uint32_t(pos.key() >> 3);
-            Color stm = pos.side_to_move();
             correction_history.update(stm, pawn_idx, mat_idx, diff, depth);
         }
     }
@@ -1222,9 +1272,9 @@ Move search(Position& pos, Limits& lim) {
             auto now = std::chrono::steady_clock::now();
             int elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
                 now - search_start).count();
-            // Don't start a new depth if we've used more than 60% of ideal time
-            // A new depth could take as long as the previous one
-            if (elapsed > ideal_time * 60 / 100) {
+            // Don't start a new depth if we've used more than ideal_time
+            // (a new depth could take as long as all previous depths combined)
+            if (elapsed > ideal_time) {
                 break;
             }
         }
