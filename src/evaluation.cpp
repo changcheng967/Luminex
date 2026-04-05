@@ -177,6 +177,9 @@ Value evaluate(const Position& pos) {
 
     Square ksq_arr[2] = {pos.king_sq(WHITE), pos.king_sq(BLACK)};
     int bishop_count[2] = {0, 0};
+
+    // Pre-compute center files mask (C-F) for space evaluation
+    static constexpr Bitboard CENTER_FILES = file_bb(FILE_C) | file_bb(FILE_D) | file_bb(FILE_E) | file_bb(FILE_F);
     Bitboard occupied = pos.pieces();
 
     for (int c_idx = 0; c_idx < 2; ++c_idx) {
@@ -226,27 +229,35 @@ Value evaluate(const Position& pos) {
                 eg_score += sign * (2 + r * 2);
             }
 
-            // Backward pawn detection: a pawn that cannot advance safely
-            // and has no friendly pawn on adjacent files behind or beside it
+            // Pawn lever bonus: can capture an adjacent enemy pawn
             {
-                // Squares this pawn could advance to (one or two squares)
-                Square push = relative_square(c, make_square(f, Rank(r + 1)));
-                // Check if the push square is attacked by enemy pawns
-                bool push_attacked = (push < SQUARE_NONE) &&
-                    (pawn_attacks_bb(them, their_pawns) & square_bb(push));
-                // Check if there's a friendly pawn on adjacent files that can support the push square
-                bool has_support = false;
-                if (f > FILE_A && file_count[f - 1] > 0) has_support = true;
-                if (f < FILE_H && file_count[f + 1] > 0) has_support = true;
+                Bitboard lever_targets = pawn_attacks_bb(c, sq) & their_pawns;
+                if (lever_targets) {
+                    int lever_bonus = 3 + r * 2;
+                    mg_score += sign * lever_bonus;
+                    // Extra for central levers
+                    if (f >= FILE_C && f <= FILE_F) {
+                        mg_score += sign * 3;
+                    }
+                }
+            }
 
-                if (push_attacked && !has_support && !left && !right && r >= RANK_2 && r <= RANK_5) {
-                    // Weakened backward detection: only flag if also somewhat isolated
-                    // Full isolation is already caught above, so check partial isolation
-                    bool left_partial = (f > FILE_A && file_count[f - 1] > 0);
-                    bool right_partial = (f < FILE_H && file_count[f + 1] > 0);
-                    if (!left_partial || !right_partial) {
-                        mg_score -= sign * 8;
-                        eg_score -= sign * 10;
+            // Backward pawn detection: a pawn that cannot advance safely
+            // because the push square is attacked by enemy pawns, and no
+            // adjacent-file friendly pawn can defend the push square
+            {
+                Square push = relative_square(c, make_square(f, Rank(r + 1)));
+                if (push < SQUARE_NONE && r >= RANK_2 && r <= RANK_5) {
+                    // Check if push square is attacked by enemy pawns
+                    bool push_attacked = (pawn_attacks_bb(them, their_pawns) & square_bb(push)) != 0;
+                    if (push_attacked) {
+                        // Check if our pawns attack the push square (can defend it)
+                        Bitboard our_pawn_attacks = pawn_attacks_bb(c, our_pawns);
+                        bool defended = (our_pawn_attacks & square_bb(push)) != 0;
+                        if (!defended) {
+                            mg_score -= sign * 10;
+                            eg_score -= sign * 12;
+                        }
                     }
                 }
             }
@@ -261,6 +272,31 @@ Value evaluate(const Position& pos) {
                 if (f > FILE_A) ahead |= square_bb(relative_square(c, make_square(File(f - 1), Rank(rr))));
                 if (f < FILE_H) ahead |= square_bb(relative_square(c, make_square(File(f + 1), Rank(rr))));
             }
+
+            // Candidate passed pawn: would be passed if stoppers were exchanged
+            if ((ahead & their_pawns) && r >= RANK_2 && r <= RANK_6) {
+                Bitboard stoppers = ahead & their_pawns;
+                Bitboard threats = their_pawns & pawn_attacks_bb(c, sq);
+                Bitboard support = our_pawns & pawn_attacks_bb(them, sq);
+                Bitboard push_sq_bb = relative_square(c, make_square(f, Rank(r + 1)));
+                Bitboard push_threats = their_pawns & pawn_attacks_bb(c, push_sq_bb);
+                Bitboard push_support = our_pawns & pawn_attacks_bb(them, push_sq_bb);
+                Bitboard leftovers = stoppers & ~(threats | push_threats);
+                bool supported = popcount(support) >= popcount(threats);
+                if (!leftovers && popcount(push_support) >= popcount(push_threats)) {
+                    static constexpr int CandMG[2][8] = {
+                        { 0, -8, -10, -12, -15, 15, 0, 0 },
+                        { 0, -10, -5,   2,   8, 30, 0, 0 }
+                    };
+                    static constexpr int CandEG[2][8] = {
+                        { 0,   5,  12,  25,  50, 70, 0, 0 },
+                        { 0,  12,  25,  50,  85,120, 0, 0 }
+                    };
+                    mg_score += sign * CandMG[supported ? 1 : 0][r];
+                    eg_score += sign * CandEG[supported ? 1 : 0][r];
+                }
+            }
+
             if (!(ahead & their_pawns)) {
                 // Stash-style table bonuses by rank
                 static constexpr int PassedMG[8] = { 0, -10, -14, -27, 16, 67, 107, 0 };
@@ -276,6 +312,17 @@ Value evaluate(const Position& pos) {
                     if (rook_behind) {
                         mg_passer += 18;
                         eg_passer += 25;
+                    }
+                }
+
+                // Enemy rook behind our passed pawn — reduces bonus
+                Bitboard enemy_behind = file_bb(f) & pos.pieces(them, ROOK);
+                if (enemy_behind) {
+                    Square ersq = lsb(enemy_behind);
+                    bool enemy_rook_behind = (c == WHITE) ? (rank_of(ersq) < rank_of(sq)) : (rank_of(ersq) > rank_of(sq));
+                    if (enemy_rook_behind) {
+                        mg_passer -= 8;
+                        eg_passer -= 12;
                     }
                 }
 
@@ -519,6 +566,55 @@ Value evaluate(const Position& pos) {
                     }
                 }
             }
+        }
+    }
+
+    // Space evaluation: bonus for controlling squares behind our pawn chain
+    // Inspired by Stockfish/Ethereal — counts safe central squares we control
+    for (int c_idx = 0; c_idx < 2; ++c_idx) {
+        Color c = Color(c_idx);
+        Color them = Color(c_idx ^ 1);
+        Sign sign = (c_idx == 0) ? 1 : -1;
+
+        // Space area: center files (C-F), ranks 2-4 relative to us
+        Bitboard space_area = CENTER_FILES;
+        if (c == WHITE) {
+            space_area &= (rank_bb(RANK_2) | rank_bb(RANK_3) | rank_bb(RANK_4));
+        } else {
+            space_area &= (rank_bb(RANK_5) | rank_bb(RANK_6) | rank_bb(RANK_7));
+        }
+
+        // Safe squares: not attacked by enemy pawns
+        Bitboard enemy_pawn_attacks = pawn_attacks_bb(them, pos.pieces(them, PAWN));
+        Bitboard safe = space_area & ~enemy_pawn_attacks;
+
+        // Count squares controlled by our pieces (not pawns)
+        Bitboard our_non_pawns = pos.pieces(c) ^ pos.pieces(c, PAWN) ^ pos.pieces(c, KING);
+        Bitboard controlled = BB_EMPTY;
+        while (our_non_pawns) {
+            Square s = pop_lsb(our_non_pawns);
+            PieceType pt = piece_type_of(pos.piece_on(s));
+            Bitboard attacks = BB_EMPTY;
+            switch (pt) {
+                case KNIGHT: attacks = knight_attacks_bb(s); break;
+                case BISHOP: attacks = bb_diag_attacks(s, occupied); break;
+                case ROOK:   attacks = rook_attacks_bb(s, occupied); break;
+                case QUEEN:  attacks = queen_attacks_bb(s, occupied); break;
+                default: break;
+            }
+            controlled |= (attacks & safe);
+        }
+
+        // Weight by pawn count minus open files (avoid bonus when pawns traded)
+        int our_pawn_count = popcount(pos.pieces(c, PAWN));
+        int open_files = 0;
+        for (int fi = int(FILE_C); fi <= int(FILE_F); ++fi) {
+            if (!(pos.pieces(PAWN) & file_bb(File(fi)))) open_files++;
+        }
+        int weight = our_pawn_count - open_files;
+        if (weight > 0) {
+            int space_bonus = popcount(controlled) * weight * 3;
+            mg_score += sign * space_bonus;  // MG only — space matters less in endgame
         }
     }
 

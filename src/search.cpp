@@ -88,6 +88,17 @@ struct CorrectionHistory {
         std::memset(threat_correction, 0, sizeof(threat_correction));
     }
 
+    void age() {
+        for (int c = 0; c < 2; ++c) {
+            for (int i = 0; i < CORRECTION_SIZE; ++i) pawn_correction[c][i] /= 2;
+            for (int i = 0; i < TABLE_SIZE; ++i) material_correction[c][i] /= 2;
+            for (int i = 0; i < TABLE_SIZE; ++i) king_attack_correction[c][i] /= 2;
+            for (int i = 0; i < TABLE_SIZE; ++i) mobility_correction[c][i] /= 2;
+            for (int i = 0; i < TABLE_SIZE; ++i) passed_pawn_correction[c][i] /= 2;
+            for (int i = 0; i < TABLE_SIZE; ++i) threat_correction[c][i] /= 2;
+        }
+    }
+
     static void gravity_update(int& val, int bonus) {
         val += bonus - val * std::abs(bonus) / CORRECTION_LIMIT;
     }
@@ -192,11 +203,11 @@ inline Value eval_cached(const Position& pos) {
 
 // Reduction constants
 constexpr int futility_margin(int depth, bool improving) {
-    // Depth-dependent futility margins - more conservative for accuracy
-    int base = 170 * depth;
+    // Depth-dependent futility margins — conservative for tactical accuracy
+    int base = 150 * depth;
 
-    if (improving) base -= 20;
-    else base += 30;
+    if (improving) base -= 15;
+    else base += 20;
 
     return base;
 }
@@ -430,9 +441,9 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
 
     ++local_nodes;
 
-    // Check time every 4096 nodes for better time control
+    // Check time every 1024 nodes for better time control
     // Use local_nodes for cheap counting, flush to atomic periodically
-    if ((local_nodes & 4095) == 0) {
+    if ((local_nodes & 1023) == 0) {
         nodes.store(local_nodes, std::memory_order_relaxed);
         if (check_time()) {
             return VALUE_ZERO;
@@ -495,14 +506,8 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
     // Compute improving flag: position is improving if eval is better than 2 plies ago
     ss->improving = (ss->ply >= 2 && eval > (ss - 2)->static_eval);
 
-    // TT-absence depth reduction (from Stash): reduce by 1 when no TT entry at all)
-    // Positions absent from TT were likely not reached in previous iterations
-    if (!found && !pv_node && depth >= 3) {
-        depth--;
-    }
-
     // Internal Iterative Reduction (IIR): reduce depth by 1 when no TT move available
-    // Much cheaper than IID (which does a full sub-search), improves move ordering naturally
+    // When no TT move exists, we have no guidance for move ordering, so reduce depth
     if (tt_move == MOVE_NONE && depth >= 4) {
         depth--;
     }
@@ -793,7 +798,7 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
 
         // Futility pruning: skip quiet moves that can't improve alpha
         if (is_quiet && !pv_node && ss->ply > 0 && !pos.is_check() && depth <= 5) {
-            int margin = depth * 200 + (ss->improving ? 50 : 150);
+            int margin = depth * 150 + (ss->improving ? 30 : 100);
             if (eval + margin < alpha) {
                 return false;
             }
@@ -816,26 +821,24 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
         }
 
         // Extensions
-        bool extension = false;
+        int ext_count = 0;
         if (m == tt_move && tt_move_is_singular) {
-            extension = true;
+            ext_count++;
             // Double singular extension: extend by 2 for extremely singular moves
             if (tt_move_is_double_singular) {
-                extension = true;  // Total +2 extension
+                ext_count++;  // Total +2 extension
             }
         }
         if (gives_check(m)) {
-            extension = true;
+            ext_count++;
         }
         // Recapture extension: recapturing on the same square is often forced/tactical
         if (ss->ply >= 1 && (ss - 1)->current_move != MOVE_NONE && m.to() == (ss - 1)->current_move.to()) {
             if (m.is_capture()) {
-                extension = true;
+                ext_count++;
             }
         }
-        if (extension) {
-            new_depth++;
-        }
+        new_depth += ext_count;
 
         // Store current move and moved piece for counter-move history
         ss->current_move = m;
@@ -854,14 +857,17 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
                 return false;
             }
             // Deeper/shallower re-search adjustment
-            // If LMR found something close to best, search deeper than normal
-            // If LMR found something clearly worse, search shallower
+            // Only apply when we have a valid best_value (not first move)
             if (value > alpha) {
-                bool do_deeper = value > best_value + 48;
-                bool do_shallower = value < best_value + 9;
-                int re_depth = depth - 1 + (do_deeper ? 1 : 0) - (do_shallower ? 1 : 0);
-                re_depth = std::max(1, re_depth);
-                value = -search_worker(pos, ss + 1, -beta, -alpha, re_depth, !cut_node);
+                if (best_value > -VALUE_INFINITE + 100) {
+                    bool do_deeper = value > best_value + 48;
+                    bool do_shallower = value < best_value + 9;
+                    int re_depth = depth - 1 + (do_deeper ? 1 : 0) - (do_shallower ? 1 : 0);
+                    re_depth = std::max(1, re_depth);
+                    value = -search_worker(pos, ss + 1, -beta, -alpha, re_depth, !cut_node);
+                } else {
+                    value = -search_worker(pos, ss + 1, -beta, -alpha, depth - 1, !cut_node);
+                }
                 if (stop.load(std::memory_order_relaxed)) {
                     pos.undo_move(m);
                     return false;
@@ -1223,7 +1229,7 @@ Move search(Position& pos, Limits& lim) {
         if (time_left < 0) time_left = 0;
         if (time_inc < 0) time_inc = 0;
 
-        int overhead = 10;
+        int overhead = 30;
 
         if (limits.movestogo > 0) {
             int mtg = std::max(1, limits.movestogo);
@@ -1265,8 +1271,8 @@ Move search(Position& pos, Limits& lim) {
     // natural decay within each search. Aging 1M+ entries is too expensive
     // and provides marginal benefit over gravity-based decay.
 
-    // Clear correction history for new search
-    correction_history.clear();
+    // Age correction history instead of clearing — preserves learning across moves
+    correction_history.age();
 
     // Iterative deepening
     // When depth=0, search until time runs out (tournament time control)

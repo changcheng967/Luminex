@@ -24,6 +24,7 @@ static Position pos;
 
 // Search thread management
 static std::thread search_thread;
+static HANDLE native_thread_handle = nullptr;
 static std::mutex io_mutex;
 
 // Debug logging
@@ -57,6 +58,20 @@ void uci_debug_log(const char* format, ...) {
     }
 }
 
+// Wait for search thread to finish (handles both std::thread and native thread)
+static void wait_for_search_thread() {
+    if (search_thread.joinable()) {
+        search_thread.join();
+    }
+#ifdef _WIN32
+    if (native_thread_handle) {
+        WaitForSingleObject(native_thread_handle, INFINITE);
+        CloseHandle(native_thread_handle);
+        native_thread_handle = nullptr;
+    }
+#endif
+}
+
 // Worker function that runs search in a separate thread
 static void search_worker(Position pos_copy, Limits lim) {
     if (dbglog) { fprintf(dbglog, "SEARCH_START: depth=%d time[W]=%d time[B]=%d movetime=%d\n",
@@ -77,7 +92,6 @@ static void search_worker(Position pos_copy, Limits lim) {
 }
 
 void handle_uci() {
-    TT.resize(128);
     init_evaluation();
     safe_output("id name " + std::string(ENGINE_NAME) + " " + ENGINE_VERSION + "\n");
     safe_output("id author " + std::string(ENGINE_AUTHOR) + "\n");
@@ -184,9 +198,7 @@ void handle_position(Position& pos, const std::string& cmd) {
 
 void handle_go(Position& pos, const std::string& cmd) {
     // Wait for any previous search thread to finish
-    if (search_thread.joinable()) {
-        search_thread.join();
-    }
+    wait_for_search_thread();
 
     TT.new_search();
 
@@ -211,8 +223,33 @@ void handle_go(Position& pos, const std::string& cmd) {
         limits.depth = 6;
     }
 
-    // Launch search thread
+    // Launch search thread with 4MB stack to prevent stack overflow
+    // at deep search depths (each recursive frame uses ~6.4KB)
+#ifdef _WIN32
+    // Wait for previous native thread if any
+    if (native_thread_handle) {
+        WaitForSingleObject(native_thread_handle, INFINITE);
+        CloseHandle(native_thread_handle);
+        native_thread_handle = nullptr;
+    }
+    auto* thread_args = new std::pair<Position, Limits>(pos, limits);
+    native_thread_handle = reinterpret_cast<HANDLE>(_beginthreadex(
+        nullptr, 4 * 1024 * 1024,  // 4MB stack
+        [](void* arg) -> unsigned {
+            auto* p = static_cast<std::pair<Position, Limits>*>(arg);
+            search_worker(p->first, p->second);
+            delete p;
+            return 0;
+        },
+        thread_args, 0, nullptr));
+    if (!native_thread_handle) {
+        delete thread_args;
+        // Fallback to std::thread
+        search_thread = std::thread(search_worker, pos, limits);
+    }
+#else
     search_thread = std::thread(search_worker, pos, limits);
+#endif
 }
 
 void handle_setoption(const std::string& cmd) {
@@ -278,16 +315,12 @@ void uci_loop() {
             safe_output("readyok\n");
         } else if (cmd == "ucinewgame") {
             stop.store(true, std::memory_order_seq_cst);
-            if (search_thread.joinable()) {
-                search_thread.join();
-            }
+            wait_for_search_thread();
             stop.store(false, std::memory_order_seq_cst);
             handle_ucinewgame();
         } else if (cmd == "position") {
             stop.store(true, std::memory_order_seq_cst);
-            if (search_thread.joinable()) {
-                search_thread.join();
-            }
+            wait_for_search_thread();
             stop.store(false, std::memory_order_seq_cst);
             handle_position(pos, line);
         } else if (cmd == "go") {
@@ -304,18 +337,14 @@ void uci_loop() {
             g_stop_requested = true;
             stop.store(true, std::memory_order_seq_cst);
             std::atomic_thread_fence(std::memory_order_seq_cst);
-            if (search_thread.joinable()) {
-                search_thread.join();
-            }
+            wait_for_search_thread();
             break;
         } else if (cmd == "d") {
             safe_output(pos.fen() + "\n");
         }
     }
 
-    if (search_thread.joinable()) {
-        search_thread.join();
-    }
+    wait_for_search_thread();
 
     if (dbglog) { fclose(dbglog); }
 }
