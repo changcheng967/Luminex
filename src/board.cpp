@@ -967,83 +967,65 @@ void Position::assert_consistency([[maybe_unused]] const char* location) {
 }
 
 bool Position::see_ge(Move m, Value threshold) const {
-    // Implement Static Exchange Evaluation (SEE)
     Square from = m.from();
     Square to = m.to();
 
-    // Piece value array (index by PieceType: PAWN=0, KNIGHT=1, ...)
     constexpr Value piece_value[] = {
-        PAWN_VALUE,     // PAWN
-        KNIGHT_VALUE,   // KNIGHT
-        BISHOP_VALUE,   // BISHOP
-        ROOK_VALUE,     // ROOK
-        QUEEN_VALUE,    // QUEEN
-        0,              // KING (infinite in reality, but 0 for SEE loop termination)
+        PAWN_VALUE, KNIGHT_VALUE, BISHOP_VALUE, ROOK_VALUE, QUEEN_VALUE, 0
     };
 
-    // Assume the move is made
     Bitboard occupied = pieces();
     occupied &= ~square_bb(from);
 
-    // Get the value of the piece we're capturing (or promoting)
     Value gain = piece_value[piece_type_on(to)];
     if (m.is_promotion()) {
         gain += piece_value[m.promotion_type()] - piece_value[PAWN];
     }
 
-    // If it's an en passant capture, remove the captured pawn
     if (m.is_en_passant()) {
         Square cap_sq = Square(to - (side_to_move_ == WHITE ? 8 : -8));
         occupied &= ~square_bb(cap_sq);
     }
 
-    // Early exit if gain already meets threshold
     if (gain >= threshold) return true;
 
-    // Get attackers for the target square
     Bitboard attackers = attackers_to(to, occupied);
-
-    // Side to move after the initial capture
     Color stm = Color(side_to_move_ ^ 1);
 
     while (attackers) {
-        // Get the least valuable attacker for the current side
         Bitboard stm_attackers = attackers & pieces(stm);
-        if (!stm_attackers) break;  // No more attackers for this side
+        if (!stm_attackers) break;
 
-        // Find least valuable piece
         PieceType pt;
         Bitboard pca;
-        if ((pca = stm_attackers & pieces(stm, PAWN))) {
-            pt = PAWN;
-        } else if ((pca = stm_attackers & pieces(stm, KNIGHT))) {
-            pt = KNIGHT;
-        } else if ((pca = stm_attackers & pieces(stm, BISHOP))) {
-            pt = BISHOP;
-        } else if ((pca = stm_attackers & pieces(stm, ROOK))) {
-            pt = ROOK;
-        } else if ((pca = stm_attackers & pieces(stm, QUEEN))) {
-            pt = QUEEN;
-        } else {
-            pt = KING;  // King is the last resort
-            pca = stm_attackers & pieces(stm, KING);
-        }
+        if ((pca = stm_attackers & pieces(stm, PAWN)))       pt = PAWN;
+        else if ((pca = stm_attackers & pieces(stm, KNIGHT))) pt = KNIGHT;
+        else if ((pca = stm_attackers & pieces(stm, BISHOP))) pt = BISHOP;
+        else if ((pca = stm_attackers & pieces(stm, ROOK)))   pt = ROOK;
+        else if ((pca = stm_attackers & pieces(stm, QUEEN)))  pt = QUEEN;
+        else { pt = KING; pca = stm_attackers & pieces(stm, KING); }
 
-        // Remove this attacker from the board
         Square sq = lsb(pca);
         occupied &= ~square_bb(sq);
 
-        // Switch sides
         stm = Color(stm ^ 1);
-
-        // Update gain (subtract value of captured piece, add value of recapture)
         gain = -gain - piece_value[pt];
 
-        // Check if we've met the threshold
         if (gain >= threshold) return true;
 
-        // Update attackers (sliders may have new attacks after piece removal)
-        attackers = attackers_to(to, occupied);
+        // Only add newly revealed sliding attackers (not full recompute)
+        // Diagonal sliders revealed by removing piece at sq
+        if (pt == BISHOP || pt == QUEEN) {
+            Bitboard diag = bb_diag_attacks(sq, occupied) & (pieces(BISHOP) | pieces(QUEEN));
+            attackers |= diag;
+        }
+        // Orthogonal sliders revealed by removing piece at sq
+        if (pt == ROOK || pt == QUEEN) {
+            Bitboard orth = rook_attacks_bb(sq, occupied) & (pieces(ROOK) | pieces(QUEEN));
+            attackers |= orth;
+        }
+        // Remove the piece that just captured from attacker set
+        attackers &= occupied;
     }
 
     return gain >= threshold;

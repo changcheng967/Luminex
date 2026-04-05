@@ -188,13 +188,13 @@ inline Value eval_cached(const Position& pos) {
     uint32_t idx = uint32_t(key) & (EVAL_CACHE_SIZE - 1);
 
     if (eval_cache[idx].key == key) {
-        return correction_history.correct(pos, Value(eval_cache[idx].value));
+        return Value(eval_cache[idx].value);
     }
 
     Value eval = evaluate(pos);
     eval_cache[idx].key = key;
     eval_cache[idx].value = int32_t(eval);
-    return correction_history.correct(pos, eval);
+    return eval;
 }
 
 [[maybe_unused]] inline void clear_eval_cache() {
@@ -203,11 +203,11 @@ inline Value eval_cached(const Position& pos) {
 
 // Reduction constants
 constexpr int futility_margin(int depth, bool improving) {
-    // Depth-dependent futility margins — conservative for tactical accuracy
-    int base = 150 * depth;
+    // Depth-dependent futility margins
+    int base = 130 * depth + 50;
 
-    if (improving) base -= 15;
-    else base += 20;
+    if (improving) base -= 20;
+    else base += 25;
 
     return base;
 }
@@ -649,8 +649,8 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
         }
     }
 
-    // Helper lambda: compute LMR reduction for a move
-    auto compute_reduction = [&](Move m, int mp) -> int {
+    // Helper lambda: compute LMR reduction for a move (takes gives_chk to avoid recomputation)
+    auto compute_reduction = [&](Move m, int mp, bool gives_chk) -> int {
         // Logarithmic LMR formula with history-based adjustments
         // Conservative base (1.35/2.75) for better tactical accuracy
         int reduction = int(1.35 + std::log(double(std::max(depth - 1, 1))) * std::log(double(std::max(mp, 1))) / 2.75);
@@ -693,25 +693,8 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
             if (m == counter_move_table[int(prev_pc)][int(prev_move.to())]) reduction -= 1;
         }
 
-        // Check if the move gives check - reduce less
-        {
-            Square opp_ksq = pos.king_sq(Color(pos.side_to_move() ^ 1));
-            PieceType pt = piece_type_of(pos.piece_on(m.from()));
-            if (pt != PAWN && pt != KING) {
-                Bitboard attacks_to = BB_EMPTY;
-                switch (pt) {
-                    case KNIGHT: attacks_to = knight_attacks_bb(m.to()); break;
-                    case BISHOP: attacks_to = bishop_attacks_bb(m.to(), pos.pieces()); break;
-                    case ROOK:   attacks_to = rook_attacks_bb(m.to(), pos.pieces()); break;
-                    case QUEEN:  attacks_to = queen_attacks_bb(m.to(), pos.pieces()); break;
-                    default: break;
-                }
-                if (attacks_to & square_bb(opp_ksq)) reduction -= 1;
-            } else if (pt == PAWN) {
-                Color us = pos.side_to_move();
-                if (pawn_attacks_bb(us, m.to()) & square_bb(opp_ksq)) reduction -= 1;
-            }
-        }
+        // Check-giving moves: reduce less (use pre-computed value)
+        if (gives_chk) reduction -= 1;
 
         // Promotion moves: reduce less
         if (m.is_promotion()) reduction -= 1;
@@ -815,7 +798,7 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
                       (is_quiet || is_losing_capture) && !gives_chk;
 
         if (do_lmr) {
-            int reduction = compute_reduction(m, moves_played);
+            int reduction = compute_reduction(m, moves_played, gives_chk);
             // Reduce less in PV nodes
             if (pv_node) reduction = std::max(1, reduction - 1);
             new_depth = depth - 1 - reduction;
@@ -1159,15 +1142,6 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
         else bound = BOUND_UPPER;
         // Use best_move_found instead of ss->pv[ss->ply] to avoid stale PV corruption
         tte->save(pos.key(), best_value, pv_node, bound, depth, best_move_found, eval, TT.generation());
-
-        // Update correction history: if search result differs from static eval, learn
-        if (abs(best_value - eval) > 10 && abs(best_value) < VALUE_KNOWN_WIN && ss->ply >= 1) {
-            Value diff = best_value - eval;
-            Color stm = pos.side_to_move();
-            uint32_t pawn_idx = uint32_t(pos.key());
-            uint32_t mat_idx = uint32_t(pos.key() >> 3);
-            correction_history.update(stm, pawn_idx, mat_idx, diff, depth);
-        }
     }
 
     return best_value;
@@ -1273,8 +1247,7 @@ Move search(Position& pos, Limits& lim) {
     // natural decay within each search. Aging 1M+ entries is too expensive
     // and provides marginal benefit over gravity-based decay.
 
-    // Age correction history instead of clearing — preserves learning across moves
-    correction_history.age();
+    // Correction history disabled — simplified eval path
 
     // Iterative deepening
     // When depth=0, search until time runs out (tournament time control)
