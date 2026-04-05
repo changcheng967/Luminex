@@ -48,54 +48,22 @@ int continuation_history[12][64][12][64];
 Move counter_move_table[12][64];
 
 // ============================================================
-// CORRECTION HISTORY — Third Generation: 6-Dimensional
-//
-// Stockfish uses 4 correction tables. We use 6, indexed by:
-// 1. Pawn structure hash (most important)
-// 2. Material configuration hash
-// 3. King zone attack pattern (NEW)
-// 4. Mobility profile hash (NEW)
-// 5. Passed pawn structure hash (NEW)
-// 6. Threat configuration hash (NEW)
-//
-// Each table uses gravity-based updates. The combined correction
-// is a weighted average with pawn structure getting 3x weight.
+// CORRECTION HISTORY — Simplified: Pawn-only
+// Index by pawn structure hash (most reliable signal)
 // ============================================================
-struct CorrectionHistory {
+struct PawnCorrectionHistory {
     static constexpr int CORRECTION_SIZE = 16384;
     static constexpr int CORRECTION_LIMIT = 512;
-    static constexpr int TABLE_SIZE = 4096;
 
-    // Table 1: Pawn structure (largest, most important)
-    int pawn_correction[2][CORRECTION_SIZE];
-    // Table 2: Material configuration
-    int material_correction[2][TABLE_SIZE];
-    // Table 3: King zone attack pattern
-    int king_attack_correction[2][TABLE_SIZE];
-    // Table 4: Mobility profile
-    int mobility_correction[2][TABLE_SIZE];
-    // Table 5: Passed pawn structure
-    int passed_pawn_correction[2][TABLE_SIZE];
-    // Table 6: Threat configuration
-    int threat_correction[2][TABLE_SIZE];
+    int table[2][CORRECTION_SIZE];
 
     void clear() {
-        std::memset(pawn_correction, 0, sizeof(pawn_correction));
-        std::memset(material_correction, 0, sizeof(material_correction));
-        std::memset(king_attack_correction, 0, sizeof(king_attack_correction));
-        std::memset(mobility_correction, 0, sizeof(mobility_correction));
-        std::memset(passed_pawn_correction, 0, sizeof(passed_pawn_correction));
-        std::memset(threat_correction, 0, sizeof(threat_correction));
+        std::memset(table, 0, sizeof(table));
     }
 
     void age() {
         for (int c = 0; c < 2; ++c) {
-            for (int i = 0; i < CORRECTION_SIZE; ++i) pawn_correction[c][i] /= 2;
-            for (int i = 0; i < TABLE_SIZE; ++i) material_correction[c][i] /= 2;
-            for (int i = 0; i < TABLE_SIZE; ++i) king_attack_correction[c][i] /= 2;
-            for (int i = 0; i < TABLE_SIZE; ++i) mobility_correction[c][i] /= 2;
-            for (int i = 0; i < TABLE_SIZE; ++i) passed_pawn_correction[c][i] /= 2;
-            for (int i = 0; i < TABLE_SIZE; ++i) threat_correction[c][i] /= 2;
+            for (int i = 0; i < CORRECTION_SIZE; ++i) table[c][i] /= 2;
         }
     }
 
@@ -103,73 +71,19 @@ struct CorrectionHistory {
         val += bonus - val * std::abs(bonus) / CORRECTION_LIMIT;
     }
 
-    void update(Color c, uint32_t pawn_idx, uint32_t mat_idx, Value eval_diff, Depth depth) {
+    void update(Color c, uint64_t pawn_key, Value eval_diff, Depth depth) {
         int bonus = eval_diff * depth * 16 / 128;
         bonus = std::max(-CORRECTION_LIMIT, std::min(CORRECTION_LIMIT, bonus));
-
-        uint32_t key = pawn_idx;  // full position key lower 32 bits
-
-        // Table 1: Pawn structure
-        gravity_update(pawn_correction[c][pawn_idx & (CORRECTION_SIZE - 1)], bonus);
-
-        // Table 2: Material
-        gravity_update(material_correction[c][mat_idx & (TABLE_SIZE - 1)], bonus);
-
-        // Table 3: King attack pattern (index by king square + attacker hash)
-        Square ksq = /* we don't have pos here, use key bits */ Square((key >> 6) & 63);
-        uint32_t king_idx = (uint32_t(ksq) * 64 + ((key >> 12) & 63)) & (TABLE_SIZE - 1);
-        gravity_update(king_attack_correction[c][king_idx], bonus);
-
-        // Table 4: Mobility profile
-        gravity_update(mobility_correction[c][(key >> 7) & (TABLE_SIZE - 1)], bonus);
-
-        // Table 5: Passed pawn structure
-        gravity_update(passed_pawn_correction[c][(key >> 11) & (TABLE_SIZE - 1)], bonus);
-
-        // Table 6: Threat configuration
-        gravity_update(threat_correction[c][(key >> 5) & (TABLE_SIZE - 1)], bonus);
+        gravity_update(table[c][pawn_key & (CORRECTION_SIZE - 1)], bonus);
     }
 
-    Value correct(const Position& pos, Value static_eval) const {
-        uint32_t key = uint32_t(pos.key());
-        Color stm = pos.side_to_move();
-
-        // Table 1: Pawn correction (3x weight — most reliable)
-        int pawn_corr = (pawn_correction[stm][key & (CORRECTION_SIZE - 1)]
-                       - pawn_correction[~stm][(key >> 13) & (CORRECTION_SIZE - 1)]);
-
-        // Table 2: Material correction (2x weight)
-        int mat_corr = (material_correction[stm][(key >> 3) & (TABLE_SIZE - 1)]
-                      - material_correction[~stm][(key >> 16) & (TABLE_SIZE - 1)]);
-
-        // Table 3: King attack correction
-        Square ksq = pos.king_sq(stm);
-        uint32_t king_idx = (uint32_t(ksq) * 64 + ((key >> 12) & 63)) & (TABLE_SIZE - 1);
-        int king_corr = (king_attack_correction[stm][king_idx]
-                       - king_attack_correction[~stm][king_idx]);
-
-        // Table 4: Mobility correction
-        int mob_corr = (mobility_correction[stm][(key >> 7) & (TABLE_SIZE - 1)]
-                      - mobility_correction[~stm][(key >> 19) & (TABLE_SIZE - 1)]);
-
-        // Table 5: Passed pawn correction
-        int pp_corr = (passed_pawn_correction[stm][(key >> 11) & (TABLE_SIZE - 1)]
-                     - passed_pawn_correction[~stm][(key >> 23) & (TABLE_SIZE - 1)]);
-
-        // Table 6: Threat correction
-        int threat_corr = (threat_correction[stm][(key >> 5) & (TABLE_SIZE - 1)]
-                        - threat_correction[~stm][(key >> 17) & (TABLE_SIZE - 1)]);
-
-        // Weighted combination: pawn(3) > material(2) > king(1) > mob(1) > passer(1) > threat(1)
-        // Total weight = 9
-        int total = (pawn_corr * 3 + mat_corr * 2 + king_corr + mob_corr + pp_corr + threat_corr) / 9;
-
-        total = std::max(-200, std::min(200, total));
-        return static_eval + total;
+    Value correct(Color c, uint64_t pawn_key, Value static_eval) const {
+        int corr = table[c][pawn_key & (CORRECTION_SIZE - 1)];
+        return static_eval + corr * 66 / 512;
     }
 };
 
-CorrectionHistory correction_history;
+PawnCorrectionHistory pawn_correction_history;
 
 
 
@@ -182,6 +96,19 @@ EvalCacheEntry eval_cache[EVAL_CACHE_SIZE];
 
 // Thread-local node counter to avoid atomic overhead on every node
 static thread_local uint64_t local_nodes = 0;
+
+// Compute pawn structure hash key (same as evaluate_pawns uses internally)
+inline uint64_t compute_pawn_key(const Position& pos) {
+    uint64_t pawn_key = 0;
+    for (int c = 0; c < 2; ++c) {
+        Bitboard pb = pos.pieces(Color(c), PAWN);
+        while (pb) {
+            Square sq = pop_lsb(pb);
+            pawn_key ^= Zobrist::psq[c][int(PAWN)][int(sq)];
+        }
+    }
+    return pawn_key;
+}
 
 inline Value eval_cached(const Position& pos) {
     uint64_t key = pos.key();
@@ -500,11 +427,19 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
     Value eval = VALUE_ZERO;
     if (!pos.is_check()) {
         eval = eval_cached(pos);
+        // Apply pawn correction history
+        Color stm = pos.side_to_move();
+        uint64_t pawn_key = compute_pawn_key(pos);
+        eval = pawn_correction_history.correct(stm, pawn_key, eval);
     }
     ss->static_eval = eval;
 
     // Compute improving flag: position is improving if eval is better than 2 plies ago
     ss->improving = (ss->ply >= 2 && eval > (ss - 2)->static_eval);
+
+    // Opponent worsening: our eval is better than opponent's eval from 1 ply ago
+    // This means the opponent's last move didn't help them
+    bool opponent_worsening = (ss->ply >= 1 && eval > -(ss - 1)->static_eval);
 
     // Internal Iterative Reduction (IIR): reduce depth by 1 when no TT move available
     // When no TT move exists, we have no guidance for move ordering, so reduce depth
@@ -514,12 +449,13 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
 
     // Futility pruning - use improving for better pruning decisions
     // Depth <= 6 for balance between pruning and tactical accuracy
-    if (!pv_node && !pos.is_check() && depth <= 6 && eval - futility_margin(depth, ss->improving) >= beta) {
+    // More aggressive when opponent is worsening (wider margin)
+    if (!pv_node && !pos.is_check() && depth <= 6 && eval - futility_margin(depth, ss->improving || opponent_worsening) >= beta) {
         return eval;
     }
 
     // Reverse futility pruning (static null move): if eval is far above beta, prune immediately
-    if (!pv_node && !pos.is_check() && depth <= 8 && eval - 100 * depth - (ss->improving ? 0 : 30) >= beta) {
+    if (!pv_node && !pos.is_check() && depth <= 8 && eval - 100 * depth - ((ss->improving || opponent_worsening) ? 0 : 30) >= beta) {
         return eval;
     }
 
@@ -631,8 +567,7 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
     int quiet_count = 0;
 
     // Singular extension: check if TT move is significantly better than alternatives
-    bool tt_move_is_singular = false;
-    bool tt_move_is_double_singular = false;
+    int singular_extension = 0;
     if (tt_move != MOVE_NONE && !pv_node && found && tt_depth >= depth - 3 && depth >= 8 &&
         (tte->bound() & BOUND_LOWER) && abs(tt_value) < VALUE_KNOWN_WIN) {
         Value sBeta = Value(tt_value - depth * 2);
@@ -640,12 +575,22 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
         Value singular_value = search_worker(pos, ss, sBeta - 1, sBeta, (depth - 1) / 2, cut_node);
         ss->excluded_move = MOVE_NONE;
         if (singular_value < sBeta) {
-            tt_move_is_singular = true;
+            singular_extension = 1;
             // Double extension: if move is EXTREMELY singular (fails by a lot),
             // extend even more - inspired by Stockfish's double extension
             if (singular_value < sBeta - depth) {
-                tt_move_is_double_singular = true;
+                singular_extension = 2;
             }
+        } else if (singular_value >= beta) {
+            // Multi-cut: other moves are also good enough to beat beta
+            // Return immediately without searching further
+            return singular_value;
+        } else if (tt_value >= beta) {
+            // TT move is NOT singular but expected to beat beta
+            // Negative extension: reduce depth for non-singular expected cutoff
+            singular_extension = -2;
+        } else if (cut_node) {
+            singular_extension = -1;
         }
     }
 
@@ -654,7 +599,7 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
         // Logarithmic LMR formula with history-based adjustments
         // Conservative base (1.35/2.75) for better tactical accuracy
         int reduction = int(1.35 + std::log(double(std::max(depth - 1, 1))) * std::log(double(std::max(mp, 1))) / 2.75);
-        if (!ss->improving) reduction += 1;
+        if (!ss->improving && !opponent_worsening) reduction += 1;
         if (cut_node) reduction += 1;
 
         // TT move gets less reduction
@@ -807,12 +752,8 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
 
         // Extensions
         int ext_count = 0;
-        if (m == tt_move && tt_move_is_singular) {
-            ext_count++;
-            // Double singular extension: extend by 2 for extremely singular moves
-            if (tt_move_is_double_singular) {
-                ext_count++;  // Total +2 extension
-            }
+        if (m == tt_move) {
+            ext_count += singular_extension;
         }
         if (gives_chk) {
             ext_count++;
@@ -1136,6 +1077,18 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
     // CRITICAL FIX: Only save to TT if search completed fully
     // If search was aborted (stop=true), don't save garbage/incomplete scores
     if (!stop.load(std::memory_order_relaxed)) {
+        // Update pawn correction history when search completed
+        // Only update when: not in check, eval is meaningful
+        if (!pos.is_check() && depth >= 1 && abs(best_value) < VALUE_KNOWN_WIN) {
+            Color stm = pos.side_to_move();
+            Value raw_eval = eval_cached(pos);  // Get uncorrected eval
+            Value diff = best_value - raw_eval;
+            if (diff != 0) {
+                uint64_t pawn_key = compute_pawn_key(pos);
+                pawn_correction_history.update(stm, pawn_key, diff, depth);
+            }
+        }
+
         Bound bound;
         if (best_value >= beta) bound = BOUND_LOWER;
         else if (best_value > original_alpha) bound = BOUND_EXACT;  // PV node improved alpha
@@ -1247,7 +1200,8 @@ Move search(Position& pos, Limits& lim) {
     // natural decay within each search. Aging 1M+ entries is too expensive
     // and provides marginal benefit over gravity-based decay.
 
-    // Correction history disabled — simplified eval path
+    // Age pawn correction history between searches
+    pawn_correction_history.age();
 
     // Iterative deepening
     // When depth=0, search until time runs out (tournament time control)

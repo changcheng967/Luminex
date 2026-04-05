@@ -735,10 +735,16 @@ Value evaluate(const Position& pos) {
             if (qu_attacks & (king_diag | king_orth) & safe) attack_units += 5;
         }
 
-        // Only evaluate king safety if we have enough attackers
-        if (attacker_count >= 1) {
+        // Attack weight table: non-linear scaling by attacker count
+        // 0 or 1 attacker = no danger, 2+ = increasingly dangerous
+        static constexpr int AttackWeight[8] = { 0, 0, 50, 75, 88, 94, 97, 100 };
+
+        if (attacker_count >= 2) {
             int idx = std::min(attack_units, 99);
             int danger = SafetyTable[idx];
+
+            // Scale by attack weight (non-linear with attacker count)
+            danger = danger * AttackWeight[std::min(attacker_count, 7)] / 100;
 
             // No queen = much less danger
             if (!pos.pieces(them, QUEEN)) danger = danger / 4;

@@ -535,16 +535,14 @@ bool Position::do_move(Move m) {
     st_ = &next_st;
     ++game_ply_;
 
-    // CRITICAL: Validate move flags match actual board state AFTER state is saved
-    // This ensures undo can work even if validation fails
+    // Debug-only validation: check move flags match board state
+    // In release builds, moves from generator + legal() guarantee correctness
+#ifndef NDEBUG
     PieceType piece_at_to = piece_type_on(to);
     bool piece_at_to_is_enemy = (board[to] != NO_PIECE && color_of_piece(board[to]) == them);
     bool move_flag_says_capture = m.is_capture();
 
     if (piece_at_to_is_enemy && !move_flag_says_capture && !m.is_promotion()) {
-        // Enemy piece at destination but move is NOT flagged as capture
-        // This will cause board corruption! Undo state advance and abort.
-#ifndef NDEBUG
         std::cerr << "\n=== MOVE FLAG ERROR in do_move ===\n";
         std::cerr << "Move: " << m << " (" << from << " to " << to << ")\n";
         std::cerr << "Enemy piece at destination but not flagged as capture!\n";
@@ -552,9 +550,6 @@ bool Position::do_move(Move m) {
         std::cerr << "Move flags: 0x" << std::hex << m.flags() << std::dec << "\n";
         std::cerr << "Undoing state advance and aborting.\n";
         std::cerr << "====================================\n";
-#endif
-        // CRITICAL: Manually undo state advance since we're returning false
-        // This ensures atomic failure - nothing changed
         st_ply--;
         st_ = &state_stack[st_ply];
         game_ply_--;
@@ -562,20 +557,17 @@ bool Position::do_move(Move m) {
     }
 
     if (!piece_at_to_is_enemy && piece_at_to != PT_NONE && color_of_piece(board[to]) == us) {
-        // Friendly piece at destination - invalid move
-#ifndef NDEBUG
         std::cerr << "\n=== CAPTURING OWN PIECE in do_move ===\n";
         std::cerr << "Move: " << m << " (" << from << " to " << to << ")\n";
         std::cerr << "Friendly piece at destination!\n";
         std::cerr << "Undoing state advance and aborting.\n";
         std::cerr << "====================================\n";
-#endif
-        // CRITICAL: Manually undo state advance since we're returning false
         st_ply--;
         st_ = &state_stack[st_ply];
         game_ply_--;
         return false;
     }
+#endif
 
     // Handle capture
     PieceType captured = piece_type_on(to);
@@ -645,18 +637,11 @@ bool Position::do_move(Move m) {
         st_->key ^= Zobrist::en_passant[file_of(st_->ep_square)];
     }
 
-    // CRITICAL FIX: Update Zobrist key for castling rights changes
-    // XOR out OLD castling rights BEFORE modifying them
-    for (Color c : {WHITE, BLACK}) {
-        for (int i = 0; i < 2; ++i) {
-            if (st_->castling_rights & (c == WHITE ? (WHITE_KINGSIDE << i) : (BLACK_KINGSIDE << i))) {
-                st_->key ^= Zobrist::castling[(c << 1) | i];
-            }
-        }
-    }
+    // Update castling rights efficiently
+    // Save old rights, compute new rights, XOR the difference into the key
+    int old_castling = st_->castling_rights;
 
-    // Update castling rights
-    // Remove OUR castling rights when our rook moves FROM its starting square
+    // Remove OUR castling rights when our king or rook moves FROM starting square
     if (pt == KING) {
         st_->castling_rights &= ~(us == WHITE ? (WHITE_KINGSIDE | WHITE_QUEENSIDE)
                                                : (BLACK_KINGSIDE | BLACK_QUEENSIDE));
@@ -681,13 +666,12 @@ bool Position::do_move(Move m) {
         castling_rights_[them] &= ~(them == WHITE ? WHITE_QUEENSIDE : BLACK_QUEENSIDE);
     }
 
-    // XOR in NEW castling rights AFTER modifying them
-    for (Color c : {WHITE, BLACK}) {
-        for (int i = 0; i < 2; ++i) {
-            if (st_->castling_rights & (c == WHITE ? (WHITE_KINGSIDE << i) : (BLACK_KINGSIDE << i))) {
-                st_->key ^= Zobrist::castling[(c << 1) | i];
-            }
-        }
+    // XOR the castling rights difference into the key
+    int castling_diff = old_castling ^ st_->castling_rights;
+    while (castling_diff) {
+        int bit = __builtin_ctz(castling_diff);
+        st_->key ^= Zobrist::castling[bit];
+        castling_diff &= castling_diff - 1;
     }
 
     // Switch side
