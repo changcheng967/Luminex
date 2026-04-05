@@ -16,7 +16,7 @@ namespace luminex {
 // Engine info
 constexpr const char* ENGINE_NAME = "Luminex";
 constexpr const char* ENGINE_AUTHOR = "changcheng967";
-constexpr const char* ENGINE_VERSION = "3.24.0";
+constexpr const char* ENGINE_VERSION = "3.25.1";
 
 // Initialize engine
 void init();

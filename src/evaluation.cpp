@@ -251,7 +251,7 @@ Value evaluate(const Position& pos) {
                 }
             }
 
-            // Passed pawn bonus with blocker and king proximity
+            // Passed pawn bonus with table-based evaluation (Stash-inspired)
             Bitboard ahead = 0;
             Bitboard ahead_file = 0;
             for (int rr = r + 1; rr <= RANK_7; ++rr) {
@@ -262,33 +262,24 @@ Value evaluate(const Position& pos) {
                 if (f < FILE_H) ahead |= square_bb(relative_square(c, make_square(File(f + 1), Rank(rr))));
             }
             if (!(ahead & their_pawns)) {
-                int mg_passer = 15 + r * 10;
-                int eg_passer = 30 + r * 25;
-
-                // Supported passer bonus (protected by own pawn)
-                Bitboard support_squares = pawn_attacks_bb(c, our_pawns);
-                if (support_squares & square_bb(relative_square(c, make_square(f, Rank(r + 1))))) {
-                    mg_passer += 8;
-                    eg_passer += 12;
-                }
-
-                // Blocker penalty: enemy pieces blocking the path
-                if (ahead_file & pos.pieces(them)) {
-                    mg_passer -= 12;
-                    eg_passer -= 18;
-                }
+                // Stash-style table bonuses by rank
+                static constexpr int PassedMG[8] = { 0, -10, -14, -27, 16, 67, 107, 0 };
+                static constexpr int PassedEG[8] = { 0,   7,  15,  41, 99,189, 350, 0 };
+                int mg_passer = PassedMG[r];
+                int eg_passer = PassedEG[r];
 
                 // Rook behind passed pawn bonus
                 Bitboard behind = file_bb(f) & pos.pieces(c, ROOK);
-                if (behind && c == WHITE && rank_of(sq) > rank_of(lsb(behind))) {
-                    mg_passer += 18;
-                    eg_passer += 25;
-                } else if (behind && c == BLACK && rank_of(sq) < rank_of(lsb(behind))) {
-                    mg_passer += 18;
-                    eg_passer += 25;
+                if (behind) {
+                    Square rsq2 = lsb(behind);
+                    bool rook_behind = (c == WHITE) ? (rank_of(rsq2) < rank_of(sq)) : (rank_of(rsq2) > rank_of(sq));
+                    if (rook_behind) {
+                        mg_passer += 18;
+                        eg_passer += 25;
+                    }
                 }
 
-                // King proximity (EG only - king becomes relevant in endgame)
+                // King proximity (EG only)
                 Square our_ksq = ksq_arr[c_idx];
                 Square their_ksq = ksq_arr[c_idx ^ 1];
                 Square promo_sq = relative_square(c, make_square(f, RANK_8));
@@ -296,10 +287,10 @@ Value evaluate(const Position& pos) {
                 int their_kdist = distance(their_ksq, promo_sq);
                 eg_passer += (their_kdist - our_kdist) * 6;
 
-                // Blocked by enemy king (EG - enemy king in the way = harder to push)
-                if (relative_rank(c, their_ksq) > r) {
-                    int their_kdist_to_path = distance(their_ksq, sq);
-                    eg_passer -= their_kdist_to_path * 3;
+                // Blocked by enemy pieces penalty
+                if (ahead_file & pos.pieces(them)) {
+                    mg_passer -= 12;
+                    eg_passer -= 18;
                 }
 
                 mg_score += sign * mg_passer;
