@@ -192,18 +192,11 @@ inline Value eval_cached(const Position& pos) {
 
 // Reduction constants
 constexpr int futility_margin(int depth, bool improving) {
-    // Depth-dependent futility margins - tuned from self-play
-    int base;
-    if (depth == 1) base = 130;
-    else if (depth == 2) base = 200;
-    else if (depth == 3) base = 270;
-    else if (depth == 4) base = 340;
-    else if (depth == 5) base = 400;
-    else if (depth == 6) base = 460;
-    else base = 460 + (depth - 6) * 50;
+    // Depth-dependent futility margins - more conservative for accuracy
+    int base = 170 * depth;
 
-    if (improving) base -= 25;
-    else base += 40;
+    if (improving) base -= 20;
+    else base += 30;
 
     return base;
 }
@@ -502,6 +495,12 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
     // Compute improving flag: position is improving if eval is better than 2 plies ago
     ss->improving = (ss->ply >= 2 && eval > (ss - 2)->static_eval);
 
+    // TT-absence depth reduction (from Stash): reduce by 1 when no TT entry at all)
+    // Positions absent from TT were likely not reached in previous iterations
+    if (!found && !pv_node && depth >= 3) {
+        depth--;
+    }
+
     // Internal Iterative Reduction (IIR): reduce depth by 1 when no TT move available
     // Much cheaper than IID (which does a full sub-search), improves move ordering naturally
     if (tt_move == MOVE_NONE && depth >= 4) {
@@ -515,13 +514,13 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
     }
 
     // Reverse futility pruning (static null move): if eval is far above beta, prune immediately
-    if (!pv_node && !pos.is_check() && depth <= 8 && eval - 85 * depth - (ss->improving ? 0 : 25) >= beta) {
+    if (!pv_node && !pos.is_check() && depth <= 8 && eval - 100 * depth - (ss->improving ? 0 : 30) >= beta) {
         return eval;
     }
 
     // Razoring: at low depths, if eval is far below alpha, try qsearch to confirm
     if (!pv_node && !pos.is_check() && depth <= 3) {
-        Value razor_margin = 250 + depth * 60;  // depth 1=310, depth 3=430
+        Value razor_margin = 300 + depth * depth * 60;
         if (eval + razor_margin < alpha) {
             // Try quiescence search to confirm the position is really losing
             Value qsearch_value = qsearch(pos, ss, alpha - 1, alpha, 0);
@@ -648,8 +647,8 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
     // Helper lambda: compute LMR reduction for a move
     auto compute_reduction = [&](Move m, int mp) -> int {
         // Logarithmic LMR formula with history-based adjustments
-        // Slightly more aggressive base (1.55 vs 1.35) for better pruning at depth
-        int reduction = int(1.55 + std::log(double(std::max(depth - 1, 1))) * std::log(double(std::max(mp, 1))) / 2.55);
+        // Conservative base (1.35/2.75) for better tactical accuracy
+        int reduction = int(1.35 + std::log(double(std::max(depth - 1, 1))) * std::log(double(std::max(mp, 1))) / 2.75);
         if (!ss->improving) reduction += 1;
         if (cut_node) reduction += 1;
 
@@ -675,8 +674,8 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
                 history_score += continuation_history[int(prev2_pc)][int(prev2_move.to())][int(pc)][int(m.to())];
             }
 
-            // Stronger history influence on reduction
-            reduction -= history_score / 2000;
+            // History influence on reduction
+            reduction -= history_score / 3000;
         }
 
         // Reduce less for killer moves
@@ -754,9 +753,32 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
             }
         }
 
+        // Continuation pruning: skip quiet moves with very poor history at low depth
+        // Worth ~10 ELO (from Ethereal). Uses combined counter+continuation history.
+        if (is_quiet && !pv_node && depth <= 4 && moves_played > 0) {
+            Piece pc = pos.piece_on(m.from());
+            if (pc != NO_PIECE) {
+                int hist_score = history[int(pc)][int(m.to())];
+                if (ss->ply >= 1 && (ss - 1)->current_move != MOVE_NONE && (ss - 1)->moved_piece != NO_PIECE) {
+                    Move prev_move = (ss - 1)->current_move;
+                    Piece prev_pc = (ss - 1)->moved_piece;
+                    hist_score += counter_moves[int(prev_pc)][int(prev_move.to())][int(pc)][int(m.to())];
+                }
+                if (ss->ply >= 2 && (ss - 2)->current_move != MOVE_NONE && (ss - 2)->moved_piece != NO_PIECE) {
+                    Move prev2_move = (ss - 2)->current_move;
+                    Piece prev2_pc = (ss - 2)->moved_piece;
+                    hist_score += continuation_history[int(prev2_pc)][int(prev2_move.to())][int(pc)][int(m.to())];
+                }
+                // Prune if history is very negative (move has historically been bad)
+                if (hist_score < 783 - 4872 * (depth - 1)) {
+                    return false;
+                }
+            }
+        }
+
         // SEE-based quiet move pruning at shallow depth
         if (is_quiet && !pv_node && ss->ply > 0 && depth <= 3) {
-            if (!pos.see_ge(m, Value(-25 * depth * depth))) {
+            if (!pos.see_ge(m, Value(-20 * depth * depth))) {
                 return false;
             }
         }
@@ -771,7 +793,7 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
 
         // Futility pruning: skip quiet moves that can't improve alpha
         if (is_quiet && !pv_node && ss->ply > 0 && !pos.is_check() && depth <= 5) {
-            int margin = depth * 200 + (ss->improving ? 0 : 100);
+            int margin = depth * 200 + (ss->improving ? 50 : 150);
             if (eval + margin < alpha) {
                 return false;
             }
