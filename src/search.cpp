@@ -192,16 +192,18 @@ inline Value eval_cached(const Position& pos) {
 
 // Reduction constants
 constexpr int futility_margin(int depth, bool improving) {
-    // Depth-dependent futility margins
-    int base = 100 * depth;
-    if (depth == 1) base = 150;
-    else if (depth == 2) base = 220;
-    else if (depth == 3) base = 300;
-    else base = 300 + (depth - 3) * 60;
+    // Depth-dependent futility margins - tuned from self-play
+    int base;
+    if (depth == 1) base = 130;
+    else if (depth == 2) base = 200;
+    else if (depth == 3) base = 270;
+    else if (depth == 4) base = 340;
+    else if (depth == 5) base = 400;
+    else if (depth == 6) base = 460;
+    else base = 460 + (depth - 6) * 50;
 
-    // Improving positions can tolerate larger margins (more likely to recover)
-    if (improving) base -= 30;
-    else base += 50;
+    if (improving) base -= 25;
+    else base += 40;
 
     return base;
 }
@@ -513,14 +515,13 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
     }
 
     // Reverse futility pruning (static null move): if eval is far above beta, prune immediately
-    if (!pv_node && !pos.is_check() && depth <= 9 && eval - 75 * depth >= beta) {
+    if (!pv_node && !pos.is_check() && depth <= 8 && eval - 85 * depth - (ss->improving ? 0 : 25) >= beta) {
         return eval;
     }
 
     // Razoring: at low depths, if eval is far below alpha, try qsearch to confirm
-    // Less aggressive margin to reduce tactical blindness
     if (!pv_node && !pos.is_check() && depth <= 3) {
-        Value razor_margin = 300 + depth * 50;  // Less aggressive: depth 1=350, depth 3=450
+        Value razor_margin = 250 + depth * 60;  // depth 1=310, depth 3=430
         if (eval + razor_margin < alpha) {
             // Try quiescence search to confirm the position is really losing
             Value qsearch_value = qsearch(pos, ss, alpha - 1, alpha, 0);
@@ -543,10 +544,11 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
         // Reduce less in endgames (fewer non-pawn pieces = more zugzwang risk)
         if (piece_count < 4) R -= 1;
         // Increase reduction when eval is far above beta
-        if (eval - beta > 150) R += 1;
+        if (eval - beta > 200) R += 1;
+        // Extra reduction when eval is very far above beta
+        if (eval - beta > 400) R += 1;
         R = std::max(2, std::min(R, depth - 1));
         Value null_value = -search_worker(pos, ss + 1, -beta, -beta + 1, depth - R, !cut_node);
-
         pos.undo_null_move();
 
         if (null_value >= beta) {
@@ -626,6 +628,7 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
 
     // Singular extension: check if TT move is significantly better than alternatives
     bool tt_move_is_singular = false;
+    bool tt_move_is_double_singular = false;
     if (tt_move != MOVE_NONE && !pv_node && found && tt_depth >= depth - 3 && depth >= 8 &&
         (tte->bound() & BOUND_LOWER) && abs(tt_value) < VALUE_KNOWN_WIN) {
         Value sBeta = Value(tt_value - depth * 2);
@@ -634,13 +637,19 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
         ss->excluded_move = MOVE_NONE;
         if (singular_value < sBeta) {
             tt_move_is_singular = true;
+            // Double extension: if move is EXTREMELY singular (fails by a lot),
+            // extend even more - inspired by Stockfish's double extension
+            if (singular_value < sBeta - depth) {
+                tt_move_is_double_singular = true;
+            }
         }
     }
 
     // Helper lambda: compute LMR reduction for a move
     auto compute_reduction = [&](Move m, int mp) -> int {
         // Logarithmic LMR formula with history-based adjustments
-        int reduction = int(1.35 + std::log(double(std::max(depth - 1, 1))) * std::log(double(std::max(mp, 1))) / 2.75);
+        // Slightly more aggressive base (1.55 vs 1.35) for better pruning at depth
+        int reduction = int(1.55 + std::log(double(std::max(depth - 1, 1))) * std::log(double(std::max(mp, 1))) / 2.55);
         if (!ss->improving) reduction += 1;
         if (cut_node) reduction += 1;
 
@@ -667,7 +676,7 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
             }
 
             // Stronger history influence on reduction
-            reduction -= history_score / 3000;
+            reduction -= history_score / 2000;
         }
 
         // Reduce less for killer moves
@@ -753,8 +762,10 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
         }
 
         // Late move pruning: prune quiet moves after examining a reasonable number
-        int lmp_threshold = 2 + depth * depth;
-        if (is_quiet && !pv_node && ss->ply > 0 && moves_played >= lmp_threshold) {
+        // Improving positions can tolerate more pruning (more likely to recover)
+        int lmp_base = ss->improving ? 3 : 2;
+        int lmp_threshold = lmp_base + depth * depth;
+        if (is_quiet && !pv_node && ss->ply > 0 && depth <= 6 && moves_played >= lmp_threshold) {
             return false;
         }
 
@@ -786,6 +797,10 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
         bool extension = false;
         if (m == tt_move && tt_move_is_singular) {
             extension = true;
+            // Double singular extension: extend by 2 for extremely singular moves
+            if (tt_move_is_double_singular) {
+                extension = true;  // Total +2 extension
+            }
         }
         if (gives_check(m)) {
             extension = true;
@@ -1173,19 +1188,7 @@ Move search(Position& pos, Limits& lim) {
         stack[i].pv[0] = MOVE_NONE;
     }
 
-    // === Opening Book ===
-    // Simple opening: play e2e4 from the starting position
-    {
-        if (popcount(pos.pieces()) == 32 && pos.side_to_move() == WHITE) {
-            for (ExtMove* it = initial_moves; it != initial_end; ++it) {
-                if (it->move.from() == E2 && it->move.to() == E4) {
-                    best_move = it->move;
-                    uci_info(pos, 1, VALUE_ZERO, 0, 0);
-                    return best_move;
-                }
-            }
-        }
-    }
+    // No opening book - rely on search for best opening moves
 
 
 

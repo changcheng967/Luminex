@@ -221,8 +221,9 @@ Value evaluate(const Position& pos) {
 
             // Connected pawn bonus: pawn protected by another pawn
             if (square_bb(sq) & supported_by_adj) {
-                mg_score += sign * (4 + r * 2);
-                eg_score += sign * (2 + r);
+                int connected_bonus = 4 + r * 3;
+                mg_score += sign * connected_bonus;
+                eg_score += sign * (2 + r * 2);
             }
 
             // Backward pawn detection: a pawn that cannot advance safely
@@ -264,20 +265,27 @@ Value evaluate(const Position& pos) {
                 int mg_passer = 15 + r * 10;
                 int eg_passer = 30 + r * 25;
 
+                // Supported passer bonus (protected by own pawn)
+                Bitboard support_squares = pawn_attacks_bb(c, our_pawns);
+                if (support_squares & square_bb(relative_square(c, make_square(f, Rank(r + 1))))) {
+                    mg_passer += 8;
+                    eg_passer += 12;
+                }
+
                 // Blocker penalty: enemy pieces blocking the path
                 if (ahead_file & pos.pieces(them)) {
-                    mg_passer -= 10;
-                    eg_passer -= 15;
+                    mg_passer -= 12;
+                    eg_passer -= 18;
                 }
 
                 // Rook behind passed pawn bonus
                 Bitboard behind = file_bb(f) & pos.pieces(c, ROOK);
                 if (behind && c == WHITE && rank_of(sq) > rank_of(lsb(behind))) {
-                    mg_passer += 15;
-                    eg_passer += 20;
+                    mg_passer += 18;
+                    eg_passer += 25;
                 } else if (behind && c == BLACK && rank_of(sq) < rank_of(lsb(behind))) {
-                    mg_passer += 15;
-                    eg_passer += 20;
+                    mg_passer += 18;
+                    eg_passer += 25;
                 }
 
                 // King proximity (EG only - king becomes relevant in endgame)
@@ -286,7 +294,13 @@ Value evaluate(const Position& pos) {
                 Square promo_sq = relative_square(c, make_square(f, RANK_8));
                 int our_kdist = distance(our_ksq, promo_sq);
                 int their_kdist = distance(their_ksq, promo_sq);
-                eg_passer += (their_kdist - our_kdist) * 5;
+                eg_passer += (their_kdist - our_kdist) * 6;
+
+                // Blocked by enemy king (EG - enemy king in the way = harder to push)
+                if (relative_rank(c, their_ksq) > r) {
+                    int their_kdist_to_path = distance(their_ksq, sq);
+                    eg_passer -= their_kdist_to_path * 3;
+                }
 
                 mg_score += sign * mg_passer;
                 eg_score += sign * eg_passer;
@@ -304,6 +318,8 @@ Value evaluate(const Position& pos) {
             int mob = popcount(attacks & ~pos.pieces(c));
             mg_score += sign * mob * 2;
             eg_score += sign * mob * 3;
+            // Third Gen: trapped piece penalty (0-1 mobility = piece is trapped)
+            if (mob <= 1) { mg_score -= sign * 30; eg_score -= sign * 20; }
 
             // Outpost knight: on rank 4-6, protected by own pawn, cannot be attacked by enemy pawn
             Rank kr = relative_rank(c, sq);
@@ -331,6 +347,8 @@ Value evaluate(const Position& pos) {
             int mob = popcount(bb_diag_attacks(sq, occupied) & ~pos.pieces(c));
             mg_score += sign * mob * 3;
             eg_score += sign * mob * 4;
+            // Third Gen: trapped bishop penalty
+            if (mob <= 2) { mg_score -= sign * 20; eg_score -= sign * 15; }
 
             // Bad bishop penalty: bishop hemmed in by own pawns on same color complex
             {
@@ -401,12 +419,18 @@ Value evaluate(const Position& pos) {
         File kfile = file_of(ksq);
         bool on_back = (c == WHITE && krank <= RANK_2) || (c == BLACK && krank >= RANK_7);
         if (on_back) {
-            Square front = relative_square(c, make_square(kfile, RANK_2));
-            Bitboard shield = square_bb(front);
-            if (kfile > FILE_A) shield |= square_bb(relative_square(c, make_square(File(kfile - 1), RANK_2)));
-            if (kfile < FILE_H) shield |= square_bb(relative_square(c, make_square(File(kfile + 1), RANK_2)));
-            int count = popcount(our_pawns & shield);
-            mg_score += sign * count * 15;
+            // Per-rank shield evaluation: check 3 ranks in front of king
+            for (int r = 1; r <= 3; ++r) {
+                int weight = (r == 1) ? 15 : (r == 2) ? 8 : 3;
+                for (int df = -1; df <= 1; ++df) {
+                    File sf = File(int(kfile) + df);
+                    if (sf < FILE_A || sf > FILE_H) continue;
+                    Square shield_sq = relative_square(c, make_square(sf, Rank(r)));
+                    if (our_pawns & square_bb(shield_sq)) {
+                        mg_score += sign * weight;
+                    }
+                }
+            }
 
             Bitboard all_pawns = pos.pieces(PAWN);
             if (!(all_pawns & file_bb(kfile))) mg_score -= sign * 20;
@@ -480,9 +504,11 @@ Value evaluate(const Position& pos) {
             Bitboard minors = pos.pieces(c, KNIGHT, BISHOP);
             Bitboard threatened = minors & enemy_pawn_attacks;
             while (threatened) {
-                pop_lsb(threatened);
-                mg_score -= sign * 10;
-                eg_score -= sign * 5;
+                Square tsq = pop_lsb(threatened);
+                PieceType tpt = piece_type_of(pos.piece_on(tsq));
+                int penalty = (tpt == KNIGHT) ? 12 : 10;  // Knights are more vulnerable
+                mg_score -= sign * penalty;
+                eg_score -= sign * (penalty / 2);
             }
         }
 
@@ -580,7 +606,12 @@ Value evaluate(const Position& pos) {
         int attacking_material = popcount(enemy_qu) * 4 + popcount(enemy_ro) * 2;
         if (attacking_material < 4) danger = danger * attacking_material / 4;
 
-        danger = std::min(danger, 400);
+        // CRITICAL Third Gen insight: no queen = almost no mating potential
+        // Reduce danger dramatically when no enemy queen (inspired by Ethereal's SafetyNoEnemyQueens)
+        if (!enemy_qu) danger = danger / 4;
+        if (!enemy_qu && !enemy_ro) danger = danger / 4;
+
+        danger = std::min(danger, 600);
 
         mg_score -= sign * danger;
     }

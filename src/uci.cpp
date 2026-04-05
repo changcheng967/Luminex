@@ -254,7 +254,7 @@ void handle_quit() {
 }
 
 void uci_loop() {
-    // Debug logging disabled - remove comment to enable
+    // Debug logging disabled
     // dbglog = fopen("C:\\Users\\chang\\Downloads\\Luminex\\luminex_debug.log", "w");
 
     std::string line;
