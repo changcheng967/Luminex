@@ -131,6 +131,7 @@ void handle_uci() {
     safe_output("id name " + std::string(ENGINE_NAME) + " " + ENGINE_VERSION + "\n");
     safe_output("id author " + std::string(ENGINE_AUTHOR) + "\n");
     safe_output("option name Hash type spin default 128 min 1 max 1048576\n");
+    safe_output("option name Threads type spin default 2 min 1 max 64\n");
     safe_output("option name Contempt type spin default 0 min -1000 max 1000\n");
     safe_output("option name Clear Hash type button\n");
     safe_output("uciok\n");
@@ -285,6 +286,11 @@ void handle_setoption(const std::string& cmd) {
         if (name == "Contempt") {
             params.contempt = std::stoi(value);
         }
+    } else if (name == "Threads") {
+        int t = std::stoi(value);
+        if (t < 1) t = 1;
+        if (t > 64) t = 64;
+        num_threads = t;
     } else if (name == "Clear Hash") {
         TT.clear();
     } else if (name == "Hash") {

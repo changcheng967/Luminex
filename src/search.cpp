@@ -6,6 +6,8 @@
 #include <cstring>
 #include <cstdio>
 #include <sstream>
+#include <thread>
+#include <vector>
 
 namespace luminex {
 
@@ -25,30 +27,32 @@ std::atomic<bool> stop;
 int root_depth;
 Value root_score;
 
+// Lazy SMP thread management
+int num_threads = 2;
+
 namespace {
 
-// Stack to store search states
+// Per-thread search state for lazy SMP
 constexpr int MAX_PLY_PLUS_6 = MAX_PLY + 6;
-Stack stack[MAX_PLY_PLUS_6];
 
-// Killer moves: moves that caused beta cutoffs at each ply
-Move killers[MAX_PLY][2];
+struct SearchWorker {
+    Stack stack[MAX_PLY_PLUS_6];
+    Move killers[MAX_PLY][2] = {};
+    int history[12][64] = {};
+    int capture_history[12][64][7] = {};
+    Move counter_move_table[12][64] = {};
+};
 
-// History heuristic: [piece][to_square]
-int history[12][64];
+// Thread-local pointer to current thread's search state
+static thread_local SearchWorker* worker = nullptr;
 
+// Shared between threads (lazy SMP tolerates races in these heuristic tables)
 // Counter-move history: [prev_piece][prev_to][piece][to]
 int counter_moves[12][64][12][64];
 
 // Continuation history (2-ply): [piece2][to2][piece1][to1]
 // Tracks how good a move is given OUR previous move (2 plies back)
 int continuation_history[12][64][12][64];
-
-// Capture history: [piece][to][captured_type] - tracks how good each capture has been
-int capture_history[12][64][7];
-
-// Counter-move table: direct move suggestion [prev_piece][prev_to]
-Move counter_move_table[12][64];
 
 // ============================================================
 // CORRECTION HISTORY — Simplified: Pawn-only
@@ -87,6 +91,10 @@ struct PawnCorrectionHistory {
 };
 
 PawnCorrectionHistory pawn_correction_history;
+
+// Lazy SMP helper thread management (inside anonymous namespace for internal linkage)
+static std::vector<std::thread> helper_threads;
+static bool helpers_running = false;
 
 
 
@@ -133,7 +141,7 @@ inline Value eval_cached(const Position& pos) {
 
 // Reduction constants
 constexpr int futility_margin(int depth, bool improving) {
-    // Depth-dependent futility margins
+    // Depth-dependent futility margins (slightly tighter for more pruning)
     int base = 130 * depth + 50;
 
     if (improving) base -= 20;
@@ -616,7 +624,7 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
         // History-based adjustment: combine plain + counter + continuation
         Piece pc = pos.piece_on(m.from());
         if (pc != NO_PIECE) {
-            int history_score = history[int(pc)][int(m.to())];
+            int history_score = worker->history[int(pc)][int(m.to())];
 
             // Counter-move history (1-ply)
             if (ss->ply >= 1 && (ss - 1)->current_move != MOVE_NONE && (ss - 1)->moved_piece != NO_PIECE) {
@@ -637,13 +645,13 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
         }
 
         // Reduce less for killer moves
-        if (m == killers[ss->ply][0]) reduction -= 1;
+        if (m == worker->killers[ss->ply][0]) reduction -= 1;
 
         // Counter-move bonus
         if (ss->ply >= 1 && (ss - 1)->current_move != MOVE_NONE && (ss - 1)->moved_piece != NO_PIECE) {
             Move prev_move = (ss - 1)->current_move;
             Piece prev_pc = (ss - 1)->moved_piece;
-            if (m == counter_move_table[int(prev_pc)][int(prev_move.to())]) reduction -= 1;
+            if (m == worker->counter_move_table[int(prev_pc)][int(prev_move.to())]) reduction -= 1;
         }
 
         // Check-giving moves: reduce less (use pre-computed value)
@@ -702,7 +710,7 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
         if (is_quiet && !pv_node && depth <= 4 && moves_played > 0) {
             Piece pc = pos.piece_on(m.from());
             if (pc != NO_PIECE) {
-                int hist_score = history[int(pc)][int(m.to())];
+                int hist_score = worker->history[int(pc)][int(m.to())];
                 if (ss->ply >= 1 && (ss - 1)->current_move != MOVE_NONE && (ss - 1)->moved_piece != NO_PIECE) {
                     Move prev_move = (ss - 1)->current_move;
                     Piece prev_pc = (ss - 1)->moved_piece;
@@ -863,16 +871,16 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
                 if (value >= beta) {
                 // Beta cutoff - update killers, history and counter-move history
                 if (is_quiet && ss->ply < MAX_PLY) {
-                    if (m != killers[ss->ply][0]) {
-                        killers[ss->ply][1] = killers[ss->ply][0];
-                        killers[ss->ply][0] = m;
+                    if (m != worker->killers[ss->ply][0]) {
+                        worker->killers[ss->ply][1] = worker->killers[ss->ply][0];
+                        worker->killers[ss->ply][0] = m;
                     }
                     Piece pc = ss->moved_piece;
                     if (pc != NO_PIECE) {
                         // Stockfish-style stat_bonus: non-linear scaling with depth
                         int bonus = depth > 15 ? -8 : 19 * depth * depth + 155 * depth - 132;
                         // Gravity formula for plain history
-                        int& h = history[int(pc)][int(m.to())];
+                        int& h = worker->history[int(pc)][int(m.to())];
                         h += bonus - h * abs(bonus) / 32768;
 
                         // Counter-move history (1-ply: opponent's last move)
@@ -881,7 +889,7 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
                             Piece prev_pc = (ss - 1)->moved_piece;
                             int& cm = counter_moves[int(prev_pc)][int(prev_move.to())][int(pc)][int(m.to())];
                             cm += bonus - cm * abs(bonus) / 32768;
-                            counter_move_table[int(prev_pc)][int(prev_move.to())] = m;
+                            worker->counter_move_table[int(prev_pc)][int(prev_move.to())] = m;
                         }
 
                         // Continuation history (2-ply: our own previous move)
@@ -895,7 +903,7 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
                     // Capture history update for capture moves that caused cutoff
                     if (!is_quiet && ss->ply < MAX_PLY && captured_pt != PT_NONE) {
                         int cap_bonus = depth > 15 ? -8 : 19 * depth * depth + 155 * depth - 132;
-                        int& ch = capture_history[int(ss->moved_piece)][int(m.to())][int(captured_pt)];
+                        int& ch = worker->capture_history[int(ss->moved_piece)][int(m.to())][int(captured_pt)];
                         ch += cap_bonus - ch * std::abs(cap_bonus) / 32768;
                     }
                     // History gravity malus for non-cutoff quiet moves (use stat_bonus formula)
@@ -904,7 +912,7 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
                         Move qm = quiets_searched[i];
                         Piece qpc = pos.piece_on(qm.from());
                         if (qpc != NO_PIECE) {
-                            int& h = history[int(qpc)][int(qm.to())];
+                            int& h = worker->history[int(qpc)][int(qm.to())];
                             h += malus - h * abs(malus) / 32768;
                             if (ss->ply >= 1 && (ss - 1)->current_move != MOVE_NONE && (ss - 1)->moved_piece != NO_PIECE) {
                                 Move prev_move = (ss - 1)->current_move;
@@ -966,7 +974,7 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
                 PieceType attacker = pos.piece_type_on(m.from());
                 int mvv_lva = piece_value[captured] * 10 - piece_value[attacker];
                 // Add capture history for better ordering
-                int cap_hist = capture_history[int(pos.piece_on(m.from()))][int(m.to())][int(captured)];
+                int cap_hist = worker->capture_history[int(pos.piece_on(m.from()))][int(m.to())][int(captured)];
                 if (pos.see_ge(m, VALUE_ZERO)) {
                     score = 1500000 + mvv_lva + cap_hist;
                 } else {
@@ -1023,7 +1031,7 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
             } else {
                 Piece pc = pos.piece_on(m.from());
                 if (pc != NO_PIECE) {
-                    score = history[int(pc)][int(m.to())];
+                    score = worker->history[int(pc)][int(m.to())];
                     if (ss->ply >= 1 && (ss - 1)->current_move != MOVE_NONE && (ss - 1)->moved_piece != NO_PIECE) {
                         Move prev_move = (ss - 1)->current_move;
                         Piece prev_pc = (ss - 1)->moved_piece;
@@ -1038,12 +1046,12 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
                 }
 
                 // Killer moves bonus ON TOP of history
-                if (m == killers[ss->ply][0]) score += 60000;
-                else if (m == killers[ss->ply][1]) score += 50000;
+                if (m == worker->killers[ss->ply][0]) score += 60000;
+                else if (m == worker->killers[ss->ply][1]) score += 50000;
                 else if (ss->ply >= 1 && (ss - 1)->current_move != MOVE_NONE && (ss - 1)->moved_piece != NO_PIECE) {
                     Move prev_move = (ss - 1)->current_move;
                     Piece prev_pc = (ss - 1)->moved_piece;
-                    if (m == counter_move_table[int(prev_pc)][int(prev_move.to())]) {
+                    if (m == worker->counter_move_table[int(prev_pc)][int(prev_move.to())]) {
                         score += 40000;
                     }
                 }
@@ -1124,6 +1132,151 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
 
 } // namespace
 
+// Helper thread function for lazy SMP
+// Each helper runs its own iterative deepening, populating the shared TT
+static void helper_thread_func(Position pos_copy) {
+    // Create per-thread search worker
+    SearchWorker* w = new SearchWorker();
+    worker = w;
+    local_nodes = 0;
+
+    // Initialize stack
+    for (int i = 0; i < MAX_PLY_PLUS_6; ++i) {
+        w->stack[i].ply = i - 1;
+        w->stack[i].current_move = MOVE_NONE;
+        w->stack[i].moved_piece = NO_PIECE;
+        w->stack[i].previous = i > 0 ? &w->stack[i - 1] : nullptr;
+        w->stack[i].pv[0] = MOVE_NONE;
+    }
+
+    // Simple iterative deepening - no UCI output, no complex time management
+    Move prev_best = MOVE_NONE;
+    Value prev_score = -VALUE_INFINITE;
+    int effective_depth = (limits.depth == 0) ? MAX_PLY : limits.depth;
+
+    for (int d = 1; d <= effective_depth; ++d) {
+        if (stop.load(std::memory_order_relaxed) || g_stop_requested) break;
+
+        // Check time periodically
+        if ((local_nodes & 1023) == 0) {
+            nodes.store(local_nodes, std::memory_order_relaxed);
+            if (check_time()) break;
+        }
+
+        // Aspiration window (same as main thread)
+        Value alpha = -VALUE_INFINITE;
+        Value beta = VALUE_INFINITE;
+        if (d >= 4 && prev_score > -VALUE_KNOWN_WIN && prev_score < VALUE_KNOWN_WIN) {
+            alpha = prev_score - 30;
+            beta = prev_score + 30;
+        }
+
+        // Generate moves
+        ExtMove moves[MAX_MOVES];
+        ExtMove* end = generate<GEN_LEGAL>(pos_copy, moves);
+
+        // Simple move ordering
+        for (ExtMove* it = moves; it != end; ++it) {
+            Move m = it->move;
+            int score = 0;
+            if (m == prev_best) score = 2000000;
+            else if (m.is_capture()) {
+                PieceType captured = pos_copy.piece_type_on(m.to());
+                PieceType attacker = pos_copy.piece_type_on(m.from());
+                static constexpr int pv[] = {100, 320, 330, 500, 900, 20000, 0};
+                score = 1000000 + (captured != PT_NONE ? pv[captured] : 0) * 10 - pv[attacker];
+            } else if (m.is_promotion()) {
+                score = 900000 + m.promotion_type() * 10000;
+            } else {
+                Piece pc = pos_copy.piece_on(m.from());
+                if (pc != NO_PIECE) score = w->history[int(pc)][int(m.to())];
+            }
+            it->value = score;
+        }
+
+        std::sort(moves, end, [](const ExtMove& a, const ExtMove& b) {
+            return a.value > b.value;
+        });
+
+        Value depth_best_value = -VALUE_INFINITE;
+        Move depth_best_move = MOVE_NONE;
+
+        for (ExtMove* it = moves; it != end; ++it) {
+            if (stop.load(std::memory_order_relaxed) || g_stop_requested) break;
+            if ((local_nodes & 1023) == 0) {
+                nodes.store(local_nodes, std::memory_order_relaxed);
+                if (check_time()) break;
+            }
+
+            if (!pos_copy.do_move(it->move)) continue;
+
+            Value value = -search_worker(pos_copy, w->stack + 1, -beta, -alpha, d - 1, false);
+
+            pos_copy.undo_move(it->move);
+
+            if (stop.load(std::memory_order_relaxed)) break;
+
+            if (value > depth_best_value) {
+                depth_best_value = value;
+                depth_best_move = it->move;
+            }
+            if (value > alpha) {
+                alpha = value;
+            }
+            if (value >= beta) break;
+        }
+
+        if (stop.load(std::memory_order_relaxed)) break;
+
+        // Handle aspiration fail
+        if (depth_best_move != MOVE_NONE) {
+            if (depth_best_value <= alpha || depth_best_value >= beta) {
+                // Fail - re-search with full window
+                alpha = -VALUE_INFINITE;
+                beta = VALUE_INFINITE;
+                depth_best_value = -VALUE_INFINITE;
+                depth_best_move = MOVE_NONE;
+
+                for (ExtMove* it = moves; it != end; ++it) {
+                    if (stop.load(std::memory_order_relaxed) || g_stop_requested) break;
+
+                    if (!pos_copy.do_move(it->move)) continue;
+                    Value value = -search_worker(pos_copy, w->stack + 1, -beta, -alpha, d - 1, false);
+                    pos_copy.undo_move(it->move);
+
+                    if (stop.load(std::memory_order_relaxed)) break;
+
+                    if (value > depth_best_value) {
+                        depth_best_value = value;
+                        depth_best_move = it->move;
+                    }
+                    if (value > alpha) alpha = value;
+                    if (value >= beta) break;
+                }
+
+                if (stop.load(std::memory_order_relaxed)) break;
+            }
+
+            // Update prev for next depth
+            prev_best = depth_best_move;
+            prev_score = depth_best_value;
+
+            // Save to TT (shared with main thread)
+            if (!stop.load(std::memory_order_relaxed)) {
+                bool found;
+                TTEntry* tte = TT.probe(pos_copy.key(), found);
+                tte->save(pos_copy.key(), depth_best_value, true, BOUND_EXACT, d, depth_best_move, VALUE_ZERO, TT.generation());
+            }
+        }
+    }
+
+    // Flush final node count
+    nodes.store(local_nodes, std::memory_order_relaxed);
+
+    delete w;
+    worker = nullptr;
+}
+
 // Root search with iterative deepening
 Move search(Position& pos, Limits& lim) {
     limits = lim;
@@ -1157,19 +1310,27 @@ Move search(Position& pos, Limits& lim) {
         return MOVE_NONE;  // No move to make
     }
 
+    // Create main thread search worker
+    SearchWorker* main_worker = new SearchWorker();
+    worker = main_worker;
+
     // Initialize search stack
     // CRITICAL: stack[0] is unused (ply -1), stack[1] is ply 0 for root search
     for (int i = 0; i < MAX_PLY_PLUS_6; ++i) {
-        stack[i].ply = i - 1;  // stack[0].ply = -1, stack[1].ply = 0, etc.
-        stack[i].current_move = MOVE_NONE;
-        stack[i].moved_piece = NO_PIECE;
-        stack[i].previous = i > 0 ? &stack[i - 1] : nullptr;
-        stack[i].pv[0] = MOVE_NONE;
+        worker->stack[i].ply = i - 1;  // stack[0].ply = -1, stack[1].ply = 0, etc.
+        worker->stack[i].current_move = MOVE_NONE;
+        worker->stack[i].moved_piece = NO_PIECE;
+        worker->stack[i].previous = i > 0 ? &worker->stack[i - 1] : nullptr;
+        worker->stack[i].pv[0] = MOVE_NONE;
     }
 
     // No opening book - rely on search for best opening moves
 
-
+    // Launch helper threads for lazy SMP
+    helpers_running = true;
+    for (int i = 1; i < num_threads; ++i) {
+        helper_threads.emplace_back(helper_thread_func, pos);
+    }
 
     // Time management — Third Generation: Stability + Score Progression
     if (limits.use_time_management()) {
@@ -1205,15 +1366,15 @@ Move search(Position& pos, Limits& lim) {
 
     // Initialize killers (clear for new search)
     for (int i = 0; i < MAX_PLY; ++i) {
-        killers[i][0] = MOVE_NONE;
-        killers[i][1] = MOVE_NONE;
+        worker->killers[i][0] = MOVE_NONE;
+        worker->killers[i][1] = MOVE_NONE;
     }
 
     // Age history tables (gravity formula handles intra-search decay,
     // so we only need gentle inter-search aging)
     for (int i = 0; i < 12; ++i) {
         for (int j = 0; j < 64; ++j) {
-            history[i][j] /= 2;
+            worker->history[i][j] /= 2;
         }
     }
 
@@ -1301,9 +1462,9 @@ Move search(Position& pos, Limits& lim) {
             else {
                 Piece pc = pos.piece_on(m.from());
                 if (pc != NO_PIECE) {
-                    score = history[int(pc)][int(m.to())];
-                    if (m == killers[0][0]) score += 500000;
-                    else if (m == killers[0][1]) score += 400000;
+                    score = worker->history[int(pc)][int(m.to())];
+                    if (m == worker->killers[0][0]) score += 500000;
+                    else if (m == worker->killers[0][1]) score += 400000;
                 }
             }
 
@@ -1349,11 +1510,11 @@ Move search(Position& pos, Limits& lim) {
                 Value value;
                 // PVS: first move gets full window, rest get zero-window scout
                 if (root_moves_searched == 0) {
-                    value = -search_worker(pos, stack + 1, -beta, -running_alpha,
+                    value = -search_worker(pos, worker->stack + 1, -beta, -running_alpha,
                                            root_depth - 1, false);
                 } else {
                     // Zero-window scout search
-                    value = -search_worker(pos, stack + 1, -running_alpha - 1, -running_alpha,
+                    value = -search_worker(pos, worker->stack + 1, -running_alpha - 1, -running_alpha,
                                            root_depth - 1, true);
                     // CRITICAL: Check stop immediately after recursive call
                     if (g_stop_requested || stop.load(std::memory_order_relaxed)) {
@@ -1362,7 +1523,7 @@ Move search(Position& pos, Limits& lim) {
                     }
                     // Re-search with full window only if scout found something better
                     if (value > running_alpha && value < beta) {
-                        value = -search_worker(pos, stack + 1, -beta, -running_alpha,
+                        value = -search_worker(pos, worker->stack + 1, -beta, -running_alpha,
                                                root_depth - 1, false);
                     }
                 }
@@ -1491,8 +1652,17 @@ Move search(Position& pos, Limits& lim) {
         }
     }
 
-    // Print search statistics before returning
-    // Debug logging removed - statistics confirmed TT efficiency improved 4-5x with PVS fix
+    // Signal and stop helper threads
+    stop.store(true, std::memory_order_relaxed);
+    for (auto& t : helper_threads) {
+        if (t.joinable()) t.join();
+    }
+    helper_threads.clear();
+    helpers_running = false;
+
+    // Clean up main thread search worker
+    delete worker;
+    worker = nullptr;
 
     return best_move;
 }
