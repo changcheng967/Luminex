@@ -999,8 +999,8 @@ Value evaluate(const Position& pos) {
         }
 
         // Stash: SafetyOffset (18/53) always added, AttackWeight (9/36) * attack count
-        // Stash-style weak squares: enemy attacks in king zone, not doubly defended by us
-        Bitboard weak_squares = attacks_by[them][PAWN] & king_zone &
+        // Stash-style weak squares: any enemy attack in king zone, not doubly defended by us
+        Bitboard weak_squares = all_attacks[them] & king_zone &
             ~attacked2[c] & (~all_attacks[c] | attacks_by[c][KING]);
         int weak_count = popcount(weak_squares);
 
@@ -1021,9 +1021,7 @@ Value evaluate(const Position& pos) {
         mg_danger += mg_attack_weight;
         eg_danger += eg_attack_weight;
 
-        // Stash threshold: need >= 2 attackers with queen, >= 1 without queen
-        bool attacker_has_queen = (pos.pieces(them, QUEEN) != 0);
-        if (attacker_count >= (attacker_has_queen ? 2 : 1)) {
+        if (attacker_count >= 2) {
             // Scale: Stash uses max(mg, 0) * mg / 256 for MG, max(eg, 0) / 16 for EG
             int mg_safety = std::max(0, mg_danger) * std::max(0, mg_danger) / 256;
             int eg_safety = std::max(0, eg_danger) / 16;
@@ -1057,7 +1055,10 @@ int scale_factor(const Position& pos, [[maybe_unused]] Value eg) {
     int total_pawns = wp + bp;
 
     // No pawns endgame: harder to win
-    if (total_pawns == 0) return 16;
+    if (total_pawns == 0) {
+        int piece_count = popcount(pos.pieces()) - 4; // exclude kings
+        return std::min(16 + piece_count * 2, 32);
+    }
 
     // Opposite-colored bishops: drawish endgames
     int wb = popcount(pos.pieces(WHITE, BISHOP));
@@ -1068,8 +1069,15 @@ int scale_factor(const Position& pos, [[maybe_unused]] Value eg) {
         Square bb_sq = lsb(pos.pieces(BLACK, BISHOP));
         bool wb_light = ((int(wb_sq) + (wb_sq / 8)) % 2) == 0;
         bool bb_light = ((int(bb_sq) + (bb_sq / 8)) % 2) == 0;
-        if (wb_light != bb_light && total_pawns <= 4) {
-            return 20;  // Drawish with OCB and few pawns
+        if (wb_light != bb_light) {
+            // Stash OCB scaling: 71 + piece_count*9 (with material) or 33 + passed_count*21
+            int piece_count = popcount(pos.pieces()) - 4; // exclude kings and bishops
+            if (piece_count > 0) {
+                return std::min(71 + piece_count * 9, 32);
+            } else {
+                // Passed pawns only
+                return std::min(33 + total_pawns * 21, 32);
+            }
         }
     }
 
