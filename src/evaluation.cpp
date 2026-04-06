@@ -885,14 +885,27 @@ Value evaluate(const Position& pos) {
 
     }
 
-    // Space evaluation: simplified - just count center pawn presence
-    for (int c_idx = 0; c_idx < 2; ++c_idx) {
-        Color c = Color(c_idx);
-        Sign sign = (c_idx == 0) ? 1 : -1;
-        Bitboard our_pawns = pos.pieces(c, PAWN);
-        int center_count = popcount(our_pawns & (BB_FILE_D | BB_FILE_E));
-        if (center_count > 0 && popcount(our_pawns) >= 5) {
-            mg_score += sign * center_count * 6;
+    // Space evaluation: count squares behind our pawns that are safe (not attacked by enemy pawns)
+    // Safe squares = squares attacked by our pawns but NOT by enemy pawns
+    {
+        int space[2] = {0, 0};
+        int pawn_count[2] = {0, 0};
+        for (int c = 0; c < 2; ++c) {
+            Bitboard our_pawns = pos.pieces(Color(c), PAWN);
+            pawn_count[c] = popcount(our_pawns);
+            // Our pawn attacks minus enemy pawn attacks = our territory
+            Bitboard our_pawn_attacks = pawn_attacks_bb(Color(c), our_pawns);
+            Bitboard their_pawn_attacks = pawn_attacks_bb(Color(c ^ 1), pos.pieces(Color(c ^ 1), PAWN));
+            // Only count space in the center four files (C through F) and between ranks 2-7
+            Bitboard space_area = (BB_FILE_C | BB_FILE_D | BB_FILE_E | BB_FILE_F)
+                                 & (our_pawn_attacks & ~their_pawn_attacks);
+            space[c] = popcount(space_area);
+        }
+        // Only apply space bonus if we have more pawns (otherwise pushing creates weaknesses)
+        if (pawn_count[WHITE] > pawn_count[BLACK]) {
+            mg_score += space[WHITE] * 4 - space[BLACK] * 2;
+        } else if (pawn_count[BLACK] > pawn_count[WHITE]) {
+            mg_score -= space[BLACK] * 4 - space[WHITE] * 2;
         }
     }
 
@@ -912,16 +925,16 @@ Value evaluate(const Position& pos) {
     if (bishop_count[WHITE] >= 2) { mg_score += 21; eg_score += 93; }
     if (bishop_count[BLACK] >= 2) { mg_score -= 21; eg_score -= 93; }
 
-    // King safety using SafetyTable
+    // King safety using SafetyTable (Stash-style linear formula, capped at 200)
     static const int SafetyTable[100] = {
         0, 0, 1, 2, 3, 5, 7, 9, 12, 15, 18, 22, 26, 30, 35, 39,
         44, 50, 56, 62, 68, 75, 82, 85, 89, 97, 105, 113, 122, 131, 140,
-        150, 169, 180, 191, 202, 213, 225, 237, 248, 260, 272, 283, 295,
-        307, 319, 330, 342, 354, 366, 377, 389, 401, 412, 424, 436, 448,
-        459, 471, 483, 494, 500, 500, 500, 500, 500, 500, 500, 500, 500,
-        500, 500, 500, 500, 500, 500, 500, 500, 500, 500, 500, 500, 500,
-        500, 500, 500, 500, 500, 500, 500, 500, 500, 500, 500, 500, 500,
-        500, 500
+        150, 160, 168, 174, 178, 182, 185, 188, 190, 192, 194, 195, 196,
+        197, 198, 198, 199, 199, 199, 200, 200, 200, 200, 200, 200, 200,
+        200, 200, 200, 200, 200, 200, 200, 200, 200, 200, 200, 200, 200,
+        200, 200, 200, 200, 200, 200, 200, 200, 200, 200, 200, 200, 200,
+        200, 200, 200, 200, 200, 200, 200, 200, 200, 200, 200, 200, 200,
+        200, 200
     };
 
     for (int c_idx = 0; c_idx < 2; ++c_idx) {

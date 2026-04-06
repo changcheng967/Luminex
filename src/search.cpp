@@ -4,7 +4,6 @@
 #include <chrono>
 #include <cmath>
 #include <cstring>
-#include <cstdio>
 #include <sstream>
 #include <thread>
 #include <vector>
@@ -55,44 +54,6 @@ int counter_moves[12][64][12][64];
 // Tracks how good a move is given OUR previous move (2 plies back)
 int continuation_history[12][64][12][64];
 
-// ============================================================
-// CORRECTION HISTORY — Simplified: Pawn-only
-// Index by pawn structure hash (most reliable signal)
-// ============================================================
-struct PawnCorrectionHistory {
-    static constexpr int CORRECTION_SIZE = 16384;
-    static constexpr int CORRECTION_LIMIT = 512;
-
-    int table[2][CORRECTION_SIZE];
-
-    void clear() {
-        std::memset(table, 0, sizeof(table));
-    }
-
-    void age() {
-        for (int c = 0; c < 2; ++c) {
-            for (int i = 0; i < CORRECTION_SIZE; ++i) table[c][i] /= 2;
-        }
-    }
-
-    static void gravity_update(int& val, int bonus) {
-        val += bonus - val * std::abs(bonus) / CORRECTION_LIMIT;
-    }
-
-    void update(Color c, uint64_t pawn_key, Value eval_diff, Depth depth) {
-        int bonus = eval_diff * depth * 16 / 128;
-        bonus = std::max(-CORRECTION_LIMIT, std::min(CORRECTION_LIMIT, bonus));
-        gravity_update(table[c][pawn_key & (CORRECTION_SIZE - 1)], bonus);
-    }
-
-    Value correct(Color c, uint64_t pawn_key, Value static_eval) const {
-        int corr = table[c][pawn_key & (CORRECTION_SIZE - 1)];
-        return static_eval + corr * 66 / 512;
-    }
-};
-
-PawnCorrectionHistory pawn_correction_history;
-
 // Lazy SMP helper thread management (inside anonymous namespace for internal linkage)
 static std::vector<std::thread> helper_threads;
 static std::atomic<bool> helpers_running{false};
@@ -109,19 +70,6 @@ EvalCacheEntry eval_cache[EVAL_CACHE_SIZE];
 // Thread-local node counter to avoid atomic overhead on every node
 static thread_local uint64_t local_nodes = 0;
 static thread_local uint64_t last_reported_nodes = 0;
-
-// Compute pawn structure hash key (same as evaluate_pawns uses internally)
-inline uint64_t compute_pawn_key(const Position& pos) {
-    uint64_t pawn_key = 0;
-    for (int c = 0; c < 2; ++c) {
-        Bitboard pb = pos.pieces(Color(c), PAWN);
-        while (pb) {
-            Square sq = pop_lsb(pb);
-            pawn_key ^= Zobrist::psq[c][int(PAWN)][int(sq)];
-        }
-    }
-    return pawn_key;
-}
 
 inline Value eval_cached(const Position& pos) {
     uint64_t key = pos.key();
@@ -234,7 +182,7 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
 
     // Check for draw
     if (pos.is_draw()) {
-        // Draw score randomization: tiny noise to avoid search instabilities on draws (Stash-style)
+        if (alpha >= VALUE_DRAW) return alpha;
         Value draw_noise = (local_nodes & 2) - 1;
         return VALUE_DRAW + draw_noise - (pos.side_to_move() == WHITE ? params.contempt / 2 : -params.contempt / 2);
     }
@@ -365,6 +313,7 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
 
     // Check for draw
     if (pos.is_draw()) {
+        if (alpha >= VALUE_DRAW) return alpha;
         Value draw_noise = (local_nodes & 2) - 1;
         return VALUE_DRAW + draw_noise - (pos.side_to_move() == WHITE ? params.contempt / 2 : -params.contempt / 2);
     }
@@ -431,7 +380,7 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
         if (tt_value >= beta && tt_move && ss->ply > 0) {
             Piece moved = pos.piece_on(tt_move.from());
             if (moved != NO_PIECE && !tt_move.is_capture()) {
-                int bonus = depth > 17 ? -8 : depth * (depth + 1) * 2 - 2;
+                int bonus = depth > 17 ? -8 : 19 * depth * depth + 155 * depth - 132;
                 int& h = worker->history[int(moved)][int(tt_move.to())];
                 h += bonus - h * std::abs(bonus) / 32768;
             }
@@ -443,10 +392,6 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
     Value eval = VALUE_ZERO;
     if (!pos.is_check()) {
         eval = eval_cached(pos);
-        // Apply pawn correction history
-        Color stm = pos.side_to_move();
-        uint64_t pawn_key = compute_pawn_key(pos);
-        eval = pawn_correction_history.correct(stm, pawn_key, eval);
     }
     ss->static_eval = eval;
 
@@ -887,7 +832,7 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
                     Piece pc = ss->moved_piece;
                     if (pc != NO_PIECE) {
                         // Stockfish 11 stat_bonus: conservative quadratic scaling
-                        int bonus = depth > 17 ? -8 : depth * (depth + 1) * 2 - 2;
+                        int bonus = depth > 17 ? -8 : 19 * depth * depth + 155 * depth - 132;
                         // Gravity formula for plain history
                         int& h = worker->history[int(pc)][int(m.to())];
                         h += bonus - h * abs(bonus) / 32768;
@@ -912,7 +857,7 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
                     }
                     // Capture history update for capture moves that caused cutoff
                     if (!is_quiet && ss->ply < MAX_PLY && captured_pt != PT_NONE) {
-                        int cap_bonus = depth > 17 ? -8 : depth * (depth + 1) * 2 - 2;
+                        int cap_bonus = depth > 17 ? -8 : 19 * depth * depth + 155 * depth - 132;
                         int& ch = worker->capture_history[int(ss->moved_piece)][int(m.to())][int(captured_pt)];
                         ch += cap_bonus - ch * std::abs(cap_bonus) / 32768;
                     }
@@ -1120,18 +1065,6 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
     // CRITICAL FIX: Only save to TT if search completed fully
     // If search was aborted (stop=true), don't save garbage/incomplete scores
     if (!stop.load(std::memory_order_relaxed)) {
-        // Update pawn correction history when search completed
-        // Only update when: not in check, eval is meaningful
-        if (!pos.is_check() && depth >= 1 && abs(best_value) < VALUE_KNOWN_WIN) {
-            Color stm = pos.side_to_move();
-            Value raw_eval = eval_cached(pos);  // Get uncorrected eval
-            Value diff = best_value - raw_eval;
-            if (diff != 0) {
-                uint64_t pawn_key = compute_pawn_key(pos);
-                pawn_correction_history.update(stm, pawn_key, diff, depth);
-            }
-        }
-
         Bound bound;
         if (best_value >= beta) bound = BOUND_LOWER;
         else if (best_value > original_alpha) bound = BOUND_EXACT;  // PV node improved alpha
@@ -1404,9 +1337,6 @@ Move search(Position& pos, Limits& lim) {
     // The gravity formula (bonus - h * abs(bonus) / 16384) already handles
     // natural decay within each search. Aging 1M+ entries is too expensive
     // and provides marginal benefit over gravity-based decay.
-
-    // Age pawn correction history between searches
-    pawn_correction_history.age();
 
     // Iterative deepening
     // When depth=0, search until time runs out (tournament time control)
