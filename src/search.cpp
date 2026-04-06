@@ -280,7 +280,7 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
             if (it->move.is_capture()) {
                 PieceType captured = pos.piece_type_on(it->move.to());
                 PieceType attacker = pos.piece_type_on(it->move.from());
-                static constexpr int pv[] = {100, 320, 330, 500, 900, 20000, 0};
+                static constexpr int pv[] = {100, 337, 365, 477, 1025, 20000, 0};
                 it->value = (captured != PT_NONE ? pv[captured] : 0) * 10 - pv[attacker];
                 if (it->move.is_promotion()) it->value += pv[it->move.promotion_type()];
             } else {
@@ -956,7 +956,7 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
         ExtMove* cap_end = generate<GEN_CAPTURE>(pos, captures);
 
         // Score captures: MVV-LVA + SEE classification
-        static constexpr int piece_value[] = {100, 320, 330, 500, 900, 20000, 0};
+        static constexpr int piece_value[] = {100, 337, 365, 477, 1025, 20000, 0};
         for (ExtMove* it = captures; it != cap_end; ++it) {
             Move m = it->move;
             int score = 0;
@@ -1187,7 +1187,7 @@ static void helper_thread_func(Position pos_copy, int thread_id) {
             else if (m.is_capture()) {
                 PieceType captured = pos_copy.piece_type_on(m.to());
                 PieceType attacker = pos_copy.piece_type_on(m.from());
-                static constexpr int pv[] = {100, 320, 330, 500, 900, 20000, 0};
+                static constexpr int pv[] = {100, 337, 365, 477, 1025, 20000, 0};
                 score = 1000000 + (captured != PT_NONE ? pv[captured] : 0) * 10 - pv[attacker];
             } else if (m.is_promotion()) {
                 score = 900000 + m.promotion_type() * 10000;
@@ -1458,7 +1458,7 @@ Move search(Position& pos, Limits& lim) {
             else if (m.is_capture()) {
                 PieceType captured = pos.piece_type_on(m.to());
                 PieceType attacker = pos.piece_type_on(m.from());
-                static constexpr int piece_value[] = {100, 320, 330, 500, 900, 20000, 0};
+                static constexpr int piece_value[] = {100, 337, 365, 477, 1025, 20000, 0};
                 score = 1000000 + piece_value[captured] * 10 - piece_value[attacker];
             }
             // Promotions
