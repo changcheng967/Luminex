@@ -226,10 +226,9 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
 
     // Check for draw
     if (pos.is_draw()) {
-        // Apply contempt: if positive, prefer avoiding draws
-        // From root perspective, positive contempt means "I want to avoid draws"
-        // So we return VALUE_DRAW - contempt/2 for root player
-        return VALUE_DRAW - (pos.side_to_move() == WHITE ? params.contempt / 2 : -params.contempt / 2);
+        // Draw score randomization: tiny noise to avoid search instabilities on draws (Stash-style)
+        Value draw_noise = (local_nodes & 2) - 1;
+        return VALUE_DRAW + draw_noise - (pos.side_to_move() == WHITE ? params.contempt / 2 : -params.contempt / 2);
     }
 
     // Evaluate position
@@ -360,10 +359,8 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
 
     // Check for draw
     if (pos.is_draw()) {
-        // Apply contempt: if positive, prefer avoiding draws
-        // From root perspective, positive contempt means "I want to avoid draws"
-        // So we return VALUE_DRAW - contempt/2 for root player
-        return VALUE_DRAW - (pos.side_to_move() == WHITE ? params.contempt / 2 : -params.contempt / 2);
+        Value draw_noise = (local_nodes & 2) - 1;
+        return VALUE_DRAW + draw_noise - (pos.side_to_move() == WHITE ? params.contempt / 2 : -params.contempt / 2);
     }
 
     ++local_nodes;
@@ -442,8 +439,7 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
     bool opponent_worsening = (ss->ply >= 1 && eval > -(ss - 1)->static_eval);
 
     // Internal Iterative Reduction (IIR): reduce depth by 1 when no TT move available
-    // When no TT move exists, we have no guidance for move ordering, so reduce depth
-    if (tt_move == MOVE_NONE && depth >= 4) {
+    if (tt_move == MOVE_NONE && depth >= 3) {
         depth--;
     }
 
@@ -471,32 +467,28 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
         }
     }
 
-    // Null move pruning with verification in endgames
+    // Null move pruning (Stash-style)
     int piece_count = popcount(pos.pieces()) - popcount(pos.pieces(PAWN)) - 2;
-    bool null_move_ok = !pv_node && !pos.is_check() && depth >= 2 && piece_count >= 1 &&
-                          eval >= beta && ss->ply >= 1;
+    bool null_move_ok = !pv_node && !pos.is_check() && depth >= 3 && piece_count >= 1 &&
+                          eval >= beta + 30 && ss->ply >= 1 && !ss->excluded_move;
 
     if (null_move_ok) {
         pos.do_null_move();
 
-        // Adaptive null move reduction
-        int R = 3 + (depth > 6 ? 1 : 0) + (depth > 12 ? 1 : 0);
-        // Reduce less in endgames (fewer non-pawn pieces = more zugzwang risk)
-        if (piece_count < 4) R -= 1;
-        // Increase reduction when eval is far above beta
-        if (eval - beta > 200) R += 1;
-        // Extra reduction when eval is very far above beta
-        if (eval - beta > 400) R += 1;
+        // Stash-style reduction: (855 + 61*depth) / 256 + min((eval-beta)/111, 5)
+        int R = (855 + 61 * depth) / 256;
+        R += std::min((eval - beta) / 111, 5);
         R = std::max(2, std::min(R, depth - 1));
         Value null_value = -search_worker(pos, ss + 1, -beta, -beta + 1, depth - R, !cut_node);
         pos.undo_null_move();
 
         if (null_value >= beta) {
+            // Distrust mate scores from null move
             if (null_value >= VALUE_MATE_IN_MAX_PLY) null_value = beta;
 
-            // Verification search in endgames (few non-pawn pieces = zugzwang risk)
-            if (piece_count < 4 && depth >= 6) {
-                Value verify = search_worker(pos, ss, beta - 1, beta, depth - R - 1, !cut_node);
+            // Verification search at high depth (Stash: depth > 12)
+            if (depth > 12 && piece_count < 6) {
+                Value verify = search_worker(pos, ss, beta - 1, beta, (depth - R) * 3 / 4, !cut_node);
                 if (verify >= beta) return null_value;
             } else {
                 return null_value;
