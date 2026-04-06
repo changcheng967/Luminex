@@ -173,8 +173,8 @@ bool check_time() {
 
     if (limits.movetime) {
         auto now = std::chrono::steady_clock::now();
-        int elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
-            now - search_start).count();
+        int elapsed = static_cast<int>(std::chrono::duration_cast<std::chrono::milliseconds>(
+            now - search_start).count());
         if (elapsed >= limits.movetime) {
             stop = true;
             return true;
@@ -183,8 +183,8 @@ bool check_time() {
 
     if (limits.use_time_management()) {
         auto now = std::chrono::steady_clock::now();
-        int elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
-            now - search_start).count();
+        int elapsed = static_cast<int>(std::chrono::duration_cast<std::chrono::milliseconds>(
+            now - search_start).count());
         // Hard limit: stop immediately when max_time is exceeded
         if (elapsed >= max_time) {
             stop = true;
@@ -195,8 +195,8 @@ bool check_time() {
     // SAFETY: For depth-only searches (no time limit), add a 30-minute maximum
     if (!limits.movetime && !limits.use_time_management() && limits.nodes == 0) {
         auto now = std::chrono::steady_clock::now();
-        int elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
-            now - search_start).count();
+        int elapsed = static_cast<int>(std::chrono::duration_cast<std::chrono::milliseconds>(
+            now - search_start).count());
         if (elapsed >= 1800000) {  // 30 minutes
             stop = true;
             return true;
@@ -1243,16 +1243,16 @@ Move search(Position& pos, Limits& lim) {
         // Always complete depth 1, then be aggressive about stopping
         if (limits.use_time_management() && root_depth > 1) {
             auto now = std::chrono::steady_clock::now();
-            int elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
-                now - search_start).count();
+            int elapsed = static_cast<int>(std::chrono::duration_cast<std::chrono::milliseconds>(
+                now - search_start).count());
             if (elapsed > ideal_time) {
                 break;
             }
         }
         if (limits.movetime) {
             auto now = std::chrono::steady_clock::now();
-            int elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
-                now - search_start).count();
+            int elapsed = static_cast<int>(std::chrono::duration_cast<std::chrono::milliseconds>(
+                now - search_start).count());
             if (elapsed >= (limits.movetime * 7) / 10) {
                 break;
             }
@@ -1444,7 +1444,7 @@ Move search(Position& pos, Limits& lim) {
 
         // Calculate elapsed time for NPS
         auto search_end = std::chrono::steady_clock::now();
-        int time_ms = std::chrono::duration_cast<std::chrono::milliseconds>(search_end - search_start).count();
+        int time_ms = static_cast<int>(std::chrono::duration_cast<std::chrono::milliseconds>(search_end - search_start).count());
 
         // Send UCI info
         uci_info(pos, root_depth, depth_best_value, local_nodes, time_ms);

@@ -25,7 +25,7 @@ void TranspositionTable::resize(size_t mb) {
         new_size |= new_size >> 4;
         new_size |= new_size >> 8;
         new_size |= new_size >> 16;
-        if (sizeof(size_t) > 4) new_size |= new_size >> 32;
+        if constexpr (sizeof(size_t) > 4) new_size |= new_size >> 32;
         new_size++;
         // Minimum size of 1024 to avoid tiny tables
         if (new_size < 1024) new_size = 1024;

@@ -1,4 +1,5 @@
 #define _CRT_SECURE_NO_WARNINGS
+#pragma warning(disable: 4459) // variable shadowing - intentional for pos parameter
 #include "luminex.h"
 #include <chrono>
 #include <cstdarg>

@@ -1017,7 +1017,7 @@ int scale_factor(const Position& pos, [[maybe_unused]] Value eg) {
         bool wb_light = ((int(wb_sq) + (wb_sq / 8)) % 2) == 0;
         bool bb_light = ((int(bb_sq) + (bb_sq / 8)) % 2) == 0;
         if (wb_light != bb_light) {
-            // Stash OCB scaling: 71 + piece_count*9 (with material) or 33 + passed_count*21
+            // OCB scaling (original Stash formula)
             int piece_count = popcount(pos.pieces()) - 4; // exclude kings and bishops
             if (piece_count > 0) {
                 return std::min(71 + piece_count * 9, 32);

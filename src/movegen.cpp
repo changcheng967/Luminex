@@ -62,25 +62,25 @@ ExtMove* generate_moves(const Position& pos, ExtMove* moveList) {
         Bitboard attacks = pawn_attacks_bb(us, from) & targets;
 
         while (attacks) {
-            Square to = pop_lsb(attacks);
+            Square cap_to = pop_lsb(attacks);
 
-            if (relative_rank(us, to) == RANK_8) {
+            if (relative_rank(us, cap_to) == RANK_8) {
                 // Promotion capture
                 if constexpr (T == GEN_CAPTURE || T == GEN_ALL || T == GEN_LEGAL || T == GEN_EVASION || T == GEN_NON_EVASION) {
-                    *moveList++ = Move(from, to, MF_CAPTURE_PROMO_QUEEN);
-                    *moveList++ = Move(from, to, MF_CAPTURE_PROMO_ROOK);
-                    *moveList++ = Move(from, to, MF_CAPTURE_PROMO_BISHOP);
-                    *moveList++ = Move(from, to, MF_CAPTURE_PROMO_KNIGHT);
+                    *moveList++ = Move(from, cap_to, MF_CAPTURE_PROMO_QUEEN);
+                    *moveList++ = Move(from, cap_to, MF_CAPTURE_PROMO_ROOK);
+                    *moveList++ = Move(from, cap_to, MF_CAPTURE_PROMO_BISHOP);
+                    *moveList++ = Move(from, cap_to, MF_CAPTURE_PROMO_KNIGHT);
                 }
-            } else if (to == pos.ep_square()) {
+            } else if (cap_to == pos.ep_square()) {
                 // En passant
                 if constexpr (T == GEN_CAPTURE || T == GEN_ALL || T == GEN_LEGAL || T == GEN_EVASION || T == GEN_NON_EVASION) {
-                    *moveList++ = Move(from, to, MF_EN_PASSANT);
+                    *moveList++ = Move(from, cap_to, MF_EN_PASSANT);
                 }
             } else {
                 // Normal capture
                 if constexpr (T == GEN_CAPTURE || T == GEN_ALL || T == GEN_LEGAL || T == GEN_EVASION || T == GEN_NON_EVASION) {
-                    *moveList++ = Move(from, to, MF_CAPTURE);
+                    *moveList++ = Move(from, cap_to, MF_CAPTURE);
                 }
             }
         }

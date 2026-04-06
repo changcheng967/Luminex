@@ -682,7 +682,7 @@ bool Position::do_move(Move m) {
     // XOR the castling rights difference into the key
     int castling_diff = old_castling ^ st_->castling_rights;
     while (castling_diff) {
-        int bit = __builtin_ctz(castling_diff);
+        int bit = std::countr_zero(Bitboard(castling_diff));
         st_->key ^= Zobrist::castling[bit];
         castling_diff &= castling_diff - 1;
     }
