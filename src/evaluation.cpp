@@ -694,6 +694,18 @@ Value evaluate(const Position& pos) {
     if (bishop_count[WHITE] >= 2) { mg_score += 21; eg_score += 93; }
     if (bishop_count[BLACK] >= 2) { mg_score -= 21; eg_score -= 93; }
 
+    // Material imbalance: bishop value increases with fewer pawns
+    for (int c_idx = 0; c_idx < 2; ++c_idx) {
+        Color c = Color(c_idx);
+        Sign sign = (c_idx == 0) ? 1 : -1;
+        int pawns = popcount(pos.pieces(c, PAWN));
+        int bishops = bishop_count[c_idx];
+        if (bishops >= 1) {
+            mg_score += sign * (30 - pawns * 2);
+            eg_score += sign * (50 - pawns * 3);
+        }
+    }
+
     // King safety using Stockfish-style SafetyTable (from chessprogramming.org)
     // Smooth S-curve scaling instead of crude quadratic
     static const int SafetyTable[100] = {
