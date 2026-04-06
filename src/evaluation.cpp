@@ -7,15 +7,15 @@ namespace luminex {
 static constexpr int PieceValueMG[8] = { 82, 337, 365, 477, 1025, 0, 0, 0 };
 static constexpr int PieceValueEG[8] = { 94, 281, 297, 512, 936, 0, 0, 0 };
 
-// Stash mobility tables (MG, EG) - more balanced non-linear values
-static constexpr int KnightMobilityMG[9] = { -56, -45, -35, -26, -19, -13, -8, 0, 4 };
-static constexpr int KnightMobilityEG[9] = { 20, -28, 36, 58, 76, 95, 104, 109, 103 };
-static constexpr int BishopMobilityMG[14] = { -56, -44, -27, -25, -17, -13, -10, -8, -7, -5, -2, 7, 9, 35 };
-static constexpr int BishopMobilityEG[14] = { -44, -39, -15, 15, 32, 46, 56, 61, 64, 67, 61, 56, 57, 48 };
-static constexpr int RookMobilityMG[15] = { -88, -39, -27, -31, -29, -33, -34, -29, -26, -18, -17, -13, -6, 4, 23 };
-static constexpr int RookMobilityEG[15] = { -47, 40, 76, 92, 103, 117, 125, 131, 140, 149, 156, 163, 167, 169, 161 };
-static constexpr int QueenMobilityMG[28] = { -14, 19, 0, -6, 1, -2, -4, -3, -2, -2, -1, 2, 2, 5, 5, 5, 6, 9, 14, 12, 36, 39, 48, 34, 59, 11, 11, 36 };
-static constexpr int QueenMobilityEG[28] = { -93, 216, 147, 95, 65, 118, 151, 175, 185, 205, 214, 219, 228, 232, 237, 243, 244, 241, 232, 234, 204, 198, 183, 163, 156, 164, 170, 141 };
+// Ethereal-style mobility tables (MG, EG) - better tuned non-linear values
+static constexpr int KnightMobilityMG[9] = { -104, -45, -22, -8, 6, 11, 19, 30, 43 };
+static constexpr int KnightMobilityEG[9] = { -139, -114, -37, 3, 15, 34, 38, 37, 17 };
+static constexpr int BishopMobilityMG[14] = { -99, -46, -16, -4, 6, 14, 17, 19, 19, 27, 26, 52, 55, 83 };
+static constexpr int BishopMobilityEG[14] = { -186, -124, -54, -14, 1, 20, 35, 39, 49, 48, 48, 32, 47, 2 };
+static constexpr int RookMobilityMG[15] = { -127, -56, -25, -12, -10, -12, -11, -4, 4, 9, 11, 19, 19, 37, 97 };
+static constexpr int RookMobilityEG[15] = { -148, -127, -85, -28, 2, 27, 42, 46, 52, 55, 64, 68, 73, 60, 15 };
+static constexpr int QueenMobilityMG[28] = { -111, -253, -127, -46, -18, 10, 9, 13, 7, 7, 7, 16, 21, 27, 24, 31, 32, 35, 38, 41, 35, 35, 35, 42, 44, 47, 50, 52 };
+static constexpr int QueenMobilityEG[28] = { -273, -401, -228, -236, -144, -81, -41, 13, 32, 62, 79, 96, 110, 114, 115, 120, 122, 113, 101, 96, 83, 74, 62, 50, 36, 25, 18, 7 };
 
 // Stash-style piece-specific threat tables [attacked_piece_type]
 // Index: PAWN=0, KNIGHT=1, BISHOP=2, ROOK=3, QUEEN=4, KING=5
@@ -33,6 +33,30 @@ static constexpr int FarKnightMG = -22, FarKnightEG = -13;
 static constexpr int FarBishopMG = -8, FarBishopEG = -10;
 static constexpr int FarRookMG = -10, FarRookEG = 5;
 static constexpr int FarQueenMG = -8, FarQueenEG = 15;
+
+// Stash pawn storm and shelter tables [position_type * 8 + rank_distance]
+// position_type: 0-7 = side (king file < f, same side as rook), 8-15 = front (same file as king), 16-23 = center (king file >= f, different side from rook)
+// rank_distance: 0 = pawn on king rank, 7 = no pawn on file
+static constexpr int KingStormMG[24] = {
+       2,  -36,   24,    7,  -11,  -13,  -33,   -4,
+       0,    2,   33,    3,   -6,   -7,    3,   15,
+       8,   12,   34,   21,   -8,  -15,   -6,   -2
+};
+static constexpr int KingStormEG[24] = {
+     -10,   -6,   26,   20,   25,    8,  -14,  -36,
+       0,   -7,   44,  -13,  -18,   18,   55,  -14,
+       2,   -1,   17,  -11,  -24,   48,  112,  -81
+};
+static constexpr int KingShelterMG[24] = {
+     -38,  -27,  -26,  -12,   20,   21,  -16,    6,
+       0,   -8,   -8,    0,    9,   35,    4,   13,
+     -37,   12,   -2,    7,   10,   20,   16,   13
+};
+static constexpr int KingShelterEG[24] = {
+      20,  145,  -49,   14,  -13,  -16,   -3, -102,
+       0,  -35,   82,   66,   36,   -4,   -1,  -74,
+     -59, -173,  111,  160,   45,    1,   -1,   -3
+};
 
 // PeSTO piece-square tables (WHITE, a1=0 layout)
 // Transposed from original a8=0 layout by reversing row order.
@@ -902,6 +926,76 @@ Value evaluate(const Position& pos) {
         }
         // Exclude own pawn attacks from king zone (Stash)
         king_zone &= ~attacks_by[c][PAWN];
+
+        // Stash pawn storm and shelter evaluation
+        {
+            File kfile = file_of(our_ksq);
+            Square their_ksq = ksq_arr[c_idx ^ 1];
+
+            Bitboard our_pawns_bb = pos.pieces(c, PAWN);
+            Bitboard their_pawns_bb = pos.pieces(them, PAWN);
+
+            for (int df = -2; df <= 2; ++df) {
+                File f = File(int(kfile) + df);
+                if (f < FILE_A || f > FILE_H) continue;
+
+                // Determine position_type based on file distance from king
+                int abs_df = std::abs(df);
+                // Side (0-7): abs_df = 2, on same side as king's rook
+                // Front (8-15): abs_df = 0, same file as king
+                // Center (16-23): abs_df = 1
+                int pt;
+                if (abs_df == 2) pt = 0;      // side
+                else if (abs_df == 0) pt = 8;  // front
+                else pt = 16;                  // center
+
+                // KingStorm: our pawn distance to enemy king rank
+                {
+                    Bitboard our_file_pawns = our_pawns_bb & file_bb(f);
+                    int storm_dist = 7;
+                    if (our_file_pawns) {
+                        // Find pawn closest to enemy king rank (highest relative rank)
+                        Rank best_rank = RANK_1;
+                        Bitboard tmp = our_file_pawns;
+                        while (tmp) {
+                            Square psq = lsb(tmp);
+                            tmp &= tmp - 1;
+                            Rank pr = relative_rank(c, psq);
+                            if (pr > best_rank) best_rank = pr;
+                        }
+                        storm_dist = std::abs(rank_of(their_ksq) - rank_of(relative_square(c, make_square(f, best_rank))));
+                        storm_dist = std::min(storm_dist, 7);
+                    }
+                    int idx = pt + storm_dist;
+                    idx = std::clamp(idx, 0, 23);
+                    mg_score += sign * KingStormMG[idx];
+                    eg_score += sign * KingStormEG[idx];
+                }
+
+                // KingShelter: their pawn distance to their own king rank
+                {
+                    Bitboard their_file_pawns = their_pawns_bb & file_bb(f);
+                    int shelter_dist = 7;
+                    if (their_file_pawns) {
+                        // Find pawn closest to their king rank
+                        Rank best_rank = RANK_1;
+                        Bitboard tmp = their_file_pawns;
+                        while (tmp) {
+                            Square psq = lsb(tmp);
+                            tmp &= tmp - 1;
+                            Rank pr = relative_rank(them, psq);
+                            if (pr > best_rank) best_rank = pr;
+                        }
+                        shelter_dist = std::abs(rank_of(their_ksq) - rank_of(relative_square(them, make_square(f, best_rank))));
+                        shelter_dist = std::min(shelter_dist, 7);
+                    }
+                    int idx = pt + shelter_dist;
+                    idx = std::clamp(idx, 0, 23);
+                    mg_score += sign * KingShelterMG[idx];
+                    eg_score += sign * KingShelterEG[idx];
+                }
+            }
+        }
 
         int attacker_count = 0;
 
