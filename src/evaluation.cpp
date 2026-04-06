@@ -27,6 +27,8 @@ static constexpr int BishopThreatMG[6] = { -3, 15, 1, 55, 50, 0 };
 static constexpr int BishopThreatEG[6] = { 5, 50, 58, 75, 152, 0 };
 static constexpr int RookThreatMG[6] = { -10, 7, 24, 11, 50, 0 };
 static constexpr int RookThreatEG[6] = { 13, 29, 22, 27, 63, 0 };
+static constexpr int QueenThreatMG[6] = { -14, 11, 24, 19, 5, 0 };
+static constexpr int QueenThreatEG[6] = { -5, 22, 15, 31, 9, 0 };
 
 // Far piece penalty: pieces more than 3 squares from own king
 static constexpr int FarKnightMG = -22, FarKnightEG = -13;
@@ -697,9 +699,15 @@ Value evaluate(const Position& pos) {
 
             // Rook on blocked file: friendly pawn ahead on same file (Stash: -8/-8)
             {
-                Bitboard ahead_pawns = (c == WHITE)
-                    ? (our_pawns & file_bb(f) & ~rank_bb(Rank(rank_of(sq))))
-                    : (our_pawns & file_bb(f) & ~rank_bb(Rank(rank_of(sq))));
+                Bitboard ahead_pawns;
+                if (c == WHITE) {
+                    // White: pawns on ranks above the rook
+                    ahead_pawns = our_pawns & file_bb(f) & ~rank_bb(Rank(rank_of(sq)));
+                } else {
+                    // Black: pawns on ranks below the rook
+                    Bitboard rook_rank = rank_bb(Rank(rank_of(sq)));
+                    ahead_pawns = our_pawns & file_bb(f) & (rook_rank - 1);
+                }
                 if (ahead_pawns) {
                     mg_score += sign * (-8);
                     eg_score += sign * (-8);
@@ -833,6 +841,16 @@ Value evaluate(const Position& pos) {
                 if (pt < KING) {
                     mg_score += sign * RookThreatMG[pt];
                     eg_score += sign * RookThreatEG[pt];
+                }
+            }
+
+            // Queen threats: our queens attacking enemy pieces
+            threats = their_pieces & attacks_by[c][QUEEN];
+            while (threats) {
+                PieceType pt = piece_type_of(pos.piece_on(pop_lsb(threats)));
+                if (pt < KING) {
+                    mg_score += sign * QueenThreatMG[pt];
+                    eg_score += sign * QueenThreatEG[pt];
                 }
             }
 
