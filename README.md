@@ -44,7 +44,7 @@ build/luminex.exe bench
 
 ## Strength
 
-~3350 ELO (pure HCE, no NNUE). Tested against Stash v13 at tc=1+0.01.
+~1800 ELO (pure HCE, no NNUE). Estimated from tests against Stash v13 (1972 ELO) at tc=1+0.01.
 
 ## License
 
