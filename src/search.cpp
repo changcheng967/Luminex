@@ -431,7 +431,7 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
         if (tt_value >= beta && tt_move && ss->ply > 0) {
             Piece moved = pos.piece_on(tt_move.from());
             if (moved != NO_PIECE && !tt_move.is_capture()) {
-                int bonus = depth > 15 ? -8 : 19 * depth * depth + 155 * depth - 132;
+                int bonus = depth > 17 ? -8 : depth * (depth + 1) * 2 - 2;
                 int& h = worker->history[int(moved)][int(tt_move.to())];
                 h += bonus - h * std::abs(bonus) / 32768;
             }
@@ -886,8 +886,8 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
                     }
                     Piece pc = ss->moved_piece;
                     if (pc != NO_PIECE) {
-                        // Stockfish-style stat_bonus: non-linear scaling with depth
-                        int bonus = depth > 15 ? -8 : 19 * depth * depth + 155 * depth - 132;
+                        // Stockfish 11 stat_bonus: conservative quadratic scaling
+                        int bonus = depth > 17 ? -8 : depth * (depth + 1) * 2 - 2;
                         // Gravity formula for plain history
                         int& h = worker->history[int(pc)][int(m.to())];
                         h += bonus - h * abs(bonus) / 32768;
@@ -911,12 +911,12 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
                     }
                     // Capture history update for capture moves that caused cutoff
                     if (!is_quiet && ss->ply < MAX_PLY && captured_pt != PT_NONE) {
-                        int cap_bonus = depth > 15 ? -8 : 19 * depth * depth + 155 * depth - 132;
+                        int cap_bonus = depth > 17 ? -8 : depth * (depth + 1) * 2 - 2;
                         int& ch = worker->capture_history[int(ss->moved_piece)][int(m.to())][int(captured_pt)];
                         ch += cap_bonus - ch * std::abs(cap_bonus) / 32768;
                     }
                     // History gravity malus for non-cutoff quiet moves (use stat_bonus formula)
-                    int malus = depth > 15 ? 8 : -(19 * depth * depth + 155 * depth - 132);
+                    int malus = depth > 17 ? 8 : -(depth * (depth + 1) * 2 - 2);
                     for (int i = 0; i < quiet_count - 1; ++i) {
                         Move qm = quiets_searched[i];
                         Piece qpc = pos.piece_on(qm.from());
