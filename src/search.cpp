@@ -562,6 +562,19 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
     Move quiets_searched[64];
     int quiet_count = 0;
 
+    // Internal Iterative Deepening: if no TT move at PV nodes, search at reduced depth
+    // to populate TT with a good move for ordering
+    if (pv_node && tt_move == MOVE_NONE && depth >= 4) {
+        search_worker(pos, ss, alpha, beta, depth - 2, false);
+        TTEntry* iid_tte = TT.probe(pos.key(), found);
+        if (found) {
+            Move iid_move = iid_tte->move();
+            if (iid_move && iid_move.from() < SQUARE_NONE && iid_move.to() < SQUARE_NONE && pos.legal(iid_move)) {
+                tt_move = iid_move;
+            }
+        }
+    }
+
     // Singular extension: check if TT move is significantly better than alternatives
     int singular_extension = 0;
     if (tt_move != MOVE_NONE && !pv_node && found && tt_depth >= depth - 3 && depth >= 8 &&
