@@ -34,30 +34,6 @@ static constexpr int FarBishopMG = -8, FarBishopEG = -10;
 static constexpr int FarRookMG = -10, FarRookEG = 5;
 static constexpr int FarQueenMG = -8, FarQueenEG = 15;
 
-// Stash pawn storm and shelter tables [position_type * 8 + rank_distance]
-// position_type: 0-7 = side (king file < f, same side as rook), 8-15 = front (same file as king), 16-23 = center (king file >= f, different side from rook)
-// rank_distance: 0 = pawn on king rank, 7 = no pawn on file
-static constexpr int KingStormMG[24] = {
-       2,  -36,   24,    7,  -11,  -13,  -33,   -4,
-       0,    2,   33,    3,   -6,   -7,    3,   15,
-       8,   12,   34,   21,   -8,  -15,   -6,   -2
-};
-static constexpr int KingStormEG[24] = {
-     -10,   -6,   26,   20,   25,    8,  -14,  -36,
-       0,   -7,   44,  -13,  -18,   18,   55,  -14,
-       2,   -1,   17,  -11,  -24,   48,  112,  -81
-};
-static constexpr int KingShelterMG[24] = {
-     -38,  -27,  -26,  -12,   20,   21,  -16,    6,
-       0,   -8,   -8,    0,    9,   35,    4,   13,
-     -37,   12,   -2,    7,   10,   20,   16,   13
-};
-static constexpr int KingShelterEG[24] = {
-      20,  145,  -49,   14,  -13,  -16,   -3, -102,
-       0,  -35,   82,   66,   36,   -4,   -1,  -74,
-     -59, -173,  111,  160,   45,    1,   -1,   -3
-};
-
 // PeSTO piece-square tables (WHITE, a1=0 layout)
 // Transposed from original a8=0 layout by reversing row order.
 // Verified against chessprogramming.org/PeSTO's_Evaluation_Function
@@ -926,76 +902,6 @@ Value evaluate(const Position& pos) {
         }
         // Exclude own pawn attacks from king zone (Stash)
         king_zone &= ~attacks_by[c][PAWN];
-
-        // Stash pawn storm and shelter evaluation
-        {
-            File kfile = file_of(our_ksq);
-            Square their_ksq = ksq_arr[c_idx ^ 1];
-
-            Bitboard our_pawns_bb = pos.pieces(c, PAWN);
-            Bitboard their_pawns_bb = pos.pieces(them, PAWN);
-
-            for (int df = -2; df <= 2; ++df) {
-                File f = File(int(kfile) + df);
-                if (f < FILE_A || f > FILE_H) continue;
-
-                // Determine position_type based on file distance from king
-                int abs_df = std::abs(df);
-                // Side (0-7): abs_df = 2, on same side as king's rook
-                // Front (8-15): abs_df = 0, same file as king
-                // Center (16-23): abs_df = 1
-                int pt;
-                if (abs_df == 2) pt = 0;      // side
-                else if (abs_df == 0) pt = 8;  // front
-                else pt = 16;                  // center
-
-                // KingStorm: our pawn distance to enemy king rank
-                {
-                    Bitboard our_file_pawns = our_pawns_bb & file_bb(f);
-                    int storm_dist = 7;
-                    if (our_file_pawns) {
-                        // Find pawn closest to enemy king rank (highest relative rank)
-                        Rank best_rank = RANK_1;
-                        Bitboard tmp = our_file_pawns;
-                        while (tmp) {
-                            Square psq = lsb(tmp);
-                            tmp &= tmp - 1;
-                            Rank pr = relative_rank(c, psq);
-                            if (pr > best_rank) best_rank = pr;
-                        }
-                        storm_dist = std::abs(rank_of(their_ksq) - rank_of(relative_square(c, make_square(f, best_rank))));
-                        storm_dist = std::min(storm_dist, 7);
-                    }
-                    int idx = pt + storm_dist;
-                    idx = std::clamp(idx, 0, 23);
-                    mg_score += sign * KingStormMG[idx];
-                    eg_score += sign * KingStormEG[idx];
-                }
-
-                // KingShelter: their pawn distance to their own king rank
-                {
-                    Bitboard their_file_pawns = their_pawns_bb & file_bb(f);
-                    int shelter_dist = 7;
-                    if (their_file_pawns) {
-                        // Find pawn closest to their king rank
-                        Rank best_rank = RANK_1;
-                        Bitboard tmp = their_file_pawns;
-                        while (tmp) {
-                            Square psq = lsb(tmp);
-                            tmp &= tmp - 1;
-                            Rank pr = relative_rank(them, psq);
-                            if (pr > best_rank) best_rank = pr;
-                        }
-                        shelter_dist = std::abs(rank_of(their_ksq) - rank_of(relative_square(them, make_square(f, best_rank))));
-                        shelter_dist = std::min(shelter_dist, 7);
-                    }
-                    int idx = pt + shelter_dist;
-                    idx = std::clamp(idx, 0, 23);
-                    mg_score += sign * KingShelterMG[idx];
-                    eg_score += sign * KingShelterEG[idx];
-                }
-            }
-        }
 
         int attacker_count = 0;
 
