@@ -1,97 +1,52 @@
-# Prerequisites
+# Compiled files
 *.d
-
-# Compiled Object files
-*.slo
-*.lo
 *.o
 *.obj
-
-# Precompiled Headers
+*.slo
+*.lo
 *.gch
 *.pch
-
-# Linker files
 *.ilk
-
-# Debugger Files
 *.pdb
-
-# Compiled Dynamic libraries
+*.dwo
+*.lib
+*.a
 *.so
 *.dylib
 *.dll
 
-# Fortran module files
-*.mod
-*.smod
-
-# Compiled Static libraries
-*.lai
-*.la
-*.a
-*.lib
-
 # Executables
-luminex.exe
-run_game.exe
-test_*.exe
+*.exe
 *.out
 *.app
 
-# debug information files
-*.dwo
-
-# NNUE files (not used in HCE build)
+# NNUE files (not used)
 *.bin
 *.pt
 
+# Build directories
+build/
+build_debug/
+build_debug2/
+build_release/
+
+# IDE and tooling
+.cache/
+.vs/
+.vscode/
+.idea/
+
 # Claude Code
 .claude/
-
-# Ignore the build directory
-build/
-
-# Ignore the CLAUDE.md file
 CLAUDE.md
 
-# Test games and analysis files
+# Test games and logs
 *.pgn
-game_log*.txt
-game_analysis.txt
-mate_test.txt
+*.txt
+!README.md
+!src/*.txt
 *.sh
 *.bat
 *.py
 *.cpp
 !src/*.cpp
-test_*.txt
-*.txt
-!src/*.txt
-!README.md
-check_board.txt
-debug_moves.txt
-analyze_positions.sh
-play_game*.sh
-play_games.bat
-reproduce_game.txt
-run_game.cpp
-run_selfplay.py
-selfplay.bat
-selfplay.py
-verify.txt
-verify_knight_moves.cpp
-test_fen.cpp
-test_fen.txt
-test_gen.txt
-test_moves2.txt
-test_pseudo.txt
-test_queen.txt
-test_queen_vis.txt
-test_see.cpp
-test_check.txt
-test_positions.txt
-Luminex-v*.exe
-nul
-.pgnluminex_*_log.txt
-luminex_*_log.txt
