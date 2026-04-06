@@ -439,7 +439,7 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
     bool opponent_worsening = (ss->ply >= 1 && eval > -(ss - 1)->static_eval);
 
     // Internal Iterative Reduction (IIR): reduce depth by 1 when no TT move available
-    if (tt_move == MOVE_NONE && depth >= 3) {
+    if (tt_move == MOVE_NONE && depth >= 4) {
         depth--;
     }
 
@@ -469,15 +469,16 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
 
     // Null move pruning (Stash-style)
     int piece_count = popcount(pos.pieces()) - popcount(pos.pieces(PAWN)) - 2;
-    bool null_move_ok = !pv_node && !pos.is_check() && depth >= 3 && piece_count >= 1 &&
+    bool null_move_ok = !pv_node && !pos.is_check() && depth >= 2 && piece_count >= 1 &&
                           eval >= beta + 30 && ss->ply >= 1 && !ss->excluded_move;
 
     if (null_move_ok) {
         pos.do_null_move();
 
-        // Stash-style reduction: (855 + 61*depth) / 256 + min((eval-beta)/111, 5)
-        int R = (855 + 61 * depth) / 256;
-        R += std::min((eval - beta) / 111, 5);
+        int R = 3 + (depth > 6 ? 1 : 0) + (depth > 12 ? 1 : 0);
+
+        if (piece_count < 4) R -= 1;
+
         R = std::max(2, std::min(R, depth - 1));
         Value null_value = -search_worker(pos, ss + 1, -beta, -beta + 1, depth - R, !cut_node);
         pos.undo_null_move();
@@ -486,8 +487,8 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
             // Distrust mate scores from null move
             if (null_value >= VALUE_MATE_IN_MAX_PLY) null_value = beta;
 
-            // Verification search at high depth (Stash: depth > 12)
-            if (depth > 12 && piece_count < 6) {
+            // Verification search at high depth
+            if (piece_count < 4 && depth >= 6) {
                 Value verify = search_worker(pos, ss, beta - 1, beta, (depth - R) * 3 / 4, !cut_node);
                 if (verify >= beta) return null_value;
             } else {
@@ -589,7 +590,7 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
     // Helper lambda: compute LMR reduction for a move (takes gives_chk to avoid recomputation)
     auto compute_reduction = [&](Move m, int mp, bool gives_chk) -> int {
         // Logarithmic LMR formula with history-based adjustments
-        int reduction = int(1.0 + std::log(double(std::max(depth - 1, 1))) * std::log(double(std::max(mp, 1))) / 2.25);
+        int reduction = int(1.35 + std::log(double(std::max(depth - 1, 1))) * std::log(double(std::max(mp, 1))) / 2.75);
         if (!ss->improving && !opponent_worsening) reduction += 1;
         if (cut_node) reduction += 1;
 
@@ -616,7 +617,7 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
             }
 
             // History influence on reduction
-            reduction -= history_score / 2560;
+            reduction -= history_score / 3000;
         }
 
         // Reduce less for killer moves

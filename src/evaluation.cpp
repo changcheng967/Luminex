@@ -425,15 +425,12 @@ Value evaluate(const Position& pos) {
     // Per-piece-type attack maps for threat evaluation and king safety
     Bitboard attacks_by[2][7] = {};
     Bitboard all_attacks[2] = {};
-    Bitboard attacked2[2] = {};  // Squares attacked by 2+ pieces (for weak squares)
 
     // Initialize pawn and king attacks
     for (int c = 0; c < 2; ++c) {
         attacks_by[c][PAWN] = pawn_attacks_bb(Color(c), pos.pieces(Color(c), PAWN));
         attacks_by[c][KING] = king_attacks_bb(ksq_arr[c]);
         all_attacks[c] = attacks_by[c][PAWN] | attacks_by[c][KING];
-        // Double attacks: pawn-pawn + pawn-king + king pawn-attacks
-        attacked2[c] = (all_attacks[c] & attacks_by[c][PAWN]) | pawn_attacks_bb(Color(c), pos.pieces(Color(c), PAWN) & pos.pieces(Color(c), PAWN));
     }
 
     // Pawn evaluation via pawn hash table
@@ -525,7 +522,6 @@ Value evaluate(const Position& pos) {
 
             Bitboard attacks = knight_attacks_bb(sq);
             attacks_by[c][KNIGHT] |= attacks;
-            attacked2[c] |= all_attacks[c] & attacks;
             all_attacks[c] |= attacks;
             int mob = popcount(attacks & mob_area & ~pos.pieces(c));
             mob = std::min(mob, 8);
@@ -570,7 +566,6 @@ Value evaluate(const Position& pos) {
             eg_score += sign * (PieceValueEG[BISHOP] + PST_EG_TABLE[int(c)][int(BISHOP)][int(sq)]);
             Bitboard attacks = bb_diag_attacks(sq, occupied);
             attacks_by[c][BISHOP] |= attacks;
-            attacked2[c] |= all_attacks[c] & attacks;
             all_attacks[c] |= attacks;
             int mob = popcount(attacks & mob_area & ~pos.pieces(c));
             mob = std::min(mob, 13);
@@ -639,7 +634,6 @@ Value evaluate(const Position& pos) {
             // Rook mobility: exclude own rooks and queens from occupancy (Stash)
             Bitboard attacks = rook_attacks_bb(sq, occupied ^ pos.pieces(c, ROOK) ^ pos.pieces(c, QUEEN));
             attacks_by[c][ROOK] |= attacks;
-            attacked2[c] |= all_attacks[c] & attacks;
             all_attacks[c] |= attacks;
             int mob = popcount(attacks & mob_area & ~pos.pieces(c));
             mob = std::min(mob, 14);
@@ -717,7 +711,6 @@ Value evaluate(const Position& pos) {
             Bitboard attacks = bb_diag_attacks(sq, occupied ^ pos.pieces(c, BISHOP))
                              | rook_attacks_bb(sq, occupied ^ pos.pieces(c, ROOK));
             attacks_by[c][QUEEN] |= attacks;
-            attacked2[c] |= all_attacks[c] & attacks;
             all_attacks[c] |= attacks;
             int mob = popcount(attacks & mob_area & ~pos.pieces(c));
             mob = std::min(mob, 27);
@@ -873,7 +866,17 @@ Value evaluate(const Position& pos) {
     if (bishop_count[WHITE] >= 2) { mg_score += 21; eg_score += 93; }
     if (bishop_count[BLACK] >= 2) { mg_score -= 21; eg_score -= 93; }
 
-    // King safety using Stash-style differentiated weights
+    // King safety using Stockfish-style SafetyTable (proven at peak: 14-6 vs Stash v20)
+    static const int SafetyTable[100] = {
+        0, 0, 1, 2, 3, 5, 7, 9, 12, 15, 18, 22, 26, 30, 35, 39,
+        44, 50, 56, 62, 68, 75, 82, 85, 89, 97, 105, 113, 122, 131, 140,
+        150, 169, 180, 191, 202, 213, 225, 237, 248, 260, 272, 283, 295,
+        307, 319, 330, 342, 354, 366, 377, 389, 401, 412, 424, 436, 448,
+        459, 471, 483, 494, 500, 500, 500, 500, 500, 500, 500, 500, 500,
+        500, 500, 500, 500, 500, 500, 500, 500, 500, 500, 500, 500, 500,
+        500, 500, 500, 500, 500, 500, 500, 500, 500, 500, 500, 500, 500,
+        500, 500
+    };
 
     for (int c_idx = 0; c_idx < 2; ++c_idx) {
         Color c = Color(c_idx);
@@ -881,152 +884,96 @@ Value evaluate(const Position& pos) {
         Sign sign = (c_idx == 0) ? 1 : -1;
         Square our_ksq = ksq_arr[c_idx];
 
-        // Skip king safety entirely in endgames (no enemy queen + no enemy rooks)
-        Bitboard enemy_qu = pos.pieces(them, QUEEN);
-        Bitboard enemy_ro = pos.pieces(them, ROOK);
-        if (!enemy_qu && !enemy_ro) continue;
-
-        // King zone: 3x4 area around king (matching Stash)
-        // king attacks + one rank in front, expanded on A/H files
-        // Exclude own pawn attacks (pawns don't participate in king attacks for safety)
+        // King zone: king attacks + one rank toward enemy
         Bitboard king_zone = king_attacks_bb(our_ksq) | square_bb(our_ksq);
-        // Shift one rank toward enemy
-        if (c == WHITE) {
-            king_zone |= (king_zone << 8) & ~BB_RANK_1;
-            if (file_of(our_ksq) == FILE_A) king_zone |= (king_zone << 1) & BB_FILE_B & ~BB_RANK_1;
-            if (file_of(our_ksq) == FILE_H) king_zone |= (king_zone >> 1) & BB_FILE_G & ~BB_RANK_1;
-        } else {
-            king_zone |= (king_zone >> 8) & ~BB_RANK_8;
-            if (file_of(our_ksq) == FILE_A) king_zone |= (king_zone << 1) & BB_FILE_B & ~BB_RANK_8;
-            if (file_of(our_ksq) == FILE_H) king_zone |= (king_zone >> 1) & BB_FILE_G & ~BB_RANK_8;
+        Rank fwd = (c == WHITE) ? Rank(rank_of(our_ksq) + 1) : Rank(rank_of(our_ksq) - 1);
+        if (fwd >= RANK_1 && fwd <= RANK_8) {
+            for (File f = FILE_A; f <= FILE_H; f = File(f + 1)) {
+                king_zone |= square_bb(make_square(f, fwd));
+            }
         }
-        // Exclude own pawn attacks from king zone (Stash)
-        king_zone &= ~attacks_by[c][PAWN];
 
+        int attack_units = 0;
         int attacker_count = 0;
 
-        // Safe squares for checks: not our pieces, not attacked by enemy pawns
-        // (safe must be computed before piece loops that use it)
-        Bitboard safe = ~pos.pieces(c) & ~attacks_by[them][PAWN];
+        // Safe squares: not defended by our pawns
+        Bitboard our_pawn_attacks = pawn_attacks_bb(c, pos.pieces(c, PAWN));
+        Bitboard safe = ~our_pawn_attacks;
 
-        // Precompute king check rays (where sliders could give check)
-        Bitboard king_diag = bb_diag_attacks(our_ksq, Bitboard(0));
-        Bitboard king_orth = rook_attacks_bb(our_ksq, Bitboard(0));
-        Bitboard king_knights = knight_attacks_bb(our_ksq);
-
-        // Pawn attacks on king zone (Stash: pawn weight 0 for MG, but still counts as attacker)
+        // Pawn attacks on king zone (2 units per pawn)
         Bitboard enemy_pawns = pos.pieces(them, PAWN);
         Bitboard ep = enemy_pawns;
         while (ep) {
             Square psq = pop_lsb(ep);
             if (pawn_attacks_bb(them, square_bb(psq)) & king_zone) {
+                attack_units += 2;
                 attacker_count++;
             }
         }
 
-        // Stash-style differentiated attack weights per piece type
-        // [MG weight, EG weight] - applied per piece with attacks reaching king zone
-        // Knight: 46/72, Bishop: 31/116, Rook: 33/-46, Queen: 10/2
-        int mg_attack_weight = 0;
-        int eg_attack_weight = 0;
-        bool has_queen_attacker = false;
-
-        // Knight attacks on king zone + safe check bonus (Stash: KnightWeight 46/72)
+        // Knight attacks on king zone + safe check bonus
         Bitboard enemy_kn = pos.pieces(them, KNIGHT);
         while (enemy_kn) {
             Square ksq2 = pop_lsb(enemy_kn);
             Bitboard kn_attacks = knight_attacks_bb(ksq2);
             if (kn_attacks & king_zone) {
-                mg_attack_weight += 46;
-                eg_attack_weight += 72;
+                attack_units += 2;
                 attacker_count++;
             }
-            // Safe check bonus (Stash: SafeKnightCheck 74/41)
-            if (kn_attacks & king_knights & safe) {
-                mg_attack_weight += 74;
-                eg_attack_weight += 41;
-            }
+            // Safe check: knight can give check and the check square is not defended
+            Bitboard kn_checks = kn_attacks & king_attacks_bb(our_ksq);
+            if (kn_checks & safe) attack_units += 3;
         }
 
-        // Bishop attacks on king zone + safe check bonus (Stash: BishopWeight 31/116)
+        // Bishop attacks on king zone + safe check bonus
         Bitboard enemy_bi = pos.pieces(them, BISHOP);
         while (enemy_bi) {
             Square bsq = pop_lsb(enemy_bi);
             Bitboard bi_attacks = bishop_attacks_bb(bsq, occupied);
             if (bi_attacks & king_zone) {
-                mg_attack_weight += 31;
-                eg_attack_weight += 116;
+                attack_units += 2;
                 attacker_count++;
             }
-            // Safe check bonus (Stash: SafeBishopCheck 36/170)
-            if (bi_attacks & king_diag & safe) {
-                mg_attack_weight += 36;
-                eg_attack_weight += 170;
-            }
+            Bitboard bi_checks = bi_attacks & bb_diag_attacks(our_ksq, Bitboard(0));
+            if (bi_checks & safe) attack_units += 2;
         }
 
-        // Rook attacks on king zone + safe check bonus (Stash: RookWeight 33/-46)
+        // Rook attacks on king zone + safe check bonus
+        Bitboard enemy_ro = pos.pieces(them, ROOK);
         while (enemy_ro) {
             Square rsq = pop_lsb(enemy_ro);
             Bitboard ro_attacks = rook_attacks_bb(rsq, occupied);
             if (ro_attacks & king_zone) {
-                mg_attack_weight += 33;
-                eg_attack_weight += -46;
+                attack_units += 3;
                 attacker_count++;
             }
-            // Safe check bonus (Stash: SafeRookCheck 89/183)
-            if (ro_attacks & king_orth & safe) {
-                mg_attack_weight += 89;
-                eg_attack_weight += 183;
-            }
+            Bitboard ro_checks = ro_attacks & rook_attacks_bb(our_ksq, Bitboard(0));
+            if (ro_checks & safe) attack_units += 4;
         }
 
-        // Queen attacks on king zone + safe check bonus (Stash: QueenWeight 10/2)
+        // Queen attacks on king zone + safe check bonus
+        Bitboard enemy_qu = pos.pieces(them, QUEEN);
         while (enemy_qu) {
             Square qsq = pop_lsb(enemy_qu);
             Bitboard qu_attacks = queen_attacks_bb(qsq, occupied);
             if (qu_attacks & king_zone) {
-                mg_attack_weight += 10;
-                eg_attack_weight += 2;
+                attack_units += 5;
                 attacker_count++;
-                has_queen_attacker = true;
             }
-            // Safe check bonus (Stash: SafeQueenCheck 45/231)
-            if (qu_attacks & (king_diag | king_orth) & safe) {
-                mg_attack_weight += 45;
-                eg_attack_weight += 231;
-            }
+            // Queen checks are devastating
+            Bitboard qu_checks = qu_attacks & (bb_diag_attacks(our_ksq, Bitboard(0)) | rook_attacks_bb(our_ksq, Bitboard(0)));
+            if (qu_checks & safe) attack_units += 5;
         }
 
-        // Stash: SafetyOffset (18/53) always added, AttackWeight (9/36) * attack count
-        // Stash-style weak squares: any enemy attack in king zone, not doubly defended by us
-        Bitboard weak_squares = all_attacks[them] & king_zone &
-            ~attacked2[c] & (~all_attacks[c] | attacks_by[c][KING]);
-        int weak_count = popcount(weak_squares);
+        // Only evaluate king safety if we have enough attackers
+        if (attacker_count >= 1) {
+            int idx = std::min(attack_units, 99);
+            int danger = SafetyTable[idx];
 
-        // Stash: WeakKingZone (27/-76) * weak_count
-        // Stash: QueenlessAttack (-88/-81) when attacking without queen
-        int phase_local = popcount(pos.pieces(KNIGHT)) + popcount(pos.pieces(BISHOP))
-                        + popcount(pos.pieces(ROOK)) * 2 + popcount(pos.pieces(QUEEN)) * 4;
-        phase_local = std::min(24, std::max(4, phase_local));
-        int mg_danger = 18 + 9 * attacker_count + 27 * weak_count;
-        int eg_danger = 53 + 36 * attacker_count + -76 * weak_count;
+            // No queen = much less danger
+            if (!enemy_qu) danger = danger / 4;
+            if (!enemy_qu && !enemy_ro) danger = danger / 4;
 
-        if (attacker_count >= 2 && !has_queen_attacker) {
-            mg_danger += -88;
-            eg_danger += -81;
-        }
-
-        // Apply differentiated attack weights
-        mg_danger += mg_attack_weight;
-        eg_danger += eg_attack_weight;
-
-        if (attacker_count >= 2) {
-            // Scale: Stash uses max(mg, 0) * mg / 256 for MG, max(eg, 0) / 16 for EG
-            int mg_safety = std::max(0, mg_danger) * std::max(0, mg_danger) / 256;
-            int eg_safety = std::max(0, eg_danger) / 16;
-
-            int danger = (mg_safety * phase_local + eg_safety * (24 - phase_local)) / 24;
             mg_score -= sign * danger;
         }
     }
@@ -1041,8 +988,8 @@ Value evaluate(const Position& pos) {
     Score eg_scaled = eg_score * sf / 32;
     Score score = (mg_score * phase + eg_scaled * (24 - phase)) / 24;
 
-    // Initiative/tempo bonus (Stash: 24 MG, 32 EG)
-    Score tempo = (24 * phase + 32 * (24 - phase)) / 24;
+    // Tempo bonus
+    Score tempo = (15 * phase + 5 * (24 - phase)) / 24;
     score += (pos.side_to_move() == WHITE) ? tempo : -tempo;
 
     return pos.side_to_move() == WHITE ? score : -score;
