@@ -7,15 +7,15 @@ namespace luminex {
 static constexpr int PieceValueMG[8] = { 82, 337, 365, 477, 1025, 0, 0, 0 };
 static constexpr int PieceValueEG[8] = { 94, 281, 297, 512, 936, 0, 0, 0 };
 
-// Ethereal-style mobility tables (MG, EG) - better tuned non-linear values
-static constexpr int KnightMobilityMG[9] = { -104, -45, -22, -8, 6, 11, 19, 30, 43 };
-static constexpr int KnightMobilityEG[9] = { -139, -114, -37, 3, 15, 34, 38, 37, 17 };
-static constexpr int BishopMobilityMG[14] = { -99, -46, -16, -4, 6, 14, 17, 19, 19, 27, 26, 52, 55, 83 };
-static constexpr int BishopMobilityEG[14] = { -186, -124, -54, -14, 1, 20, 35, 39, 49, 48, 48, 32, 47, 2 };
-static constexpr int RookMobilityMG[15] = { -127, -56, -25, -12, -10, -12, -11, -4, 4, 9, 11, 19, 19, 37, 97 };
-static constexpr int RookMobilityEG[15] = { -148, -127, -85, -28, 2, 27, 42, 46, 52, 55, 64, 68, 73, 60, 15 };
-static constexpr int QueenMobilityMG[28] = { -111, -253, -127, -46, -18, 10, 9, 13, 7, 7, 7, 16, 21, 27, 24, 31, 32, 35, 38, 41, 35, 35, 35, 42, 44, 47, 50, 52 };
-static constexpr int QueenMobilityEG[28] = { -273, -401, -228, -236, -144, -81, -41, 13, 32, 62, 79, 96, 110, 114, 115, 120, 122, 113, 101, 96, 83, 74, 62, 50, 36, 25, 18, 7 };
+// Stash mobility tables (MG, EG) - more balanced non-linear values
+static constexpr int KnightMobilityMG[9] = { -56, -45, -35, -26, -19, -13, -8, 0, 4 };
+static constexpr int KnightMobilityEG[9] = { 20, -28, 36, 58, 76, 95, 104, 109, 103 };
+static constexpr int BishopMobilityMG[14] = { -56, -44, -27, -25, -17, -13, -10, -8, -7, -5, -2, 7, 9, 35 };
+static constexpr int BishopMobilityEG[14] = { -44, -39, -15, 15, 32, 46, 56, 61, 64, 67, 61, 56, 57, 48 };
+static constexpr int RookMobilityMG[15] = { -88, -39, -27, -31, -29, -33, -34, -29, -26, -18, -17, -13, -6, 4, 23 };
+static constexpr int RookMobilityEG[15] = { -47, 40, 76, 92, 103, 117, 125, 131, 140, 149, 156, 163, 167, 169, 161 };
+static constexpr int QueenMobilityMG[28] = { -14, 19, 0, -6, 1, -2, -4, -3, -2, -2, -1, 2, 2, 5, 5, 5, 6, 9, 14, 12, 36, 39, 48, 34, 59, 11, 11, 36 };
+static constexpr int QueenMobilityEG[28] = { -93, 216, 147, 95, 65, 118, 151, 175, 185, 205, 214, 219, 228, 232, 237, 243, 244, 241, 232, 234, 204, 198, 183, 163, 156, 164, 170, 141 };
 
 // Stash-style piece-specific threat tables [attacked_piece_type]
 // Index: PAWN=0, KNIGHT=1, BISHOP=2, ROOK=3, QUEEN=4, KING=5
