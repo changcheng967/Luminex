@@ -385,7 +385,7 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
     }
 
     // Prevent stale PV data from being saved to TT on fail-low nodes
-    ss->pv[ss->ply] = MOVE_NONE;
+    if (ss->ply < 64) ss->pv[ss->ply] = MOVE_NONE;
 
     // Check stop every node for instant response
     if (g_stop_requested || stop.load(std::memory_order_relaxed)) {
@@ -617,7 +617,7 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
             }
 
             // History influence on reduction
-            reduction -= history_score / 3000;
+            reduction -= history_score / 8192;
         }
 
         // Reduce less for killer moves
@@ -831,16 +831,17 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
             if (value > alpha) {
                 alpha = value;
 
-                // Update PV
-                ss->pv[ss->ply] = m;
-                int i = 0;
-                for (; (ss + 1)->pv[(ss + 1)->ply + i] != MOVE_NONE && i < 60; ++i) {
-                    ss->pv[ss->ply + 1 + i] = (ss + 1)->pv[(ss + 1)->ply + i];
+                // Update PV (guard against array overflow)
+                if (ss->ply < 63) {
+                    ss->pv[ss->ply] = m;
+                    int i = 0;
+                    for (; (ss + 1)->pv[(ss + 1)->ply + i] != MOVE_NONE && ss->ply + 1 + i < 63; ++i) {
+                        ss->pv[ss->ply + 1 + i] = (ss + 1)->pv[(ss + 1)->ply + i];
+                    }
+                    ss->pv[ss->ply + 1 + i] = MOVE_NONE;
                 }
-                ss->pv[ss->ply + 1 + i] = MOVE_NONE;
-            }
 
-            if (value >= beta) {
+                if (value >= beta) {
                 // Beta cutoff - update killers, history and counter-move history
                 if (is_quiet && ss->ply < MAX_PLY) {
                     if (m != killers[ss->ply][0]) {
@@ -849,17 +850,18 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
                     }
                     Piece pc = ss->moved_piece;
                     if (pc != NO_PIECE) {
-                        int bonus = depth * depth;
+                        // Stockfish-style stat_bonus: non-linear scaling with depth
+                        int bonus = depth > 15 ? -8 : 19 * depth * depth + 155 * depth - 132;
                         // Gravity formula for plain history
                         int& h = history[int(pc)][int(m.to())];
-                        h += bonus - h * abs(bonus) / 16384;
+                        h += bonus - h * abs(bonus) / 32768;
 
                         // Counter-move history (1-ply: opponent's last move)
                         if (ss->ply >= 1 && (ss - 1)->current_move != MOVE_NONE && (ss - 1)->moved_piece != NO_PIECE) {
                             Move prev_move = (ss - 1)->current_move;
                             Piece prev_pc = (ss - 1)->moved_piece;
                             int& cm = counter_moves[int(prev_pc)][int(prev_move.to())][int(pc)][int(m.to())];
-                            cm += bonus - cm * abs(bonus) / 16384;
+                            cm += bonus - cm * abs(bonus) / 32768;
                             counter_move_table[int(prev_pc)][int(prev_move.to())] = m;
                         }
 
@@ -868,28 +870,28 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
                             Move prev2_move = (ss - 2)->current_move;
                             Piece prev2_pc = (ss - 2)->moved_piece;
                             int& ch = continuation_history[int(prev2_pc)][int(prev2_move.to())][int(pc)][int(m.to())];
-                            ch += bonus - ch * abs(bonus) / 16384;
+                            ch += bonus - ch * abs(bonus) / 32768;
                         }
                     }
-                    // History gravity malus for non-cutoff quiet moves
-                    int malus = -depth * depth;
+                    // History gravity malus for non-cutoff quiet moves (use stat_bonus formula)
+                    int malus = depth > 15 ? 8 : -(19 * depth * depth + 155 * depth - 132);
                     for (int i = 0; i < quiet_count - 1; ++i) {
                         Move qm = quiets_searched[i];
                         Piece qpc = pos.piece_on(qm.from());
                         if (qpc != NO_PIECE) {
                             int& h = history[int(qpc)][int(qm.to())];
-                            h += malus - h * abs(malus) / 16384;
+                            h += malus - h * abs(malus) / 32768;
                             if (ss->ply >= 1 && (ss - 1)->current_move != MOVE_NONE && (ss - 1)->moved_piece != NO_PIECE) {
                                 Move prev_move = (ss - 1)->current_move;
                                 Piece prev_pc = (ss - 1)->moved_piece;
                                 int& cm = counter_moves[int(prev_pc)][int(prev_move.to())][int(qpc)][int(qm.to())];
-                                cm += malus - cm * abs(malus) / 16384;
+                                cm += malus - cm * abs(malus) / 32768;
                             }
                             if (ss->ply >= 2 && (ss - 2)->current_move != MOVE_NONE && (ss - 2)->moved_piece != NO_PIECE) {
                                 Move prev2_move = (ss - 2)->current_move;
                                 Piece prev2_pc = (ss - 2)->moved_piece;
                                 int& ch = continuation_history[int(prev2_pc)][int(prev2_move.to())][int(qpc)][int(qm.to())];
-                                ch += malus - ch * abs(malus) / 16384;
+                                ch += malus - ch * abs(malus) / 32768;
                             }
                         }
                     }
@@ -898,6 +900,7 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
                     tte->save(pos.key(), value, false, BOUND_LOWER, depth, m, eval, TT.generation());
                 }
                 return true;  // beta cutoff
+                }
             }
         }
         return false;  // no cutoff
@@ -1409,12 +1412,15 @@ Move search(Position& pos, Limits& lim) {
 
         root_score = depth_best_value;
 
+        // Flush local node count to atomic for accurate reporting
+        nodes.store(local_nodes, std::memory_order_relaxed);
+
         // Calculate elapsed time for NPS
         auto search_end = std::chrono::steady_clock::now();
         int time_ms = std::chrono::duration_cast<std::chrono::milliseconds>(search_end - search_start).count();
 
         // Send UCI info
-        uci_info(pos, root_depth, depth_best_value, nodes.load(), time_ms);
+        uci_info(pos, root_depth, depth_best_value, local_nodes, time_ms);
     }
 
     // Fallback: if best_move is still MOVE_NONE, use the first legal move we found
@@ -1513,7 +1519,7 @@ void uci_info([[maybe_unused]] const Position& pos, int depth, Value score, uint
         pv_keys[pv_count] = pv_pos.key();
         pv_moves[pv_count++] = m;
         oss << " " << m;
-        pv_pos.do_move(m);
+        if (!pv_pos.do_move(m)) break;
     }
 
     // Undo PV moves to restore position
