@@ -906,7 +906,7 @@ Value evaluate(const Position& pos) {
         while (ep) {
             Square psq = pop_lsb(ep);
             if (pawn_attacks_bb(them, square_bb(psq)) & king_zone) {
-                attack_units += 2;
+                attack_units += 3;
                 attacker_count++;
             }
         }
@@ -917,12 +917,12 @@ Value evaluate(const Position& pos) {
             Square ksq2 = pop_lsb(enemy_kn);
             Bitboard kn_attacks = knight_attacks_bb(ksq2);
             if (kn_attacks & king_zone) {
-                attack_units += 2;
+                attack_units += 3;
                 attacker_count++;
             }
             // Safe check: knight can give check and the check square is not defended
             Bitboard kn_checks = kn_attacks & king_attacks_bb(our_ksq);
-            if (kn_checks & safe) attack_units += 3;
+            if (kn_checks & safe) attack_units += 4;
         }
 
         // Bishop attacks on king zone + safe check bonus
@@ -931,11 +931,11 @@ Value evaluate(const Position& pos) {
             Square bsq = pop_lsb(enemy_bi);
             Bitboard bi_attacks = bishop_attacks_bb(bsq, occupied);
             if (bi_attacks & king_zone) {
-                attack_units += 2;
+                attack_units += 3;
                 attacker_count++;
             }
             Bitboard bi_checks = bi_attacks & bb_diag_attacks(our_ksq, Bitboard(0));
-            if (bi_checks & safe) attack_units += 2;
+            if (bi_checks & safe) attack_units += 3;
         }
 
         // Rook attacks on king zone + safe check bonus
@@ -944,11 +944,11 @@ Value evaluate(const Position& pos) {
             Square rsq = pop_lsb(enemy_ro);
             Bitboard ro_attacks = rook_attacks_bb(rsq, occupied);
             if (ro_attacks & king_zone) {
-                attack_units += 3;
+                attack_units += 4;
                 attacker_count++;
             }
             Bitboard ro_checks = ro_attacks & rook_attacks_bb(our_ksq, Bitboard(0));
-            if (ro_checks & safe) attack_units += 4;
+            if (ro_checks & safe) attack_units += 5;
         }
 
         // Queen attacks on king zone + safe check bonus
@@ -957,16 +957,16 @@ Value evaluate(const Position& pos) {
             Square qsq = pop_lsb(enemy_qu);
             Bitboard qu_attacks = queen_attacks_bb(qsq, occupied);
             if (qu_attacks & king_zone) {
-                attack_units += 5;
+                attack_units += 6;
                 attacker_count++;
             }
             // Queen checks are devastating
             Bitboard qu_checks = qu_attacks & (bb_diag_attacks(our_ksq, Bitboard(0)) | rook_attacks_bb(our_ksq, Bitboard(0)));
-            if (qu_checks & safe) attack_units += 5;
+            if (qu_checks & safe) attack_units += 6;
         }
 
         // Only evaluate king safety if we have enough attackers
-        if (attacker_count >= 1) {
+        if (attacker_count >= 2) {
             int idx = std::min(attack_units, 99);
             int danger = SafetyTable[idx];
 
