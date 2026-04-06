@@ -908,6 +908,7 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
                             int& ch = continuation_history[int(prev2_pc)][int(prev2_move.to())][int(pc)][int(m.to())];
                             ch += bonus - ch * abs(bonus) / 32768;
                         }
+
                     }
                     // Capture history update for capture moves that caused cutoff
                     if (!is_quiet && ss->ply < MAX_PLY && captured_pt != PT_NONE) {

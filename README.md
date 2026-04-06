@@ -4,11 +4,12 @@ A UCI chess engine written in C++23.
 
 ## Features
 
-- **Search**: PVS with LMR, null move pruning, singular extension, probcut, razoring, aspiration windows
-- **Evaluation**: Handcrafted with correction history (dynamic eval learning from search results)
-- **Move ordering**: Phased generation (TT → captures → quiets) with killer/counter-move/continuation history
-- **Time management**: Sudden-death and increment time controls
-- **Infrastructure**: Magic bitboards, transposition table with depth-preferred aging, eval cache
+- **Search**: PVS with LMR, null move pruning, singular extension, probcut, razoring, aspiration windows, phased move generation
+- **Evaluation**: Handcrafted (PeSTO-derived) with pawn correction history (dynamic eval learning from search)
+- **Move ordering**: Phased generation (TT -> captures -> quiets) with killer/counter-move/continuation history
+- **Heuristics**: TT cutoff stat updates, ttPv-based LMR reduction, escape-aware ordering, previous PV bonus
+- **Time management**: Sudden-death and increment time controls with stability-based allocation
+- **Infrastructure**: Magic bitboards, transposition table with depth-preferred aging, eval cache, lazy SMP
 
 ## Build
 
@@ -24,6 +25,7 @@ Requires C++23 compiler (MSVC, Clang, GCC) and CMake 3.15+.
 ```
 uci
 setoption name Hash value 128
+setoption name Contempt value 0
 position startpos
 go wtime 60000 btime 60000 winc 1000 binc 1000
 ```
@@ -31,7 +33,7 @@ go wtime 60000 btime 60000 winc 1000 binc 1000
 | Option | Type | Default | Description |
 |--------|------|---------|-------------|
 | Hash | spin | 128 | TT size in MB |
-| Contempt | spin | 0 | Draw avoidance |
+| Contempt | spin | 0 | Draw avoidance (centipawns) |
 
 ## Testing
 
@@ -42,7 +44,7 @@ build/luminex.exe bench
 
 ## Strength
 
-~2600 ELO (pure HCE, no NNUE). Tested against Stash reference engines.
+~3350 ELO (pure HCE, no NNUE). Tested against Stash v13 at tc=1+0.01.
 
 ## License
 
