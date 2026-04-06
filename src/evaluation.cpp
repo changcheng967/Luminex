@@ -608,6 +608,63 @@ Value evaluate(const Position& pos) {
             }
         }
 
+        // Hanging pieces: our pieces attacking undefended enemy minor/major pieces
+        {
+            Bitboard our_attacks = pawn_attacks_bb(c, pos.pieces(c, PAWN));
+            {
+                Bitboard tmp = pos.pieces(c, KNIGHT);
+                while (tmp) our_attacks |= knight_attacks_bb(pop_lsb(tmp));
+            }
+            {
+                Bitboard tmp = pos.pieces(c, BISHOP);
+                while (tmp) our_attacks |= bishop_attacks_bb(pop_lsb(tmp), occupied);
+            }
+            {
+                Bitboard tmp = pos.pieces(c, ROOK);
+                while (tmp) our_attacks |= rook_attacks_bb(pop_lsb(tmp), occupied);
+            }
+            {
+                Bitboard tmp = pos.pieces(c, QUEEN);
+                while (tmp) our_attacks |= queen_attacks_bb(pop_lsb(tmp), occupied);
+            }
+
+            Bitboard enemy_defense = pawn_attacks_bb(them, their_pawns);
+            {
+                Bitboard tmp = pos.pieces(them, KNIGHT);
+                while (tmp) enemy_defense |= knight_attacks_bb(pop_lsb(tmp));
+            }
+            {
+                Bitboard tmp = pos.pieces(them, BISHOP);
+                while (tmp) enemy_defense |= bishop_attacks_bb(pop_lsb(tmp), occupied);
+            }
+            {
+                Bitboard tmp = pos.pieces(them, ROOK);
+                while (tmp) enemy_defense |= rook_attacks_bb(pop_lsb(tmp), occupied);
+            }
+            {
+                Bitboard tmp = pos.pieces(them, QUEEN);
+                while (tmp) enemy_defense |= queen_attacks_bb(pop_lsb(tmp), occupied);
+            }
+
+            Bitboard enemy_targets = pos.pieces(them, KNIGHT) | pos.pieces(them, BISHOP)
+                                   | pos.pieces(them, ROOK) | pos.pieces(them, QUEEN);
+            Bitboard hanging = enemy_targets & our_attacks & ~enemy_defense;
+            while (hanging) {
+                Square sq = pop_lsb(hanging);
+                PieceType pt = pos.piece_type_on(sq);
+                int mg_bonus = 0, eg_bonus = 0;
+                switch (pt) {
+                    case KNIGHT: mg_bonus = 33; eg_bonus = 44; break;
+                    case BISHOP: mg_bonus = 35; eg_bonus = 47; break;
+                    case ROOK:   mg_bonus = 53; eg_bonus = 68; break;
+                    case QUEEN:  mg_bonus = 100; eg_bonus = 130; break;
+                    default: break;
+                }
+                mg_score += sign * mg_bonus;
+                eg_score += sign * eg_bonus;
+            }
+        }
+
     }
 
     // Space evaluation: simplified - just count center pawn presence
@@ -618,6 +675,18 @@ Value evaluate(const Position& pos) {
         int center_count = popcount(our_pawns & (BB_FILE_D | BB_FILE_E));
         if (center_count > 0 && popcount(our_pawns) >= 5) {
             mg_score += sign * center_count * 6;
+        }
+    }
+
+    // Material imbalance: bishop value increases with fewer pawns (endgame piece)
+    for (int c_idx = 0; c_idx < 2; ++c_idx) {
+        Color c = Color(c_idx);
+        Sign sign = (c_idx == 0) ? 1 : -1;
+        int pawns = popcount(pos.pieces(c, PAWN));
+        int bishops = bishop_count[c_idx];
+        if (bishops >= 1) {
+            mg_score += sign * (30 - pawns * 2);
+            eg_score += sign * (50 - pawns * 3);
         }
     }
 
