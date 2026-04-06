@@ -912,61 +912,6 @@ Value evaluate(const Position& pos) {
     if (bishop_count[WHITE] >= 2) { mg_score += 21; eg_score += 93; }
     if (bishop_count[BLACK] >= 2) { mg_score -= 21; eg_score -= 93; }
 
-    // Material imbalance: TogaII-style quadratic approximation
-    // Bonus for having the right combination of pieces
-    for (int c_idx = 0; c_idx < 2; ++c_idx) {
-        Color c = Color(c_idx);
-        Sign sign = (c_idx == 0) ? 1 : -1;
-        int ni = popcount(pos.pieces(c, KNIGHT));
-        int bi = bishop_count[c_idx];
-        int ri = popcount(pos.pieces(c, ROOK));
-        int qi = popcount(pos.pieces(c, QUEEN));
-        int pi = popcount(pos.pieces(c, PAWN));
-
-        // TogaII material imbalance table (simplified)
-        // Positive = bonus for having this piece combination
-        int imbalance = 0;
-
-        // Knight bonus/penalty based on other pieces
-        imbalance += 35 * (ni - ri + 1) + (ri == 0 ? -15 * ni : 0);
-
-        // Bishop bonus with few pawns (already handled above, but add more)
-        imbalance += 20 * bi - 10 * (bi >= 2 ? 0 : bi);
-
-        // Rook bonus with open files (handled in piece eval) and pawn count
-        imbalance += 15 * (ri - ni - bi - qi);
-
-        // Queen penalty with few pieces (queen is less useful in endgame)
-        imbalance -= qi * (25 - 4 * pi);
-
-        // Minor piece pair bonus
-        imbalance += (ni + bi >= 2) ? 15 : 0;
-
-        mg_score += sign * imbalance;
-    }
-
-    // Pawn island penalty: each island beyond the first costs ~15/25 cp
-    for (int c_idx = 0; c_idx < 2; ++c_idx) {
-        Color c = Color(c_idx);
-        Sign sign = (c_idx == 0) ? 1 : -1;
-        Bitboard pawns = pos.pieces(c, PAWN);
-        if (!pawns) continue;
-
-        int islands = 0;
-        bool in_island = false;
-        for (File f = FILE_A; f <= FILE_H; f = File(f + 1)) {
-            if (pawns & file_bb(f)) {
-                if (!in_island) { islands++; in_island = true; }
-            } else {
-                in_island = false;
-            }
-        }
-        if (islands > 1) {
-            mg_score -= sign * 12 * (islands - 1);
-            eg_score -= sign * 20 * (islands - 1);
-        }
-    }
-
     // King safety using SafetyTable
     static const int SafetyTable[100] = {
         0, 0, 1, 2, 3, 5, 7, 9, 12, 15, 18, 22, 26, 30, 35, 39,
