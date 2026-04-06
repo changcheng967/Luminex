@@ -44,6 +44,9 @@ int counter_moves[12][64][12][64];
 // Tracks how good a move is given OUR previous move (2 plies back)
 int continuation_history[12][64][12][64];
 
+// Capture history: [piece][to][captured_type] - tracks how good each capture has been
+int capture_history[12][64][7];
+
 // Counter-move table: direct move suggestion [prev_piece][prev_to]
 Move counter_move_table[12][64];
 
@@ -667,6 +670,9 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
         // Skip excluded move (used by singular extension)
         if (m == ss->excluded_move) return false;
 
+        // Save captured piece type before do_move (for capture history update)
+        PieceType captured_pt = m.is_capture() ? pos.piece_type_on(m.to()) : PT_NONE;
+
         // Skip pseudo_legal check: moves from generator are already pseudo-legal
         if (!pos.legal(m, true)) return false;  // Skip pseudo_legal check for generated moves
 
@@ -873,6 +879,12 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
                             ch += bonus - ch * abs(bonus) / 32768;
                         }
                     }
+                    // Capture history update for capture moves that caused cutoff
+                    if (!is_quiet && ss->ply < MAX_PLY && captured_pt != PT_NONE) {
+                        int cap_bonus = depth > 15 ? -8 : 19 * depth * depth + 155 * depth - 132;
+                        int& ch = capture_history[int(ss->moved_piece)][int(m.to())][int(captured_pt)];
+                        ch += cap_bonus - ch * std::abs(cap_bonus) / 32768;
+                    }
                     // History gravity malus for non-cutoff quiet moves (use stat_bonus formula)
                     int malus = depth > 15 ? 8 : -(19 * depth * depth + 155 * depth - 132);
                     for (int i = 0; i < quiet_count - 1; ++i) {
@@ -940,8 +952,10 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
                 PieceType captured = pos.piece_type_on(m.to());
                 PieceType attacker = pos.piece_type_on(m.from());
                 int mvv_lva = piece_value[captured] * 10 - piece_value[attacker];
+                // Add capture history for better ordering
+                int cap_hist = capture_history[int(pos.piece_on(m.from()))][int(m.to())][int(captured)];
                 if (pos.see_ge(m, VALUE_ZERO)) {
-                    score = 1500000 + mvv_lva;
+                    score = 1500000 + mvv_lva + cap_hist;
                 } else {
                     score = 500000 + mvv_lva;
                 }
