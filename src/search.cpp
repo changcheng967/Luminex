@@ -420,10 +420,22 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
     Value tt_value = found ? tte->value() : VALUE_ZERO;
     Depth tt_depth = found ? tte->depth() : DEPTH_ZERO;
 
+    // ttPv: this position was a PV node when stored in TT
+    bool ttPv = found && tte->bound() == BOUND_EXACT;
+
     // TT cutoff: require exact or greater depth for safety
     // IIR naturally improves TT population without aggressive margins
     if (!pv_node && found && tt_depth >= depth &&
         (tt_value >= beta ? (tte->bound() & BOUND_LOWER) : (tte->bound() & BOUND_UPPER))) {
+        // TT cutoff stat updates: reinforce heuristics even on TT hits
+        if (tt_value >= beta && tt_move && ss->ply > 0) {
+            Piece moved = pos.piece_on(tt_move.from());
+            if (moved != NO_PIECE && !tt_move.is_capture()) {
+                int bonus = depth > 15 ? -8 : 19 * depth * depth + 155 * depth - 132;
+                int& h = worker->history[int(moved)][int(tt_move.to())];
+                h += bonus - h * std::abs(bonus) / 32768;
+            }
+        }
         return tt_value;
     }
 
@@ -613,6 +625,7 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
         int reduction = int(1.35 + std::log(double(std::max(depth - 1, 1))) * std::log(double(std::max(mp, 1))) / 2.75);
         if (!ss->improving && !opponent_worsening) reduction += 1;
         if (cut_node) reduction += 1;
+        if (ttPv) reduction -= 2; // PV positions from TT get less reduction
 
         // TT move gets less reduction
         if (m == tt_move) reduction -= 1;
