@@ -598,7 +598,7 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
     auto compute_reduction = [&](Move m, int mp, bool gives_chk) -> int {
         // Logarithmic LMR formula with history-based adjustments
         // Conservative base (1.35/2.75) for better tactical accuracy
-        int reduction = int(1.35 + std::log(double(std::max(depth - 1, 1))) * std::log(double(std::max(mp, 1))) / 2.75);
+        int reduction = int(1.0 + std::log(double(std::max(depth - 1, 1))) * std::log(double(std::max(mp, 1))) / 2.5);
         if (!ss->improving && !opponent_worsening) reduction += 1;
         if (cut_node) reduction += 1;
 
@@ -739,7 +739,7 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
         bool gives_chk = gives_check(m);
         bool is_losing_capture = m.is_capture() && !m.is_promotion() && depth >= 1 &&
                                   !pos.see_ge(m, Value(-depth * 80));
-        bool do_lmr = depth >= 2 && moves_played >= (pv_node ? 2 : 1) &&
+        bool do_lmr = depth >= 3 && moves_played >= 3 &&
                       (is_quiet || is_losing_capture) && !gives_chk;
 
         if (do_lmr) {
@@ -1274,6 +1274,15 @@ Move search(Position& pos, Limits& lim) {
             // Promotions
             else if (m.is_promotion()) {
                 score = 900000 + m.promotion_type() * 10000;
+            }
+            // Quiet moves: use history + killer ordering (was missing before!)
+            else {
+                Piece pc = pos.piece_on(m.from());
+                if (pc != NO_PIECE) {
+                    score = history[int(pc)][int(m.to())];
+                    if (m == killers[0][0]) score += 500000;
+                    else if (m == killers[0][1]) score += 400000;
+                }
             }
 
             it->value = score;

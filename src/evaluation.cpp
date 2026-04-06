@@ -17,6 +17,23 @@ static constexpr int RookMobilityEG[15] = { -148, -127, -85, -28, 2, 27, 42, 46,
 static constexpr int QueenMobilityMG[28] = { -111, -253, -127, -46, -18, 10, 9, 13, 7, 7, 7, 16, 21, 27, 24, 31, 32, 35, 38, 41, 35, 35, 35, 42, 44, 47, 50, 52 };
 static constexpr int QueenMobilityEG[28] = { -273, -401, -228, -236, -144, -81, -41, 13, 32, 62, 79, 96, 110, 114, 115, 120, 122, 113, 101, 96, 83, 74, 62, 50, 36, 25, 18, 7 };
 
+// Stash-style piece-specific threat tables [attacked_piece_type]
+// Index: PAWN=0, KNIGHT=1, BISHOP=2, ROOK=3, QUEEN=4, KING=5
+static constexpr int PawnThreatMG[6] = { -2, 71, 67, 61, 62, 0 };
+static constexpr int PawnThreatEG[6] = { -34, 65, 111, 65, 24, 0 };
+static constexpr int KnightThreatMG[6] = { -9, 4, 42, 93, 49, 0 };
+static constexpr int KnightThreatEG[6] = { 8, 49, 56, 46, 31, 0 };
+static constexpr int BishopThreatMG[6] = { -3, 15, 1, 55, 50, 0 };
+static constexpr int BishopThreatEG[6] = { 5, 50, 58, 75, 152, 0 };
+static constexpr int RookThreatMG[6] = { -10, 7, 24, 11, 50, 0 };
+static constexpr int RookThreatEG[6] = { 13, 29, 22, 27, 63, 0 };
+
+// Far piece penalty: pieces more than 3 squares from own king
+static constexpr int FarKnightMG = -22, FarKnightEG = -13;
+static constexpr int FarBishopMG = -8, FarBishopEG = -10;
+static constexpr int FarRookMG = -10, FarRookEG = 5;
+static constexpr int FarQueenMG = -8, FarQueenEG = 15;
+
 // PeSTO piece-square tables (WHITE, a1=0 layout)
 // Transposed from original a8=0 layout by reversing row order.
 // Verified against chessprogramming.org/PeSTO's_Evaluation_Function
@@ -360,6 +377,17 @@ Value evaluate(const Position& pos) {
 
     Bitboard occupied = pos.pieces();
 
+    // Per-piece-type attack maps for threat evaluation and king safety
+    Bitboard attacks_by[2][7] = {};
+    Bitboard all_attacks[2] = {};
+
+    // Initialize pawn and king attacks
+    for (int c = 0; c < 2; ++c) {
+        attacks_by[c][PAWN] = pawn_attacks_bb(Color(c), pos.pieces(Color(c), PAWN));
+        attacks_by[c][KING] = king_attacks_bb(ksq_arr[c]);
+        all_attacks[c] = attacks_by[c][PAWN] | attacks_by[c][KING];
+    }
+
     // Pawn evaluation via pawn hash table
     {
         int32_t pawn_mg = 0, pawn_eg = 0;
@@ -448,6 +476,8 @@ Value evaluate(const Position& pos) {
             eg_score += sign * (PieceValueEG[KNIGHT] + PST_EG_TABLE[int(c)][int(KNIGHT)][int(sq)]);
 
             Bitboard attacks = knight_attacks_bb(sq);
+            attacks_by[c][KNIGHT] |= attacks;
+            all_attacks[c] |= attacks;
             int mob = popcount(attacks & mob_area & ~pos.pieces(c));
             mob = std::min(mob, 8);
             mg_score += sign * KnightMobilityMG[mob];
@@ -457,15 +487,19 @@ Value evaluate(const Position& pos) {
             Rank kr = relative_rank(c, sq);
             if (kr >= RANK_4 && kr <= RANK_6) {
                 if (pawn_attacks_bb(c, our_pawns) & square_bb(sq)) {
-                    // Check if any enemy pawn could attack this square
                     Bitboard enemy_pawn_attacks = pawn_attacks_bb(them, their_pawns);
                     bool can_be_attacked = (enemy_pawn_attacks & square_bb(sq)) != 0;
                     if (!can_be_attacked) {
-                        // True outpost: protected, cannot be challenged by enemy pawn
                         mg_score += sign * (20 + (kr - 3) * 5);
                         eg_score += sign * (10 + (kr - 3) * 3);
                     }
                 }
+            }
+
+            // Far knight penalty: knight far from own king
+            if (distance(sq, ksq_arr[c_idx]) > 3) {
+                mg_score += sign * FarKnightMG;
+                eg_score += sign * FarKnightEG;
             }
         }
 
@@ -476,11 +510,53 @@ Value evaluate(const Position& pos) {
             Square sq = pop_lsb(bishops);
             mg_score += sign * (PieceValueMG[BISHOP] + PST_MG_TABLE[int(c)][int(BISHOP)][int(sq)]);
             eg_score += sign * (PieceValueEG[BISHOP] + PST_EG_TABLE[int(c)][int(BISHOP)][int(sq)]);
-            int mob = popcount(bb_diag_attacks(sq, occupied) & mob_area & ~pos.pieces(c));
+            Bitboard attacks = bb_diag_attacks(sq, occupied);
+            attacks_by[c][BISHOP] |= attacks;
+            all_attacks[c] |= attacks;
+            int mob = popcount(attacks & mob_area & ~pos.pieces(c));
             mob = std::min(mob, 13);
             mg_score += sign * BishopMobilityMG[mob];
             eg_score += sign * BishopMobilityEG[mob];
 
+            // Bishop pawns same color penalty (Stash: BishopPawnsSameColor)
+            {
+                static constexpr Bitboard BB_DARK_SQ = 0x55AA55AA55AA55AAULL;
+                static constexpr Bitboard BB_LIGHT_SQ = 0xAA55AA55AA55AA55ULL;
+                bool is_dark = ((int(sq) + rank_of(sq)) % 2) == 0;
+                Bitboard same_color_bb = is_dark ? BB_DARK_SQ : BB_LIGHT_SQ;
+                int same_color_pawns = popcount(our_pawns & same_color_bb);
+                same_color_pawns = std::min(same_color_pawns, 6);
+                // Stash values: 15/36, 15/26, 13/17, 9/11, 6/3, 3/-2, -3/-10
+                static constexpr int BscMG[7] = { 15, 15, 13, 9, 6, 3, -3 };
+                static constexpr int BscEG[7] = { 36, 26, 17, 11, 3, -2, -10 };
+                mg_score += sign * BscMG[same_color_pawns];
+                eg_score += sign * BscEG[same_color_pawns];
+            }
+
+            // Bishop long diagonal bonus (Stash: BishopLongDiagonal 13/22)
+            // Check if bishop sees 2+ center squares (d4,d5,e4,e5)
+            if (popcount(attacks & BB_CENTER) >= 2) {
+                mg_score += sign * 13;
+                eg_score += sign * 22;
+            }
+
+            // Bishop outpost (Stash: BishopOutpost 47/24)
+            {
+                Rank br = relative_rank(c, sq);
+                if (br >= RANK_4 && br <= RANK_6) {
+                    if ((pawn_attacks_bb(c, our_pawns) & square_bb(sq)) &&
+                        !(pawn_attacks_bb(them, their_pawns) & square_bb(sq))) {
+                        mg_score += sign * 47;
+                        eg_score += sign * 24;
+                    }
+                }
+            }
+
+            // Far bishop penalty
+            if (distance(sq, ksq_arr[c_idx]) > 3) {
+                mg_score += sign * FarBishopMG;
+                eg_score += sign * FarBishopEG;
+            }
         }
 
         // Rooks
@@ -490,7 +566,10 @@ Value evaluate(const Position& pos) {
             mg_score += sign * (PieceValueMG[ROOK] + PST_MG_TABLE[int(c)][int(ROOK)][int(sq)]);
             eg_score += sign * (PieceValueEG[ROOK] + PST_EG_TABLE[int(c)][int(ROOK)][int(sq)]);
 
-            int mob = popcount(rook_attacks_bb(sq, occupied) & mob_area & ~pos.pieces(c));
+            Bitboard attacks = rook_attacks_bb(sq, occupied);
+            attacks_by[c][ROOK] |= attacks;
+            all_attacks[c] |= attacks;
+            int mob = popcount(attacks & mob_area & ~pos.pieces(c));
             mob = std::min(mob, 14);
             mg_score += sign * RookMobilityMG[mob];
             eg_score += sign * RookMobilityEG[mob];
@@ -511,6 +590,18 @@ Value evaluate(const Position& pos) {
                 mg_score += sign * 25;
                 eg_score += sign * 30;
             }
+
+            // Rook xray queen: bonus for rook on same file as enemy queen (Stash: 15/4)
+            if ((file_bb(f) & pos.pieces(them, QUEEN))) {
+                mg_score += sign * 15;
+                eg_score += sign * 4;
+            }
+
+            // Far rook penalty
+            if (distance(sq, ksq_arr[c_idx]) > 3) {
+                mg_score += sign * FarRookMG;
+                eg_score += sign * FarRookEG;
+            }
         }
 
         // Queens
@@ -520,10 +611,19 @@ Value evaluate(const Position& pos) {
             mg_score += sign * (PieceValueMG[QUEEN] + PST_MG_TABLE[int(c)][int(QUEEN)][int(sq)]);
             eg_score += sign * (PieceValueEG[QUEEN] + PST_EG_TABLE[int(c)][int(QUEEN)][int(sq)]);
 
-            int mob = popcount(queen_attacks_bb(sq, occupied) & mob_area & ~pos.pieces(c));
+            Bitboard attacks = queen_attacks_bb(sq, occupied);
+            attacks_by[c][QUEEN] |= attacks;
+            all_attacks[c] |= attacks;
+            int mob = popcount(attacks & mob_area & ~pos.pieces(c));
             mob = std::min(mob, 27);
             mg_score += sign * QueenMobilityMG[mob];
             eg_score += sign * QueenMobilityEG[mob];
+
+            // Far queen penalty
+            if (distance(sq, ksq_arr[c_idx]) > 3) {
+                mg_score += sign * FarQueenMG;
+                eg_score += sign * FarQueenEG;
+            }
         }
 
         // King PST
@@ -587,81 +687,55 @@ Value evaluate(const Position& pos) {
             eg_score -= sign * 10;
         }
 
-        // Threat evaluation: pieces attacked by enemy pawns
+        // Threat evaluation using Stash-style piece-specific threat tables
         {
-            Bitboard enemy_pawn_attacks = pawn_attacks_bb(them, their_pawns);
-            Bitboard our_non_pawns = (pos.pieces(c) ^ pos.pieces(c, PAWN)) ^ pos.pieces(c, KING);
-            Bitboard threatened = our_non_pawns & enemy_pawn_attacks;
-            while (threatened) {
-                Square sq = pop_lsb(threatened);
-                PieceType pt = piece_type_of(pos.piece_on(sq));
-                int penalty = 0;
-                switch (pt) {
-                    case KNIGHT: penalty = 40; break;
-                    case BISHOP: penalty = 40; break;
-                    case ROOK:   penalty = 30; break;
-                    case QUEEN:  penalty = 55; break;
-                    default: break;
+            Bitboard their_pieces = pos.pieces(them);
+
+            // Pawn threats: our pawns attacking enemy pieces
+            Bitboard threats = their_pieces & attacks_by[c][PAWN];
+            while (threats) {
+                PieceType pt = piece_type_of(pos.piece_on(pop_lsb(threats)));
+                if (pt < KING) {
+                    mg_score += sign * PawnThreatMG[pt];
+                    eg_score += sign * PawnThreatEG[pt];
                 }
-                mg_score -= sign * penalty;
-                eg_score -= sign * (penalty * 2 / 3);
-            }
-        }
-
-        // Hanging pieces: our pieces attacking undefended enemy minor/major pieces
-        {
-            Bitboard our_attacks = pawn_attacks_bb(c, pos.pieces(c, PAWN));
-            {
-                Bitboard tmp = pos.pieces(c, KNIGHT);
-                while (tmp) our_attacks |= knight_attacks_bb(pop_lsb(tmp));
-            }
-            {
-                Bitboard tmp = pos.pieces(c, BISHOP);
-                while (tmp) our_attacks |= bishop_attacks_bb(pop_lsb(tmp), occupied);
-            }
-            {
-                Bitboard tmp = pos.pieces(c, ROOK);
-                while (tmp) our_attacks |= rook_attacks_bb(pop_lsb(tmp), occupied);
-            }
-            {
-                Bitboard tmp = pos.pieces(c, QUEEN);
-                while (tmp) our_attacks |= queen_attacks_bb(pop_lsb(tmp), occupied);
             }
 
-            Bitboard enemy_defense = pawn_attacks_bb(them, their_pawns);
-            {
-                Bitboard tmp = pos.pieces(them, KNIGHT);
-                while (tmp) enemy_defense |= knight_attacks_bb(pop_lsb(tmp));
-            }
-            {
-                Bitboard tmp = pos.pieces(them, BISHOP);
-                while (tmp) enemy_defense |= bishop_attacks_bb(pop_lsb(tmp), occupied);
-            }
-            {
-                Bitboard tmp = pos.pieces(them, ROOK);
-                while (tmp) enemy_defense |= rook_attacks_bb(pop_lsb(tmp), occupied);
-            }
-            {
-                Bitboard tmp = pos.pieces(them, QUEEN);
-                while (tmp) enemy_defense |= queen_attacks_bb(pop_lsb(tmp), occupied);
-            }
-
-            Bitboard enemy_targets = pos.pieces(them, KNIGHT) | pos.pieces(them, BISHOP)
-                                   | pos.pieces(them, ROOK) | pos.pieces(them, QUEEN);
-            Bitboard hanging = enemy_targets & our_attacks & ~enemy_defense;
-            while (hanging) {
-                Square sq = pop_lsb(hanging);
-                PieceType pt = pos.piece_type_on(sq);
-                int mg_bonus = 0, eg_bonus = 0;
-                switch (pt) {
-                    case KNIGHT: mg_bonus = 33; eg_bonus = 44; break;
-                    case BISHOP: mg_bonus = 35; eg_bonus = 47; break;
-                    case ROOK:   mg_bonus = 53; eg_bonus = 68; break;
-                    case QUEEN:  mg_bonus = 100; eg_bonus = 130; break;
-                    default: break;
+            // Knight threats: our knights attacking enemy pieces
+            threats = their_pieces & attacks_by[c][KNIGHT];
+            while (threats) {
+                PieceType pt = piece_type_of(pos.piece_on(pop_lsb(threats)));
+                if (pt < KING) {
+                    mg_score += sign * KnightThreatMG[pt];
+                    eg_score += sign * KnightThreatEG[pt];
                 }
-                mg_score += sign * mg_bonus;
-                eg_score += sign * eg_bonus;
+            }
+
+            // Bishop threats: our bishops attacking enemy pieces
+            threats = their_pieces & attacks_by[c][BISHOP];
+            while (threats) {
+                PieceType pt = piece_type_of(pos.piece_on(pop_lsb(threats)));
+                if (pt < KING) {
+                    mg_score += sign * BishopThreatMG[pt];
+                    eg_score += sign * BishopThreatEG[pt];
+                }
+            }
+
+            // Rook threats: our rooks attacking enemy pieces
+            threats = their_pieces & attacks_by[c][ROOK];
+            while (threats) {
+                PieceType pt = piece_type_of(pos.piece_on(pop_lsb(threats)));
+                if (pt < KING) {
+                    mg_score += sign * RookThreatMG[pt];
+                    eg_score += sign * RookThreatEG[pt];
+                }
+            }
+
+            // Hanging pawns: enemy pawns not defended by any enemy piece (Stash: 13/52)
+            Bitboard hanging_pawns = pos.pieces(them, PAWN) & ~all_attacks[them] & all_attacks[c];
+            if (hanging_pawns) {
+                mg_score += sign * 13 * popcount(hanging_pawns);
+                eg_score += sign * 52 * popcount(hanging_pawns);
             }
         }
 
@@ -693,18 +767,6 @@ Value evaluate(const Position& pos) {
     // Bishop pair bonus (Stash values: 21/93)
     if (bishop_count[WHITE] >= 2) { mg_score += 21; eg_score += 93; }
     if (bishop_count[BLACK] >= 2) { mg_score -= 21; eg_score -= 93; }
-
-    // Material imbalance: bishop value increases with fewer pawns
-    for (int c_idx = 0; c_idx < 2; ++c_idx) {
-        Color c = Color(c_idx);
-        Sign sign = (c_idx == 0) ? 1 : -1;
-        int pawns = popcount(pos.pieces(c, PAWN));
-        int bishops = bishop_count[c_idx];
-        if (bishops >= 1) {
-            mg_score += sign * (30 - pawns * 2);
-            eg_score += sign * (50 - pawns * 3);
-        }
-    }
 
     // King safety using Stockfish-style SafetyTable (from chessprogramming.org)
     // Smooth S-curve scaling instead of crude quadratic
@@ -742,9 +804,8 @@ Value evaluate(const Position& pos) {
         int attack_units = 0;
         int attacker_count = 0;
 
-        // Safe squares: not defended by our pawns
-        Bitboard our_pawn_attacks = pawn_attacks_bb(c, pos.pieces(c, PAWN));
-        Bitboard safe = ~our_pawn_attacks;
+        // Safe squares: not defended by our pawns (use precomputed)
+        Bitboard safe = ~attacks_by[c][PAWN];
 
         // Precompute king check rays (where sliders could give check)
         Bitboard king_diag = bb_diag_attacks(our_ksq, Bitboard(0));
