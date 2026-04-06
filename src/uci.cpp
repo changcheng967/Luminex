@@ -88,7 +88,7 @@ static void launch_search_thread(Position pos_copy, Limits lim) {
     }
     auto* thread_args = new std::pair<Position, Limits>(pos_copy, lim);
     native_thread_handle = reinterpret_cast<HANDLE>(_beginthreadex(
-        nullptr, 4 * 1024 * 1024,  // 4MB stack
+        nullptr, 8 * 1024 * 1024,  // 8MB stack
         [](void* arg) -> unsigned {
             auto* p = static_cast<std::pair<Position, Limits>*>(arg);
             search_worker(p->first, p->second);
