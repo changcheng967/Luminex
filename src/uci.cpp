@@ -131,7 +131,7 @@ void handle_uci() {
     safe_output("id name " + std::string(ENGINE_NAME) + " " + ENGINE_VERSION + "\n");
     safe_output("id author " + std::string(ENGINE_AUTHOR) + "\n");
     safe_output("option name Hash type spin default 128 min 1 max 1048576\n");
-    safe_output("option name Threads type spin default 2 min 1 max 64\n");
+    safe_output("option name Threads type spin default 1 min 1 max 64\n");
     safe_output("option name Contempt type spin default 0 min -1000 max 1000\n");
     safe_output("option name Clear Hash type button\n");
     safe_output("uciok\n");

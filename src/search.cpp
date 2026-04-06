@@ -28,7 +28,7 @@ int root_depth;
 Value root_score;
 
 // Lazy SMP thread management
-int num_threads = 2;
+int num_threads = 1;
 
 namespace {
 
@@ -94,7 +94,7 @@ PawnCorrectionHistory pawn_correction_history;
 
 // Lazy SMP helper thread management (inside anonymous namespace for internal linkage)
 static std::vector<std::thread> helper_threads;
-static bool helpers_running = false;
+static std::atomic<bool> helpers_running{false};
 
 
 
@@ -107,6 +107,7 @@ EvalCacheEntry eval_cache[EVAL_CACHE_SIZE];
 
 // Thread-local node counter to avoid atomic overhead on every node
 static thread_local uint64_t local_nodes = 0;
+static thread_local uint64_t last_reported_nodes = 0;
 
 // Compute pawn structure hash key (same as evaluate_pawns uses internally)
 inline uint64_t compute_pawn_key(const Position& pos) {
@@ -157,9 +158,6 @@ static int max_time = 0;    // Maximum time to use
 
 // Check time - returns true if time limit exceeded
 bool check_time() {
-    // Memory barrier to ensure we see the latest stop flag
-    std::atomic_thread_fence(std::memory_order_seq_cst);
-
     // Check volatile stop flag first for fastest response
     if (g_stop_requested) {
         return true;
@@ -227,8 +225,6 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
     }
 
     // Memory barrier for ensure we see the latest stop flag
-    std::atomic_thread_fence(std::memory_order_seq_cst);
-
     if (g_stop_requested || stop.load(std::memory_order_relaxed)) {
         return VALUE_ZERO;
     }
@@ -362,8 +358,6 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
     }
 
     // Memory barrier to ensure we see the latest stop flag
-    std::atomic_thread_fence(std::memory_order_seq_cst);
-
     if (g_stop_requested || stop.load(std::memory_order_relaxed)) {
         return VALUE_ZERO;
     }
@@ -378,8 +372,9 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
 
     // Check time every 1024 nodes for better time control
     // Use local_nodes for cheap counting, flush to atomic periodically
-    if ((local_nodes & 1023) == 0) {
-        nodes.store(local_nodes, std::memory_order_relaxed);
+    if ((local_nodes - last_reported_nodes) >= 1024) {
+        nodes.fetch_add(local_nodes - last_reported_nodes, std::memory_order_relaxed);
+        last_reported_nodes = local_nodes;
         if (check_time()) {
             return VALUE_ZERO;
         }
@@ -1134,11 +1129,13 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
 
 // Helper thread function for lazy SMP
 // Each helper runs its own iterative deepening, populating the shared TT
-static void helper_thread_func(Position pos_copy) {
+// thread_id is used to offset start depth to reduce TT contention
+static void helper_thread_func(Position pos_copy, int thread_id) {
     // Create per-thread search worker
     SearchWorker* w = new SearchWorker();
     worker = w;
     local_nodes = 0;
+    last_reported_nodes = 0;
 
     // Initialize stack
     for (int i = 0; i < MAX_PLY_PLUS_6; ++i) {
@@ -1150,16 +1147,19 @@ static void helper_thread_func(Position pos_copy) {
     }
 
     // Simple iterative deepening - no UCI output, no complex time management
+    // Offset start depth by thread_id to reduce TT contention between threads
     Move prev_best = MOVE_NONE;
     Value prev_score = -VALUE_INFINITE;
     int effective_depth = (limits.depth == 0) ? MAX_PLY : limits.depth;
+    int start_depth = 1 + thread_id;
 
-    for (int d = 1; d <= effective_depth; ++d) {
+    for (int d = start_depth; d <= effective_depth; ++d) {
         if (stop.load(std::memory_order_relaxed) || g_stop_requested) break;
 
         // Check time periodically
         if ((local_nodes & 1023) == 0) {
-            nodes.store(local_nodes, std::memory_order_relaxed);
+            nodes.fetch_add(local_nodes - last_reported_nodes, std::memory_order_relaxed);
+            last_reported_nodes = local_nodes;
             if (check_time()) break;
         }
 
@@ -1204,7 +1204,8 @@ static void helper_thread_func(Position pos_copy) {
         for (ExtMove* it = moves; it != end; ++it) {
             if (stop.load(std::memory_order_relaxed) || g_stop_requested) break;
             if ((local_nodes & 1023) == 0) {
-                nodes.store(local_nodes, std::memory_order_relaxed);
+                nodes.fetch_add(local_nodes - last_reported_nodes, std::memory_order_relaxed);
+            last_reported_nodes = local_nodes;
                 if (check_time()) break;
             }
 
@@ -1271,7 +1272,8 @@ static void helper_thread_func(Position pos_copy) {
     }
 
     // Flush final node count
-    nodes.store(local_nodes, std::memory_order_relaxed);
+    nodes.fetch_add(local_nodes - last_reported_nodes, std::memory_order_relaxed);
+    last_reported_nodes = local_nodes;
 
     delete w;
     worker = nullptr;
@@ -1284,6 +1286,7 @@ Move search(Position& pos, Limits& lim) {
     stop = false;
     nodes = 0;
     local_nodes = 0;
+    last_reported_nodes = 0;
 
     // Track search start time for time management
     search_start = std::chrono::steady_clock::now();
@@ -1329,7 +1332,7 @@ Move search(Position& pos, Limits& lim) {
     // Launch helper threads for lazy SMP
     helpers_running = true;
     for (int i = 1; i < num_threads; ++i) {
-        helper_threads.emplace_back(helper_thread_func, pos);
+        helper_threads.emplace_back(helper_thread_func, pos, i);
     }
 
     // Time management — Third Generation: Stability + Score Progression
@@ -1395,7 +1398,6 @@ Move search(Position& pos, Limits& lim) {
 
     for (root_depth = start_depth; root_depth <= effective_depth; ++root_depth) {
         // Check stop at the very start of each depth iteration
-        std::atomic_thread_fence(std::memory_order_seq_cst);
         if (g_stop_requested || stop.load(std::memory_order_relaxed)) {
             break;
         }
@@ -1601,7 +1603,8 @@ Move search(Position& pos, Limits& lim) {
         root_score = depth_best_value;
 
         // Flush local node count to atomic for accurate reporting
-        nodes.store(local_nodes, std::memory_order_relaxed);
+        nodes.fetch_add(local_nodes - last_reported_nodes, std::memory_order_relaxed);
+        last_reported_nodes = local_nodes;
 
         // Calculate elapsed time for NPS
         auto search_end = std::chrono::steady_clock::now();
