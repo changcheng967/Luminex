@@ -589,8 +589,7 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
     // Helper lambda: compute LMR reduction for a move (takes gives_chk to avoid recomputation)
     auto compute_reduction = [&](Move m, int mp, bool gives_chk) -> int {
         // Logarithmic LMR formula with history-based adjustments
-        // Conservative base (1.35/2.75) for better tactical accuracy
-        int reduction = int(1.0 + std::log(double(std::max(depth - 1, 1))) * std::log(double(std::max(mp, 1))) / 2.5);
+        int reduction = int(1.0 + std::log(double(std::max(depth - 1, 1))) * std::log(double(std::max(mp, 1))) / 2.25);
         if (!ss->improving && !opponent_worsening) reduction += 1;
         if (cut_node) reduction += 1;
 
@@ -617,7 +616,7 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
             }
 
             // History influence on reduction
-            reduction -= history_score / 3000;
+            reduction -= history_score / 2560;
         }
 
         // Reduce less for killer moves
