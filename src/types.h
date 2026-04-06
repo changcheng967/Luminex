@@ -199,12 +199,12 @@ constexpr Value VALUE_MATE = 29000;
 constexpr Value VALUE_MATE_IN_MAX_PLY = VALUE_MATE - 256;
 constexpr Value VALUE_KNOWN_WIN = 15000;
 
-// Piece values for evaluation (aligned with PeSTO MG values used in evaluation.cpp)
+// Piece values for evaluation
 constexpr Value PAWN_VALUE   = 100;
-constexpr Value KNIGHT_VALUE = 337;
-constexpr Value BISHOP_VALUE = 365;
-constexpr Value ROOK_VALUE   = 477;
-constexpr Value QUEEN_VALUE  = 1025;
+constexpr Value KNIGHT_VALUE = 330;
+constexpr Value BISHOP_VALUE = 330;
+constexpr Value ROOK_VALUE   = 500;
+constexpr Value QUEEN_VALUE  = 1000;
 
 // Piece-square table values
 constexpr Value PST_MG = 0;

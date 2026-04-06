@@ -392,7 +392,28 @@ Value evaluate(const Position& pos) {
                 int wrank = rank_of(weak_ksq);
                 int center_dist_file = std::max(wfile - 3, 7 - wfile);
                 int center_dist_rank = std::max(wrank - 3, 7 - wrank);
-                int corner_bonus = center_dist_file * center_dist_file + center_dist_rank * center_dist_rank;
+
+                // For KBN vs K: drive to corner matching bishop's color
+                int corner_bonus;
+                if (has_bn && strong_material == 2) {
+                    // KBN vs K: find bishop, check its square color
+                    Square bsq = lsb(pos.pieces(c, BISHOP));
+                    bool bishop_light = ((int(bsq) + int(bsq) / 8) % 2) == 0;
+                    bool weak_light = ((int(weak_ksq) + int(weak_ksq) / 8) % 2) == 0;
+
+                    // Push to corner of same color as bishop
+                    // Corners: a1(light), h1(dark), a8(dark), h8(light)
+                    // If bishop on light squares, target a1/h8; if dark, target a8/h1
+                    if (bishop_light == weak_light) {
+                        // Weak king already on right color - push to corner
+                        corner_bonus = center_dist_file * center_dist_file + center_dist_rank * center_dist_rank;
+                    } else {
+                        // Wrong color - bonus for moving toward correct color first
+                        corner_bonus = (center_dist_file * center_dist_file + center_dist_rank * center_dist_rank) / 2;
+                    }
+                } else {
+                    corner_bonus = center_dist_file * center_dist_file + center_dist_rank * center_dist_rank;
+                }
 
                 // Keep kings close: bonus for strong king being near weak king
                 int king_dist = std::abs(file_of(strong_ksq) - wfile) + std::abs(rank_of(strong_ksq) - wrank);
@@ -946,26 +967,16 @@ Value evaluate(const Position& pos) {
         }
     }
 
-    // King safety using Stockfish 11 quadratic danger model
-    // Safe check bonuses by piece type (Stockfish 11 values)
-    static constexpr int RookSafeCheck   = 1080;
-    static constexpr int QueenSafeCheck  =  780;
-    static constexpr int BishopSafeCheck =  635;
-    static constexpr int KnightSafeCheck =  790;
-
-    // Attacker weights by piece type (Stockfish 11: Knight=81, Bishop=52, Rook=44, Queen=10)
-    static constexpr int KingAttackWeights[6] = { 0, 0, 81, 52, 44, 10 };
-
-    // King flank bitboards: 3 files around the king's file
-    static constexpr Bitboard KingFlank[8] = {
-        BB_FILE_A | BB_FILE_B | BB_FILE_C,
-        BB_FILE_A | BB_FILE_B | BB_FILE_C,
-        BB_FILE_A | BB_FILE_B | BB_FILE_C,
-        BB_FILE_B | BB_FILE_C | BB_FILE_D,
-        BB_FILE_E | BB_FILE_F | BB_FILE_G,
-        BB_FILE_F | BB_FILE_G | BB_FILE_H,
-        BB_FILE_F | BB_FILE_G | BB_FILE_H,
-        BB_FILE_F | BB_FILE_G | BB_FILE_H,
+    // King safety using SafetyTable
+    static const int SafetyTable[100] = {
+        0, 0, 1, 2, 3, 5, 7, 9, 12, 15, 18, 22, 26, 30, 35, 39,
+        44, 50, 56, 62, 68, 75, 82, 85, 89, 97, 105, 113, 122, 131, 140,
+        150, 169, 180, 191, 202, 213, 225, 237, 248, 260, 272, 283, 295,
+        307, 319, 330, 342, 354, 366, 377, 389, 401, 412, 424, 436, 448,
+        459, 471, 483, 494, 500, 500, 500, 500, 500, 500, 500, 500, 500,
+        500, 500, 500, 500, 500, 500, 500, 500, 500, 500, 500, 500, 500,
+        500, 500, 500, 500, 500, 500, 500, 500, 500, 500, 500, 500, 500,
+        500, 500
     };
 
     for (int c_idx = 0; c_idx < 2; ++c_idx) {
@@ -974,140 +985,95 @@ Value evaluate(const Position& pos) {
         Sign sign = (c_idx == 0) ? 1 : -1;
         Square our_ksq = ksq_arr[c_idx];
 
-        // King ring: squares adjacent to king (clamped to avoid edge issues)
-        File kf = std::max(FILE_B, std::min(FILE_G, file_of(our_ksq)));
-        Rank kr = std::max(RANK_2, std::min(RANK_7, rank_of(our_ksq)));
-        Square clamped_ksq = make_square(kf, kr);
-        Bitboard king_ring = king_attacks_bb(clamped_ksq) | square_bb(clamped_ksq);
+        // King zone: king attacks + one rank toward enemy
+        Bitboard king_zone = king_attacks_bb(our_ksq) | square_bb(our_ksq);
+        Rank fwd = (c == WHITE) ? Rank(rank_of(our_ksq) + 1) : Rank(rank_of(our_ksq) - 1);
+        if (fwd >= RANK_1 && fwd <= RANK_8) {
+            for (File f = FILE_A; f <= FILE_H; f = File(f + 1)) {
+                king_zone |= square_bb(make_square(f, fwd));
+            }
+        }
 
-        // Remove squares defended by two pawns (well-protected, not vulnerable)
-        Bitboard our_pawn_attacks = pawn_attacks_bb(c, pos.pieces(c, PAWN));
-        // Approximate double pawn attacks: intersection of shifted pawn attacks
-        Bitboard pawns = pos.pieces(c, PAWN);
-        Bitboard dbl_attack = (c == WHITE)
-            ? ((pawns << 9) & (pawns << 7) & 0xFFFFFFFFFFFFFF00ULL)
-            : ((pawns >> 9) & (pawns >> 7) & 0x00FFFFFFFFFFFFFFULL);
-        king_ring &= ~dbl_attack;
-
+        int attack_units = 0;
         int attacker_count = 0;
-        int attacker_weight = 0;
-        int king_danger = 0;
-        Bitboard unsafe_checks = 0;
 
-        // Safe squares: not defended by us, or only by king/queen (weakly defended)
-        Bitboard safe = ~all_attacks[c] | (all_attacks[c] & ~(our_pawn_attacks | attacks_by[c][KNIGHT] | attacks_by[c][ROOK] | attacks_by[c][BISHOP]));
+        // Safe squares: not defended by our pawns
+        Bitboard our_pawn_attacks = pawn_attacks_bb(c, pos.pieces(c, PAWN));
+        Bitboard safe = ~our_pawn_attacks;
 
-        // Weak squares: attacked by enemy, defended at most once by us (not by pawns)
-        Bitboard weak = all_attacks[them] & ~our_pawn_attacks & ~all_attacks[c];
+        // Pawn attacks on king zone
+        Bitboard enemy_pawns = pos.pieces(them, PAWN);
+        Bitboard ep = enemy_pawns;
+        while (ep) {
+            Square psq = pop_lsb(ep);
+            if (pawn_attacks_bb(them, square_bb(psq)) & king_zone) {
+                attack_units += 3;
+                attacker_count++;
+            }
+        }
 
-        // Count pawn attackers on king ring
-        Bitboard pawn_ring_attacks = pawn_attacks_bb(them, pos.pieces(them, PAWN)) & king_ring;
-        attacker_count += popcount(pawn_ring_attacks);
-
-        // Knight attacks on king ring + safe check bonus
+        // Knight attacks on king zone + safe check bonus
         Bitboard enemy_kn = pos.pieces(them, KNIGHT);
         while (enemy_kn) {
             Square ksq2 = pop_lsb(enemy_kn);
             Bitboard kn_attacks = knight_attacks_bb(ksq2);
-            if (kn_attacks & king_ring) {
+            if (kn_attacks & king_zone) {
+                attack_units += 3;
                 attacker_count++;
-                attacker_weight += KingAttackWeights[KNIGHT];
             }
             Bitboard kn_checks = kn_attacks & king_attacks_bb(our_ksq);
-            if (kn_checks & safe) king_danger += KnightSafeCheck;
-            else unsafe_checks |= kn_checks;
+            if (kn_checks & safe) attack_units += 4;
         }
 
-        // Bishop attacks on king ring + safe check bonus
+        // Bishop attacks on king zone + safe check bonus
         Bitboard enemy_bi = pos.pieces(them, BISHOP);
-        Bitboard diag_to_king = bb_diag_attacks(our_ksq, occupied);
         while (enemy_bi) {
             Square bsq = pop_lsb(enemy_bi);
             Bitboard bi_attacks = bishop_attacks_bb(bsq, occupied);
-            if (bi_attacks & king_ring) {
+            if (bi_attacks & king_zone) {
+                attack_units += 3;
                 attacker_count++;
-                attacker_weight += KingAttackWeights[BISHOP];
             }
-            Bitboard bi_checks = bi_attacks & diag_to_king;
-            if (bi_checks & safe) king_danger += BishopSafeCheck;
-            else unsafe_checks |= bi_checks;
+            Bitboard bi_checks = bi_attacks & bb_diag_attacks(our_ksq, Bitboard(0));
+            if (bi_checks & safe) attack_units += 3;
         }
 
-        // Rook attacks on king ring + safe check bonus
+        // Rook attacks on king zone + safe check bonus
         Bitboard enemy_ro = pos.pieces(them, ROOK);
-        Bitboard straight_to_king = rook_attacks_bb(our_ksq, occupied);
-        Bitboard rook_checks_bb = straight_to_king & attacks_by[them][ROOK];
         while (enemy_ro) {
             Square rsq = pop_lsb(enemy_ro);
             Bitboard ro_attacks = rook_attacks_bb(rsq, occupied);
-            if (ro_attacks & king_ring) {
+            if (ro_attacks & king_zone) {
+                attack_units += 4;
                 attacker_count++;
-                attacker_weight += KingAttackWeights[ROOK];
             }
-            if (rook_checks_bb & safe) king_danger += RookSafeCheck;
-            else unsafe_checks |= ro_attacks & straight_to_king & attacks_by[them][ROOK];
+            Bitboard ro_checks = ro_attacks & rook_attacks_bb(our_ksq, Bitboard(0));
+            if (ro_checks & safe) attack_units += 5;
         }
 
-        // Queen attacks on king ring + safe check bonus (only if not from rook check square)
+        // Queen attacks on king zone + safe check bonus
         Bitboard enemy_qu = pos.pieces(them, QUEEN);
-        Bitboard queen_checks_bb = (straight_to_king | diag_to_king) & attacks_by[them][QUEEN]
-                                   & safe & ~attacks_by[c][QUEEN] & ~rook_checks_bb;
         while (enemy_qu) {
             Square qsq = pop_lsb(enemy_qu);
             Bitboard qu_attacks = queen_attacks_bb(qsq, occupied);
-            if (qu_attacks & king_ring) {
+            if (qu_attacks & king_zone) {
+                attack_units += 6;
                 attacker_count++;
-                attacker_weight += KingAttackWeights[QUEEN];
             }
-            if (queen_checks_bb) king_danger += QueenSafeCheck;
+            Bitboard qu_checks = qu_attacks & (bb_diag_attacks(our_ksq, Bitboard(0)) | rook_attacks_bb(our_ksq, Bitboard(0)));
+            if (qu_checks & safe) attack_units += 6;
         }
 
-        // Only compute danger if we have enough attackers
+        // Only evaluate king safety if we have enough attackers
         if (attacker_count >= 2) {
-            // King flank attack: count enemy attacks on our king's flank (3 files)
-            Bitboard flank = KingFlank[file_of(our_ksq)];
-            // Camp: our side of the board, excluding back rank
-            Bitboard camp = (c == WHITE)
-                ? ~(BB_RANK_6 | BB_RANK_7 | BB_RANK_8)
-                : ~(BB_RANK_1 | BB_RANK_2 | BB_RANK_3);
-            int flank_attack = popcount(all_attacks[them] & flank & camp)
-                             + popcount(all_attacks[them] & flank & camp & all_attacks[them]); // double attacks
-            int flank_defense = popcount(all_attacks[c] & flank & camp);
+            int idx = std::min(attack_units, 99);
+            int danger = SafetyTable[idx];
 
-            // Count direct attacks on squares adjacent to our king
-            int king_attacks = popcount(all_attacks[them] & king_attacks_bb(our_ksq));
+            if (!enemy_qu) danger = danger / 4;
+            if (!enemy_qu && !enemy_ro) danger = danger / 4;
 
-            // Compose king danger (Stockfish 11 formula)
-            king_danger += attacker_count * attacker_weight
-                         + 185 * popcount(king_ring & weak)
-                         + 148 * popcount(unsafe_checks)
-                         +  69 * king_attacks
-                         +   3 * flank_attack * flank_attack / 8
-                         - 873 * !pos.pieces(them, QUEEN)
-                         - 100 * bool(attacks_by[c][KNIGHT] & king_attacks_bb(our_ksq))
-                         -   4 * flank_defense
-                         +  37;
-
-            // Quadratic transformation: danger explodes non-linearly
-            if (king_danger > 100) {
-                mg_score -= sign * (king_danger * king_danger / 4096);
-                eg_score -= sign * (king_danger / 16);
-            }
+            mg_score -= sign * danger;
         }
-
-        // Pawnless flank penalty
-        if (!(pos.pieces(PAWN) & KingFlank[file_of(our_ksq)])) {
-            eg_score -= sign * 95;
-            mg_score -= sign * 17;
-        }
-
-        // Flank attack penalty
-        Bitboard flank2 = KingFlank[file_of(our_ksq)];
-        Bitboard camp2 = (c == WHITE)
-            ? ~(BB_RANK_6 | BB_RANK_7 | BB_RANK_8)
-            : ~(BB_RANK_1 | BB_RANK_2 | BB_RANK_3);
-        int flank_att_count = popcount(all_attacks[them] & flank2 & camp2);
-        mg_score -= sign * 8 * flank_att_count;
     }
 
     // Phase calculation
