@@ -431,7 +431,7 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
         }
     }
 
-    // Null move pruning (Stash-style)
+    // Null move pruning (static R formula)
     int piece_count = popcount(pos.pieces()) - popcount(pos.pieces(PAWN)) - 2;
     bool null_move_ok = !pv_node && !pos.is_check() && depth >= 2 && piece_count >= 1 &&
                           eval >= beta && ss->ply >= 1 && !ss->excluded_move;
