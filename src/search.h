@@ -59,6 +59,7 @@ extern std::atomic<uint64_t> nodes;
 extern std::atomic<bool> stop;
 extern int root_depth;
 extern Value root_score;
-extern int num_threads; // Default 2 for optimal lazy SMP performance
+extern int num_threads; // Default 1, SMP only helps at longer TC
+extern Move previous_root_best; // Previous iteration's best move for ordering
 
 } // namespace luminex

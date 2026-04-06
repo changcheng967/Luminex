@@ -500,7 +500,14 @@ Value evaluate(const Position& pos) {
                 Square promo_sq = relative_square(c, make_square(f, RANK_8));
                 int our_kdist = distance(our_ksq, promo_sq);
                 int their_kdist = distance(their_ksq, promo_sq);
-                eg_passer += (their_kdist - our_kdist) * 6;
+                eg_passer += (their_kdist - our_kdist) * 8;
+
+                // Free passed pawn bonus: enemy king can't catch
+                // Bonus scales with how far the enemy king is
+                if (their_kdist > our_kdist + (c == pos.side_to_move() ? 0 : 1)) {
+                    int unreachable = their_kdist - our_kdist;
+                    eg_passer += unreachable * (unreachable > 4 ? 25 : 15);
+                }
 
                 // Blocked by enemy pieces penalty
                 if (ahead_file & pos.pieces(them)) {
@@ -1017,13 +1024,13 @@ int scale_factor(const Position& pos, [[maybe_unused]] Value eg) {
         bool wb_light = ((int(wb_sq) + (wb_sq / 8)) % 2) == 0;
         bool bb_light = ((int(bb_sq) + (bb_sq / 8)) % 2) == 0;
         if (wb_light != bb_light) {
-            // OCB scaling (original Stash formula)
+            // OCB scaling: more drawish with fewer pieces
             int piece_count = popcount(pos.pieces()) - 4; // exclude kings and bishops
             if (piece_count > 0) {
-                return std::min(71 + piece_count * 9, 32);
+                return std::min(18 + piece_count * 2, 32);
             } else {
-                // Passed pawns only
-                return std::min(33 + total_pawns * 21, 32);
+                // Passed pawns only: very drawish
+                return std::min(18 + total_pawns, 32);
             }
         }
     }

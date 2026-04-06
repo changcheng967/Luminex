@@ -29,6 +29,7 @@ Value root_score;
 
 // Lazy SMP thread management
 int num_threads = 1;
+Move previous_root_best = MOVE_NONE;
 
 namespace {
 
@@ -1040,6 +1041,9 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
                     }
                 }
 
+                // Previous iteration's root best move bonus
+                if (m == previous_root_best) score += 70000;
+
                 // Killer moves bonus ON TOP of history
                 if (m == worker->killers[ss->ply][0]) score += 60000;
                 else if (m == worker->killers[ss->ply][1]) score += 50000;
@@ -1294,6 +1298,7 @@ Move search(Position& pos, Limits& lim) {
     Move best_move = MOVE_NONE;
     Value best_value = -VALUE_INFINITE;
     root_score = best_value;
+    previous_root_best = MOVE_NONE;
 
     // Check if we have any legal moves at all
     ExtMove initial_moves[MAX_MOVES];
@@ -1590,6 +1595,7 @@ Move search(Position& pos, Limits& lim) {
         if (depth_best_move != MOVE_NONE) {
             best_value = depth_best_value;
             best_move = depth_best_move;
+            previous_root_best = depth_best_move;
         }
 
         // Save root position to TT for PV extraction
