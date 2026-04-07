@@ -4,10 +4,11 @@ A UCI chess engine written in C++23 with pure handcrafted evaluation.
 
 ## Features
 
-- **Search**: PVS with LMR, null move pruning (static R=3/4/5), singular extension with double extension, probcut, razoring, futility/reverse futility pruning, aspiration windows, phased move generation
-- **Evaluation**: PeSTO-derived PSTs, Ethereal mobility tables, Stash-style piece-specific threats, SafetyTable king safety (capped 200), pawn structure (doubled/isolated/backward/candidate/connected/phalanx/lever), passed pawns with rook behind/king proximity/free passer, bishop pair, outpost pieces, far piece penalty, space evaluation, OCB scaling
-- **Move ordering**: Phased generation (TT -> captures -> quiets) with killer/counter-move/2-ply continuation history, capture history, escape-aware ordering, previous root PV bonus
-- **Heuristics**: TT cutoff stat updates with SF11 stat_bonus formula, ttPv LMR reduction, history gravity (32768 divisor), continuation pruning
+- **Search**: PVS with LMR (precomputed reduction table), null move pruning (static R=3/4/5), singular extension with double extension, probcut, razoring, futility/reverse futility pruning, aspiration windows, phased move generation
+- **Evaluation**: PeSTO-derived PSTs, Ethereal mobility tables (scaled), Stash-style piece-specific threats (scaled), SafetyTable king safety (capped 200), pawn structure (doubled/isolated/backward/candidate/connected/phalanx/lever), passed pawns with rook behind/king proximity/free passer, bishop pair, outpost pieces, far piece penalty, space evaluation, OCB scaling
+- **Move ordering**: Phased generation (TT -> captures -> quiets) with killer/counter-move/2-ply continuation history, low-ply history (plies 1-3), capture history with fail-low malus, escape-aware ordering, previous root PV bonus
+- **Heuristics**: TT cutoff stat updates with SF11 stat_bonus formula, ttPv LMR reduction, history gravity (32768 divisor), continuation pruning, aggressive capture LMR (losing captures)
+- **Tuning**: 33 UCI-tunable eval parameters (SPSA + Texel), mobility/threat scaling factors
 - **Time management**: Sudden-death and increment time controls with stability-based allocation
 - **Infrastructure**: Magic bitboards, transposition table with depth-preferred aging, eval cache (512K), pawn hash (16K), lazy SMP
 
@@ -52,8 +53,8 @@ build/luminex.exe bench
 
 ## Strength
 
-~1835 ELO (pure HCE, no NNUE). Estimated from 40-game tests against Stash v13 (1972 ELO) at tc=1+0.01.
-Best confirmed result: 12-27-1 (31.25% WR, -137 ELO) vs Stash v13.
+~1972 ELO (pure HCE, no NNUE). Estimated from 80-game tests against Stash v13 at tc=1+0.01.
+Best confirmed result: 41-36-3 (53.2% WR, +23 ELO) vs Stash v13.
 
 ## License
 
