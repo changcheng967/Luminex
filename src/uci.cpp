@@ -1,6 +1,7 @@
 #define _CRT_SECURE_NO_WARNINGS
 #pragma warning(disable: 4459) // variable shadowing - intentional for pos parameter
 #include "luminex.h"
+#include "evaluation.h"
 #include <chrono>
 #include <cstdarg>
 #include <iostream>
@@ -134,6 +135,31 @@ void handle_uci() {
     safe_output("option name Threads type spin default 1 min 1 max 64\n");
     safe_output("option name Contempt type spin default 0 min -1000 max 1000\n");
     safe_output("option name Clear Hash type button\n");
+    // Eval parameters (SPSA-tuned defaults)
+    safe_output("option name BishopPairMG type spin default 30 min -100 max 200\n");
+    safe_output("option name BishopPairEG type spin default 96 min -100 max 300\n");
+    safe_output("option name RookOpenMG type spin default 29 min -50 max 150\n");
+    safe_output("option name RookOpenEG type spin default 47 min -50 max 150\n");
+    safe_output("option name RookSemiOpenMG type spin default 20 min -50 max 100\n");
+    safe_output("option name RookSemiOpenEG type spin default 15 min -50 max 100\n");
+    safe_output("option name Rook7thMG type spin default 30 min -50 max 100\n");
+    safe_output("option name Rook7thEG type spin default 17 min -50 max 150\n");
+    safe_output("option name PawnShieldCenter type spin default 11 min -20 max 40\n");
+    safe_output("option name PawnShieldKnight type spin default 15 min -20 max 40\n");
+    safe_output("option name PawnShieldRook type spin default 8 min -20 max 30\n");
+    safe_output("option name PawnStorm type spin default 9 min 0 max 30\n");
+    safe_output("option name OpenFilePenaltyMG type spin default 21 min -50 max 100\n");
+    safe_output("option name OpenFilePenaltyEG type spin default 18 min -50 max 100\n");
+    safe_output("option name OutpostKnightMG type spin default 27 min -20 max 60\n");
+    safe_output("option name OutpostKnightEG type spin default 17 min -20 max 40\n");
+    safe_output("option name OutpostBishopMG type spin default 50 min -20 max 100\n");
+    safe_output("option name OutpostBishopEG type spin default 31 min -20 max 60\n");
+    safe_output("option name HangingPawnMG type spin default 8 min -20 max 50\n");
+    safe_output("option name HangingPawnEG type spin default 39 min -20 max 100\n");
+    safe_output("option name FarKnightMG type spin default 29 min -50 max 60\n");
+    safe_output("option name FarKnightEG type spin default 8 min -50 max 60\n");
+    safe_output("option name FarBishopMG type spin default 5 min -50 max 40\n");
+    safe_output("option name FarBishopEG type spin default 3 min -50 max 40\n");
     safe_output("uciok\n");
 }
 
@@ -286,6 +312,30 @@ void handle_setoption(const std::string& cmd) {
         if (name == "Contempt") {
             params.contempt = std::stoi(value);
         }
+    } else if (name == "BishopPairMG") { g_eval_params.bishop_pair_mg = std::stoi(value);
+    } else if (name == "BishopPairEG") { g_eval_params.bishop_pair_eg = std::stoi(value);
+    } else if (name == "RookOpenMG") { g_eval_params.rook_open_mg = std::stoi(value);
+    } else if (name == "RookOpenEG") { g_eval_params.rook_open_eg = std::stoi(value);
+    } else if (name == "RookSemiOpenMG") { g_eval_params.rook_semi_open_mg = std::stoi(value);
+    } else if (name == "RookSemiOpenEG") { g_eval_params.rook_semi_open_eg = std::stoi(value);
+    } else if (name == "Rook7thMG") { g_eval_params.rook_7th_mg = std::stoi(value);
+    } else if (name == "Rook7thEG") { g_eval_params.rook_7th_eg = std::stoi(value);
+    } else if (name == "PawnShieldCenter") { g_eval_params.pawn_shield_center = std::stoi(value);
+    } else if (name == "PawnShieldKnight") { g_eval_params.pawn_shield_knight = std::stoi(value);
+    } else if (name == "PawnShieldRook") { g_eval_params.pawn_shield_rook = std::stoi(value);
+    } else if (name == "PawnStorm") { g_eval_params.pawn_storm = std::stoi(value);
+    } else if (name == "OpenFilePenaltyMG") { g_eval_params.open_file_penalty_mg = std::stoi(value);
+    } else if (name == "OpenFilePenaltyEG") { g_eval_params.open_file_penalty_eg = std::stoi(value);
+    } else if (name == "OutpostKnightMG") { g_eval_params.outpost_knight_mg = std::stoi(value);
+    } else if (name == "OutpostKnightEG") { g_eval_params.outpost_knight_eg = std::stoi(value);
+    } else if (name == "OutpostBishopMG") { g_eval_params.outpost_bishop_mg = std::stoi(value);
+    } else if (name == "OutpostBishopEG") { g_eval_params.outpost_bishop_eg = std::stoi(value);
+    } else if (name == "HangingPawnMG") { g_eval_params.hanging_pawn_mg = std::stoi(value);
+    } else if (name == "HangingPawnEG") { g_eval_params.hanging_pawn_eg = std::stoi(value);
+    } else if (name == "FarKnightMG") { g_eval_params.far_knight_mg = std::stoi(value);
+    } else if (name == "FarKnightEG") { g_eval_params.far_knight_eg = std::stoi(value);
+    } else if (name == "FarBishopMG") { g_eval_params.far_bishop_mg = std::stoi(value);
+    } else if (name == "FarBishopEG") { g_eval_params.far_bishop_eg = std::stoi(value);
     } else if (name == "Threads") {
         int t = std::stoi(value);
         if (t < 1) t = 1;

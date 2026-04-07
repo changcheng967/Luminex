@@ -3,6 +3,8 @@
 
 namespace luminex {
 
+EvalParams g_eval_params;
+
 // PeSTO piece values (MG and EG)
 static constexpr int PieceValueMG[8] = { 82, 337, 365, 477, 1025, 0, 0, 0 };
 static constexpr int PieceValueEG[8] = { 94, 281, 297, 512, 936, 0, 0, 0 };
@@ -30,9 +32,7 @@ static constexpr int RookThreatEG[6] = { 13, 29, 22, 27, 63, 0 };
 static constexpr int QueenThreatMG[6] = { -14, 11, 24, 19, 5, 0 };
 static constexpr int QueenThreatEG[6] = { -5, 22, 15, 31, 9, 0 };
 
-// Far piece penalty: pieces more than 3 squares from own king
-static constexpr int FarKnightMG = -22, FarKnightEG = -13;
-static constexpr int FarBishopMG = -8, FarBishopEG = -10;
+// Far piece penalty: pieces more than 3 squares from own king (only rook/queen remain hardcoded)
 static constexpr int FarRookMG = -10, FarRookEG = 5;
 static constexpr int FarQueenMG = -8, FarQueenEG = 15;
 
@@ -565,16 +565,16 @@ Value evaluate(const Position& pos) {
                     Bitboard enemy_pawn_attacks = pawn_attacks_bb(them, their_pawns);
                     bool can_be_attacked = (enemy_pawn_attacks & square_bb(sq)) != 0;
                     if (!can_be_attacked) {
-                        mg_score += sign * (20 + (kr - 3) * 5);
-                        eg_score += sign * (10 + (kr - 3) * 3);
+                        mg_score += sign * (g_eval_params.outpost_knight_mg + (kr - 3) * 5);
+                        eg_score += sign * (g_eval_params.outpost_knight_eg + (kr - 3) * 3);
                     }
                 }
             }
 
             // Far knight penalty: knight far from own king
             if (distance(sq, ksq_arr[c_idx]) > 3) {
-                mg_score += sign * FarKnightMG;
-                eg_score += sign * FarKnightEG;
+                mg_score -= sign * g_eval_params.far_knight_mg;
+                eg_score -= sign * g_eval_params.far_knight_eg;
             }
 
             // Knight shielded: friendly pawn above knight (Stash: 4/23)
@@ -641,16 +641,16 @@ Value evaluate(const Position& pos) {
                 if (br >= RANK_4 && br <= RANK_6) {
                     if ((pawn_attacks_bb(c, our_pawns) & square_bb(sq)) &&
                         !(pawn_attacks_bb(them, their_pawns) & square_bb(sq))) {
-                        mg_score += sign * 47;
-                        eg_score += sign * 24;
+                        mg_score += sign * g_eval_params.outpost_bishop_mg;
+                        eg_score += sign * g_eval_params.outpost_bishop_eg;
                     }
                 }
             }
 
             // Far bishop penalty
             if (distance(sq, ksq_arr[c_idx]) > 3) {
-                mg_score += sign * FarBishopMG;
-                eg_score += sign * FarBishopEG;
+                mg_score -= sign * g_eval_params.far_bishop_mg;
+                eg_score -= sign * g_eval_params.far_bishop_eg;
             }
         }
 
@@ -673,18 +673,18 @@ Value evaluate(const Position& pos) {
             // Open/semi-open file
             File f = file_of(sq);
             if (!(pos.pieces(PAWN) & file_bb(f))) {
-                mg_score += sign * 38;
-                eg_score += sign * 38;
+                mg_score += sign * g_eval_params.rook_open_mg;
+                eg_score += sign * g_eval_params.rook_open_eg;
             } else if (!(our_pawns & file_bb(f))) {
-                mg_score += sign * 15;
-                eg_score += sign * 18;
+                mg_score += sign * g_eval_params.rook_semi_open_mg;
+                eg_score += sign * g_eval_params.rook_semi_open_eg;
             }
 
             // Rook on 7th rank bonus
             Rank rr = relative_rank(c, rank_of(sq));
             if (rr == RANK_7) {
-                mg_score += sign * 25;
-                eg_score += sign * 30;
+                mg_score += sign * g_eval_params.rook_7th_mg;
+                eg_score += sign * g_eval_params.rook_7th_eg;
             }
 
             // Rook xray queen: bonus for rook on same file as enemy queen (Stash: 15/4)
@@ -772,7 +772,7 @@ Value evaluate(const Position& pos) {
         if (on_back) {
             // Per-rank shield evaluation: check 3 ranks in front of king
             for (int r = 1; r <= 3; ++r) {
-                int weight = (r == 1) ? 15 : (r == 2) ? 8 : 3;
+                int weight = (r == 1) ? g_eval_params.pawn_shield_knight : (r == 2) ? g_eval_params.pawn_shield_center : g_eval_params.pawn_shield_rook;
                 for (int df = -1; df <= 1; ++df) {
                     File sf = File(int(kfile) + df);
                     if (sf < FILE_A || sf > FILE_H) continue;
@@ -784,9 +784,9 @@ Value evaluate(const Position& pos) {
             }
 
             Bitboard all_pawns = pos.pieces(PAWN);
-            if (!(all_pawns & file_bb(kfile))) mg_score -= sign * 20;
-            if (kfile > FILE_A && !(all_pawns & file_bb(File(kfile - 1)))) mg_score -= sign * 15;
-            if (kfile < FILE_H && !(all_pawns & file_bb(File(kfile + 1)))) mg_score -= sign * 15;
+            if (!(all_pawns & file_bb(kfile))) mg_score -= sign * g_eval_params.open_file_penalty_mg;
+            if (kfile > FILE_A && !(all_pawns & file_bb(File(kfile - 1)))) mg_score -= sign * g_eval_params.open_file_penalty_eg;
+            if (kfile < FILE_H && !(all_pawns & file_bb(File(kfile + 1)))) mg_score -= sign * g_eval_params.open_file_penalty_eg;
 
             // Pawn storm: enemy pawns advancing toward our castled king
             {
@@ -800,7 +800,7 @@ Value evaluate(const Position& pos) {
                         Rank pr = relative_rank(c, rank_of(psq));
                         // Enemy pawn advancing toward our king (higher relative rank = closer)
                         if (pr >= RANK_4) {
-                            int storm_danger = (pr - 3) * 8;  // 8 per rank above 3
+                            int storm_danger = (pr - 3) * g_eval_params.pawn_storm;
                             mg_score -= sign * storm_danger;
                         }
                     }
@@ -878,8 +878,8 @@ Value evaluate(const Position& pos) {
             // Hanging pawns: enemy pawns not defended by any enemy piece (Stash: 13/52)
             Bitboard hanging_pawns = pos.pieces(them, PAWN) & ~all_attacks[them] & all_attacks[c];
             if (hanging_pawns) {
-                mg_score += sign * 13 * popcount(hanging_pawns);
-                eg_score += sign * 52 * popcount(hanging_pawns);
+                mg_score += sign * g_eval_params.hanging_pawn_mg * popcount(hanging_pawns);
+                eg_score += sign * g_eval_params.hanging_pawn_eg * popcount(hanging_pawns);
             }
         }
 
@@ -921,9 +921,9 @@ Value evaluate(const Position& pos) {
         }
     }
 
-    // Bishop pair bonus (Stash values: 21/93)
-    if (bishop_count[WHITE] >= 2) { mg_score += 21; eg_score += 93; }
-    if (bishop_count[BLACK] >= 2) { mg_score -= 21; eg_score -= 93; }
+    // Bishop pair bonus
+    if (bishop_count[WHITE] >= 2) { mg_score += g_eval_params.bishop_pair_mg; eg_score += g_eval_params.bishop_pair_eg; }
+    if (bishop_count[BLACK] >= 2) { mg_score -= g_eval_params.bishop_pair_mg; eg_score -= g_eval_params.bishop_pair_eg; }
 
     // King safety using SafetyTable (Stash-style linear formula, capped at 200)
     static const int SafetyTable[100] = {
