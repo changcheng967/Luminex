@@ -53,7 +53,7 @@ build/luminex.exe bench
 
 ## Strength
 
-~1972 ELO (pure HCE, no NNUE). Estimated from 80-game tests against Stash v13 at tc=1+0.01.
+~1995 ELO (pure HCE, no NNUE). Estimated from 80-game tests against Stash v13 (1972 ELO) at tc=1+0.01.
 Best confirmed result: 41-36-3 (53.2% WR, +23 ELO) vs Stash v13.
 
 ## License
