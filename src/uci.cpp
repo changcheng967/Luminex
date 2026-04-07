@@ -170,6 +170,7 @@ void handle_isready() {
 void handle_ucinewgame() {
     TT.clear();
     TT.new_search();
+    clear_correction_history();
     pos.set("rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1");
 }
 

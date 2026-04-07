@@ -59,6 +59,13 @@ int continuation_history[12][64][12][64];
 static std::vector<std::thread> helper_threads;
 static std::atomic<bool> helpers_running{false};
 
+// Correction history: learns eval adjustments from search results
+// Indexed by [side_to_move][pawn_key & mask]
+// SF 16.1 style: pawn-structure based correction
+static constexpr int CORRHIST_SIZE = 16384;  // Must be power of 2
+static constexpr int CORRECTION_LIMIT = 1024;
+static int16_t correction_history[2][CORRHIST_SIZE] = {};
+
 
 
 struct EvalCacheEntry {
@@ -405,6 +412,10 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
     Value eval = VALUE_ZERO;
     if (!pos.is_check()) {
         eval = eval_cached(pos);
+        // Apply correction history: adjust eval based on learned corrections for this pawn structure
+        int cv = correction_history[int(pos.side_to_move())][int(pos.pawn_key() & (CORRHIST_SIZE - 1))];
+        eval = eval + 66 * cv / 512;
+        eval = std::clamp(eval, Value(-VALUE_INFINITE + 1), Value(VALUE_INFINITE - 1));
     }
     ss->static_eval = eval;
 
@@ -1131,7 +1142,23 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
         else if (best_value > original_alpha) bound = BOUND_EXACT;  // PV node improved alpha
         else bound = BOUND_UPPER;
         // Use best_move_found instead of ss->pv[ss->ply] to avoid stale PV corruption
-        tte->save(pos.key(), best_value, pv_node, bound, depth, best_move_found, eval, TT.generation());
+        // Note: eval stored in TT is the raw static eval (before correction history),
+        // to avoid feedback loops where corrections amplify themselves
+        Value raw_eval = eval_cached(pos);
+        tte->save(pos.key(), best_value, pv_node, bound, depth, best_move_found, raw_eval, TT.generation());
+
+        // Update correction history: learn from difference between search result and raw eval
+        // Only update when not in check and best move is quiet (not a capture)
+        if (!pos.is_check() && (best_move_found == MOVE_NONE || !best_move_found.is_capture())
+            && !(best_value >= beta && best_value <= raw_eval)
+            && !(best_move_found == MOVE_NONE && best_value >= raw_eval)) {
+            int bonus = std::clamp(int(best_value - raw_eval) * depth / 8,
+                                   -CORRECTION_LIMIT / 4, CORRECTION_LIMIT / 4);
+            auto& entry = correction_history[int(pos.side_to_move())][int(pos.pawn_key() & (CORRHIST_SIZE - 1))];
+            // Gravity formula: entry += bonus - entry * |bonus| / limit
+            int clamped = std::clamp(bonus, -CORRECTION_LIMIT, CORRECTION_LIMIT);
+            entry = entry + clamped - entry * std::abs(clamped) / CORRECTION_LIMIT;
+        }
     }
 
     return best_value;
@@ -1745,6 +1772,10 @@ void uci_info([[maybe_unused]] const Position& pos, int depth, Value score, uint
 
     // Thread-safe output
     uci_safe_output(oss.str());
+}
+
+void clear_correction_history() {
+    std::memset(correction_history, 0, sizeof(correction_history));
 }
 
 } // namespace luminex
