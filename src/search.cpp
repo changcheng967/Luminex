@@ -705,29 +705,12 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
             }
         }
 
-        // Late Move Reduction: reduce moves that are unlikely to be best
-        // Apply LMR to quiet moves and losing captures (SEE < 0)
-        // But NEVER reduce moves that give check — they are forcing
-        Depth new_depth = depth - 1;
-        bool gives_chk = gives_check(m);
-        bool is_losing_capture = m.is_capture() && !m.is_promotion() && depth >= 1 &&
-                                  !pos.see_ge(m, Value(-depth * 80));
-        bool do_lmr = depth >= 3 && moves_played >= 3 &&
-                      (is_quiet || is_losing_capture) && !gives_chk;
-
-        if (do_lmr) {
-            int reduction = compute_reduction(m, moves_played, gives_chk);
-            // Reduce less in PV nodes
-            if (pv_node) reduction = std::max(1, reduction - 1);
-            new_depth = depth - 1 - reduction;
-            if (new_depth < 1) new_depth = 1;
-        }
-
-        // Extensions
+        // Extensions (computed first, before LMR)
         int ext_count = 0;
         if (m == tt_move) {
             ext_count += singular_extension;
         }
+        bool gives_chk = gives_check(m);
         if (gives_chk) {
             ext_count++;
         }
@@ -737,7 +720,24 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
                 ext_count++;
             }
         }
-        new_depth += ext_count;
+
+        Depth base_depth = depth - 1 + ext_count;
+        Depth new_depth = base_depth;
+
+        // Late Move Reduction: reduce moves that are unlikely to be best
+        // Apply LMR to quiet moves and losing captures (SEE < 0)
+        bool is_losing_capture = m.is_capture() && !m.is_promotion() && depth >= 1 &&
+                                  !pos.see_ge(m, Value(-depth * 80));
+        bool do_lmr = depth >= 3 && moves_played >= 3 &&
+                      (is_quiet || is_losing_capture) && !gives_chk;
+
+        if (do_lmr) {
+            int reduction = compute_reduction(m, moves_played, gives_chk);
+            // Reduce less in PV nodes
+            if (pv_node) reduction = std::max(1, reduction - 1);
+            new_depth = base_depth - reduction;
+            if (new_depth < 1) new_depth = 1;
+        }
 
         // Store current move and moved piece for counter-move history
         ss->current_move = m;
@@ -748,7 +748,7 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
         }
 
         Value value;
-        if (do_lmr && new_depth > 0) {
+        if (do_lmr) {
             // LMR: reduced zero-window search
             value = -search_worker(pos, ss + 1, -alpha - 1, -alpha, new_depth, !cut_node);
             if (stop.load(std::memory_order_relaxed)) {
@@ -761,11 +761,11 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
                 if (best_value > -VALUE_INFINITE + 100) {
                     bool do_deeper = value > best_value + 48;
                     bool do_shallower = value < best_value + 9;
-                    int re_depth = depth - 1 + (do_deeper ? 1 : 0) - (do_shallower ? 1 : 0);
+                    int re_depth = base_depth + (do_deeper ? 1 : 0) - (do_shallower ? 1 : 0);
                     re_depth = std::max(1, re_depth);
                     value = -search_worker(pos, ss + 1, -beta, -alpha, re_depth, !cut_node);
                 } else {
-                    value = -search_worker(pos, ss + 1, -beta, -alpha, depth - 1, !cut_node);
+                    value = -search_worker(pos, ss + 1, -beta, -alpha, base_depth, !cut_node);
                 }
                 if (stop.load(std::memory_order_relaxed)) {
                     pos.undo_move(m);
@@ -774,14 +774,14 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
             }
         } else if (moves_played > 0) {
             // PVS: zero-window scout search for non-first moves
-            value = -search_worker(pos, ss + 1, -alpha - 1, -alpha, depth - 1, !cut_node);
+            value = -search_worker(pos, ss + 1, -alpha - 1, -alpha, new_depth, !cut_node);
             if (stop.load(std::memory_order_relaxed)) {
                 pos.undo_move(m);
                 return false;
             }
             // Re-search with full window if scout found improvement
             if (value > alpha && value < beta) {
-                value = -search_worker(pos, ss + 1, -beta, -alpha, depth - 1, false);
+                value = -search_worker(pos, ss + 1, -beta, -alpha, new_depth, false);
                 if (stop.load(std::memory_order_relaxed)) {
                     pos.undo_move(m);
                     return false;
@@ -789,7 +789,7 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
             }
         } else {
             // First move: full window search
-            value = -search_worker(pos, ss + 1, -beta, -alpha, depth - 1, false);
+            value = -search_worker(pos, ss + 1, -beta, -alpha, new_depth, false);
             if (stop.load(std::memory_order_relaxed)) {
                 pos.undo_move(m);
                 return false;
