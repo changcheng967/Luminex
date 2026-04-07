@@ -292,63 +292,6 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
         return -VALUE_MATE + ss->ply;
     }
 
-    // Quiet check generation: search quiet moves that give check
-    // Only at depth >= -2 to avoid explosion, and not when in check (already handled above)
-    if (!in_check && depth >= -2 && !stop.load(std::memory_order_relaxed)) {
-        ExtMove quiets[MAX_MOVES];
-        ExtMove* quiet_end = generate<GEN_QUIET>(pos, quiets);
-
-        for (ExtMove* it = quiets; it != quiet_end; ++it) {
-            if (stop.load(std::memory_order_relaxed)) break;
-
-            Move m = it->move;
-            if (!pos.legal(m, true)) continue;
-
-            // Only search moves that give check
-            Square opp_ksq = pos.king_sq(Color(pos.side_to_move() ^ 1));
-            PieceType pt = piece_type_of(pos.piece_on(m.from()));
-            bool gives_chk = false;
-            Bitboard occ_no_from = pos.pieces() ^ square_bb(m.from());
-
-            if (pt == PAWN) {
-                gives_chk = (pawn_attacks_bb(pos.side_to_move(), m.to()) & square_bb(opp_ksq)) != 0;
-            } else if (pt == KNIGHT) {
-                gives_chk = (knight_attacks_bb(m.to()) & square_bb(opp_ksq)) != 0;
-            } else if (pt == BISHOP) {
-                gives_chk = (bishop_attacks_bb(m.to(), occ_no_from) & square_bb(opp_ksq)) != 0;
-            } else if (pt == ROOK) {
-                gives_chk = (rook_attacks_bb(m.to(), occ_no_from) & square_bb(opp_ksq)) != 0;
-            } else if (pt == KING) {
-                // King can't give check
-                gives_chk = false;
-            }
-
-            if (!gives_chk) continue;
-
-            // Skip if SEE < 0 (losing check)
-            if (!pos.see_ge(m, VALUE_ZERO)) continue;
-
-            ss->current_move = m;
-            ss->moved_piece = pos.piece_on(m.from());
-
-            if (!pos.do_move(m)) continue;
-
-            moves_searched++;
-
-            Value value = -qsearch(pos, ss + 1, -beta, -alpha, depth - 1);
-
-            if (stop.load(std::memory_order_relaxed)) {
-                pos.undo_move(m);
-                return VALUE_ZERO;
-            }
-
-            pos.undo_move(m);
-
-            if (value >= beta) return value;
-            if (value > alpha) alpha = value;
-        }
-    }
-
     return alpha;
 }
 
