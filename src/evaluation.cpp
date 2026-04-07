@@ -19,18 +19,13 @@ static constexpr int RookMobilityEG[15] = { -148, -127, -85, -28, 2, 27, 42, 46,
 static constexpr int QueenMobilityMG[28] = { -111, -253, -127, -46, -18, 10, 9, 13, 7, 7, 7, 16, 21, 27, 24, 31, 32, 35, 38, 41, 35, 35, 35, 42, 44, 47, 50, 52 };
 static constexpr int QueenMobilityEG[28] = { -273, -401, -228, -236, -144, -81, -41, 13, 32, 62, 79, 96, 110, 114, 115, 120, 122, 113, 101, 96, 83, 74, 62, 50, 36, 25, 18, 7 };
 
-// Stash-style piece-specific threat tables [attacked_piece_type]
-// Index: PAWN=0, KNIGHT=1, BISHOP=2, ROOK=3, QUEEN=4, KING=5
-static constexpr int PawnThreatMG[6] = { -2, 71, 67, 61, 62, 0 };
-static constexpr int PawnThreatEG[6] = { -34, 65, 111, 65, 24, 0 };
-static constexpr int KnightThreatMG[6] = { -9, 4, 42, 93, 49, 0 };
-static constexpr int KnightThreatEG[6] = { 8, 49, 56, 46, 31, 0 };
-static constexpr int BishopThreatMG[6] = { -3, 15, 1, 55, 50, 0 };
-static constexpr int BishopThreatEG[6] = { 5, 50, 58, 75, 152, 0 };
-static constexpr int RookThreatMG[6] = { -10, 7, 24, 11, 50, 0 };
-static constexpr int RookThreatEG[6] = { 13, 29, 22, 27, 63, 0 };
-static constexpr int QueenThreatMG[6] = { -14, 11, 24, 19, 5, 0 };
-static constexpr int QueenThreatEG[6] = { -5, 22, 15, 31, 9, 0 };
+// SF11-style threat tables indexed by attacked piece type
+// ThreatByMinor: bonus when our knight/bishop attacks enemy piece
+static constexpr int ThreatByMinorMG[6] = { 0, 6, 59, 79, 90, 79 };
+static constexpr int ThreatByMinorEG[6] = { 0, 32, 41, 56, 119, 161 };
+// ThreatByRook: bonus when our rook attacks weak enemy piece
+static constexpr int ThreatByRookMG[6] = { 0, 3, 38, 38, 0, 51 };
+static constexpr int ThreatByRookEG[6] = { 0, 44, 71, 61, 38, 38 };
 
 // Far piece penalty: pieces more than 3 squares from own king (only rook/queen remain hardcoded)
 static constexpr int FarRookMG = -10, FarRookEG = 5;
@@ -821,61 +816,101 @@ Value evaluate(const Position& pos) {
             eg_score -= sign * 10;
         }
 
-        // Threat evaluation using Stash-style piece-specific threat tables
+        // SF11-style threat evaluation
         {
-            Bitboard their_pieces = pos.pieces(them);
+            Bitboard nonPawnEnemies = pos.pieces(them) & ~pos.pieces(them, PAWN);
 
-            // Pawn threats: our pawns attacking enemy pieces
-            Bitboard threats = their_pieces & attacks_by[c][PAWN];
-            while (threats) {
-                PieceType pt = piece_type_of(pos.piece_on(pop_lsb(threats)));
-                if (pt < KING) {
-                    mg_score += sign * PawnThreatMG[pt];
-                    eg_score += sign * PawnThreatEG[pt];
+            // Strongly protected: defended by enemy pawn, or defended twice where we don't
+            Bitboard stronglyProtected = attacks_by[them][PAWN]
+                                      | (all_attacks[them] & ~all_attacks[c]);
+            // Weak enemy pieces: attacked by us but not strongly protected
+            Bitboard weak = nonPawnEnemies & ~stronglyProtected & all_attacks[c];
+
+            // ThreatByMinor: knight/bishop threats on defended+weak pieces (SF11 values)
+            if (weak | nonPawnEnemies) {
+                Bitboard b = (weak | nonPawnEnemies) & (attacks_by[c][KNIGHT] | attacks_by[c][BISHOP]);
+                b &= nonPawnEnemies & all_attacks[c];
+                while (b) {
+                    PieceType pt = piece_type_of(pos.piece_on(pop_lsb(b)));
+                    if (pt <= QUEEN) {
+                        mg_score += sign * ThreatByMinorMG[pt];
+                        eg_score += sign * ThreatByMinorEG[pt];
+                    }
                 }
             }
 
-            // Knight threats: our knights attacking enemy pieces
-            threats = their_pieces & attacks_by[c][KNIGHT];
-            while (threats) {
-                PieceType pt = piece_type_of(pos.piece_on(pop_lsb(threats)));
-                if (pt < KING) {
-                    mg_score += sign * KnightThreatMG[pt];
-                    eg_score += sign * KnightThreatEG[pt];
+            // ThreatByRook: rook threats on weak pieces only (SF11 values)
+            {
+                Bitboard b = weak & attacks_by[c][ROOK];
+                while (b) {
+                    PieceType pt = piece_type_of(pos.piece_on(pop_lsb(b)));
+                    if (pt <= QUEEN) {
+                        mg_score += sign * ThreatByRookMG[pt];
+                        eg_score += sign * ThreatByRookEG[pt];
+                    }
                 }
             }
 
-            // Bishop threats: our bishops attacking enemy pieces
-            threats = their_pieces & attacks_by[c][BISHOP];
-            while (threats) {
-                PieceType pt = piece_type_of(pos.piece_on(pop_lsb(threats)));
-                if (pt < KING) {
-                    mg_score += sign * BishopThreatMG[pt];
-                    eg_score += sign * BishopThreatEG[pt];
-                }
+            // ThreatByKing: king attacking weak pieces
+            if (weak & attacks_by[c][KING]) {
+                mg_score += sign * 24;
+                eg_score += sign * 89;
             }
 
-            // Rook threats: our rooks attacking enemy pieces
-            threats = their_pieces & attacks_by[c][ROOK];
-            while (threats) {
-                PieceType pt = piece_type_of(pos.piece_on(pop_lsb(threats)));
-                if (pt < KING) {
-                    mg_score += sign * RookThreatMG[pt];
-                    eg_score += sign * RookThreatEG[pt];
-                }
+            // Hanging pieces: weak pieces not defended at all, or doubly attacked by us
+            {
+                Bitboard b = weak & (~all_attacks[them] | all_attacks[c]);
+                mg_score += sign * 69 * popcount(b);
+                eg_score += sign * 36 * popcount(b);
             }
 
-            // Queen threats: our queens attacking enemy pieces
-            threats = their_pieces & attacks_by[c][QUEEN];
-            while (threats) {
-                PieceType pt = piece_type_of(pos.piece_on(pop_lsb(threats)));
-                if (pt < KING) {
-                    mg_score += sign * QueenThreatMG[pt];
-                    eg_score += sign * QueenThreatEG[pt];
-                }
+            // RestrictedPiece: enemy pieces attacked by us, not strongly protected
+            {
+                Bitboard b = pos.pieces(them) & ~stronglyProtected & all_attacks[c];
+                mg_score += sign * 7 * popcount(b);
+                eg_score += sign * 7 * popcount(b);
             }
 
-            // Hanging pawns: enemy pawns not defended by any enemy piece (Stash: 13/52)
+            // ThreatBySafePawn: our pawns on safe squares attacking non-pawn enemies
+            {
+                Bitboard safe = ~all_attacks[them] | all_attacks[c];
+                Bitboard safe_pawns = pos.pieces(c, PAWN) & safe;
+                Bitboard b = pawn_attacks_bb(c, safe_pawns) & nonPawnEnemies;
+                mg_score += sign * 173 * popcount(b);
+                eg_score += sign * 94 * popcount(b);
+            }
+
+            // ThreatByPawnPush: pawns that can push to threaten non-pawn enemies
+            {
+                Bitboard TRank3BB = (c == WHITE) ? BB_RANK_3 : BB_RANK_6;
+                Bitboard push_one = (c == WHITE) ? shift_n(pos.pieces(c, PAWN)) : shift_s(pos.pieces(c, PAWN));
+                Bitboard b = push_one & ~pos.pieces();
+                Bitboard dbl = (b & TRank3BB);
+                dbl = (c == WHITE) ? shift_n(dbl) : shift_s(dbl);
+                b |= dbl & ~pos.pieces();
+                b &= ~attacks_by[them][PAWN];
+                Bitboard safe = ~all_attacks[them] | all_attacks[c];
+                b &= safe;
+                b = pawn_attacks_bb(c, b) & nonPawnEnemies;
+                mg_score += sign * 48 * popcount(b);
+                eg_score += sign * 39 * popcount(b);
+            }
+
+            // Threats on enemy queen: KnightOnQueen + SliderOnQueen
+            if (pos.pieces(them, QUEEN)) {
+                Square qsq = lsb(pos.pieces(them, QUEEN));
+                Bitboard safe = ~stronglyProtected & ~pos.pieces(c);
+                Bitboard kn_on_q = attacks_by[c][KNIGHT] & knight_attacks_bb(qsq) & safe;
+                mg_score += sign * 16 * popcount(kn_on_q);
+                eg_score += sign * 12 * popcount(kn_on_q);
+                Bitboard slider_on_q = (attacks_by[c][BISHOP] & bishop_attacks_bb(qsq, occupied))
+                                     | (attacks_by[c][ROOK] & rook_attacks_bb(qsq, occupied));
+                slider_on_q &= all_attacks[c] & safe;
+                mg_score += sign * 59 * popcount(slider_on_q);
+                eg_score += sign * 18 * popcount(slider_on_q);
+            }
+
+            // Hanging pawns: enemy pawns not defended by any enemy piece
             Bitboard hanging_pawns = pos.pieces(them, PAWN) & ~all_attacks[them] & all_attacks[c];
             if (hanging_pawns) {
                 mg_score += sign * g_eval_params.hanging_pawn_mg * popcount(hanging_pawns);
