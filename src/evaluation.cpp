@@ -512,25 +512,31 @@ Value evaluate(const Position& pos) {
                     }
                 }
 
-                // King proximity (EG only)
+                // King proximity (EG only) — SF11-style with rank scaling
                 Square our_ksq = ksq_arr[c_idx];
                 Square their_ksq = ksq_arr[c_idx ^ 1];
                 Square promo_sq = relative_square(c, make_square(f, RANK_8));
                 int our_kdist = distance(our_ksq, promo_sq);
                 int their_kdist = distance(their_ksq, promo_sq);
-                eg_passer += (their_kdist - our_kdist) * 8;
+                // Higher weight for advanced passers — king proximity matters more
+                int kdist_weight = r >= RANK_6 ? 20 : (r >= RANK_5 ? 12 : 8);
+                eg_passer += (their_kdist - our_kdist) * kdist_weight;
 
                 // Free passed pawn bonus: enemy king can't catch
-                // Bonus scales with how far the enemy king is
+                // Bonus scales with rank — a free pawn on 6th/7th is nearly winning
                 if (their_kdist > our_kdist + (c == pos.side_to_move() ? 0 : 1)) {
                     int unreachable = their_kdist - our_kdist;
-                    eg_passer += unreachable * (unreachable > 4 ? 25 : 15);
+                    if (r >= RANK_7) eg_passer += unreachable * 40;
+                    else if (r >= RANK_6) eg_passer += unreachable * 30;
+                    else eg_passer += unreachable * (unreachable > 4 ? 25 : 15);
                 }
 
-                // Blocked by enemy pieces penalty
+                // Blocked by enemy pieces penalty — worse for advanced passers
                 if (ahead_file & pos.pieces(them)) {
-                    mg_passer -= 12;
-                    eg_passer -= 18;
+                    int block_penalty_mg = r >= RANK_6 ? 18 : 12;
+                    int block_penalty_eg = r >= RANK_6 ? 30 : 18;
+                    mg_passer -= block_penalty_mg;
+                    eg_passer -= block_penalty_eg;
                 }
 
                 mg_score += sign * mg_passer;
@@ -1136,6 +1142,49 @@ Value evaluate(const Position& pos) {
     int phase = popcount(pos.pieces(KNIGHT)) + popcount(pos.pieces(BISHOP))
               + popcount(pos.pieces(ROOK)) * 2 + popcount(pos.pieces(QUEEN)) * 4;
     phase = std::min(24, phase);
+
+    // Endgame king safety: penalize king on back rank with no escape squares
+    // when enemy has rooks/queens (back-rank mate threat)
+    if (phase <= 12) {  // Endgame or transition
+        int eg_king_penalty[2] = {};
+        for (int c_idx = 0; c_idx < 2; ++c_idx) {
+            Color c = Color(c_idx);
+            Color them = Color(c_idx ^ 1);
+            Square our_ksq = ksq_arr[c_idx];
+            Rank back_rank = (c == WHITE) ? RANK_1 : RANK_8;
+            Rank our_rank = rank_of(our_ksq);
+
+            // Only apply if enemy has rooks or queens (back-rank mate requires sliding pieces)
+            if (!pos.pieces(them, ROOK) && !pos.pieces(them, QUEEN)) continue;
+
+            // King on back rank penalty
+            if (our_rank == back_rank) {
+                // Count escape squares (squares the king can move to)
+                Bitboard king_moves = king_attacks_bb(our_ksq) & ~pos.pieces(c);
+                // Remove squares attacked by enemy
+                Bitboard enemy_attacks = all_attacks[c_idx ^ 1];
+                Bitboard safe_escapes = king_moves & ~enemy_attacks;
+                int escapes = popcount(safe_escapes);
+
+                if (escapes <= 1) {
+                    // Trapped on back rank — significant danger
+                    // Scale by phase: more dangerous with more pieces on board
+                    int penalty = (escapes == 0) ? 80 : 40;
+                    eg_king_penalty[c_idx] = penalty * (phase + 4) / 16;
+                }
+            }
+
+            // King far from center penalty in endgame (king should centralize)
+            int center_dist = std::max(std::abs(int(file_of(our_ksq)) - 3), 3 - int(file_of(our_ksq)))
+                            + std::max(std::abs(int(rank_of(our_ksq)) - 3), 3 - int(rank_of(our_ksq)));
+            // Only penalize if king is NOT on back rank (back rank already handled)
+            // and there are still enemy pieces that can attack
+            if (our_rank != back_rank && center_dist >= 4 && phase <= 8) {
+                eg_king_penalty[c_idx] += center_dist * 2;
+            }
+        }
+        eg_score += eg_king_penalty[0] - eg_king_penalty[1];
+    }
 
     // Interpolate MG/EG with endgame scaling
     int sf = scale_factor(pos, eg_score);
