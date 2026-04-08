@@ -189,6 +189,24 @@ bool check_time() {
     return false;
 }
 
+// Mate score adjustment: store mate scores relative to root ply in TT
+// so probing from different plies gives correct mate distances
+inline Value value_to_tt(Value v, int ply) {
+    if (v >= VALUE_MATE_IN_MAX_PLY)
+        return v + ply;
+    if (v <= -VALUE_MATE_IN_MAX_PLY)
+        return v - ply;
+    return v;
+}
+
+inline Value value_from_tt(Value v, int ply) {
+    if (v >= VALUE_MATE_IN_MAX_PLY)
+        return v - ply;
+    if (v <= -VALUE_MATE_IN_MAX_PLY)
+        return v + ply;
+    return v;
+}
+
 // Quiescence search
 Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
     // Check for max ply to prevent stack overflow
@@ -215,13 +233,35 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
         return VALUE_DRAW + draw_noise - (pos.side_to_move() == WHITE ? params.contempt / 2 : -params.contempt / 2);
     }
 
+    // TT probe in qsearch — significant speedup from avoiding re-computation
+    bool tt_found = false;
+    TTEntry* tte = TT.probe(pos.key(), tt_found);
+    Value tt_value = tt_found ? value_from_tt(tte->value(), ss->ply) : VALUE_ZERO;
+    Depth tt_depth = tt_found ? tte->depth() : DEPTH_ZERO;
+    Move tt_move = MOVE_NONE;
+    if (tt_found) {
+        Move m = tte->move();
+        if (m && m.from() < SQUARE_NONE && m.to() < SQUARE_NONE && pos.legal(m))
+            tt_move = m;
+    }
+
+    // TT cutoff in qsearch (only at sufficient depth)
+    if (tt_found && tt_depth >= depth
+        && (tt_value >= beta ? (tte->bound() & BOUND_LOWER) : (tte->bound() & BOUND_UPPER))) {
+        return tt_value;
+    }
+
     // Evaluate position
     bool in_check = pos.is_check();
     Value eval = VALUE_ZERO;
 
     if (!in_check) {
-        // Stand pat only when NOT in check
-        eval = eval_cached(pos);
+        // Use TT eval if available and more informative
+        if (tt_found && tte->bound() != BOUND_NONE) {
+            eval = tt_value;
+        } else {
+            eval = eval_cached(pos);
+        }
         if (eval >= beta) {
             return beta;
         }
@@ -465,7 +505,7 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
             tt_move = m;
         }
     }
-    Value tt_value = found ? tte->value() : VALUE_ZERO;
+    Value tt_value = found ? value_from_tt(tte->value(), ss->ply) : VALUE_ZERO;
     Depth tt_depth = found ? tte->depth() : DEPTH_ZERO;
 
     // ttPv: this position was a PV node when stored in TT
@@ -1035,7 +1075,7 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
                     }
                 }
                 if (!stop.load(std::memory_order_relaxed)) {
-                    tte->save(pos.key(), value, false, BOUND_LOWER, depth, m, eval, TT.generation());
+                    tte->save(pos.key(), value_to_tt(value, ss->ply), false, BOUND_LOWER, depth, m, eval, TT.generation());
                 }
                 return true;  // beta cutoff
                 }
@@ -1227,7 +1267,7 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
         // Note: eval stored in TT is the raw static eval (before correction history),
         // to avoid feedback loops where corrections amplify themselves
         Value raw_eval = eval_cached(pos);
-        tte->save(pos.key(), best_value, pv_node, bound, depth, best_move_found, raw_eval, TT.generation());
+        tte->save(pos.key(), value_to_tt(best_value, ss->ply), pv_node, bound, depth, best_move_found, raw_eval, TT.generation());
 
         // Update correction history: learn from difference between search result and raw eval
         // Only update when not in check and best move is quiet (not a capture)
@@ -1387,7 +1427,7 @@ static void helper_thread_func(Position pos_copy, int thread_id) {
             if (!stop.load(std::memory_order_relaxed)) {
                 bool found;
                 TTEntry* tte = TT.probe(pos_copy.key(), found);
-                tte->save(pos_copy.key(), depth_best_value, true, BOUND_EXACT, d, depth_best_move, VALUE_ZERO, TT.generation());
+                tte->save(pos_copy.key(), value_to_tt(depth_best_value, 0), true, BOUND_EXACT, d, depth_best_move, VALUE_ZERO, TT.generation());
             }
         }
     }
@@ -1720,7 +1760,7 @@ Move search(Position& pos, Limits& lim) {
         if (depth_best_move != MOVE_NONE && !stop.load(std::memory_order_relaxed)) {
             bool root_found;
             TTEntry* root_tte = TT.probe(pos.key(), root_found);
-            root_tte->save(pos.key(), depth_best_value, true, BOUND_EXACT,
+            root_tte->save(pos.key(), value_to_tt(depth_best_value, 0), true, BOUND_EXACT,
                            root_depth, depth_best_move, VALUE_ZERO, TT.generation());
         }
 

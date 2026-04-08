@@ -1,14 +1,14 @@
 # Luminex
 
-A UCI chess engine written in C++23 with pure handcrafted evaluation.
+A UCI chess engine written in C++23 with pure handcrafted evaluation. Targeting 3500+ ELO.
 
 ## Features
 
-- **Search**: PVS with LMR (precomputed reduction table), null move pruning (static R=3/4/5), singular extension with double extension, probcut, razoring, futility/reverse futility pruning, aspiration windows, phased move generation
-- **Evaluation**: PeSTO-derived PSTs, Ethereal mobility tables (scaled), Stash-style piece-specific threats (scaled), SafetyTable king safety (capped 200), pawn structure (doubled/isolated/backward/candidate/connected/phalanx/lever), passed pawns with rook behind/king proximity/free passer, bishop pair, outpost pieces, far piece penalty, space evaluation, OCB scaling
-- **Move ordering**: Phased generation (TT -> captures -> quiets) with killer/counter-move/2-ply continuation history, low-ply history (plies 1-3), capture history with fail-low malus, escape-aware ordering, previous root PV bonus
-- **Heuristics**: TT cutoff stat updates with SF11 stat_bonus formula, ttPv LMR reduction, history gravity (32768 divisor), continuation pruning, aggressive capture LMR (losing captures)
-- **Tuning**: 33 UCI-tunable eval parameters (SPSA + Texel), mobility/threat scaling factors
+- **Search**: PVS with 2D LMR table (SF16-style multiplicative), null move pruning (static R), singular extension with double/negative extensions, probcut, razoring, futility/reverse futility pruning, aspiration windows, phased move generation, qsearch with check generation, TT probe in qsearch, mate score ply adjustment (value_to_tt/value_from_tt)
+- **Evaluation**: PeSTO-derived PSTs, Ethereal mobility tables, SF11-style piece-specific threats, SafetyTable king safety, pawn structure (doubled/isolated/backward/candidate/connected/phalanx/lever), passed pawns with rook behind/king proximity/free passer, bishop pair, outpost pieces, far piece penalty, space evaluation, OCB scaling, initiative/complexity bonus (SF11), minor behind pawn, weak queen penalty, endgame king safety (back-rank mate detection)
+- **Move ordering**: Phased generation (TT -> captures -> quiets) with killer/counter-move/2-ply continuation history, low-ply history, capture history with fail-low malus, escape-aware ordering, previous root PV bonus
+- **Heuristics**: TT cutoff stat updates with SF11 stat_bonus formula, ttPv LMR reduction, history gravity (32768 divisor), continuation pruning, TT prefetch, correction history (pawn-key based)
+- **Tuning**: UCI-tunable eval parameters, mobility/threat scaling factors
 - **Time management**: Sudden-death and increment time controls with stability-based allocation
 - **Infrastructure**: Magic bitboards, transposition table with depth-preferred aging, eval cache (512K), pawn hash (16K), lazy SMP
 
@@ -53,8 +53,27 @@ build/luminex.exe bench
 
 ## Strength
 
-~1995 ELO (pure HCE, no NNUE). Estimated from 80-game tests against Stash v13 (1972 ELO) at tc=1+0.01.
-Best confirmed result: 41-36-3 (53.2% WR, +23 ELO) vs Stash v13.
+~1840 ELO (pure HCE, no NNUE). Estimated from 80-game CuteChess tests vs Stash v13 (1972 ELO) at tc=1+0.01.
+
+| Opponent | Score | ELO Diff | Test |
+|----------|-------|----------|------|
+| Stash v13 (1972) | 24-53-3 (0.319) | -132 +/- 82 | 80 games |
+
+## Stash ELO Reference (Blitz)
+
+| Version | ELO | Version | ELO | Version | ELO |
+|---------|-----|---------|-----|---------|-----|
+| v36 | 3399 | v25 | 2937 | v14 | 2060 |
+| v35 | 3358 | v24 | 2880 | v13 | 1972 |
+| v34 | 3328 | v23 | 2830 | v12 | 1886 |
+| v33 | 3286 | v22 | 2770 | v11 | 1690 |
+| v32 | 3252 | v21 | 2714 | v10 | 1620 |
+| v31 | 3220 | v20 | 2509 | v9 | 1275 |
+| v30 | 3166 | v19 | 2473 | v8 | 1090 |
+| v29 | 3137 | v18 | 2390 | | |
+| v28 | 3092 | v17 | 2298 | | |
+| v27 | 3057 | v16 | 2220 | | |
+| v26 | 3000 | v15 | 2140 | | |
 
 ## License
 
