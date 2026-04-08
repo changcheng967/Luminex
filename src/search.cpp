@@ -30,6 +30,9 @@ Value root_score;
 int num_threads = 1;
 Move previous_root_best = MOVE_NONE;
 
+// Search statistics
+SearchStats g_stats;
+
 namespace {
 
 // Per-thread search state for lazy SMP
@@ -79,16 +82,21 @@ EvalCacheEntry eval_cache[EVAL_CACHE_SIZE];
 static thread_local uint64_t local_nodes = 0;
 static thread_local uint64_t last_reported_nodes = 0;
 
-// Precomputed LMR reduction table: replaces log() calls with table lookup
-// reductions[i] = int(2763.0 / 128.0 * log(i)) for i = 0..63
-static int reductions[64];
-static bool reductions_initialized = false;
+// Precomputed 2D LMR reduction table: LMRTable[depth][move_number]
+// Based on Stockfish 16 formula: floor(base + log(depth) * log(move_num) / log_factor)
+static int LMRTable[64][64];
+static bool lmr_initialized = false;
 
-static void init_reductions() {
-    for (int i = 1; i < 64; ++i)
-        reductions[i] = int(2763.0 / 128.0 * std::log(double(i)));
-    reductions[0] = 0;
-    reductions_initialized = true;
+static void init_lmr() {
+    // Stockfish 16 style: base=0.77, log_factor=2.17
+    // Clamped to [1, 63] to avoid degenerate values
+    for (int d = 1; d < 64; ++d) {
+        for (int m = 1; m < 64; ++m) {
+            double reduction = 0.77 + std::log(double(d)) * std::log(double(m)) / 2.17;
+            LMRTable[d][m] = std::max(1, std::min(63, int(reduction)));
+        }
+    }
+    lmr_initialized = true;
 }
 
 inline Value eval_cached(const Position& pos) {
@@ -286,6 +294,9 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
             continue;
         }
 
+        // Prefetch TT entry for the child position
+        TT.prefetch(pos.key());
+
         // This move passed do_move - count it as searched
         moves_searched++;
 
@@ -312,6 +323,72 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
         return -VALUE_MATE + ss->ply;
     }
 
+    // Qsearch check generation: search quiet checks at depth >= -3
+    // This finds tactical shots that pure capture-only qsearch would miss
+    if (!in_check && depth >= -3) {
+        ExtMove quiets[MAX_MOVES];
+        ExtMove* q_end = generate<GEN_QUIET>(pos, quiets);
+        int checks_searched = 0;
+
+        for (ExtMove* it = quiets; it != q_end; ++it) {
+            if (stop.load(std::memory_order_relaxed)) break;
+
+            Move m = it->move;
+
+            // Only consider moves that give check
+            Square opp_ksq = pos.king_sq(Color(pos.side_to_move() ^ 1));
+            PieceType pt = piece_type_of(pos.piece_on(m.from()));
+            bool gives_chk = false;
+
+            if (pt == PAWN) {
+                gives_chk = (pawn_attacks_bb(pos.side_to_move(), m.to()) & square_bb(opp_ksq)) != 0;
+            } else if (pt == KNIGHT) {
+                gives_chk = (knight_attacks_bb(m.to()) & square_bb(opp_ksq)) != 0;
+            } else if (pt == BISHOP) {
+                gives_chk = (bishop_attacks_bb(m.to(), pos.pieces() ^ square_bb(m.from())) & square_bb(opp_ksq)) != 0;
+            } else if (pt == ROOK) {
+                gives_chk = (rook_attacks_bb(m.to(), pos.pieces() ^ square_bb(m.from())) & square_bb(opp_ksq)) != 0;
+            } else if (pt == QUEEN) {
+                Bitboard occ_no_from = pos.pieces() ^ square_bb(m.from());
+                gives_chk = ((bishop_attacks_bb(m.to(), occ_no_from) | rook_attacks_bb(m.to(), occ_no_from)) & square_bb(opp_ksq)) != 0;
+            }
+
+            if (!gives_chk) continue;
+
+            // Limit checks to prevent qsearch explosion
+            if (++checks_searched > 4) break;
+
+            // Skip illegal moves
+            if (!pos.legal(m, true)) continue;
+
+            // Skip moves with bad SEE (but not as strict as captures)
+            if (!pos.see_ge(m, Value(-20 * depth * depth))) continue;
+
+            ss->current_move = m;
+            ss->moved_piece = pos.piece_on(m.from());
+
+            if (!pos.do_move(m)) continue;
+
+            TT.prefetch(pos.key());
+
+            Value value = -qsearch(pos, ss + 1, -beta, -alpha, depth - 1);
+
+            if (stop.load(std::memory_order_relaxed)) {
+                pos.undo_move(m);
+                return VALUE_ZERO;
+            }
+
+            pos.undo_move(m);
+
+            if (value >= beta) {
+                return value;
+            }
+            if (value > alpha) {
+                alpha = value;
+            }
+        }
+    }
+
     return alpha;
 }
 
@@ -325,6 +402,8 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
     if (ss->ply >= MAX_PLY) {
         return eval_cached(pos);
     }
+
+    if (ss->ply > g_stats.max_depth_reached) g_stats.max_depth_reached = ss->ply;
 
     // Memory barrier to ensure we see the latest stop flag
     if (g_stop_requested || stop.load(std::memory_order_relaxed)) {
@@ -596,12 +675,12 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
 
     // Helper lambda: compute LMR reduction for a move (takes gives_chk to avoid recomputation)
     auto compute_reduction = [&](Move m, int mp, bool gives_chk) -> int {
-        // Precomputed LMR table: avoids repeated log() calls
+        // 2D LMR table lookup
         int d_idx = std::max(depth - 1, 1);
         int m_idx = std::max(mp, 1);
         if (d_idx >= 64) d_idx = 63;
         if (m_idx >= 64) m_idx = 63;
-        int reduction = reductions[d_idx] + reductions[m_idx] / 2;
+        int reduction = LMRTable[d_idx][m_idx];
         if (!ss->improving && !opponent_worsening) reduction += 1;
         if (cut_node) reduction += 1;
         if (ttPv) reduction -= 2; // PV positions from TT get less reduction
@@ -786,6 +865,9 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
         if (!pos.do_move(m)) {
             return false;
         }
+
+        // Prefetch TT entry for the child position
+        TT.prefetch(pos.key());
 
         Value value;
         if (do_lmr && new_depth > 0) {
@@ -1326,6 +1408,7 @@ Move search(Position& pos, Limits& lim) {
     nodes = 0;
     local_nodes = 0;
     last_reported_nodes = 0;
+    g_stats = SearchStats{};
 
     // Track search start time for time management
     search_start = std::chrono::steady_clock::now();
@@ -1354,7 +1437,7 @@ Move search(Position& pos, Limits& lim) {
     }
 
     // Initialize LMR reduction table (once)
-    if (!reductions_initialized) init_reductions();
+    if (!lmr_initialized) init_lmr();
 
     // Create main thread search worker
     SearchWorker* main_worker = new SearchWorker();

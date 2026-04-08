@@ -43,6 +43,28 @@ struct SearchParams {
     int multi_pv = 1;
 };
 
+// Search statistics for debugging
+struct SearchStats {
+    int64_t tt_cutoffs = 0;
+    int64_t null_moves_prunes = 0;
+    int64_t futility_prunes = 0;
+    int64_t rev_futility_prunes = 0;
+    int64_t razoring_prunes = 0;
+    int64_t probcut_prunes = 0;
+    int64_t lmr_reductions = 0;
+    int64_t lmr_researches = 0;
+    int64_t singular_extensions = 0;
+    int64_t check_extensions = 0;
+    int64_t recapture_extensions = 0;
+    int64_t late_move_prunes = 0;
+    int64_t see_prunes = 0;
+    int64_t history_prunes = 0;
+    int64_t qs_nodes = 0;
+    int max_depth_reached = 0;
+};
+
+extern SearchStats g_stats;
+
 class Position;
 class TranspositionTable;
 

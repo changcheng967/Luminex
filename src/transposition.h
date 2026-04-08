@@ -48,6 +48,7 @@ public:
 
     TTEntry* probe(uint64_t key, bool& found);
     void write(uint64_t key, Value v, bool pv, Bound b, Depth d, Move m, Value ev);
+    void prefetch(uint64_t key) const;
 
     uint8_t generation() const { return generation8; }
     size_t hashfull() const;

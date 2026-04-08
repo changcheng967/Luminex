@@ -572,6 +572,17 @@ Value evaluate(const Position& pos) {
                 eg_score -= sign * g_eval_params.far_knight_eg;
             }
 
+            // Minor behind pawn: knight directly behind own pawn (SF11: 18/3)
+            {
+                Square behind_sq = (c == WHITE)
+                    ? make_square(file_of(sq), Rank(rank_of(sq) - 1))
+                    : make_square(file_of(sq), Rank(rank_of(sq) + 1));
+                if (behind_sq < SQUARE_NONE && (our_pawns & square_bb(behind_sq))) {
+                    mg_score += sign * 18;
+                    eg_score += sign * 3;
+                }
+            }
+
             // Knight shielded: friendly pawn above knight (Stash: 4/23)
             Square shield_sq = (c == WHITE)
                 ? make_square(file_of(sq), Rank(rank_of(sq) + 1))
@@ -646,6 +657,17 @@ Value evaluate(const Position& pos) {
             if (distance(sq, ksq_arr[c_idx]) > 3) {
                 mg_score -= sign * g_eval_params.far_bishop_mg;
                 eg_score -= sign * g_eval_params.far_bishop_eg;
+            }
+
+            // Minor behind pawn: bishop directly behind own pawn (SF11: 18/3)
+            {
+                Square behind_sq = (c == WHITE)
+                    ? make_square(file_of(sq), Rank(rank_of(sq) - 1))
+                    : make_square(file_of(sq), Rank(rank_of(sq) + 1));
+                if (behind_sq < SQUARE_NONE && (our_pawns & square_bb(behind_sq))) {
+                    mg_score += sign * 18;
+                    eg_score += sign * 3;
+                }
             }
         }
 
@@ -752,6 +774,12 @@ Value evaluate(const Position& pos) {
             if (distance(sq, ksq_arr[c_idx]) > 3) {
                 mg_score += sign * FarQueenMG;
                 eg_score += sign * FarQueenEG;
+            }
+
+            // Weak queen: queen is pinned to our king (SF11: -49/-15)
+            if (pos.pinned() & square_bb(sq)) {
+                mg_score -= sign * 49;
+                eg_score -= sign * 15;
             }
         }
 
@@ -1066,6 +1094,41 @@ Value evaluate(const Position& pos) {
             if (!enemy_qu && !enemy_ro) danger = danger / 4;
 
             mg_score -= sign * danger;
+        }
+    }
+
+    // SF11-style initiative/complexity bonus
+    // Encourages the winning side to keep pieces on the board and avoid drawish simplifications
+    {
+        int both_flanks = 0;
+        if ((pos.pieces(PAWN) & (BB_FILE_A | BB_FILE_B | BB_FILE_C)) &&
+            (pos.pieces(PAWN) & (BB_FILE_F | BB_FILE_G | BB_FILE_H)))
+            both_flanks = 1;
+
+        // King outflanking: which king is closer to the center of the board
+        int wf = std::abs(file_of(ksq_arr[0]) - file_of(ksq_arr[1]));
+        int wr = std::abs(rank_of(ksq_arr[0]) - rank_of(ksq_arr[1]));
+        int outflanking = wf + wr;
+
+        // Infiltration: king past rank 4 (MG) or rank 6 (EG)
+        int infiltration_w = (rank_of(ksq_arr[0]) >= RANK_5) ? 1 : 0;
+        int infiltration_b = (rank_of(ksq_arr[1]) <= RANK_4) ? 1 : 0;
+        int infiltration = infiltration_w + infiltration_b;
+
+        int npm = popcount(pos.pieces(KNIGHT)) * 337 + popcount(pos.pieces(BISHOP)) * 365
+                + popcount(pos.pieces(ROOK)) * 477 + popcount(pos.pieces(QUEEN)) * 1025;
+
+        int complexity = 9 * popcount(pos.pieces(PAWN))
+                       + 11 * outflanking
+                       + 9 * infiltration
+                       + 21 * both_flanks
+                       + 51 * (npm == 0 ? 1 : 0);
+
+        // Apply with sign of eg_score (only in endgame-like positions)
+        if (complexity > 100) {
+            int u = (eg_score > 0 ? 1 : -1) * std::min(complexity - 100, 120);
+            // Reduce initiative for the losing side
+            eg_score += (mg_score > 0 ? 1 : -1) * u / 5;
         }
     }
 

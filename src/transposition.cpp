@@ -137,4 +137,10 @@ size_t TranspositionTable::hashfull() const {
     return cnt * 1000 / (std::min(size_t(1000), table.size()) * 3);
 }
 
+void TranspositionTable::prefetch(uint64_t key) const {
+#if defined(__GNUC__) || defined(__clang__)
+    __builtin_prefetch(&table[(size_t)key & (table.size() - 1)], 0, 3);
+#endif
+}
+
 } // namespace luminex
