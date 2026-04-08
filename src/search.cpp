@@ -30,9 +30,6 @@ Value root_score;
 int num_threads = 1;
 Move previous_root_best = MOVE_NONE;
 
-// Search statistics
-SearchStats g_stats;
-
 namespace {
 
 // Per-thread search state for lazy SMP
@@ -62,13 +59,6 @@ int continuation_history[12][64][12][64];
 static std::vector<std::thread> helper_threads;
 static std::atomic<bool> helpers_running{false};
 
-// Correction history: learns eval adjustments from search results
-// Indexed by [side_to_move][pawn_key & mask]
-// SF 16.1 style: pawn-structure based correction
-static constexpr int CORRHIST_SIZE = 16384;  // Must be power of 2
-static constexpr int CORRECTION_LIMIT = 1024;
-static int16_t correction_history[2][CORRHIST_SIZE] = {};
-
 
 
 struct EvalCacheEntry {
@@ -82,21 +72,16 @@ EvalCacheEntry eval_cache[EVAL_CACHE_SIZE];
 static thread_local uint64_t local_nodes = 0;
 static thread_local uint64_t last_reported_nodes = 0;
 
-// Precomputed 2D LMR reduction table: LMRTable[depth][move_number]
-// Based on Stockfish 16 formula: floor(base + log(depth) * log(move_num) / log_factor)
-static int LMRTable[64][64];
-static bool lmr_initialized = false;
+// Precomputed LMR reduction table: replaces log() calls with table lookup
+// reductions[i] = int(2763.0 / 128.0 * log(i)) for i = 0..63
+static int reductions[64];
+static bool reductions_initialized = false;
 
-static void init_lmr() {
-    // Stockfish 16 style: base=0.77, log_factor=2.17
-    // Clamped to [1, 63] to avoid degenerate values
-    for (int d = 1; d < 64; ++d) {
-        for (int m = 1; m < 64; ++m) {
-            double reduction = 0.77 + std::log(double(d)) * std::log(double(m)) / 2.17;
-            LMRTable[d][m] = std::max(1, std::min(63, int(reduction)));
-        }
-    }
-    lmr_initialized = true;
+static void init_reductions() {
+    for (int i = 1; i < 64; ++i)
+        reductions[i] = int(2763.0 / 128.0 * std::log(double(i)));
+    reductions[0] = 0;
+    reductions_initialized = true;
 }
 
 inline Value eval_cached(const Position& pos) {
@@ -189,24 +174,6 @@ bool check_time() {
     return false;
 }
 
-// Mate score adjustment: store mate scores relative to root ply in TT
-// so probing from different plies gives correct mate distances
-inline Value value_to_tt(Value v, int ply) {
-    if (v >= VALUE_MATE_IN_MAX_PLY)
-        return v + ply;
-    if (v <= -VALUE_MATE_IN_MAX_PLY)
-        return v - ply;
-    return v;
-}
-
-inline Value value_from_tt(Value v, int ply) {
-    if (v >= VALUE_MATE_IN_MAX_PLY)
-        return v - ply;
-    if (v <= -VALUE_MATE_IN_MAX_PLY)
-        return v + ply;
-    return v;
-}
-
 // Quiescence search
 Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
     // Check for max ply to prevent stack overflow
@@ -233,35 +200,13 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
         return VALUE_DRAW + draw_noise - (pos.side_to_move() == WHITE ? params.contempt / 2 : -params.contempt / 2);
     }
 
-    // TT probe in qsearch — significant speedup from avoiding re-computation
-    bool tt_found = false;
-    TTEntry* tte = TT.probe(pos.key(), tt_found);
-    Value tt_value = tt_found ? value_from_tt(tte->value(), ss->ply) : VALUE_ZERO;
-    Depth tt_depth = tt_found ? tte->depth() : DEPTH_ZERO;
-    Move tt_move = MOVE_NONE;
-    if (tt_found) {
-        Move m = tte->move();
-        if (m && m.from() < SQUARE_NONE && m.to() < SQUARE_NONE && pos.legal(m))
-            tt_move = m;
-    }
-
-    // TT cutoff in qsearch (only at sufficient depth)
-    if (tt_found && tt_depth >= depth
-        && (tt_value >= beta ? (tte->bound() & BOUND_LOWER) : (tte->bound() & BOUND_UPPER))) {
-        return tt_value;
-    }
-
     // Evaluate position
     bool in_check = pos.is_check();
     Value eval = VALUE_ZERO;
 
     if (!in_check) {
-        // Use TT eval if available and more informative
-        if (tt_found && tte->bound() != BOUND_NONE) {
-            eval = tt_value;
-        } else {
-            eval = eval_cached(pos);
-        }
+        // Stand pat only when NOT in check
+        eval = eval_cached(pos);
         if (eval >= beta) {
             return beta;
         }
@@ -334,9 +279,6 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
             continue;
         }
 
-        // Prefetch TT entry for the child position
-        TT.prefetch(pos.key());
-
         // This move passed do_move - count it as searched
         moves_searched++;
 
@@ -363,72 +305,6 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
         return -VALUE_MATE + ss->ply;
     }
 
-    // Qsearch check generation: search quiet checks at depth >= -3
-    // This finds tactical shots that pure capture-only qsearch would miss
-    if (!in_check && depth >= -3) {
-        ExtMove quiets[MAX_MOVES];
-        ExtMove* q_end = generate<GEN_QUIET>(pos, quiets);
-        int checks_searched = 0;
-
-        for (ExtMove* it = quiets; it != q_end; ++it) {
-            if (stop.load(std::memory_order_relaxed)) break;
-
-            Move m = it->move;
-
-            // Only consider moves that give check
-            Square opp_ksq = pos.king_sq(Color(pos.side_to_move() ^ 1));
-            PieceType pt = piece_type_of(pos.piece_on(m.from()));
-            bool gives_chk = false;
-
-            if (pt == PAWN) {
-                gives_chk = (pawn_attacks_bb(pos.side_to_move(), m.to()) & square_bb(opp_ksq)) != 0;
-            } else if (pt == KNIGHT) {
-                gives_chk = (knight_attacks_bb(m.to()) & square_bb(opp_ksq)) != 0;
-            } else if (pt == BISHOP) {
-                gives_chk = (bishop_attacks_bb(m.to(), pos.pieces() ^ square_bb(m.from())) & square_bb(opp_ksq)) != 0;
-            } else if (pt == ROOK) {
-                gives_chk = (rook_attacks_bb(m.to(), pos.pieces() ^ square_bb(m.from())) & square_bb(opp_ksq)) != 0;
-            } else if (pt == QUEEN) {
-                Bitboard occ_no_from = pos.pieces() ^ square_bb(m.from());
-                gives_chk = ((bishop_attacks_bb(m.to(), occ_no_from) | rook_attacks_bb(m.to(), occ_no_from)) & square_bb(opp_ksq)) != 0;
-            }
-
-            if (!gives_chk) continue;
-
-            // Limit checks to prevent qsearch explosion
-            if (++checks_searched > 4) break;
-
-            // Skip illegal moves
-            if (!pos.legal(m, true)) continue;
-
-            // Skip moves with bad SEE (but not as strict as captures)
-            if (!pos.see_ge(m, Value(-20 * depth * depth))) continue;
-
-            ss->current_move = m;
-            ss->moved_piece = pos.piece_on(m.from());
-
-            if (!pos.do_move(m)) continue;
-
-            TT.prefetch(pos.key());
-
-            Value value = -qsearch(pos, ss + 1, -beta, -alpha, depth - 1);
-
-            if (stop.load(std::memory_order_relaxed)) {
-                pos.undo_move(m);
-                return VALUE_ZERO;
-            }
-
-            pos.undo_move(m);
-
-            if (value >= beta) {
-                return value;
-            }
-            if (value > alpha) {
-                alpha = value;
-            }
-        }
-    }
-
     return alpha;
 }
 
@@ -442,8 +318,6 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
     if (ss->ply >= MAX_PLY) {
         return eval_cached(pos);
     }
-
-    if (ss->ply > g_stats.max_depth_reached) g_stats.max_depth_reached = ss->ply;
 
     // Memory barrier to ensure we see the latest stop flag
     if (g_stop_requested || stop.load(std::memory_order_relaxed)) {
@@ -505,7 +379,7 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
             tt_move = m;
         }
     }
-    Value tt_value = found ? value_from_tt(tte->value(), ss->ply) : VALUE_ZERO;
+    Value tt_value = found ? tte->value() : VALUE_ZERO;
     Depth tt_depth = found ? tte->depth() : DEPTH_ZERO;
 
     // ttPv: this position was a PV node when stored in TT
@@ -531,10 +405,6 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
     Value eval = VALUE_ZERO;
     if (!pos.is_check()) {
         eval = eval_cached(pos);
-        // Apply correction history: adjust eval based on learned corrections for this pawn structure
-        int cv = correction_history[int(pos.side_to_move())][int(pos.pawn_key() & (CORRHIST_SIZE - 1))];
-        eval = eval + 66 * cv / 512;
-        eval = std::clamp(eval, Value(-VALUE_INFINITE + 1), Value(VALUE_INFINITE - 1));
     }
     ss->static_eval = eval;
 
@@ -715,12 +585,12 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
 
     // Helper lambda: compute LMR reduction for a move (takes gives_chk to avoid recomputation)
     auto compute_reduction = [&](Move m, int mp, bool gives_chk) -> int {
-        // 2D LMR table lookup
+        // Precomputed LMR table: avoids repeated log() calls
         int d_idx = std::max(depth - 1, 1);
         int m_idx = std::max(mp, 1);
         if (d_idx >= 64) d_idx = 63;
         if (m_idx >= 64) m_idx = 63;
-        int reduction = LMRTable[d_idx][m_idx];
+        int reduction = reductions[d_idx] + reductions[m_idx] / 2;
         if (!ss->improving && !opponent_worsening) reduction += 1;
         if (cut_node) reduction += 1;
         if (ttPv) reduction -= 2; // PV positions from TT get less reduction
@@ -906,9 +776,6 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
             return false;
         }
 
-        // Prefetch TT entry for the child position
-        TT.prefetch(pos.key());
-
         Value value;
         if (do_lmr && new_depth > 0) {
             // LMR: reduced zero-window search
@@ -1075,7 +942,7 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
                     }
                 }
                 if (!stop.load(std::memory_order_relaxed)) {
-                    tte->save(pos.key(), value_to_tt(value, ss->ply), false, BOUND_LOWER, depth, m, eval, TT.generation());
+                    tte->save(pos.key(), value, false, BOUND_LOWER, depth, m, eval, TT.generation());
                 }
                 return true;  // beta cutoff
                 }
@@ -1088,7 +955,8 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
     // PHASE 1: TT move (already known, free)
     // ========================================
     if (tt_move != MOVE_NONE) {
-        if (search_move(tt_move, false)) {
+        bool tt_is_quiet = !tt_move.is_capture() && !tt_move.is_promotion();
+        if (search_move(tt_move, tt_is_quiet)) {
             // TT move caused cutoff - early return
             if (!stop.load(std::memory_order_relaxed)) {
                 // best_value already set inside search_move
@@ -1264,23 +1132,7 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
         else if (best_value > original_alpha) bound = BOUND_EXACT;  // PV node improved alpha
         else bound = BOUND_UPPER;
         // Use best_move_found instead of ss->pv[ss->ply] to avoid stale PV corruption
-        // Note: eval stored in TT is the raw static eval (before correction history),
-        // to avoid feedback loops where corrections amplify themselves
-        Value raw_eval = eval_cached(pos);
-        tte->save(pos.key(), value_to_tt(best_value, ss->ply), pv_node, bound, depth, best_move_found, raw_eval, TT.generation());
-
-        // Update correction history: learn from difference between search result and raw eval
-        // Only update when not in check and best move is quiet (not a capture)
-        if (!pos.is_check() && (best_move_found == MOVE_NONE || !best_move_found.is_capture())
-            && !(best_value >= beta && best_value <= raw_eval)
-            && !(best_move_found == MOVE_NONE && best_value >= raw_eval)) {
-            int bonus = std::clamp(int(best_value - raw_eval) * depth / 8,
-                                   -CORRECTION_LIMIT / 4, CORRECTION_LIMIT / 4);
-            auto& entry = correction_history[int(pos.side_to_move())][int(pos.pawn_key() & (CORRHIST_SIZE - 1))];
-            // Gravity formula: entry += bonus - entry * |bonus| / limit
-            int clamped = std::clamp(bonus, -CORRECTION_LIMIT, CORRECTION_LIMIT);
-            entry = entry + clamped - entry * std::abs(clamped) / CORRECTION_LIMIT;
-        }
+        tte->save(pos.key(), best_value, pv_node, bound, depth, best_move_found, eval, TT.generation());
     }
 
     return best_value;
@@ -1427,7 +1279,7 @@ static void helper_thread_func(Position pos_copy, int thread_id) {
             if (!stop.load(std::memory_order_relaxed)) {
                 bool found;
                 TTEntry* tte = TT.probe(pos_copy.key(), found);
-                tte->save(pos_copy.key(), value_to_tt(depth_best_value, 0), true, BOUND_EXACT, d, depth_best_move, VALUE_ZERO, TT.generation());
+                tte->save(pos_copy.key(), depth_best_value, true, BOUND_EXACT, d, depth_best_move, VALUE_ZERO, TT.generation());
             }
         }
     }
@@ -1448,7 +1300,6 @@ Move search(Position& pos, Limits& lim) {
     nodes = 0;
     local_nodes = 0;
     last_reported_nodes = 0;
-    g_stats = SearchStats{};
 
     // Track search start time for time management
     search_start = std::chrono::steady_clock::now();
@@ -1477,7 +1328,7 @@ Move search(Position& pos, Limits& lim) {
     }
 
     // Initialize LMR reduction table (once)
-    if (!lmr_initialized) init_lmr();
+    if (!reductions_initialized) init_reductions();
 
     // Create main thread search worker
     SearchWorker* main_worker = new SearchWorker();
@@ -1760,7 +1611,7 @@ Move search(Position& pos, Limits& lim) {
         if (depth_best_move != MOVE_NONE && !stop.load(std::memory_order_relaxed)) {
             bool root_found;
             TTEntry* root_tte = TT.probe(pos.key(), root_found);
-            root_tte->save(pos.key(), value_to_tt(depth_best_value, 0), true, BOUND_EXACT,
+            root_tte->save(pos.key(), depth_best_value, true, BOUND_EXACT,
                            root_depth, depth_best_move, VALUE_ZERO, TT.generation());
         }
 
@@ -1898,7 +1749,7 @@ void uci_info([[maybe_unused]] const Position& pos, int depth, Value score, uint
 }
 
 void clear_correction_history() {
-    std::memset(correction_history, 0, sizeof(correction_history));
+    // No-op: correction history not used in this version
 }
 
 } // namespace luminex
