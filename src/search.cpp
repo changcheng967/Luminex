@@ -497,7 +497,7 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
     if (null_move_ok) {
         pos.do_null_move();
 
-        int R = 3 + (depth > 6 ? 1 : 0) + (depth > 12 ? 1 : 0) + std::min(3, (eval - beta) / 200);
+        int R = 3 + (depth > 6 ? 1 : 0) + (depth > 12 ? 1 : 0);
 
         if (piece_count < 4) R -= 1;
 
