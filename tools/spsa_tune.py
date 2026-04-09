@@ -1,10 +1,8 @@
 #!/usr/bin/env python3
 """
-Luminex SPSA Tuner - Self-Engineered Parameter Optimization
-Drives cutechess-cli to play self-play games and optimize eval parameters.
-
-Usage:
-    python3 spsa_tune.py --engine ./build/luminex --iterations 50000 --rounds 28 --tc 1+0.01
+Luminex SPSA Tuner - Dynamic Scaling Edition
+Optimizes chess engine parameters using Simultaneous Perturbation Stochastic Approximation.
+Automatically detects hardware and scales concurrency accordingly.
 """
 
 import subprocess
@@ -13,22 +11,21 @@ import json
 import os
 import sys
 import random
-import math
 import re
 import time
 from dataclasses import dataclass, field
-from typing import List, Dict, Tuple
+from typing import List, Tuple
 
 # ============================================================
-# SPSA Parameter
+# SPSA Parameter Structure
 # ============================================================
 @dataclass
 class SPSAParam:
-    name: str           # UCI option name (must match engine)
-    theta: float        # Current value
+    name: str           # UCI option name
+    theta: float        # Current central value
     min_val: float
     max_val: float
-    c_end: float = 4.0  # Perturbation size at last iteration
+    c_end: float = 4.0  # Final perturbation size
     R_end: float = 0.002
     c_k: float = 0.0
     R_k: float = 0.0
@@ -43,7 +40,7 @@ class SPSAParam:
         self.history.append(self.theta)
 
 # ============================================================
-# Default Tunable Parameters
+# Parameter Definition (Modify these for Luminex)
 # ============================================================
 def get_default_params() -> List[SPSAParam]:
     return [
@@ -74,7 +71,7 @@ def get_default_params() -> List[SPSAParam]:
     ]
 
 # ============================================================
-# SPSA Core
+# SPSA Logic Engine
 # ============================================================
 class SPSATuner:
     def __init__(self, params: List[SPSAParam], cfg: dict):
@@ -100,14 +97,12 @@ class SPSATuner:
         self.update_gains()
         for p in self.params:
             p.delta = 1.0 if self.rng.random() < 0.5 else -1.0
-            # Fixed the theta access here
             p.theta_plus = max(p.min_val, min(p.theta + p.c_k * p.delta, p.max_val))
             p.theta_minus = max(p.min_val, min(p.theta - p.c_k * p.delta, p.max_val))
 
     def update(self, result: float):
         for p in self.params:
-            if p.c_k == 0 or p.delta == 0:
-                continue
+            if p.c_k == 0 or p.delta == 0: continue
             gradient = result / (2.0 * p.c_k * p.delta)
             p.theta = max(p.min_val, min(p.theta + p.R_k * p.c_k * gradient, p.max_val))
             p.history.append(p.theta)
@@ -118,127 +113,89 @@ class SPSATuner:
         for p in self.params:
             val = int(round(p.theta_plus if use_plus else p.theta_minus))
             opts.append(f"option.{p.name}={val}")
-        # Ensure single-threaded play for clean tuning on many cores
-        opts.append("option.Threads=1")
+        opts.append("option.Threads=1") # Force single-thread per game
         return opts
 
     def save(self, path: str):
         state = {
             'iteration': self.iteration,
-            'params': [{
-                'name': p.name, 'theta': p.theta,
-                'min_val': p.min_val, 'max_val': p.max_val,
-                'c_end': p.c_end, 'R_end': p.R_end,
-                'initial': p.initial,
-            } for p in self.params]
+            'params': [{'name': p.name, 'theta': p.theta, 'initial': p.initial} for p in self.params]
         }
-        with open(path, 'w') as f:
-            json.dump(state, f, indent=2)
+        with open(path, 'w') as f: json.dump(state, f, indent=2)
 
     def load(self, path: str):
         with open(path) as f:
             state = json.load(f)
-        self.iteration = state['iteration']
-        for p, s in zip(self.params, state['params']):
-            p.theta = s['theta']
+            self.iteration = state['iteration']
+            for p, s in zip(self.params, state['params']): p.theta = s['theta']
 
 # ============================================================
-# CuteChess Runner
+# Match Execution
 # ============================================================
 def run_games(cutechess: str, engine: str, opts_plus: list, opts_minus: list,
-             rounds: int, tc: str, pgn_file: str) -> Tuple[int, int, int]:
+             rounds: int, tc: str, concurrency: int) -> Tuple[int, int, int]:
     cmd = [
-        cutechess,
-        "-rounds", str(rounds),
+        cutechess, "-rounds", str(rounds),
         "-engine", "cmd=" + engine, "name=LuminexPlus", *opts_plus,
         "-engine", "cmd=" + engine, "name=LuminexMinus", *opts_minus,
         "-each", "proto=uci", "tc=" + tc,
-        "-pgnout", pgn_file,
-        "-recover", "-concurrency", str(rounds) # Matches rounds to cores
+        "-concurrency", str(concurrency), "-recover"
     ]
-
     try:
-        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=1200)
-        output = proc.stdout + proc.stderr
-        
-        last_match = None
-        for line in output.split('\n'):
-            if 'Score of LuminexPlus vs LuminexMinus' in line:
-                m = re.search(r'Score of \w+ vs \w+:\s+(\d+)\s*-\s*(\d+)\s*-\s*(\d+)', line)
-                if m:
-                    last_match = m
-        if last_match:
-            return int(last_match.group(1)), int(last_match.group(2)), int(last_match.group(3))
-        return 0, 0, 0
+        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=1800)
+        m = re.search(r'Score of \w+ vs \w+:\s+(\d+)\s*-\s*(\d+)\s*-\s*(\d+)', proc.stdout + proc.stderr)
+        return (int(m.group(1)), int(m.group(2)), int(m.group(3))) if m else (0, 0, 0)
     except Exception as e:
-        print(f"  Error: {e}", file=sys.stderr)
+        print(f"Match Error: {e}")
         return 0, 0, 0
 
 # ============================================================
-# Main
+# Main Entry
 # ============================================================
 def main():
+    detected_cores = os.cpu_count() or 1
+    
     ap = argparse.ArgumentParser(description="Luminex SPSA Tuner")
     ap.add_argument("--engine", required=True)
-    ap.add_argument("--cutechess", default="./cutechess-cli", help="Path to cutechess-cli")
+    ap.add_argument("--cutechess", default="./cutechess-cli")
     ap.add_argument("--iterations", type=int, default=50000)
-    ap.add_argument("--rounds", type=int, default=28)
+    ap.add_argument("--rounds", type=int, default=detected_cores, help=f"Games per iter (Detected cores: {detected_cores})")
+    ap.add_argument("--concurrency", type=int, default=detected_cores)
     ap.add_argument("--tc", default="1+0.01")
-    ap.add_argument("--seed", type=int, default=42)
-    ap.add_argument("--resume", default=None)
     ap.add_argument("--output", default="spsa_result.json")
+    ap.add_argument("--resume", default=None)
     args = ap.parse_args()
 
     params = get_default_params()
-    tuner = SPSATuner(params, {
-        'iterations': args.iterations,
-        'alpha': 0.602,
-        'gamma': 0.101,
-        'A_fraction': 0.10,
-        'seed': args.seed,
-    })
+    tuner = SPSATuner(params, {'iterations': args.iterations})
 
     if args.resume and os.path.exists(args.resume):
         tuner.load(args.resume)
-        print(f"Resumed from iteration {tuner.iteration}")
+        print(f"Resuming from iteration {tuner.iteration}...")
 
-    print(f"Luminex SPSA Tuner")
-    print(f"Params: {len(params)}, Iterations: {args.iterations}, Rounds/iter: {args.rounds}")
-    print(f"TC: {args.tc}, Engine: {args.engine}")
-    print("-" * 40)
-
+    print(f"Starting SPSA Tuner on {args.concurrency} cores...")
     start_time = time.time()
 
     while tuner.iteration < args.iterations:
         tuner.perturb()
-        opts_plus = tuner.uci_opts(use_plus=True)
-        opts_minus = tuner.uci_opts(use_plus=False)
-
-        w, l, d = run_games(args.cutechess, args.engine, opts_plus, opts_minus,
-                           args.rounds, args.tc, "spsa_iter.pgn")
+        w, l, d = run_games(args.cutechess, args.engine, tuner.uci_opts(True), 
+                           tuner.uci_opts(False), args.rounds, args.tc, args.concurrency)
 
         total = w + l + d
         result = (w - l) / total if total > 0 else 0.0
         tuner.update(result)
 
-        elapsed = time.time() - start_time
-        iters_per_hour = (tuner.iteration / elapsed) * 3600 if elapsed > 0 else 0
-
         if tuner.iteration % 1 == 0:
-            print(f"[{tuner.iteration:5d}/{args.iterations}] "
-                  f"W:{w:2d} L:{l:2d} D:{d:2d} res={result:+.2f} "
-                  f"({iters_per_hour:.1f} iters/hr)")
+            elapsed = time.time() - start_time
+            ips = (tuner.iteration / elapsed) * 3600 if elapsed > 0 else 0
+            print(f"[{tuner.iteration:5d}/{args.iterations}] W:{w} L:{l} D:{d} res:{result:+.2f} ({ips:.1f} iters/hr)")
             tuner.save(args.output)
 
         if tuner.iteration % 100 == 0:
-            print("\n  Current Parameter Snapshot:")
+            print("\n  Parameter Updates:")
             for p in tuner.params:
-                chg = p.theta - p.initial
-                print(f"    {p.name:25s}: {p.theta:6.1f} (chg:{chg:+.1f})")
+                print(f"    {p.name:25s}: {p.theta:6.1f} (chg:{p.theta - p.initial:+.1f})")
             print()
-
-    tuner.save(args.output)
-    print(f"\nTuning complete in {time.time()-start_time:.0f}s")
 
 if __name__ == "__main__":
     main()
