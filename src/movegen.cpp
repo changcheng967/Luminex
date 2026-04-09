@@ -283,6 +283,63 @@ ExtMove* generate(const Position& pos, ExtMove* moveList) {
             }
         }
         return legal_end;
+    } else if constexpr (T == GEN_QUIET_CHECK) {
+        // Generate quiet moves that give check: generate all quiets, filter for checks
+        ExtMove* start = moveList;
+        ExtMove* end = generate_moves<GEN_QUIET>(pos, moveList);
+        Color us = pos.side_to_move();
+        Square opp_ksq = pos.king_sq(Color(us ^ 1));
+        Bitboard occ = pos.pieces();
+
+        ExtMove* check_end = start;
+        for (ExtMove* it = start; it != end; ++it) {
+            Move m = it->move;
+            Square from = m.from();
+            Square to = m.to();
+            PieceType pt = piece_type_of(pos.piece_on(from));
+            bool gives_chk = false;
+
+            // Check if piece on 'to' attacks opponent king
+            // Use occupancy with piece moved (remove from, add to)
+            Bitboard occ_after = (occ ^ square_bb(from)) | square_bb(to);
+            switch (pt) {
+                case PAWN:
+                    gives_chk = (pawn_attacks_bb(us, square_bb(to)) & square_bb(opp_ksq)) != 0;
+                    // Also check discovered check
+                    if (!gives_chk) {
+                        Bitboard occ_no_pawn = occ ^ square_bb(from);
+                        gives_chk = (rook_attacks_bb(opp_ksq, occ_no_pawn) | bishop_attacks_bb(opp_ksq, occ_no_pawn))
+                                    & (pos.pieces(us, ROOK, QUEEN) | pos.pieces(us, BISHOP, QUEEN)) & ~square_bb(from);
+                    }
+                    break;
+                case KNIGHT:
+                    gives_chk = (knight_attacks_bb(to) & square_bb(opp_ksq)) != 0;
+                    break;
+                case BISHOP:
+                    gives_chk = (bishop_attacks_bb(to, occ_after) & square_bb(opp_ksq)) != 0;
+                    break;
+                case ROOK:
+                    gives_chk = (rook_attacks_bb(to, occ_after) & square_bb(opp_ksq)) != 0;
+                    break;
+                case QUEEN:
+                    gives_chk = ((bishop_attacks_bb(to, occ_after) | rook_attacks_bb(to, occ_after)) & square_bb(opp_ksq)) != 0;
+                    break;
+                case KING:
+                    // King can't give direct check, only discovered check
+                    {
+                        Bitboard occ_no_king = occ ^ square_bb(from);
+                        gives_chk = (rook_attacks_bb(opp_ksq, occ_no_king) | bishop_attacks_bb(opp_ksq, occ_no_king))
+                                    & (pos.pieces(us, ROOK, QUEEN) | pos.pieces(us, BISHOP, QUEEN)) & ~square_bb(from);
+                    }
+                    break;
+                default: break;
+            }
+
+            if (gives_chk && pos.legal(m)) {
+                *(check_end++) = *it;
+            }
+        }
+        return check_end;
     } else {
         return generate_moves<T>(pos, moveList);
     }
@@ -292,6 +349,7 @@ ExtMove* generate(const Position& pos, ExtMove* moveList) {
 template ExtMove* generate<GEN_LEGAL>(const Position& pos, ExtMove* moveList);
 template ExtMove* generate<GEN_CAPTURE>(const Position& pos, ExtMove* moveList);
 template ExtMove* generate<GEN_QUIET>(const Position& pos, ExtMove* moveList);
+template ExtMove* generate<GEN_QUIET_CHECK>(const Position& pos, ExtMove* moveList);
 template ExtMove* generate<GEN_EVASION>(const Position& pos, ExtMove* moveList);
 template ExtMove* generate<GEN_ALL>(const Position& pos, ExtMove* moveList);
 

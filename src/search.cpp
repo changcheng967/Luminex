@@ -275,6 +275,10 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
         end = generate<GEN_LEGAL>(pos, moves);  // All legal moves when in check
     } else {
         end = generate<GEN_CAPTURE>(pos, moves);  // Only captures when not in check
+        // At first qsearch level, also generate check-giving quiet moves
+        if (depth >= -1) {
+            end = generate<GEN_QUIET_CHECK>(pos, end);
+        }
     }
 
     int moves_searched = 0;
