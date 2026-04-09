@@ -68,6 +68,44 @@ struct EvalCacheEntry {
 constexpr int EVAL_CACHE_SIZE = 524288;  // 512K entries for better hit rate
 EvalCacheEntry eval_cache[EVAL_CACHE_SIZE];
 
+// Correction history: corrects static eval based on search errors
+// Indexed by pawn structure hash. Stores rolling average of (search_value - static_eval).
+// Kept conservative: small table, gentle update, capped corrections.
+constexpr int CORRHIST_SIZE = 16384;
+struct CorrHistEntry {
+    uint64_t key;
+    int32_t correction;  // Raw sum, divided by weight on read
+    int32_t weight;
+};
+CorrHistEntry corrhist_table[CORRHIST_SIZE];
+
+inline int get_correction(uint64_t pawn_key) {
+    uint32_t idx = uint32_t(pawn_key) & (CORRHIST_SIZE - 1);
+    const CorrHistEntry& e = corrhist_table[idx];
+    if (e.key == pawn_key && e.weight > 0)
+        return e.correction / e.weight;
+    return 0;
+}
+
+inline void update_correction(uint64_t pawn_key, int error, int depth) {
+    uint32_t idx = uint32_t(pawn_key) & (CORRHIST_SIZE - 1);
+    CorrHistEntry& e = corrhist_table[idx];
+    if (e.key != pawn_key) {
+        e.key = pawn_key;
+        e.correction = 0;
+        e.weight = 0;
+    }
+    // Weight by depth squared for more reliable corrections at deeper searches
+    int w = depth * depth;
+    e.correction += error * w;
+    e.weight += w;
+    // Cap total weight to prevent stale entries from dominating
+    if (e.weight > 1024) {
+        e.correction /= 2;
+        e.weight /= 2;
+    }
+}
+
 // Thread-local node counter to avoid atomic overhead on every node
 static thread_local uint64_t local_nodes = 0;
 static thread_local uint64_t last_reported_nodes = 0;
@@ -89,13 +127,19 @@ inline Value eval_cached(const Position& pos) {
     uint32_t idx = uint32_t(key) & (EVAL_CACHE_SIZE - 1);
 
     if (eval_cache[idx].key == key) {
-        return Value(eval_cache[idx].value);
+        // Apply correction history to cached eval (capped for safety)
+        int correction = get_correction(pos.pawn_key());
+        correction = std::max(-100, std::min(100, correction));
+        return Value(eval_cache[idx].value + correction);
     }
 
     Value eval = evaluate(pos);
     eval_cache[idx].key = key;
     eval_cache[idx].value = int32_t(eval);
-    return eval;
+    // Apply correction to fresh eval too
+    int correction = get_correction(pos.pawn_key());
+    correction = std::max(-100, std::min(100, correction));
+    return Value(eval + correction);
 }
 
 [[maybe_unused]] inline void clear_eval_cache() {
@@ -1133,6 +1177,14 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
         else bound = BOUND_UPPER;
         // Use best_move_found instead of ss->pv[ss->ply] to avoid stale PV corruption
         tte->save(pos.key(), best_value, pv_node, bound, depth, best_move_found, eval, TT.generation());
+
+        // Update correction history: learn from the difference between
+        // search result and static eval, indexed by pawn structure.
+        // Only update at reasonable depth where search is meaningful.
+        if (!pv_node && abs(best_value) < VALUE_KNOWN_WIN && abs(eval) < VALUE_KNOWN_WIN
+            && moves_played > 0 && depth >= 2) {
+            update_correction(pos.pawn_key(), best_value - eval, depth);
+        }
     }
 
     return best_value;
@@ -1749,7 +1801,7 @@ void uci_info([[maybe_unused]] const Position& pos, int depth, Value score, uint
 }
 
 void clear_correction_history() {
-    // No-op: correction history not used in this version
+    std::memset(corrhist_table, 0, sizeof(corrhist_table));
 }
 
 } // namespace luminex
