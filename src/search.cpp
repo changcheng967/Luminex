@@ -69,38 +69,41 @@ constexpr int EVAL_CACHE_SIZE = 524288;  // 512K entries for better hit rate
 EvalCacheEntry eval_cache[EVAL_CACHE_SIZE];
 
 // Correction history: corrects static eval based on search errors
-// Indexed by pawn structure hash. Stores rolling average of (search_value - static_eval).
-// Kept conservative: small table, gentle update, capped corrections.
-constexpr int CORRHIST_SIZE = 16384;
+// Uses combined pawn+material hash for better indexing. Stores weighted rolling average.
+constexpr int CORRHIST_SIZE = 65536;
 struct CorrHistEntry {
-    uint64_t key;
-    int32_t correction;  // Raw sum, divided by weight on read
+    uint32_t key32;
+    int32_t correction;
     int32_t weight;
 };
 CorrHistEntry corrhist_table[CORRHIST_SIZE];
 
-inline int get_correction(uint64_t pawn_key) {
-    uint32_t idx = uint32_t(pawn_key) & (CORRHIST_SIZE - 1);
+inline uint32_t corrhist_key(uint64_t pawn_key, uint64_t pos_key) {
+    return uint32_t(pawn_key ^ (pos_key >> 16));
+}
+
+inline int get_correction(uint64_t pawn_key, uint64_t pos_key) {
+    uint32_t key = corrhist_key(pawn_key, pos_key);
+    uint32_t idx = key & (CORRHIST_SIZE - 1);
     const CorrHistEntry& e = corrhist_table[idx];
-    if (e.key == pawn_key && e.weight > 0)
+    if (e.key32 == key && e.weight > 0)
         return e.correction / e.weight;
     return 0;
 }
 
-inline void update_correction(uint64_t pawn_key, int error, int depth) {
-    uint32_t idx = uint32_t(pawn_key) & (CORRHIST_SIZE - 1);
+inline void update_correction(uint64_t pawn_key, uint64_t pos_key, int error, int depth) {
+    uint32_t key = corrhist_key(pawn_key, pos_key);
+    uint32_t idx = key & (CORRHIST_SIZE - 1);
     CorrHistEntry& e = corrhist_table[idx];
-    if (e.key != pawn_key) {
-        e.key = pawn_key;
+    if (e.key32 != key) {
+        e.key32 = key;
         e.correction = 0;
         e.weight = 0;
     }
-    // Weight by depth squared for more reliable corrections at deeper searches
     int w = depth * depth;
     e.correction += error * w;
     e.weight += w;
-    // Cap total weight to prevent stale entries from dominating
-    if (e.weight > 1024) {
+    if (e.weight > 2048) {
         e.correction /= 2;
         e.weight /= 2;
     }
@@ -128,8 +131,8 @@ inline Value eval_cached(const Position& pos) {
 
     if (eval_cache[idx].key == key) {
         // Apply correction history to cached eval (capped for safety)
-        int correction = get_correction(pos.pawn_key());
-        correction = std::max(-100, std::min(100, correction));
+        int correction = get_correction(pos.pawn_key(), pos.key());
+        correction = std::max(-150, std::min(150, correction));
         return Value(eval_cache[idx].value + correction);
     }
 
@@ -137,8 +140,8 @@ inline Value eval_cached(const Position& pos) {
     eval_cache[idx].key = key;
     eval_cache[idx].value = int32_t(eval);
     // Apply correction to fresh eval too
-    int correction = get_correction(pos.pawn_key());
-    correction = std::max(-100, std::min(100, correction));
+    int correction = get_correction(pos.pawn_key(), pos.key());
+    correction = std::max(-150, std::min(150, correction));
     return Value(eval + correction);
 }
 
@@ -1184,7 +1187,7 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
         // Only update at reasonable depth where search is meaningful.
         if (!pv_node && abs(best_value) < VALUE_KNOWN_WIN && abs(eval) < VALUE_KNOWN_WIN
             && moves_played > 0 && depth >= 2) {
-            update_correction(pos.pawn_key(), best_value - eval, depth);
+            update_correction(pos.pawn_key(), pos.key(), best_value - eval, depth);
         }
     }
 
