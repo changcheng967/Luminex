@@ -4,13 +4,7 @@ Luminex SPSA Tuner - Self-Engineered Parameter Optimization
 Drives cutechess-cli to play self-play games and optimize eval parameters.
 
 Usage:
-  python3 spsa_tune.py --engine ./build/luminex --iterations 50000 --rounds 2 --tc 1+0.01
-
-Algorithm: SPSA (Simultaneous Perturbation Stochastic Approximation)
-  - All parameters perturbed simultaneously each iteration
-  - Two games played (color reversed) between theta+ and theta-
-  - Parameters updated based on game outcomes
-  - alpha=0.602, gamma=0.101 (Spall's optimal values)
+    python3 spsa_tune.py --engine ./build/luminex --iterations 50000 --rounds 28 --tc 1+0.01
 """
 
 import subprocess
@@ -24,7 +18,6 @@ import re
 import time
 from dataclasses import dataclass, field
 from typing import List, Dict, Tuple
-
 
 # ============================================================
 # SPSA Parameter
@@ -49,13 +42,11 @@ class SPSAParam:
         self.initial = self.theta
         self.history.append(self.theta)
 
-
 # ============================================================
 # Default Tunable Parameters
 # ============================================================
 def get_default_params() -> List[SPSAParam]:
     return [
-        # EvalParams struct (24 params) - UCI names from uci.cpp
         SPSAParam("BishopPairMG",          30,    0,   80),
         SPSAParam("BishopPairEG",          96,   20,  180),
         SPSAParam("RookOpenMG",            29,    0,   60),
@@ -81,7 +72,6 @@ def get_default_params() -> List[SPSAParam]:
         SPSAParam("FarBishopMG",            5,  -20,   30),
         SPSAParam("FarBishopEG",            3,  -10,   20),
     ]
-
 
 # ============================================================
 # SPSA Core
@@ -110,8 +100,9 @@ class SPSATuner:
         self.update_gains()
         for p in self.params:
             p.delta = 1.0 if self.rng.random() < 0.5 else -1.0
-            p.theta_plus = max(p.min_val, min(self.theta + p.c_k * p.delta, p.max_val))
-            p.theta_minus = max(p.min_val, min(self.theta - p.c_k * p.delta, p.max_val))
+            # Fixed the theta access here
+            p.theta_plus = max(p.min_val, min(p.theta + p.c_k * p.delta, p.max_val))
+            p.theta_minus = max(p.min_val, min(p.theta - p.c_k * p.delta, p.max_val))
 
     def update(self, result: float):
         for p in self.params:
@@ -122,17 +113,13 @@ class SPSATuner:
             p.history.append(p.theta)
         self.iteration += 1
 
-    @property
-    def theta(self):
-        # Use mean of last 10% of history for each param (smoothing)
-        pass
-
     def uci_opts(self, use_plus: bool) -> list:
-        """Return list of cutechess option strings like 'option.Name=value'."""
         opts = []
         for p in self.params:
             val = int(round(p.theta_plus if use_plus else p.theta_minus))
             opts.append(f"option.{p.name}={val}")
+        # Ensure single-threaded play for clean tuning on many cores
+        opts.append("option.Threads=1")
         return opts
 
     def save(self, path: str):
@@ -155,13 +142,11 @@ class SPSATuner:
         for p, s in zip(self.params, state['params']):
             p.theta = s['theta']
 
-
 # ============================================================
 # CuteChess Runner
 # ============================================================
 def run_games(cutechess: str, engine: str, opts_plus: list, opts_minus: list,
-              rounds: int, tc: str, pgn_file: str) -> Tuple[int, int, int]:
-    """Run cutechess games. Returns (wins_plus, wins_minus, draws)."""
+             rounds: int, tc: str, pgn_file: str) -> Tuple[int, int, int]:
     cmd = [
         cutechess,
         "-rounds", str(rounds),
@@ -169,13 +154,13 @@ def run_games(cutechess: str, engine: str, opts_plus: list, opts_minus: list,
         "-engine", "cmd=" + engine, "name=LuminexMinus", *opts_minus,
         "-each", "proto=uci", "tc=" + tc,
         "-pgnout", pgn_file,
-        "-recover",
+        "-recover", "-concurrency", str(rounds) # Matches rounds to cores
     ]
 
     try:
-        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=600)
+        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=1200)
         output = proc.stdout + proc.stderr
-
+        
         last_match = None
         for line in output.split('\n'):
             if 'Score of LuminexPlus vs LuminexMinus' in line:
@@ -189,16 +174,15 @@ def run_games(cutechess: str, engine: str, opts_plus: list, opts_minus: list,
         print(f"  Error: {e}", file=sys.stderr)
         return 0, 0, 0
 
-
 # ============================================================
 # Main
 # ============================================================
 def main():
     ap = argparse.ArgumentParser(description="Luminex SPSA Tuner")
     ap.add_argument("--engine", required=True)
-    ap.add_argument("--cutechess", default="cutechess-cli", help="Path to cutechess-cli")
+    ap.add_argument("--cutechess", default="./cutechess-cli", help="Path to cutechess-cli")
     ap.add_argument("--iterations", type=int, default=50000)
-    ap.add_argument("--rounds", type=int, default=2)
+    ap.add_argument("--rounds", type=int, default=28)
     ap.add_argument("--tc", default="1+0.01")
     ap.add_argument("--seed", type=int, default=42)
     ap.add_argument("--resume", default=None)
@@ -214,17 +198,16 @@ def main():
         'seed': args.seed,
     })
 
-    if args.resume:
+    if args.resume and os.path.exists(args.resume):
         tuner.load(args.resume)
         print(f"Resumed from iteration {tuner.iteration}")
 
     print(f"Luminex SPSA Tuner")
     print(f"Params: {len(params)}, Iterations: {args.iterations}, Rounds/iter: {args.rounds}")
     print(f"TC: {args.tc}, Engine: {args.engine}")
-    print()
+    print("-" * 40)
 
     start_time = time.time()
-    results_log = []
 
     while tuner.iteration < args.iterations:
         tuner.perturb()
@@ -239,41 +222,23 @@ def main():
         tuner.update(result)
 
         elapsed = time.time() - start_time
-        iters_per_sec = tuner.iteration / elapsed if elapsed > 0 else 0
+        iters_per_hour = (tuner.iteration / elapsed) * 3600 if elapsed > 0 else 0
 
-        results_log.append({
-            'iter': tuner.iteration,
-            'w': w, 'l': l, 'd': d,
-            'result': result,
-            'theta': {p.name: int(round(p.theta)) for p in tuner.params}
-        })
-
-        if tuner.iteration % 10 == 0:
-            print(f"[{tuner.iteration:6d}/{args.iterations}] "
-                  f"W:{w} L:{l} D:{d} res={result:+.2f} "
-                  f"({iters_per_sec:.1f} iter/s)")
+        if tuner.iteration % 1 == 0:
+            print(f"[{tuner.iteration:5d}/{args.iterations}] "
+                  f"W:{w:2d} L:{l:2d} D:{d:2d} res={result:+.2f} "
+                  f"({iters_per_hour:.1f} iters/hr)")
             tuner.save(args.output)
 
-        if tuner.iteration % 1000 == 0:
-            # Print parameter summary
-            print("\n  Current parameters:")
+        if tuner.iteration % 100 == 0:
+            print("\n  Current Parameter Snapshot:")
             for p in tuner.params:
                 chg = p.theta - p.initial
-                print(f"    {p.name:25s}: {int(round(p.theta)):5d}  (chg={chg:+.1f})")
+                print(f"    {p.name:25s}: {p.theta:6.1f} (chg:{chg:+.1f})")
             print()
-            tuner.save(f"spsa_checkpoint_{tuner.iteration}.json")
 
-    # Final output
     tuner.save(args.output)
-    print(f"\nTuning complete. {tuner.iteration} iterations in {time.time()-start_time:.0f}s")
-    print(f"Results: {args.output}")
-
-    # Print final parameters in UCI setoption format
-    print("\n# Final parameters (UCI setoption format):")
-    for p in tuner.params:
-        chg = int(round(p.theta)) - int(round(p.initial))
-        print(f"setoption name {p.name} value {int(round(p.theta))}  # chg={chg:+d}")
-
+    print(f"\nTuning complete in {time.time()-start_time:.0f}s")
 
 if __name__ == "__main__":
     main()
