@@ -750,6 +750,21 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
             }
         }
 
+        // Counter-move pruning: at low depth, skip quiet moves that are NOT the counter-move
+        // when the counter-move has been reliable (high history score)
+        if (is_quiet && !pv_node && depth <= 2 && moves_played > 2 && ss->ply >= 1
+            && (ss - 1)->current_move != MOVE_NONE && (ss - 1)->moved_piece != NO_PIECE) {
+            Move prev_move = (ss - 1)->current_move;
+            Piece prev_pc = (ss - 1)->moved_piece;
+            Move cm = worker->counter_move_table[int(prev_pc)][int(prev_move.to())];
+            if (cm != MOVE_NONE && m != cm) {
+                // Not the counter-move — check if it's also not a killer
+                if (m != worker->killers[ss->ply][0] && m != worker->killers[ss->ply][1]) {
+                    return false;
+                }
+            }
+        }
+
         // SEE-based quiet move pruning at shallow depth
         if (is_quiet && !pv_node && ss->ply > 0 && depth <= 3) {
             if (!pos.see_ge(m, Value(-20 * depth * depth))) {
