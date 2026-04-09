@@ -438,7 +438,7 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
         if (tt_value >= beta && tt_move && ss->ply > 0) {
             Piece moved = pos.piece_on(tt_move.from());
             if (moved != NO_PIECE && !tt_move.is_capture()) {
-                int bonus = depth > 17 ? -8 : 16 * depth * depth + 130 * depth - 110;
+                int bonus = depth > 17 ? -8 : 19 * depth * depth + 155 * depth - 132;
                 int& h = worker->history[int(moved)][int(tt_move.to())];
                 h += bonus - h * std::abs(bonus) / 32768;
             }
@@ -914,7 +914,7 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
                     Piece pc = ss->moved_piece;
                     if (pc != NO_PIECE) {
                         // Stockfish 11 stat_bonus: conservative quadratic scaling
-                        int bonus = depth > 17 ? -8 : 16 * depth * depth + 130 * depth - 110;
+                        int bonus = depth > 17 ? -8 : 19 * depth * depth + 155 * depth - 132;
                         // Gravity formula for plain history
                         int& h = worker->history[int(pc)][int(m.to())];
                         h += bonus - h * abs(bonus) / 32768;
