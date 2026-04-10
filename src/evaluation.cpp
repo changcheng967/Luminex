@@ -1027,6 +1027,15 @@ Value evaluate(const Position& pos) {
                 mg_score += sign * g_eval_params.hanging_pawn_mg * popcount(hanging_pawns);
                 eg_score += sign * g_eval_params.hanging_pawn_eg * popcount(hanging_pawns);
             }
+            // Hanging pieces: enemy minor/major pieces undefended and attacked by us
+            // Principle: a loose piece must move or be captured, creating tempo advantage
+            Bitboard hanging_pieces = (pos.pieces(them, KNIGHT) | pos.pieces(them, BISHOP)
+                                     | pos.pieces(them, ROOK) | pos.pieces(them, QUEEN))
+                                     & ~all_attacks[them] & all_attacks[c];
+            if (hanging_pieces) {
+                mg_score += sign * 25 * popcount(hanging_pieces);
+                eg_score += sign * 15 * popcount(hanging_pieces);
+            }
         }
     }
 
