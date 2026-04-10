@@ -345,9 +345,8 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
     }
 
     // Search quiet checks at depth 0 to find tactical shots
-    // Derivation: checks reduce branching factor from ~35 to ~5, making them
-    // ~7x more likely to find forcing wins than random quiet moves
-    if (!in_check && depth >= 0) {
+    // Only at depth 0 to control search explosion
+    if (!in_check && depth == 0) {
         ExtMove check_moves[MAX_MOVES];
         ExtMove* check_end = generate<GEN_QUIET_CHECK>(pos, check_moves);
 
