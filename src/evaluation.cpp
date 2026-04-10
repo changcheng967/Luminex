@@ -696,6 +696,18 @@ Value evaluate(const Position& pos) {
                     eg_score += sign * 15;
                 }
             }
+
+            // Knight proximity to enemy king: pieces near the opposing king
+            // create tactical threats (forks, smothered mates, attack combos)
+            // Distance 1-2: strong attacking presence
+            // Distance 3: moderate, still within striking range
+            {
+                int kdist = distance(sq, ksq_arr[c_idx ^ 1]);
+                if (kdist <= 3) {
+                    static constexpr int KnightKingProximityMG[4] = { 0, 25, 15, 5 };
+                    mg_score += sign * KnightKingProximityMG[kdist];
+                }
+            }
         }
 
         // -------------------------------------------------------
@@ -779,6 +791,16 @@ Value evaluate(const Position& pos) {
                 if (behind_sq < SQUARE_NONE && (our_pawns & square_bb(behind_sq))) {
                     mg_score += sign * 15;
                     eg_score += sign * 3;
+                }
+            }
+
+            // Bishop proximity to enemy king: attacking bishops near the
+            // opposing king create pin/skewer threats and support attacks
+            {
+                int kdist = distance(sq, ksq_arr[c_idx ^ 1]);
+                if (kdist <= 3) {
+                    static constexpr int BishopKingProximityMG[4] = { 0, 15, 10, 3 };
+                    mg_score += sign * BishopKingProximityMG[kdist];
                 }
             }
         }
