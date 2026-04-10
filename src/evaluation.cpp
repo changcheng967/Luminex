@@ -825,6 +825,13 @@ Value evaluate(const Position& pos) {
                 eg_score += sign * 5;
             }
 
+            // Rook-queen battery: rook and own queen on same file
+            // Creates massive pressure — queen can move and rook takes over
+            if (file_bb(f) & pos.pieces(c, QUEEN)) {
+                mg_score += sign * 20;
+                eg_score += sign * 8;
+            }
+
             // Far rook penalty: rook disconnected from own king is harder to coordinate
             if (distance(sq, ksq_arr[c_idx]) > 3) {
                 mg_score -= sign * 8;
