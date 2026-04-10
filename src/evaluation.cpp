@@ -902,7 +902,7 @@ Value evaluate(const Position& pos) {
             }
 
             // Weak queen: pinned to own king (forced passivity)
-            if (pos.pinned() & square_bb(sq)) {
+            if (pos.blockers_for_king(c) & square_bb(sq)) {
                 mg_score -= sign * 50;
                 eg_score -= sign * 15;
             }
