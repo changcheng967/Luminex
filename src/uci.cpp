@@ -36,7 +36,7 @@ static FILE* dbglog = nullptr;
 
 // Check for stop command - simply check the atomic flag
 bool check_for_stop_command() {
-    return stop.load(std::memory_order_relaxed);
+    return stop.load(std::memory_order_seq_cst);
 }
 
 // Thread-safe output
