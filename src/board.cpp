@@ -835,6 +835,7 @@ void Position::do_null_move() {
 
     // Copy current state
     next_st.key = st_->key;
+    next_st.pawn_key = st_->pawn_key;  // Preserve pawn key for eval cache
     next_st.checkers = st_->checkers;
     next_st.pinned = st_->pinned;
     next_st.block_checkers = st_->block_checkers;
@@ -843,7 +844,7 @@ void Position::do_null_move() {
     next_st.ply = st_->ply;
     next_st.move = MOVE_NONE;
     next_st.captured_piece = PT_NONE;
-    next_st.halfmove_clock = st_->halfmove_clock + 1;  // Critical for is_draw()
+    next_st.halfmove_clock = st_->halfmove_clock;  // Don't increment — null move doesn't advance 50-move rule
 
     st_ = &next_st;
 
@@ -1011,13 +1012,15 @@ bool Position::see_ge(Move m, Value threshold) const {
         if (gain >= threshold) return true;
 
         // Only add newly revealed sliding attackers (not full recompute)
+        // ANY piece moving away can reveal a slider behind it
+        // (not just bishops/rooks/queens — a pawn moving reveals too)
         // Diagonal sliders revealed by removing piece at sq
-        if (pt == BISHOP || pt == QUEEN) {
+        {
             Bitboard diag = bb_diag_attacks(sq, occupied) & (pieces(BISHOP) | pieces(QUEEN));
             attackers |= diag;
         }
         // Orthogonal sliders revealed by removing piece at sq
-        if (pt == ROOK || pt == QUEEN) {
+        {
             Bitboard orth = rook_attacks_bb(sq, occupied) & (pieces(ROOK) | pieces(QUEEN));
             attackers |= orth;
         }

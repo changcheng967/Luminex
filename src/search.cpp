@@ -32,6 +32,20 @@ Move previous_root_best = MOVE_NONE;
 
 namespace {
 
+// Mate score TT adjustment: mate scores are relative to root, not current ply.
+// When storing to TT, adjust so retrieval at different ply gives correct distance.
+inline Value value_to_tt(Value v, int ply) {
+    if (v >= VALUE_MATE_IN_MAX_PLY) return Value(v + ply);
+    if (v <= -VALUE_MATE_IN_MAX_PLY) return Value(v - ply);
+    return v;
+}
+
+inline Value value_from_tt(Value v, int ply) {
+    if (v >= VALUE_MATE_IN_MAX_PLY) return Value(v - ply);
+    if (v <= -VALUE_MATE_IN_MAX_PLY) return Value(v + ply);
+    return v;
+}
+
 // Per-thread search state for lazy SMP
 constexpr int MAX_PLY_PLUS_6 = MAX_PLY + 6;
 
@@ -424,11 +438,11 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
             tt_move = m;
         }
     }
-    Value tt_value = found ? tte->value() : VALUE_ZERO;
+    Value tt_value = found ? value_from_tt(tte->value(), ss->ply) : VALUE_ZERO;
     Depth tt_depth = found ? tte->depth() : DEPTH_ZERO;
 
     // ttPv: this position was a PV node when stored in TT
-    bool ttPv = found && tte->bound() == BOUND_EXACT;
+    bool ttPv = found && tte->is_pv();
 
     // TT cutoff: require exact or greater depth for safety
     // IIR naturally improves TT population without aggressive margins
@@ -461,7 +475,8 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
     bool opponent_worsening = (ss->ply >= 1 && eval > -(ss - 1)->static_eval);
 
     // Internal Iterative Reduction (IIR): reduce depth by 1 when no TT move available
-    if (tt_move == MOVE_NONE && depth >= 4) {
+    // Only apply at non-PV nodes — PV nodes use IID instead (below)
+    if (!pv_node && tt_move == MOVE_NONE && depth >= 4) {
         depth--;
     }
 
@@ -714,7 +729,13 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
         if (m == ss->excluded_move) return false;
 
         // Save captured piece type before do_move (for capture history update)
-        PieceType captured_pt = m.is_capture() ? pos.piece_type_on(m.to()) : PT_NONE;
+        // EP captures have the captured pawn on a different square than m.to()
+        PieceType captured_pt = PT_NONE;
+        if (m.is_en_passant()) {
+            captured_pt = PAWN;
+        } else if (m.is_capture()) {
+            captured_pt = pos.piece_type_on(m.to());
+        }
 
         // Skip pseudo_legal check: moves from generator are already pseudo-legal
         if (!pos.legal(m, true)) return false;  // Skip pseudo_legal check for generated moves
@@ -987,7 +1008,7 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
                     }
                 }
                 if (!stop.load(std::memory_order_relaxed)) {
-                    tte->save(pos.key(), value, false, BOUND_LOWER, depth, m, eval, TT.generation());
+                    tte->save(pos.key(), value_to_tt(value, ss->ply), false, BOUND_LOWER, depth, m, eval, TT.generation());
                 }
                 return true;  // beta cutoff
                 }
@@ -1177,7 +1198,7 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
         else if (best_value > original_alpha) bound = BOUND_EXACT;  // PV node improved alpha
         else bound = BOUND_UPPER;
         // Use best_move_found instead of ss->pv[ss->ply] to avoid stale PV corruption
-        tte->save(pos.key(), best_value, pv_node, bound, depth, best_move_found, eval, TT.generation());
+        tte->save(pos.key(), value_to_tt(best_value, ss->ply), pv_node, bound, depth, best_move_found, eval, TT.generation());
 
         // Update correction history: learn from the difference between
         // search result and static eval, indexed by pawn structure.

@@ -826,10 +826,10 @@ Value evaluate(const Position& pos) {
                 eg_score += sign * 5;
             }
 
-            // Far rook penalty
+            // Far rook penalty: rook disconnected from own king is harder to coordinate
             if (distance(sq, ksq_arr[c_idx]) > 3) {
                 mg_score -= sign * 8;
-                eg_score += sign * 5;
+                eg_score -= sign * 5;
             }
 
             // Rook trapped/buried behind king
@@ -840,7 +840,9 @@ Value evaluate(const Position& pos) {
                     ? (rank_of(ksq) <= rank_of(sq) && fdist <= 1)
                     : (rank_of(ksq) >= rank_of(sq) && fdist <= 1);
                 if (king_between && mob <= 4) {
-                    bool has_castling = pos.castling_allowed(c, WHITE_KINGSIDE) || pos.castling_allowed(c, WHITE_QUEENSIDE);
+                    CastlingRight ks_cr = c == WHITE ? WHITE_KINGSIDE : BLACK_KINGSIDE;
+                    CastlingRight qs_cr = c == WHITE ? WHITE_QUEENSIDE : BLACK_QUEENSIDE;
+                    bool has_castling = pos.castling_allowed(c, ks_cr) || pos.castling_allowed(c, qs_cr);
                     if (has_castling) {
                         mg_score += sign * (-8);
                         eg_score += sign * (-12);
@@ -855,10 +857,17 @@ Value evaluate(const Position& pos) {
             {
                 Bitboard ahead_pawns;
                 if (c == WHITE) {
-                    ahead_pawns = our_pawns & file_bb(f) & ~rank_bb(Rank(rank_of(sq)));
+                    // For White, ahead = ranks above rook
+                    Bitboard below_and_same = 0;
+                    for (int r = RANK_1; r <= rank_of(sq); ++r)
+                        below_and_same |= rank_bb(Rank(r));
+                    ahead_pawns = our_pawns & file_bb(f) & ~below_and_same;
                 } else {
-                    Bitboard rook_rank = rank_bb(Rank(rank_of(sq)));
-                    ahead_pawns = our_pawns & file_bb(f) & (rook_rank - 1);
+                    // For Black, ahead = ranks below rook (toward rank 1)
+                    Bitboard above_and_same = 0;
+                    for (int r = rank_of(sq); r <= RANK_8; ++r)
+                        above_and_same |= rank_bb(Rank(r));
+                    ahead_pawns = our_pawns & file_bb(f) & ~above_and_same;
                 }
                 if (ahead_pawns) {
                     mg_score += sign * (-8);
@@ -887,10 +896,10 @@ Value evaluate(const Position& pos) {
             mg_score += sign * (QueenMobBaseMG + mob * QueenMobSlopeMG);
             eg_score += sign * (QueenMobBaseEG + mob * QueenMobSlopeEG);
 
-            // Far queen penalty
+            // Far queen: active queen in EG is good, disconnected queen in MG is bad
             if (distance(sq, ksq_arr[c_idx]) > 3) {
                 mg_score -= sign * 8;
-                eg_score += sign * 10;
+                eg_score -= sign * 3;
             }
 
             // Weak queen: pinned to own king (forced passivity)

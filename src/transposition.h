@@ -15,11 +15,12 @@ struct TTEntry {
     int32_t eval_;   // Changed from int16_t to prevent truncation
     uint8_t depth_;
     uint8_t gen_bound;
-    uint8_t padding;
+    uint8_t pv_flag;  // 1 if this was a PV node, 0 otherwise
 
     Move move() const { return Move(move16); }
     Depth depth() const { return Depth(depth_ - 127); }
     Bound bound() const { return Bound(gen_bound & 0x3); }
+    bool is_pv() const { return pv_flag != 0; }
     Value value() const { return Value(value_); }
     Value eval() const { return Value(eval_); }
 

@@ -3,13 +3,14 @@
 
 namespace luminex {
 
-void TTEntry::save(uint64_t k, Value v, bool, Bound b, Depth d, Move m, Value ev, uint8_t g) {
+void TTEntry::save(uint64_t k, Value v, bool pv, Bound b, Depth d, Move m, Value ev, uint8_t g) {
     key32 = uint32_t(k >> 32);
     move16 = uint16_t(m.raw());
-    value_ = int32_t(v);  // Changed from int16_t to match Value type
-    eval_ = int32_t(ev);   // Changed from int16_t to match Value type
+    value_ = int32_t(v);
+    eval_ = int32_t(ev);
     depth_ = uint8_t(d + 127);
     gen_bound = uint8_t((g << 2) | b);
+    pv_flag = pv ? 1 : 0;
 }
 
 void TranspositionTable::resize(size_t mb) {
