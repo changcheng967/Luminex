@@ -1174,41 +1174,6 @@ Value evaluate(const Position& pos) {
 
             mg_score -= sign * danger;
         }
-
-        // Attack density: more king zone squares attacked = more dangerous
-        // Derivation: P(king trapped) ~ C(k,2) = k*(k-1)/2, quadratic in coverage
-        // Each additional attacked square increases combination potential
-        {
-            Bitboard attacked_squares = all_attacks[them] & king_zone;
-            int k = popcount(attacked_squares);
-            // k=1: +2, k=3: +18, k=5: +50, k=7: +98, k=9: +162
-            int density_bonus = k * k * 2;
-            // Only count if there are enemy attackers (avoid noise)
-            if (attacker_count >= 1) {
-                mg_score -= sign * density_bonus;
-            }
-        }
-
-        // Pinned piece penalty: pinned pieces have severely restricted movement
-        // Knight: 0% moves retained (completely frozen)
-        // Bishop: ~10% (can move along pin diagonal)
-        // Rook: ~20% (can move along pin ray)
-        {
-            Bitboard pinned = pos.pinned();
-            while (pinned) {
-                Square psq = pop_lsb(pinned);
-                PieceType pt = piece_type_of(pos.piece_on(psq));
-                // Only penalize if it's OUR pinned piece
-                if (pos.piece_on(psq) != NO_PIECE && color_of_piece(pos.piece_on(psq)) == c) {
-                    int pin_penalty_mg = 0, pin_penalty_eg = 0;
-                    if (pt == KNIGHT) { pin_penalty_mg = 40; pin_penalty_eg = 20; }
-                    else if (pt == BISHOP) { pin_penalty_mg = 25; pin_penalty_eg = 10; }
-                    else if (pt == ROOK) { pin_penalty_mg = 20; pin_penalty_eg = 10; }
-                    mg_score -= sign * pin_penalty_mg;
-                    eg_score -= sign * pin_penalty_eg;
-                }
-            }
-        }
     }
 
     // -------------------------------------------------------

@@ -55,7 +55,7 @@ build/luminex.exe bench
 
 ## Strength
 
-~1950 ELO (pure HCE, no tuning, no NNUE). Estimated from 320-game CuteChess tests vs Stash v13 (1972 ELO) at tc=1+0.01.
+~2030 ELO (pure HCE, no tuning, no NNUE). Estimated from 320-game CuteChess tests vs Stash v13 (1972 ELO) at tc=1+0.01.
 
 | Version | Opponent | Score | Win% | ELO Diff | Test |
 |---------|----------|-------|------|----------|------|
