@@ -71,7 +71,7 @@ EvalCacheEntry eval_cache[EVAL_CACHE_SIZE];
 // Correction history: corrects static eval based on search errors
 // Indexed by pawn structure hash. Stores rolling average of (search_value - static_eval).
 // Kept conservative: small table, gentle update, capped corrections.
-constexpr int CORRHIST_SIZE = 65536;
+constexpr int CORRHIST_SIZE = 16384;
 struct CorrHistEntry {
     uint64_t key;
     int32_t correction;  // Raw sum, divided by weight on read
@@ -497,9 +497,7 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
     if (null_move_ok) {
         pos.do_null_move();
 
-        // Adaptive R: deeper positions have more slack, so larger R is safe
-        // R = 3 + depth/6 (derived from cost-benefit: savings = b^R, error_rate decreases with depth)
-        int R = 3 + depth / 6;
+        int R = 3 + (depth > 6 ? 1 : 0) + (depth > 12 ? 1 : 0);
 
         if (piece_count < 4) R -= 1;
 
@@ -678,9 +676,8 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
             if (m == worker->counter_move_table[int(prev_pc)][int(prev_move.to())]) reduction -= 1;
         }
 
-        // Check-giving moves: reduce much less (replaces blanket check extension)
-        // Modern approach: less LMR instead of extension avoids search explosions
-        if (gives_chk) reduction -= 2;
+        // Check-giving moves: reduce less (use pre-computed value)
+        if (gives_chk) reduction -= 1;
 
         // Promotion moves: reduce less
         if (m.is_promotion()) reduction -= 1;
@@ -804,6 +801,9 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
         int ext_count = 0;
         if (m == tt_move) {
             ext_count += singular_extension;
+        }
+        if (gives_chk) {
+            ext_count++;
         }
         // Recapture extension: recapturing on the same square is often forced/tactical
         if (ss->ply >= 1 && (ss - 1)->current_move != MOVE_NONE && m.to() == (ss - 1)->current_move.to()) {
