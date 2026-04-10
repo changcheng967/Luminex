@@ -1162,10 +1162,10 @@ Value evaluate(const Position& pos) {
 
         // Only evaluate king safety if 2+ attackers
         if (attacker_count >= 2) {
-            // Sigmoid danger: 500 * au^2 / (au^2 + 200)
-            // Produces S-curve: flat at low au, steep at mid, saturating at high
+            // Sigmoid danger: 700 * au^2 / (au^2 + 150)
+            // Steeper curve than v5.0: faster escalation, higher ceiling
             int au2 = attack_units * attack_units;
-            int danger = std::min(500, (500 * au2) / (au2 + 200));
+            int danger = std::min(700, (700 * au2) / (au2 + 150));
 
             // No queen: much less dangerous
             if (!enemy_qu) danger = danger / 4;
