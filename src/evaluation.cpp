@@ -1099,6 +1099,43 @@ Value evaluate(const Position& pos) {
     }
 
     // -------------------------------------------------------
+    // Pawn majority: more pawns on one wing creates potential passed pawn
+    // Principle: a pawn majority (e.g., 3v2 on queenside) can create
+    // a passed pawn through exchanges, even if no pawn is currently passed.
+    // Only counts when side has at least 2 pawns on the wing.
+    // -------------------------------------------------------
+    {
+        Bitboard qs_files = BB_FILE_A | BB_FILE_B | BB_FILE_C;
+        Bitboard ks_files = BB_FILE_F | BB_FILE_G | BB_FILE_H;
+        int w_qs = popcount(pos.pieces(WHITE, PAWN) & qs_files);
+        int w_ks = popcount(pos.pieces(WHITE, PAWN) & ks_files);
+        int b_qs = popcount(pos.pieces(BLACK, PAWN) & qs_files);
+        int b_ks = popcount(pos.pieces(BLACK, PAWN) & ks_files);
+        // Queenside majority
+        if (w_qs >= 2 && w_qs > b_qs) {
+            int adv = w_qs - b_qs;
+            mg_score += adv * 5;
+            eg_score += adv * 15;
+        }
+        if (b_qs >= 2 && b_qs > w_qs) {
+            int adv = b_qs - w_qs;
+            mg_score -= adv * 5;
+            eg_score -= adv * 15;
+        }
+        // Kingside majority
+        if (w_ks >= 2 && w_ks > b_ks) {
+            int adv = w_ks - b_ks;
+            mg_score += adv * 5;
+            eg_score += adv * 15;
+        }
+        if (b_ks >= 2 && b_ks > w_ks) {
+            int adv = b_ks - w_ks;
+            mg_score -= adv * 5;
+            eg_score -= adv * 15;
+        }
+    }
+
+    // -------------------------------------------------------
     // King safety: sigmoid danger model (Hill equation)
     // Principle: attack probability follows a logistic curve.
     //   - Few attackers: flat, low danger (defense copes)
