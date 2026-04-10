@@ -273,25 +273,29 @@ static constexpr int QueenMobMax = 27;
 // ============================================================
 
 // [target piece type]: P=0, N=1, B=2, R=3, Q=4, K=5
-// Pawn threats: pawns attacking higher-value pieces is always strong
-static constexpr int PawnThreatMG[6] = {  0, 35, 40, 60, 90, 0 };
-static constexpr int PawnThreatEG[6] = {  0, 40, 45, 70,100, 0 };
+// Value-gap threat model: bonus = K * max(0, target_value - attacker_value)
+// Principle: a threat is valuable only when the target is MORE valuable.
+// A pawn threatening a queen (value gap 870) is devastating.
+// A queen threatening a pawn (value gap -870) is irrelevant.
+// K=0.1 calibrated so pawn->queen ≈ 87 (close to previous 90).
+static constexpr int PawnThreatMG[6] = {  0, 23, 25, 41, 87, 0 };
+static constexpr int PawnThreatEG[6] = {  0, 28, 30, 47, 92, 0 };
 
-// Knight threats: minor piece attacking higher-value pieces
-static constexpr int KnightThreatMG[6] = { 15,  5, 20, 45, 60, 0 };
-static constexpr int KnightThreatEG[6] = { 20,  5, 25, 50, 65, 0 };
+// Knight threats: only targets worth more than knight count
+static constexpr int KnightThreatMG[6] = {  0,  0,  2, 18, 64, 0 };
+static constexpr int KnightThreatEG[6] = {  0,  0,  3, 22, 72, 0 };
 
-// Bishop threats: similar to knight (both are minors)
-static constexpr int BishopThreatMG[6] = { 15, 20,  5, 45, 60, 0 };
-static constexpr int BishopThreatEG[6] = { 20, 25,  5, 50, 65, 0 };
+// Bishop threats: only targets worth more than bishop count
+static constexpr int BishopThreatMG[6] = {  0,  0,  0, 16, 62, 0 };
+static constexpr int BishopThreatEG[6] = {  0,  0,  0, 20, 69, 0 };
 
-// Rook threats: rook threatening queen is strong
-static constexpr int RookThreatMG[6] = { 10, 25, 25,  5, 50, 0 };
-static constexpr int RookThreatEG[6] = { 12, 30, 30,  5, 55, 0 };
+// Rook threats: only targets worth more than rook count
+static constexpr int RookThreatMG[6] = {  0,  0,  0,  0, 46, 0 };
+static constexpr int RookThreatEG[6] = {  0,  0,  0,  0, 51, 0 };
 
-// Queen threats: queen is already powerful, threats are less "extra"
-static constexpr int QueenThreatMG[6] = {  5, 15, 15, 15,  5, 0 };
-static constexpr int QueenThreatEG[6] = {  5, 18, 18, 18,  5, 0 };
+// Queen threats: queen is most valuable, no target is worth more
+static constexpr int QueenThreatMG[6] = {  0,  0,  0,  0,  0, 0 };
+static constexpr int QueenThreatEG[6] = {  0,  0,  0,  0,  0, 0 };
 
 // ============================================================
 // Pawn structure constants
