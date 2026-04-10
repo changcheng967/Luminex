@@ -232,49 +232,37 @@ using Score = Value;
 // Rooks/queens naturally have high mobility (lower per-square value).
 // ============================================================
 
-// ============================================================
-// Mobility system: square-root formula for diminishing returns
-// Principle: the first few squares of freedom matter MUCH more
-// than additional squares. A piece with 3 moves vs 0 is a huge
-// difference; 8 moves vs 5 is minor. sqrt captures this.
-// mob_value = base + slope * sqrt_table[mob]
-// sqrt_table[n] = int(100 * sqrt(n)) for scaled integer math
-// ============================================================
-
-// Precomputed sqrt table (scaled by 100): sqrt_table[n] = int(100 * sqrt(n))
-static constexpr int mob_sqrt[28] = {
-      0, 100, 141, 173, 200, 224, 245, 265, 283, 300,
-    316, 332, 346, 361, 374, 387, 400, 412, 424, 436,
-    447, 458, 469, 480, 490, 500, 510, 520
-};
-
-// Knight mobility: avg mob=4, sqrt(4)=200
-// base = -slope * sqrt_table[4] / 100 = -slope * 2
+// Knight mobility: calibrated so average (mob=4) ≈ 0
+// base = -avg_mob * slope = -4 * 15 = -60
+// mob=0: -60 (trapped), mob=4: 0 (normal), mob=8: +60 (excellent)
 static constexpr int KnightMobBaseMG = -60;
-static constexpr int KnightMobSlopeMG = 30;
+static constexpr int KnightMobSlopeMG = 15;
 static constexpr int KnightMobBaseEG = -75;
-static constexpr int KnightMobSlopeEG = 37;
+static constexpr int KnightMobSlopeEG = 18;
 static constexpr int KnightMobMax = 8;
 
-// Bishop mobility: avg mob=7, sqrt(7)=265
+// Bishop mobility: calibrated so average (mob=7) ≈ 0
+// base = -7 * 7 = -49. mob=0: -48, mob=7: +1, mob=13: +43
 static constexpr int BishopMobBaseMG = -48;
-static constexpr int BishopMobSlopeMG = 18;
+static constexpr int BishopMobSlopeMG = 7;
 static constexpr int BishopMobBaseEG = -56;
-static constexpr int BishopMobSlopeEG = 21;
+static constexpr int BishopMobSlopeEG = 9;
 static constexpr int BishopMobMax = 13;
 
-// Rook mobility: avg mob=8, sqrt(8)=283
-static constexpr int RookMobBaseMG = -37;
-static constexpr int RookMobSlopeMG = 13;
+// Rook mobility: calibrated so average (mob=8) ≈ 0
+// base = -8 * 5 = -40. mob=0: -38, mob=8: +2, mob=14: +32
+static constexpr int RookMobBaseMG = -38;
+static constexpr int RookMobSlopeMG = 5;
 static constexpr int RookMobBaseEG = -48;
-static constexpr int RookMobSlopeEG = 17;
+static constexpr int RookMobSlopeEG = 7;
 static constexpr int RookMobMax = 14;
 
-// Queen mobility: avg mob=15, sqrt(15)=387
-static constexpr int QueenMobBaseMG = -27;
-static constexpr int QueenMobSlopeMG = 7;
+// Queen mobility: calibrated so average (mob=15) ≈ 0
+// base = -15 * 2 = -30. mob=0: -28, mob=15: +2, mob=27: +26
+static constexpr int QueenMobBaseMG = -28;
+static constexpr int QueenMobSlopeMG = 2;
 static constexpr int QueenMobBaseEG = -38;
-static constexpr int QueenMobSlopeEG = 10;
+static constexpr int QueenMobSlopeEG = 3;
 static constexpr int QueenMobMax = 27;
 
 // ============================================================
@@ -327,13 +315,10 @@ static constexpr int CandEG[2][8] = {
     { 0, 10,  20,  40,  70, 110, 0, 0 }
 };
 
-// Base passed pawn bonus derived from logistic promotion probability model
-// P(promote) = L / (1 + exp(-k*(rank - r0)))
-// MG: transition at rank ~5.5, cautious (blockading pieces exist)
-// EG: sharper transition at rank ~5.0, aggressive (promotion wins)
-// Shape: flatter at low ranks, steeper escalation at ranks 5-6
-static constexpr int PassedMG[8] = { 0, -5,  0,  5, 18, 45,  90, 0 };
-static constexpr int PassedEG[8] = { 0,  5, 12, 28, 55,100, 180, 0 };
+// Base passed pawn bonus (no enemy pawns ahead at all)
+// MG: cautious (can be blockaded), EG: aggressive (wins games)
+static constexpr int PassedMG[8] = { 0, -8,  0, 10, 25, 50, 100, 0 };
+static constexpr int PassedEG[8] = { 0, 10, 20, 40, 70,120, 200, 0 };
 
 // ============================================================
 // Pawn hash table
@@ -666,11 +651,11 @@ Value evaluate(const Position& pos) {
             attacks_by[c][KNIGHT] |= attacks;
             all_attacks[c] |= attacks;
 
-            // Mobility: sqrt formula (diminishing returns)
+            // Mobility: linear formula (trapped knight = useless)
             int mob = popcount(attacks & mob_area & ~pos.pieces(c));
             mob = std::min(mob, KnightMobMax);
-            mg_score += sign * (KnightMobBaseMG + (KnightMobSlopeMG * mob_sqrt[mob]) / 100);
-            eg_score += sign * (KnightMobBaseEG + (KnightMobSlopeEG * mob_sqrt[mob]) / 100);
+            mg_score += sign * (KnightMobBaseMG + mob * KnightMobSlopeMG);
+            eg_score += sign * (KnightMobBaseEG + mob * KnightMobSlopeEG);
 
             // Outpost: knight on rank 4-6, protected by own pawn,
             // not attackable by enemy pawn (permanent advantage)
@@ -731,8 +716,8 @@ Value evaluate(const Position& pos) {
             // Mobility: linear formula
             int mob = popcount(attacks & mob_area & ~pos.pieces(c));
             mob = std::min(mob, BishopMobMax);
-            mg_score += sign * (BishopMobBaseMG + (BishopMobSlopeMG * mob_sqrt[mob]) / 100);
-            eg_score += sign * (BishopMobBaseEG + (BishopMobSlopeEG * mob_sqrt[mob]) / 100);
+            mg_score += sign * (BishopMobBaseMG + mob * BishopMobSlopeMG);
+            eg_score += sign * (BishopMobBaseEG + mob * BishopMobSlopeEG);
 
             // Bishop shielded by pawn above
             {
@@ -815,8 +800,8 @@ Value evaluate(const Position& pos) {
 
             int mob = popcount(attacks & mob_area & ~pos.pieces(c));
             mob = std::min(mob, RookMobMax);
-            mg_score += sign * (RookMobBaseMG + (RookMobSlopeMG * mob_sqrt[mob]) / 100);
-            eg_score += sign * (RookMobBaseEG + (RookMobSlopeEG * mob_sqrt[mob]) / 100);
+            mg_score += sign * (RookMobBaseMG + mob * RookMobSlopeMG);
+            eg_score += sign * (RookMobBaseEG + mob * RookMobSlopeEG);
 
             // Open / semi-open file
             File f = file_of(sq);
@@ -899,8 +884,8 @@ Value evaluate(const Position& pos) {
 
             int mob = popcount(attacks & mob_area & ~pos.pieces(c));
             mob = std::min(mob, QueenMobMax);
-            mg_score += sign * (QueenMobBaseMG + (QueenMobSlopeMG * mob_sqrt[mob]) / 100);
-            eg_score += sign * (QueenMobBaseEG + (QueenMobSlopeEG * mob_sqrt[mob]) / 100);
+            mg_score += sign * (QueenMobBaseMG + mob * QueenMobSlopeMG);
+            eg_score += sign * (QueenMobBaseEG + mob * QueenMobSlopeEG);
 
             // Far queen penalty
             if (distance(sq, ksq_arr[c_idx]) > 3) {
@@ -1028,23 +1013,12 @@ Value evaluate(const Position& pos) {
                     eg_score += sign * QueenThreatEG[pt];
                 }
             }
-        }
-    }
-
-    // -------------------------------------------------------
-    // Hanging piece detection (MUST be after both colors processed)
-    // all_attacks[them] is only complete after both colors' pieces are computed.
-    // -------------------------------------------------------
-    for (int c_idx = 0; c_idx < 2; ++c_idx) {
-        Color c = Color(c_idx);
-        Color them = Color(c_idx ^ 1);
-        Sign sign = (c == WHITE) ? 1 : -1;
-
-        // Hanging pawns: enemy pawns undefended and attacked by us
-        Bitboard hanging_pawns = pos.pieces(them, PAWN) & ~all_attacks[them] & all_attacks[c];
-        if (hanging_pawns) {
-            mg_score += sign * g_eval_params.hanging_pawn_mg * popcount(hanging_pawns);
-            eg_score += sign * g_eval_params.hanging_pawn_eg * popcount(hanging_pawns);
+            // Hanging pawns: enemy pawns undefended and attacked by us
+            Bitboard hanging_pawns = pos.pieces(them, PAWN) & ~all_attacks[them] & all_attacks[c];
+            if (hanging_pawns) {
+                mg_score += sign * g_eval_params.hanging_pawn_mg * popcount(hanging_pawns);
+                eg_score += sign * g_eval_params.hanging_pawn_eg * popcount(hanging_pawns);
+            }
         }
     }
 
