@@ -1,14 +1,14 @@
 # Luminex
 
-A UCI chess engine written in C++23 with pure handcrafted evaluation. Targeting 3500+ ELO.
+A UCI chess engine written in C++23 with self-engineered handcrafted evaluation. All values derived from first principles, chess theory, and mathematical reasoning. No values borrowed from other engines. Targeting 3000+ ELO before any tuning or NNUE.
 
 ## Features
 
-- **Search**: PVS with 2D LMR table (SF16-style multiplicative), null move pruning (static R), singular extension with double/negative extensions, probcut, razoring, futility/reverse futility pruning, aspiration windows, phased move generation, qsearch with check generation, TT probe in qsearch, mate score ply adjustment (value_to_tt/value_from_tt)
-- **Evaluation**: PeSTO-derived PSTs, Ethereal mobility tables, SF11-style piece-specific threats, SafetyTable king safety, pawn structure (doubled/isolated/backward/candidate/connected/phalanx/lever), passed pawns with rook behind/king proximity/free passer, bishop pair, outpost pieces, far piece penalty, space evaluation, OCB scaling, initiative/complexity bonus (SF11), minor behind pawn, weak queen penalty, endgame king safety (back-rank mate detection)
-- **Move ordering**: Phased generation (TT -> captures -> quiets) with killer/counter-move/2-ply continuation history, low-ply history, capture history with fail-low malus, escape-aware ordering, previous root PV bonus
-- **Heuristics**: TT cutoff stat updates with SF11 stat_bonus formula, ttPv LMR reduction, history gravity (32768 divisor), continuation pruning, TT prefetch, correction history (pawn-key based)
-- **Tuning**: UCI-tunable eval parameters, mobility/threat scaling factors
+- **Search**: PVS with 2D LMR table, null move pruning (static R with verification), singular extensions with double/negative extensions, probcut, razoring, futility/reverse futility pruning, aspiration windows, phased move generation, qsearch with quiet check generation, TT probe in qsearch, mate score ply adjustment
+- **Evaluation**: Self-engineered piece values (MG/EG), PST tables from center-distance theory, linear mobility formulas (base + slope calibrated per piece), sigmoid king safety (Hill equation), value-ratio threat model, pawn structure (doubled/isolated/backward/candidate/connected/phalanx/lever), passed pawns with rook behind/king proximity/free passer, bishop pair, bishop same-color pawn penalty, outpost pieces, attack density, pinned piece penalty, pawn shield, pawn storm, rook on 7th/open file, space evaluation, OCB scaling, KXK endgame detection, castling evaluation
+- **Move ordering**: Phased generation (TT -> captures -> quiets) with killer/counter-move/2-ply continuation history, low-ply history, capture history, escape-aware ordering, previous root PV bonus
+- **Heuristics**: TT cutoff stat updates, ttPv LMR reduction, history gravity, continuation pruning, TT prefetch, correction history (pawn-key based with depth^2 weighting)
+- **Tuning**: 24 UCI-tunable eval parameters via SPSA infrastructure
 - **Time management**: Sudden-death and increment time controls with stability-based allocation
 - **Infrastructure**: Magic bitboards, transposition table with depth-preferred aging, eval cache (512K), pawn hash (16K), lazy SMP
 
@@ -44,6 +44,8 @@ go wtime 60000 btime 60000 winc 1000 binc 1000
 | Threads | spin | 1 | Search threads (lazy SMP) |
 | Contempt | spin | 0 | Draw avoidance (centipawns) |
 
+Plus 24 tunable eval parameters (BishopPairMG/EG, RookOpenMG/EG, etc.) for SPSA tuning.
+
 ## Testing
 
 ```bash
@@ -53,11 +55,19 @@ build/luminex.exe bench
 
 ## Strength
 
-~1840 ELO (pure HCE, no NNUE). Estimated from 80-game CuteChess tests vs Stash v13 (1972 ELO) at tc=1+0.01.
+~1950 ELO (pure HCE, no tuning, no NNUE). Estimated from 320-game CuteChess tests vs Stash v13 (1972 ELO) at tc=1+0.01.
 
-| Opponent | Score | ELO Diff | Test |
-|----------|-------|----------|------|
-| Stash v13 (1972) | 24-53-3 (0.319) | -132 +/- 82 | 80 games |
+| Version | Opponent | Score | Win% | ELO Diff | Test |
+|---------|----------|-------|------|----------|------|
+| v5.1.0 | Stash v13 (1972) | 179-127-14 | 58.1% | +57 | 320 games |
+
+### Progress
+
+| Version | Change | vs Stash v13 |
+|---------|--------|-------------|
+| v4.5.0 | Baseline (correction history) | 0.380 |
+| v5.0.0 | Eval rewrite from first principles | 0.533 (+23 ELO) |
+| v5.1.0 | Sigmoid king safety | 0.581 (+57 ELO) |
 
 ## Stash ELO Reference (Blitz)
 
