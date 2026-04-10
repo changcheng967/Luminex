@@ -1064,14 +1064,14 @@ Value evaluate(const Position& pos) {
     if (bishop_count[BLACK] >= 2) { mg_score -= g_eval_params.bishop_pair_mg; eg_score -= g_eval_params.bishop_pair_eg; }
 
     // -------------------------------------------------------
-    // King safety: quadratic danger model
-    // Principle: attack danger grows quadratically with attackers.
-    // Each piece type contributes different weight:
-    //   Pawn = 2 (common, moderate danger)
-    //   Knight = 4 (fork threats, hard to block)
-    //   Bishop = 3 (diagonal pressure)
-    //   Rook = 5 (open file = devastating)
-    //   Queen = 7 (most dangerous attacker)
+    // King safety: sigmoid danger model (Hill equation)
+    // Principle: attack probability follows a logistic curve.
+    //   - Few attackers: flat, low danger (defense copes)
+    //   - 3-5 attackers: rapidly escalating (each one devastating)
+    //   - 6+: saturation (king already lost, diminishing returns)
+    // Formula: danger = 500 * au^2 / (au^2 + 200) — S-curve
+    // Attack unit weights based on piece danger:
+    //   Pawn = 2, Knight = 4, Bishop = 3, Rook = 5, Queen = 7
     // Safe checks (undefended check squares) add extra danger.
     // No queen: danger / 4. No queen + no rook: danger / 16.
     // -------------------------------------------------------
@@ -1162,8 +1162,10 @@ Value evaluate(const Position& pos) {
 
         // Only evaluate king safety if 2+ attackers
         if (attacker_count >= 2) {
-            // Quadratic danger: attack_units^2, capped at 200
-            int danger = std::min(attack_units * attack_units, 200);
+            // Sigmoid danger: 500 * au^2 / (au^2 + 200)
+            // Produces S-curve: flat at low au, steep at mid, saturating at high
+            int au2 = attack_units * attack_units;
+            int danger = std::min(500, (500 * au2) / (au2 + 200));
 
             // No queen: much less dangerous
             if (!enemy_qu) danger = danger / 4;
