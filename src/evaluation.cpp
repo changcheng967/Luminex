@@ -699,12 +699,10 @@ Value evaluate(const Position& pos) {
 
             // Knight proximity to enemy king: pieces near the opposing king
             // create tactical threats (forks, smothered mates, attack combos)
-            // Distance 1-2: strong attacking presence
-            // Distance 3: moderate, still within striking range
             {
                 int kdist = distance(sq, ksq_arr[c_idx ^ 1]);
-                if (kdist <= 3) {
-                    static constexpr int KnightKingProximityMG[4] = { 0, 25, 15, 5 };
+                if (kdist <= 2) {
+                    static constexpr int KnightKingProximityMG[3] = { 0, 8, 4 };
                     mg_score += sign * KnightKingProximityMG[kdist];
                 }
             }
@@ -798,8 +796,8 @@ Value evaluate(const Position& pos) {
             // opposing king create pin/skewer threats and support attacks
             {
                 int kdist = distance(sq, ksq_arr[c_idx ^ 1]);
-                if (kdist <= 3) {
-                    static constexpr int BishopKingProximityMG[4] = { 0, 15, 10, 3 };
+                if (kdist <= 2) {
+                    static constexpr int BishopKingProximityMG[3] = { 0, 5, 3 };
                     mg_score += sign * BishopKingProximityMG[kdist];
                 }
             }
