@@ -876,6 +876,46 @@ Value evaluate(const Position& pos) {
         }
 
         // -------------------------------------------------------
+        // Doubled rooks: two friendly rooks on same file/rank
+        // Principle: rooks cooperate devastatingly on same file or rank.
+        // Doubled rooks on 7th rank is a classic winning pattern.
+        // -------------------------------------------------------
+        {
+            Bitboard our_rooks = pos.pieces(c, ROOK);
+            int rook_count = popcount(our_rooks);
+            if (rook_count >= 2) {
+                bool doubled_on_file = false;
+                bool doubled_on_7th = false;
+                Bitboard seen_files = 0;
+                Bitboard tmp = our_rooks;
+                while (tmp) {
+                    Square rsq = pop_lsb(tmp);
+                    File rf = file_of(rsq);
+                    if (seen_files & file_bb(rf)) doubled_on_file = true;
+                    seen_files |= file_bb(rf);
+                    // Check if both rooks are on relative 7th rank
+                    if (relative_rank(c, rank_of(rsq)) == RANK_7) {
+                        Bitboard other_rooks = our_rooks ^ square_bb(rsq);
+                        while (other_rooks) {
+                            Square other = pop_lsb(other_rooks);
+                            if (relative_rank(c, rank_of(other)) == RANK_7) {
+                                doubled_on_7th = true;
+                            }
+                        }
+                    }
+                }
+                if (doubled_on_file) {
+                    mg_score += sign * 20;
+                    eg_score += sign * 40;
+                }
+                if (doubled_on_7th) {
+                    mg_score += sign * 30;
+                    eg_score += sign * 60;
+                }
+            }
+        }
+
+        // -------------------------------------------------------
         // Queens
         // -------------------------------------------------------
         Bitboard queens = pos.pieces(c, QUEEN);
