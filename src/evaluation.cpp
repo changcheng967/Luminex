@@ -1166,13 +1166,6 @@ Value evaluate(const Position& pos) {
 
         // Only evaluate king safety if 2+ attackers
         if (attacker_count >= 2) {
-            // Attack density bonus: each additional attacker beyond 2 is
-            // disproportionately dangerous (combinatorial attack patterns).
-            // Derived from: n attackers create C(n,2) attack pair interactions
-            if (attacker_count > 2) {
-                attack_units += (attacker_count - 2) * 3;
-            }
-
             // Sigmoid danger: 500 * au^2 / (au^2 + 200)
             // Self-engineered S-curve derived from attack probability theory
             int au2 = attack_units * attack_units;
