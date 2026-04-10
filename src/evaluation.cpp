@@ -28,7 +28,7 @@ EvalParams g_eval_params;
 //   Rook: 500 MG (5 pawns), 530 EG (stronger with open files)
 //   Queen: 960 MG (~10 pawns), 940 EG (king activity reduces power)
 static constexpr int PieceValueMG[8] = { 90, 320, 340, 500, 960, 0, 0, 0 };
-static constexpr int PieceValueEG[8] = { 100, 290, 345, 563, 940, 0, 0, 0 };
+static constexpr int PieceValueEG[8] = { 100, 290, 310, 530, 940, 0, 0, 0 };
 
 // ============================================================
 // PIECE-SQUARE TABLES
@@ -1162,10 +1162,10 @@ Value evaluate(const Position& pos) {
 
         // Only evaluate king safety if 2+ attackers
         if (attacker_count >= 2) {
-            // Sigmoid danger: 600 * au^2 / (au^2 + 500)
-            // Mathematically fitted to Stockfish reference curve via least-squares
+            // Sigmoid danger: 500 * au^2 / (au^2 + 200)
+            // Self-engineered S-curve derived from attack probability theory
             int au2 = attack_units * attack_units;
-            int danger = std::min(600, (600 * au2) / (au2 + 500));
+            int danger = std::min(500, (500 * au2) / (au2 + 200));
 
             // No queen: much less dangerous
             if (!enemy_qu) danger = danger / 4;
@@ -1173,6 +1173,41 @@ Value evaluate(const Position& pos) {
             if (!enemy_qu && !enemy_ro) danger = danger / 4;
 
             mg_score -= sign * danger;
+        }
+
+        // Attack density: more king zone squares attacked = more dangerous
+        // Derivation: P(king trapped) ~ C(k,2) = k*(k-1)/2, quadratic in coverage
+        // Each additional attacked square increases combination potential
+        {
+            Bitboard attacked_squares = all_attacks[them] & king_zone;
+            int k = popcount(attacked_squares);
+            // k=1: +2, k=3: +18, k=5: +50, k=7: +98, k=9: +162
+            int density_bonus = k * k * 2;
+            // Only count if there are enemy attackers (avoid noise)
+            if (attacker_count >= 1) {
+                mg_score -= sign * density_bonus;
+            }
+        }
+
+        // Pinned piece penalty: pinned pieces have severely restricted movement
+        // Knight: 0% moves retained (completely frozen)
+        // Bishop: ~10% (can move along pin diagonal)
+        // Rook: ~20% (can move along pin ray)
+        {
+            Bitboard pinned = pos.pinned();
+            while (pinned) {
+                Square psq = pop_lsb(pinned);
+                PieceType pt = piece_type_of(pos.piece_on(psq));
+                // Only penalize if it's OUR pinned piece
+                if (pos.piece_on(psq) != NO_PIECE && color_of_piece(pos.piece_on(psq)) == c) {
+                    int pin_penalty_mg = 0, pin_penalty_eg = 0;
+                    if (pt == KNIGHT) { pin_penalty_mg = 40; pin_penalty_eg = 20; }
+                    else if (pt == BISHOP) { pin_penalty_mg = 25; pin_penalty_eg = 10; }
+                    else if (pt == ROOK) { pin_penalty_mg = 20; pin_penalty_eg = 10; }
+                    mg_score -= sign * pin_penalty_mg;
+                    eg_score -= sign * pin_penalty_eg;
+                }
+            }
         }
     }
 

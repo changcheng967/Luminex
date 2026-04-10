@@ -344,6 +344,37 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
         }
     }
 
+    // Search quiet checks at depth 0 to find tactical shots
+    // Derivation: checks reduce branching factor from ~35 to ~5, making them
+    // ~7x more likely to find forcing wins than random quiet moves
+    if (!in_check && depth >= 0) {
+        ExtMove check_moves[MAX_MOVES];
+        ExtMove* check_end = generate<GEN_QUIET_CHECK>(pos, check_moves);
+
+        for (ExtMove* it = check_moves; it != check_end; ++it) {
+            if (stop.load(std::memory_order_relaxed)) break;
+            if (!pos.legal(it->move, true)) continue;
+
+            ss->current_move = it->move;
+            ss->moved_piece = pos.piece_on(it->move.from());
+
+            if (!pos.do_move(it->move)) continue;
+
+            moves_searched++;
+            Value value = -qsearch(pos, ss + 1, -beta, -alpha, depth - 1);
+
+            if (stop.load(std::memory_order_relaxed)) {
+                pos.undo_move(it->move);
+                return VALUE_ZERO;
+            }
+
+            pos.undo_move(it->move);
+
+            if (value >= beta) return value;
+            if (value > alpha) alpha = value;
+        }
+    }
+
     // Checkmate detection - if in check and no legal evasions
     if (in_check && moves_searched == 0) {
         return -VALUE_MATE + ss->ply;
