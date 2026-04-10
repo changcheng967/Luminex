@@ -204,8 +204,8 @@ bool check_time() {
         }
     }
 
-    // SAFETY: For depth-only searches (no time limit), add a 30-minute maximum
-    if (!limits.movetime && !limits.use_time_management() && limits.nodes == 0) {
+    // SAFETY: For depth-only searches (not infinite), add a 30-minute maximum
+    if (!limits.infinite && !limits.movetime && !limits.use_time_management() && limits.nodes == 0) {
         auto now = std::chrono::steady_clock::now();
         int elapsed = static_cast<int>(std::chrono::duration_cast<std::chrono::milliseconds>(
             now - search_start).count());
