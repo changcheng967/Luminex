@@ -525,9 +525,8 @@ Value evaluate(const Position& pos) {
 
                 return (strong == WHITE) ? score : -score;
             }
-            // Non-mating material (lone bishop/knight vs king)
-            int mat_diff = strong_material * 50;
-            return (strong == WHITE) ? mat_diff : -mat_diff;
+            // Non-mating material (lone bishop/knight vs king): drawn
+            return VALUE_DRAW;
         }
     }
 

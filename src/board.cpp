@@ -1291,9 +1291,25 @@ bool Position::is_draw() const {
         return true;
     }
 
-    // Insufficient material: K vs K only (keep it minimal and safe)
-    if (popcount(pieces()) == 2) {
-        return true;  // K vs K
+    // Insufficient material detection
+    // K vs K, K+B vs K, K+N vs K are all draws
+    int total = popcount(pieces());
+    if (total <= 3) {
+        if (total == 2) return true;  // K vs K
+
+        // 3 pieces: one side has only a king, the other has K + minor
+        int wp = popcount(pieces(WHITE, PAWN));
+        int bp = popcount(pieces(BLACK, PAWN));
+        int wr = popcount(pieces(WHITE, ROOK));
+        int br = popcount(pieces(BLACK, ROOK));
+        int wq = popcount(pieces(WHITE, QUEEN));
+        int bq = popcount(pieces(BLACK, QUEEN));
+
+        // If no pawns, rooks, or queens exist, only kings and minors remain
+        if (wp == 0 && bp == 0 && wr == 0 && br == 0 && wq == 0 && bq == 0) {
+            // K+B vs K or K+N vs K — no mating material
+            return true;
+        }
     }
 
     // Repetition detection — only check actual moves, not null moves

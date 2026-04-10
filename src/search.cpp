@@ -272,9 +272,9 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
             tt_move = m;
         }
         Value tt_value = value_from_tt(tte->value(), ss->ply);
-        // TT cutoff: use stored value if depth sufficient and bounds match
-        if (tte->depth() >= depth &&
-            (tt_value >= beta ? (tte->bound() & BOUND_LOWER) : (tte->bound() & BOUND_UPPER))) {
+        // TT cutoff: only use for fail-high (lower bound beats beta) or exact
+        // Conservative: skip fail-low cutoffs to avoid incorrect pruning
+        if (tte->depth() >= depth && tt_value >= beta && (tte->bound() & BOUND_LOWER)) {
             return tt_value;
         }
     }
@@ -286,17 +286,7 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
     if (!in_check) {
         // Stand pat only when NOT in check
         eval = eval_cached(pos);
-        // Use TT value to improve eval estimate
-        if (ttHit) {
-            if (tte->bound() & BOUND_LOWER) eval = std::max(eval, value_from_tt(tte->value(), ss->ply));
-            if (tte->bound() & BOUND_UPPER) eval = std::min(eval, value_from_tt(tte->value(), ss->ply));
-        }
         if (eval >= beta) {
-            // Save to TT: stand pat alone beats beta (lower bound)
-            if (!stop.load(std::memory_order_relaxed)) {
-                tte->save(pos.key(), value_to_tt(eval, ss->ply), false, BOUND_LOWER,
-                          Depth(0), MOVE_NONE, eval, TT.generation());
-            }
             return eval;
         }
         if (eval > alpha) {
@@ -309,11 +299,6 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
     if (!in_check) {
         Value delta = 200 + QUEEN_VALUE;  // Assume best case: can capture a queen
         if (eval + delta < alpha) {
-            // Save to TT: even best capture can't help (upper bound)
-            if (!stop.load(std::memory_order_relaxed)) {
-                tte->save(pos.key(), value_to_tt(alpha, ss->ply), false, BOUND_UPPER,
-                          Depth(0), MOVE_NONE, eval, TT.generation());
-            }
             return alpha;
         }
     }
@@ -390,11 +375,6 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
         pos.undo_move(it->move);
 
         if (value >= beta) {
-            // Save to TT before returning on beta cutoff
-            if (!stop.load(std::memory_order_relaxed)) {
-                tte->save(pos.key(), value_to_tt(value, ss->ply), false, BOUND_LOWER,
-                          Depth(0), it->move, eval, TT.generation());
-            }
             return value;  // fail-soft
         }
         if (value > alpha) {
@@ -408,8 +388,8 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
         return -VALUE_MATE + ss->ply;
     }
 
-    // Save to TT before returning
-    if (!stop.load(std::memory_order_relaxed)) {
+    // Save to TT before returning (only when we have a valid eval - not in check)
+    if (!in_check && !stop.load(std::memory_order_relaxed)) {
         Bound bound = (alpha >= beta) ? BOUND_LOWER
                     : (alpha > original_alpha) ? BOUND_EXACT : BOUND_UPPER;
         tte->save(pos.key(), value_to_tt(alpha, ss->ply), false, bound,
