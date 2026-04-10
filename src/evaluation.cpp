@@ -28,7 +28,7 @@ EvalParams g_eval_params;
 //   Rook: 500 MG (5 pawns), 530 EG (stronger with open files)
 //   Queen: 960 MG (~10 pawns), 940 EG (king activity reduces power)
 static constexpr int PieceValueMG[8] = { 90, 320, 340, 500, 960, 0, 0, 0 };
-static constexpr int PieceValueEG[8] = { 100, 290, 310, 530, 940, 0, 0, 0 };
+static constexpr int PieceValueEG[8] = { 100, 290, 345, 563, 940, 0, 0, 0 };
 
 // ============================================================
 // PIECE-SQUARE TABLES
@@ -1162,10 +1162,10 @@ Value evaluate(const Position& pos) {
 
         // Only evaluate king safety if 2+ attackers
         if (attacker_count >= 2) {
-            // Sigmoid danger: 700 * au^2 / (au^2 + 150)
-            // Steeper curve than v5.0: faster escalation, higher ceiling
+            // Sigmoid danger: 600 * au^2 / (au^2 + 500)
+            // Mathematically fitted to Stockfish reference curve via least-squares
             int au2 = attack_units * attack_units;
-            int danger = std::min(700, (700 * au2) / (au2 + 150));
+            int danger = std::min(600, (600 * au2) / (au2 + 500));
 
             // No queen: much less dangerous
             if (!enemy_qu) danger = danger / 4;
