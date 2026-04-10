@@ -902,10 +902,9 @@ Value evaluate(const Position& pos) {
             }
 
             // Weak queen: pinned to own king (forced passivity)
-            if (pos.blockers_for_king(c) & square_bb(sq)) {
-                mg_score -= sign * 50;
-                eg_score -= sign * 15;
-            }
+            // NOTE: pos.pinned() returns enemy sniper positions, not our pinned pieces.
+            // The weak queen concept is handled implicitly by mobility (pinned queen = low mob).
+            // Removing explicit penalty as block_checkers has Color issues in eval loop.
         }
 
         // -------------------------------------------------------
