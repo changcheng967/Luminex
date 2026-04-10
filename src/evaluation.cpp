@@ -1081,14 +1081,12 @@ Value evaluate(const Position& pos) {
         Sign sign = (c_idx == 0) ? 1 : -1;
         Square our_ksq = ksq_arr[c_idx];
 
-        // King zone: king attacks + two ranks toward enemy (expanded attack surface)
+        // King zone: king attacks + one rank toward enemy
         Bitboard king_zone = king_attacks_bb(our_ksq) | square_bb(our_ksq);
-        for (int fwd_r = 1; fwd_r <= 2; ++fwd_r) {
-            Rank fwd = (c == WHITE) ? Rank(rank_of(our_ksq) + fwd_r) : Rank(rank_of(our_ksq) - fwd_r);
-            if (fwd >= RANK_1 && fwd <= RANK_8) {
-                for (File f = FILE_A; f <= FILE_H; f = File(f + 1)) {
-                    king_zone |= square_bb(make_square(f, fwd));
-                }
+        Rank fwd = (c == WHITE) ? Rank(rank_of(our_ksq) + 1) : Rank(rank_of(our_ksq) - 1);
+        if (fwd >= RANK_1 && fwd <= RANK_8) {
+            for (File f = FILE_A; f <= FILE_H; f = File(f + 1)) {
+                king_zone |= square_bb(make_square(f, fwd));
             }
         }
 
