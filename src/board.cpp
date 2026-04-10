@@ -1100,7 +1100,7 @@ bool Position::legal(Move m, bool skip_pseudo) const {
     // the move is legal. A non-pinned piece cannot expose the king to attack
     // by moving away, because no enemy slider is behind it on a ray to the king.
     // Exception: en passant can reveal a discovered check along a rank.
-    if (!st_->checkers && !(st_->pinned & square_bb(from)) && !m.is_en_passant()) {
+    if (!st_->checkers && !(st_->block_checkers & square_bb(from)) && !m.is_en_passant()) {
         return true;
     }
 
