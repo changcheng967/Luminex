@@ -1016,23 +1016,36 @@ Value evaluate(const Position& pos) {
                     eg_score += sign * QueenThreatEG[pt];
                 }
             }
-            // Hanging pawns: enemy pawns undefended and attacked by us
-            Bitboard hanging_pawns = pos.pieces(them, PAWN) & ~all_attacks[them] & all_attacks[c];
-            if (hanging_pawns) {
-                mg_score += sign * g_eval_params.hanging_pawn_mg * popcount(hanging_pawns);
-                eg_score += sign * g_eval_params.hanging_pawn_eg * popcount(hanging_pawns);
-            }
-            // Hanging pieces: undefended enemy pieces (non-pawn) attacked by us
-            // Principle: a piece with zero defenders is a tactical target.
-            // At shallow search depths (6-8 ply), the engine often can't find
-            // the sequence to win a loose piece, so the eval must recognize it.
-            Bitboard hanging = pos.pieces(them) & ~pos.pieces(them, PAWN) & ~pos.pieces(them, KING);
-            hanging &= ~all_attacks[them] & all_attacks[c];
-            if (hanging) {
-                int hanging_count = popcount(hanging);
-                mg_score += sign * hanging_count * 25;
-                eg_score += sign * hanging_count * 35;
-            }
+        }
+    }
+
+    // -------------------------------------------------------
+    // Hanging piece detection (MUST be after both colors processed)
+    // all_attacks[them] is only complete after both colors' pieces are computed.
+    // Doing this inside the per-color loop causes false positives: pieces defended
+    // by not-yet-processed piece types (e.g., bishop defended by knight) appear "hanging".
+    // -------------------------------------------------------
+    for (int c_idx = 0; c_idx < 2; ++c_idx) {
+        Color c = Color(c_idx);
+        Color them = Color(c_idx ^ 1);
+        Sign sign = (c == WHITE) ? 1 : -1;
+
+        // Hanging pawns: enemy pawns undefended and attacked by us
+        Bitboard hanging_pawns = pos.pieces(them, PAWN) & ~all_attacks[them] & all_attacks[c];
+        if (hanging_pawns) {
+            mg_score += sign * g_eval_params.hanging_pawn_mg * popcount(hanging_pawns);
+            eg_score += sign * g_eval_params.hanging_pawn_eg * popcount(hanging_pawns);
+        }
+        // Hanging pieces: undefended enemy pieces (non-pawn) attacked by us
+        // Principle: a piece with zero defenders is a tactical target.
+        // At shallow search depths (6-8 ply), the engine often can't find
+        // the sequence to win a loose piece, so the eval must recognize it.
+        Bitboard hanging = pos.pieces(them) & ~pos.pieces(them, PAWN) & ~pos.pieces(them, KING);
+        hanging &= ~all_attacks[them] & all_attacks[c];
+        if (hanging) {
+            int hanging_count = popcount(hanging);
+            mg_score += sign * hanging_count * 25;
+            eg_score += sign * hanging_count * 35;
         }
     }
 
