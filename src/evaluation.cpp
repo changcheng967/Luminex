@@ -551,7 +551,6 @@ Value evaluate(const Position& pos) {
 
     Square ksq_arr[2] = {pos.king_sq(WHITE), pos.king_sq(BLACK)};
     int bishop_count[2] = {0, 0};
-    int shield_defects[2] = {0, 0};  // Missing close-rank pawns in front of king
 
     Bitboard occupied = pos.pieces();
 
@@ -883,18 +882,6 @@ Value evaluate(const Position& pos) {
             }
         }
 
-        // Doubled rooks on 7th rank: classic "rooks on the 7th win games" pattern
-        // Two rooks dominating the 7th rank create an unstoppable combined threat
-        // that the search at shallow depth often can't fully evaluate.
-        // Principle: coordination bonus — the pair is worth more than the sum.
-        {
-            Bitboard rooks_7th = pos.pieces(c, ROOK) & rank_bb(relative_rank(c, RANK_7));
-            if (popcount(rooks_7th) >= 2) {
-                mg_score += sign * 40;
-                eg_score += sign * 60;
-            }
-        }
-
         // -------------------------------------------------------
         // Queens
         // -------------------------------------------------------
@@ -951,9 +938,6 @@ Value evaluate(const Position& pos) {
                     Square shield_sq = relative_square(c, make_square(sf, Rank(r)));
                     if (our_pawns & square_bb(shield_sq)) {
                         mg_score += sign * weight;
-                    } else if (r == 1) {
-                        // Count missing close-rank pawns for shield-attack coupling
-                        shield_defects[c_idx]++;
                     }
                 }
             }
@@ -1213,15 +1197,6 @@ Value evaluate(const Position& pos) {
             if (!enemy_qu) danger = danger / 4;
             // No queen and no rook: even less dangerous
             if (!enemy_qu && !enemy_ro) danger = danger / 4;
-
-            // Shield-attack coupling: missing close-rank pawns amplify danger
-            // Each missing pawn opens an attack line, increasing danger multiplicatively.
-            // Derived from geometric attack model: P(breakthrough) ~ 1 + k * open_lines
-            // 0 defects: factor 1.0, 1: 1.3, 2: 1.6, 3: 1.9
-            int defects = shield_defects[c_idx];
-            if (defects > 0) {
-                danger = danger * (100 + defects * 30) / 100;
-            }
 
             mg_score -= sign * danger;
         }
