@@ -234,6 +234,9 @@ bool check_time() {
 
 // Quiescence search
 Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
+    Value original_alpha = alpha;
+    Move best_move = MOVE_NONE;
+
     // Check for max ply to prevent stack overflow
     if (ss->ply >= MAX_PLY) {
         return eval_cached(pos);
@@ -258,6 +261,24 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
         return VALUE_DRAW + draw_noise - (pos.side_to_move() == WHITE ? params.contempt / 2 : -params.contempt / 2);
     }
 
+    // Transposition table probe in qsearch
+    bool ttHit;
+    TTEntry* tte = TT.probe(pos.key(), ttHit);
+    Move tt_move = MOVE_NONE;
+
+    if (ttHit) {
+        Move m = tte->move();
+        if (m && m.from() < SQUARE_NONE && m.to() < SQUARE_NONE && pos.legal(m, true)) {
+            tt_move = m;
+        }
+        Value tt_value = value_from_tt(tte->value(), ss->ply);
+        // TT cutoff: use stored value if depth sufficient and bounds match
+        if (tte->depth() >= depth &&
+            (tt_value >= beta ? (tte->bound() & BOUND_LOWER) : (tte->bound() & BOUND_UPPER))) {
+            return tt_value;
+        }
+    }
+
     // Evaluate position
     bool in_check = pos.is_check();
     Value eval = VALUE_ZERO;
@@ -265,11 +286,22 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
     if (!in_check) {
         // Stand pat only when NOT in check
         eval = eval_cached(pos);
+        // Use TT value to improve eval estimate
+        if (ttHit) {
+            if (tte->bound() & BOUND_LOWER) eval = std::max(eval, value_from_tt(tte->value(), ss->ply));
+            if (tte->bound() & BOUND_UPPER) eval = std::min(eval, value_from_tt(tte->value(), ss->ply));
+        }
         if (eval >= beta) {
-            return beta;
+            // Save to TT: stand pat alone beats beta (lower bound)
+            if (!stop.load(std::memory_order_relaxed)) {
+                tte->save(pos.key(), value_to_tt(eval, ss->ply), false, BOUND_LOWER,
+                          Depth(0), MOVE_NONE, eval, TT.generation());
+            }
+            return eval;
         }
         if (eval > alpha) {
             alpha = eval;
+            best_move = MOVE_NONE;  // Stand pat is best so far
         }
     }
 
@@ -277,6 +309,11 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
     if (!in_check) {
         Value delta = 200 + QUEEN_VALUE;  // Assume best case: can capture a queen
         if (eval + delta < alpha) {
+            // Save to TT: even best capture can't help (upper bound)
+            if (!stop.load(std::memory_order_relaxed)) {
+                tte->save(pos.key(), value_to_tt(alpha, ss->ply), false, BOUND_UPPER,
+                          Depth(0), MOVE_NONE, eval, TT.generation());
+            }
             return alpha;
         }
     }
@@ -296,7 +333,9 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
     // Score captures in qsearch by MVV-LVA for better ordering
     if (!in_check) {
         for (ExtMove* it = moves; it != end; ++it) {
-            if (it->move.is_capture()) {
+            if (it->move == tt_move) {
+                it->value = 2000000;  // TT move gets highest priority
+            } else if (it->move.is_capture()) {
                 PieceType captured = pos.piece_type_on(it->move.to());
                 PieceType attacker = pos.piece_type_on(it->move.from());
                 static constexpr int pv[] = {100, 320, 330, 500, 900, 20000, 0};
@@ -351,16 +390,30 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
         pos.undo_move(it->move);
 
         if (value >= beta) {
+            // Save to TT before returning on beta cutoff
+            if (!stop.load(std::memory_order_relaxed)) {
+                tte->save(pos.key(), value_to_tt(value, ss->ply), false, BOUND_LOWER,
+                          Depth(0), it->move, eval, TT.generation());
+            }
             return value;  // fail-soft
         }
         if (value > alpha) {
             alpha = value;
+            best_move = it->move;
         }
     }
 
     // Checkmate detection - if in check and no legal evasions
     if (in_check && moves_searched == 0) {
         return -VALUE_MATE + ss->ply;
+    }
+
+    // Save to TT before returning
+    if (!stop.load(std::memory_order_relaxed)) {
+        Bound bound = (alpha >= beta) ? BOUND_LOWER
+                    : (alpha > original_alpha) ? BOUND_EXACT : BOUND_UPPER;
+        tte->save(pos.key(), value_to_tt(alpha, ss->ply), false, bound,
+                  Depth(0), best_move, eval, TT.generation());
     }
 
     return alpha;
