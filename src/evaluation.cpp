@@ -1079,6 +1079,25 @@ Value evaluate(const Position& pos) {
     if (bishop_count[WHITE] >= 2) { mg_score += g_eval_params.bishop_pair_mg; eg_score += g_eval_params.bishop_pair_eg; }
     if (bishop_count[BLACK] >= 2) { mg_score -= g_eval_params.bishop_pair_mg; eg_score -= g_eval_params.bishop_pair_eg; }
 
+    // Knight bonus with many pawns: knights can jump over pawn chains,
+    // making them relatively stronger in closed positions (many pawns).
+    // Bishop advantage with few pawns is already handled by imbalance term.
+    {
+        int w_pawns = popcount(pos.pieces(WHITE, PAWN));
+        int b_pawns = popcount(pos.pieces(BLACK, PAWN));
+        int total_pawns = w_pawns + b_pawns;
+        // With 16 pawns (impossible): max bonus. With 0 pawns: no bonus.
+        int knight_adj = total_pawns - 8;  // -8 to +8 range (typical: 0 to 8)
+        int w_knights = popcount(pos.pieces(WHITE, KNIGHT));
+        int b_knights = popcount(pos.pieces(BLACK, KNIGHT));
+        if (knight_adj > 0) {
+            mg_score += w_knights * knight_adj * 2;
+            mg_score -= b_knights * knight_adj * 2;
+            eg_score += w_knights * knight_adj;
+            eg_score -= b_knights * knight_adj;
+        }
+    }
+
     // -------------------------------------------------------
     // King safety: sigmoid danger model (Hill equation)
     // Principle: attack probability follows a logistic curve.
