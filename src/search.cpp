@@ -1100,6 +1100,10 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
         ExtMove quiets[MAX_MOVES];
         ExtMove* quiet_end = generate<GEN_QUIET>(pos, quiets);
 
+        // Precompute enemy pawn attacks once for escape-aware ordering
+        Color them = Color(pos.side_to_move() ^ 1);
+        Bitboard enemy_pawn_attacks = pawn_attacks_bb(them, pos.pieces(them, PAWN));
+
         // Score quiets: killers + counter-moves + history + escape-aware
         for (ExtMove* it = quiets; it != quiet_end; ++it) {
             Move m = it->move;
@@ -1145,8 +1149,7 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
                 // INNOVATION: "Escape-Aware Ordering" - pieces under pawn attack move first
                 Piece moved_piece = pos.piece_on(m.from());
                 if (moved_piece != NO_PIECE && piece_type_of(moved_piece) != PAWN) {
-                    Color them = Color(pos.side_to_move() ^ 1);
-                    if (pawn_attacks_bb(them, pos.pieces(them, PAWN)) & square_bb(m.from())) {
+                    if (enemy_pawn_attacks & square_bb(m.from())) {
                         score += 15000;
                     }
                 }

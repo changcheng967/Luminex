@@ -1096,6 +1096,14 @@ bool Position::legal(Move m, bool skip_pseudo) const {
         return true;
     }
 
+    // FAST PATH: if the piece is not pinned and the king is not in check,
+    // the move is legal. A non-pinned piece cannot expose the king to attack
+    // by moving away, because no enemy slider is behind it on a ray to the king.
+    // Exception: en passant can reveal a discovered check along a rank.
+    if (!st_->checkers && !(st_->pinned & square_bb(from)) && !m.is_en_passant()) {
+        return true;
+    }
+
     // For non-king moves, verify the king is not in check after the move
     // Use attackers_to with updated occupancy - this is simpler and more correct
     // than hand-rolled attack checks (which had the pawn direction bug)
