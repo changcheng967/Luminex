@@ -315,10 +315,13 @@ static constexpr int CandEG[2][8] = {
     { 0, 10,  20,  40,  70, 110, 0, 0 }
 };
 
-// Base passed pawn bonus (no enemy pawns ahead at all)
-// MG: cautious (can be blockaded), EG: aggressive (wins games)
-static constexpr int PassedMG[8] = { 0, -8,  0, 10, 25, 50, 100, 0 };
-static constexpr int PassedEG[8] = { 0, 10, 20, 40, 70,120, 200, 0 };
+// Base passed pawn bonus derived from logistic promotion probability model
+// P(promote) = L / (1 + exp(-k*(rank - r0)))
+// MG: transition at rank ~5.5, cautious (blockading pieces exist)
+// EG: sharper transition at rank ~5.0, aggressive (promotion wins)
+// Shape: flatter at low ranks, steeper escalation at ranks 5-6
+static constexpr int PassedMG[8] = { 0, -5,  0,  5, 18, 45,  90, 0 };
+static constexpr int PassedEG[8] = { 0,  5, 12, 28, 55,100, 180, 0 };
 
 // ============================================================
 // Pawn hash table
@@ -1018,6 +1021,17 @@ Value evaluate(const Position& pos) {
             if (hanging_pawns) {
                 mg_score += sign * g_eval_params.hanging_pawn_mg * popcount(hanging_pawns);
                 eg_score += sign * g_eval_params.hanging_pawn_eg * popcount(hanging_pawns);
+            }
+            // Hanging pieces: undefended enemy pieces (non-pawn) attacked by us
+            // Principle: a piece with zero defenders is a tactical target.
+            // At shallow search depths (6-8 ply), the engine often can't find
+            // the sequence to win a loose piece, so the eval must recognize it.
+            Bitboard hanging = pos.pieces(them) & ~pos.pieces(them, PAWN) & ~pos.pieces(them, KING);
+            hanging &= ~all_attacks[them] & all_attacks[c];
+            if (hanging) {
+                int hanging_count = popcount(hanging);
+                mg_score += sign * hanging_count * 25;
+                eg_score += sign * hanging_count * 35;
             }
         }
     }
