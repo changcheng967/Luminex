@@ -281,10 +281,9 @@ void handle_go(Position& pos, const std::string& cmd) {
         else if (token == "movestogo") ss >> limits.movestogo;
     }
 
-    if (limits.depth == 0 && !limits.infinite && limits.movetime == 0 &&
-        limits.time[WHITE] == 0 && limits.time[BLACK] == 0) {
-        limits.depth = 6;
-    }
+    // "go" without parameters: search indefinitely (30-min safety in check_time)
+    // Only set a default depth if nothing at all was specified
+    // (keep depth=0 which maps to MAX_PLY in search())
 
     // Launch search thread with 4MB stack to prevent stack overflow
     launch_search_thread(pos, limits);
