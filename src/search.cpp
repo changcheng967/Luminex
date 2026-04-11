@@ -315,14 +315,6 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
         });
     }
 
-    // Phase 2 (non-check only): generate quiet checks after captures
-    // Only at shallow qsearch depth to avoid explosion
-    ExtMove checks[MAX_MOVES];
-    ExtMove* checks_end = nullptr;
-    if (!in_check && depth >= -2) {
-        checks_end = generate<GEN_QUIET_CHECK>(pos, checks);
-    }
-
     for (ExtMove* it = moves; it != end; ++it) {
         // FIX: Check for stop at top of move loop for faster response
         if (stop.load(std::memory_order_relaxed)) break;
@@ -366,39 +358,6 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
         }
         if (value > alpha) {
             alpha = value;
-        }
-    }
-
-    // Phase 2: search quiet checks (only when not in check)
-    if (!in_check && checks_end) {
-        for (ExtMove* it = checks; it != checks_end; ++it) {
-            if (stop.load(std::memory_order_relaxed)) break;
-
-            // Skip checks that lose material (SEE < 0)
-            if (!pos.see_ge(it->move, VALUE_ZERO)) continue;
-
-            ss->current_move = it->move;
-            ss->moved_piece = pos.piece_on(it->move.from());
-
-            if (!pos.do_move(it->move)) continue;
-
-            moves_searched++;
-
-            Value value = -qsearch(pos, ss + 1, -beta, -alpha, depth - 1);
-
-            if (stop.load(std::memory_order_relaxed)) {
-                pos.undo_move(it->move);
-                return VALUE_ZERO;
-            }
-
-            pos.undo_move(it->move);
-
-            if (value >= beta) {
-                return value;
-            }
-            if (value > alpha) {
-                alpha = value;
-            }
         }
     }
 
