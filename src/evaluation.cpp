@@ -356,28 +356,6 @@ static void evaluate_pawns(const Position& pos, int32_t& mg_out, int32_t& eg_out
         Bitboard tmp = our_pawns;
         while (tmp) { file_count[file_of(pop_lsb(tmp))]++; }
 
-        // Pawn islands: groups of pawns separated by open files
-        // Nimzowitsch/Capablanca principle: fewer islands = better structure
-        // Math: each island boundary creates an open file for enemy rooks
-        // and potential weakness. Penalty: (islands-1) × 10 MG, 15 EG
-        {
-            int islands = 0;
-            bool in_island = false;
-            for (int f = 0; f < 8; ++f) {
-                if (file_count[f] > 0) {
-                    if (!in_island) { islands++; in_island = true; }
-                } else {
-                    in_island = false;
-                }
-            }
-            // First island is "free" (you always have at least one group)
-            if (islands > 1) {
-                int extra = islands - 1;
-                mg -= sign * extra * 10;
-                eg -= sign * extra * 15;
-            }
-        }
-
         // Adjacent file pawn support for connected pawn detection
         Bitboard supported_by_adj = pawn_attacks_bb(c, our_pawns);
 
@@ -678,40 +656,6 @@ Value evaluate(const Position& pos) {
             mg_score += sign * (KnightMobBaseMG + mob * KnightMobSlopeMG);
             eg_score += sign * (KnightMobBaseEG + mob * KnightMobSlopeEG);
 
-            // FIRST PRINCIPLES: Trapped knight penalty
-            // Math: existing penalties (PST + mobility + far) already give ~-145cp for corner knight
-            // A 0-mobility knight is worth ~1/3 of value (107cp), current eval gives ~175cp
-            // Additional penalty: 175 - 107 ≈ 68, but average case (not corner) needs less
-            // Optimal: -35 MG, -20 EG for 0-mobility (modest, avoids double-count with mobility)
-            if (mob == 0) {
-                mg_score -= sign * 35;
-                eg_score -= sign * 20;
-            }
-
-            // FIRST PRINCIPLES: Knight blockading enemy passed pawn (Nimzowitsch)
-            // A knight directly in front of an enemy passer is the ideal blockader.
-            // Math: negates ~30% of passer's MG value and ~20% of EG value.
-            // Bonus: +15 MG, +25 EG (separate from outpost since blockaders aren't always outposts)
-            {
-                File kf = file_of(sq);
-                Square pawn_sq = relative_square(c, make_square(kf, Rank(relative_rank(c, sq) + 1)));
-                if (pawn_sq < SQUARE_NONE && their_pawns & square_bb(pawn_sq)) {
-                    // This knight is directly in front of an enemy pawn
-                    // Check if that pawn is passed (no our pawns can block/capture ahead)
-                    bool is_enemy_passer = true;
-                    for (int rr = relative_rank(c, sq) + 1; rr <= RANK_7; ++rr) {
-                        Square rsq = relative_square(c, make_square(kf, Rank(rr)));
-                        if (our_pawns & square_bb(rsq)) { is_enemy_passer = false; break; }
-                        if (kf > FILE_A && (our_pawns & square_bb(relative_square(c, make_square(File(kf-1), Rank(rr)))))) { is_enemy_passer = false; break; }
-                        if (kf < FILE_H && (our_pawns & square_bb(relative_square(c, make_square(File(kf+1), Rank(rr)))))) { is_enemy_passer = false; break; }
-                    }
-                    if (is_enemy_passer) {
-                        mg_score += sign * 15;
-                        eg_score += sign * 25;
-                    }
-                }
-            }
-
             // Outpost: knight on rank 4-6, protected by own pawn,
             // not attackable by enemy pawn (permanent advantage)
             Rank kr = relative_rank(c, sq);
@@ -773,15 +717,6 @@ Value evaluate(const Position& pos) {
             mob = std::min(mob, BishopMobMax);
             mg_score += sign * (BishopMobBaseMG + mob * BishopMobSlopeMG);
             eg_score += sign * (BishopMobBaseEG + mob * BishopMobSlopeEG);
-
-            // FIRST PRINCIPLES: Trapped bishop penalty
-            // Math: existing penalties (PST + mobility + bad bishop) give ~-98cp for worst case
-            // A 0-mobility bishop is worth ~1/3 of value (113cp), current eval gives ~242cp
-            // Optimal additional penalty: -25 MG, -15 EG for 0-mobility (avoids double-count)
-            if (mob == 0) {
-                mg_score -= sign * 25;
-                eg_score -= sign * 15;
-            }
 
             // Bishop shielded by pawn above
             {
