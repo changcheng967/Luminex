@@ -471,7 +471,8 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
     ss->static_eval = eval;
 
     // Compute improving flag: position is improving if eval is better than 2 plies ago
-    ss->improving = (ss->ply >= 2 && eval > (ss - 2)->static_eval);
+    // In-check positions are never considered improving (no reliable eval)
+    ss->improving = (ss->ply >= 2 && !pos.is_check() && eval > (ss - 2)->static_eval);
 
     // Opponent worsening: our eval is better than opponent's eval from 1 ply ago
     // This means the opponent's last move didn't help them
@@ -508,7 +509,7 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
         }
     }
 
-    // Null move pruning (adaptive R based on depth and eval advantage)
+    // Null move pruning (static R formula)
     int piece_count = popcount(pos.pieces()) - popcount(pos.pieces(PAWN)) - 2;
     bool null_move_ok = !pv_node && !pos.is_check() && depth >= 2 && piece_count >= 1 &&
                           eval >= beta && ss->ply >= 1 && !ss->excluded_move;
@@ -516,15 +517,8 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
     if (null_move_ok) {
         pos.do_null_move();
 
-        // Adaptive R: base 3, increase with depth, increase with eval advantage
-        // Principle: larger advantage = safer to skip a move = deeper null search
         int R = 3 + (depth > 6 ? 1 : 0) + (depth > 12 ? 1 : 0);
 
-        // Eval advantage: if eval significantly above beta, reduce more aggressively
-        int eval_margin = (eval - beta) / 100;  // In pawn units
-        R += std::min(3, eval_margin);
-
-        // Reduce less when few pieces (endgames are dangerous for null move)
         if (piece_count < 4) R -= 1;
 
         R = std::max(2, std::min(R, depth - 1));
@@ -837,10 +831,11 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
         if (gives_chk) {
             ext_count++;
         }
-        // Recapture extension: recapturing on the same square is often forced/tactical
+        // Recapture extension: only for significant piece captures (not pawns)
         if (ss->ply >= 1 && (ss - 1)->current_move != MOVE_NONE && m.to() == (ss - 1)->current_move.to()) {
             if (m.is_capture()) {
-                ext_count++;
+                PieceType captured = pos.piece_type_on(m.to());
+                if (captured >= KNIGHT) ext_count++;  // Only extend for minor/major recaptures
             }
         }
         new_depth += ext_count;
