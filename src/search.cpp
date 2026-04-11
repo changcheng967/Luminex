@@ -310,22 +310,6 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
         std::sort(moves, end, [](const ExtMove& a, const ExtMove& b) {
             return a.value > b.value;
         });
-    } else {
-        // Score in-check evasions: captures first, then quiets
-        for (ExtMove* it = moves; it != end; ++it) {
-            if (it->move.is_capture()) {
-                PieceType captured = pos.piece_type_on(it->move.to());
-                PieceType attacker = pos.piece_type_on(it->move.from());
-                static constexpr int pv[] = {100, 320, 330, 500, 900, 20000, 0};
-                it->value = 100000 + (captured != PT_NONE ? pv[captured] : 0) * 10 - pv[attacker];
-                if (it->move.is_promotion()) it->value += pv[it->move.promotion_type()];
-            } else {
-                it->value = 0;
-            }
-        }
-        std::sort(moves, end, [](const ExtMove& a, const ExtMove& b) {
-            return a.value > b.value;
-        });
     }
 
     for (ExtMove* it = moves; it != end; ++it) {
