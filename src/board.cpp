@@ -985,7 +985,8 @@ bool Position::see_ge(Move m, Value threshold) const {
     Bitboard occupied = pieces();
     occupied &= ~square_bb(from);
 
-    Value gain = piece_value[piece_type_on(to)];
+    // For EP captures, the captured pawn is NOT on the target square
+    Value gain = m.is_en_passant() ? PAWN_VALUE : piece_value[piece_type_on(to)];
     if (m.is_promotion()) {
         gain += piece_value[m.promotion_type()] - piece_value[PAWN];
     }
