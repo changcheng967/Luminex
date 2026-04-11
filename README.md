@@ -4,12 +4,12 @@ A UCI chess engine written in C++23 with self-engineered handcrafted evaluation.
 
 ## Features
 
-- **Search**: PVS with 2D LMR table, null move pruning (static R with verification), singular extensions with double/negative extensions, probcut, razoring, futility/reverse futility pruning, aspiration windows, phased move generation, qsearch with quiet check generation, TT probe in qsearch, mate score ply adjustment
+- **Search**: PVS with LMR (log-depth x log-moves product formula), null move pruning (static R with verification), singular extensions with double/negative extensions, probcut, razoring, futility/reverse futility pruning, aspiration windows, phased move generation, qsearch with quiet check generation, mate score ply adjustment
 - **Evaluation**: Self-engineered piece values (MG/EG), PST tables from center-distance theory, linear mobility formulas (base + slope calibrated per piece), sigmoid king safety (Hill equation), value-ratio threat model, pawn structure (doubled/isolated/backward/candidate/connected/phalanx/lever), passed pawns with rook behind/king proximity/free passer, bishop pair, bishop same-color pawn penalty, outpost pieces, attack density, pinned piece penalty, pawn shield, pawn storm, rook on 7th/open file, space evaluation, OCB scaling, KXK endgame detection, castling evaluation
 - **Move ordering**: Phased generation (TT -> captures -> quiets) with killer/counter-move/2-ply continuation history, low-ply history, capture history, escape-aware ordering, previous root PV bonus
 - **Heuristics**: TT cutoff stat updates, ttPv LMR reduction, history gravity, continuation pruning, TT prefetch, correction history (pawn-key based with depth^2 weighting)
 - **Tuning**: 24 UCI-tunable eval parameters via SPSA infrastructure
-- **Time management**: Sudden-death and increment time controls with stability-based allocation
+- **Time management**: Sudden-death and increment time controls with best-move-stability allocation
 - **Infrastructure**: Magic bitboards, transposition table with depth-preferred aging, eval cache (512K), pawn hash (16K), lazy SMP
 
 ## Build
@@ -55,19 +55,31 @@ build/luminex.exe bench
 
 ## Strength
 
-~2030 ELO (pure HCE, no tuning, no NNUE). Estimated from 320-game CuteChess tests vs Stash v13 (1972 ELO) at tc=1+0.01.
+Cutechess Elo vs Stash v14 (2060 CCRL Blitz) at tc=1+0.01:
 
-| Version | Opponent | Score | Win% | ELO Diff | Test |
-|---------|----------|-------|------|----------|------|
-| v5.1.0 | Stash v13 (1972) | 179-127-14 | 58.1% | +57 | 320 games |
+| Version | Opponent | Score | Win% | Elo Diff | Games |
+|---------|----------|-------|------|----------|-------|
+| v5.2.0 | Stash v14 (2060) | 90-101-9 | 47.2% | -19.1 +/- 47.3 | 200 |
+| v5.1.0 | Stash v13 (1972) | 179-127-14 | 58.1% | +57.0 | 320 |
 
 ### Progress
 
-| Version | Change | vs Stash v13 |
-|---------|--------|-------------|
-| v4.5.0 | Baseline (correction history) | 0.380 |
-| v5.0.0 | Eval rewrite from first principles | 0.533 (+23 ELO) |
-| v5.1.0 | Sigmoid king safety | 0.581 (+57 ELO) |
+| Version | Change | vs Stash v13 | vs Stash v14 |
+|---------|--------|-------------|-------------|
+| v4.5.0 | Baseline (correction history) | 0.380 | - |
+| v5.0.0 | Eval rewrite from first principles | 0.533 | - |
+| v5.1.0 | Sigmoid king safety | 0.581 | - |
+| v5.2.0 | Search/board bug fixes + LMR | - | 0.472 |
+
+### v5.2.0 Changes
+- Singular search cut_node fix
+- ttPv flag at beta cutoff
+- opponent_worsening parent-in-check fix
+- SEE king recapture legality check
+- SEE en passant out-of-bounds fix
+- EP hash conditional (only hash if capture possible)
+- LMR log-depth x log-moves product formula
+- Best-move stability time management
 
 ## Stash ELO Reference (Blitz)
 
