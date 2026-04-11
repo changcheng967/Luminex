@@ -17,7 +17,7 @@ class Move;
 
 // Constants
 constexpr int MAX_PLY = 246;
-constexpr int MAX_MOVES = 256;
+constexpr int MAX_MOVES = 512;
 
 // Move generation types
 enum GenType : int {
