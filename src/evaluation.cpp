@@ -1230,7 +1230,7 @@ Value evaluate(const Position& pos) {
     Score score = (mg_score * phase + eg_scaled * (24 - phase)) / 24;
 
     // Tempo bonus: having the move is worth ~15cp in MG, ~5cp in EG
-    Score tempo = (20 * phase + 8 * (24 - phase)) / 24;
+    Score tempo = (15 * phase + 5 * (24 - phase)) / 24;
     score += (pos.side_to_move() == WHITE) ? tempo : -tempo;
 
     return pos.side_to_move() == WHITE ? score : -score;
