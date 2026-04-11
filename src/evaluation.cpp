@@ -676,11 +676,10 @@ Value evaluate(const Position& pos) {
             }
 
             // Far from own king: harder to defend
-            // Temporarily disabled to test impact
-            // if (distance(sq, ksq_arr[c_idx]) > 3) {
-            //     mg_score -= sign * g_eval_params.far_knight_mg;
-            //     eg_score -= sign * g_eval_params.far_knight_eg;
-            // }
+            if (distance(sq, ksq_arr[c_idx]) > 3) {
+                mg_score -= sign * g_eval_params.far_knight_mg;
+                eg_score -= sign * g_eval_params.far_knight_eg;
+            }
 
             // Knight behind pawn: piece development pattern
             {
