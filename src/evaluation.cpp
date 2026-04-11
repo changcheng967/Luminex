@@ -1206,7 +1206,7 @@ Value evaluate(const Position& pos) {
             // Sigmoid danger: 500 * au^2 / (au^2 + 200)
             // Self-engineered S-curve derived from attack probability theory
             int au2 = attack_units * attack_units;
-            int danger = std::min(500, (500 * au2) / (au2 + 200));
+            int danger = std::min(500, (500 * au2) / (au2 + 300));
 
             // No queen: much less dangerous
             if (!enemy_qu) danger = danger / 4;
