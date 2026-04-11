@@ -557,15 +557,30 @@ Value evaluate(const Position& pos) {
         eg_score += pawn_eg;
     }
 
+    // Pre-compute pawn attacks (used 4+ times per color in eval)
+    Bitboard pawn_attacks_by_color[2] = {
+        pawn_attacks_bb(WHITE, pos.pieces(WHITE, PAWN)),
+        pawn_attacks_bb(BLACK, pos.pieces(BLACK, PAWN))
+    };
+
+    // Pre-compute piece counts (used 15+ times across eval)
+    int num_pawns[2] = { popcount(pos.pieces(WHITE, PAWN)), popcount(pos.pieces(BLACK, PAWN)) };
+    int num_knights[2] = { popcount(pos.pieces(WHITE, KNIGHT)), popcount(pos.pieces(BLACK, KNIGHT)) };
+    int num_bishops[2] = { popcount(pos.pieces(WHITE, BISHOP)), popcount(pos.pieces(BLACK, BISHOP)) };
+    int num_rooks[2] = { popcount(pos.pieces(WHITE, ROOK)), popcount(pos.pieces(BLACK, ROOK)) };
+    int num_queens[2] = { popcount(pos.pieces(WHITE, QUEEN)), popcount(pos.pieces(BLACK, QUEEN)) };
+
     for (int c_idx = 0; c_idx < 2; ++c_idx) {
         Color c = Color(c_idx);
         Color them = Color(c_idx ^ 1);
         Sign sign = (c == WHITE) ? 1 : -1;
         Bitboard our_pawns = pos.pieces(c, PAWN);
         Bitboard their_pawns = pos.pieces(them, PAWN);
+        Bitboard enemy_pawn_attacks = pawn_attacks_by_color[int(them)];
+        Bitboard our_pawn_attacks_bb = pawn_attacks_by_color[int(c)];
 
         // Mobility area: exclude squares attacked by enemy pawns
-        Bitboard mob_area = ~pawn_attacks_bb(them, their_pawns);
+        Bitboard mob_area = ~enemy_pawn_attacks;
 
         // -------------------------------------------------------
         // Passed pawn extra bonuses (beyond base table)
@@ -589,6 +604,12 @@ Value evaluate(const Position& pos) {
             if (!(ahead & their_pawns)) {
                 int mg_passer = 0;
                 int eg_passer = 0;
+
+                // Passed pawn file bonus: central files are more dangerous
+                // A queen on d1/d8 controls the center; on a1/a8 it doesn't
+                // Independent of PST (which measures pawn position value, not promotion potential)
+                if (f == FILE_D || f == FILE_E) eg_passer += 15;
+                else if (f == FILE_C || f == FILE_F) eg_passer += 8;
 
                 // Rook behind passed pawn: supports advance
                 Bitboard behind = file_bb(f) & pos.pieces(c, ROOK);
@@ -660,8 +681,7 @@ Value evaluate(const Position& pos) {
             // not attackable by enemy pawn (permanent advantage)
             Rank kr = relative_rank(c, sq);
             if (kr >= RANK_4 && kr <= RANK_6) {
-                if (pawn_attacks_bb(c, our_pawns) & square_bb(sq)) {
-                    Bitboard enemy_pawn_attacks = pawn_attacks_bb(them, their_pawns);
+                if (our_pawn_attacks_bb & square_bb(sq)) {
                     if (!(enemy_pawn_attacks & square_bb(sq))) {
                         mg_score += sign * (g_eval_params.outpost_knight_mg + (kr - 3) * 5);
                         eg_score += sign * (g_eval_params.outpost_knight_eg + (kr - 3) * 3);
@@ -763,8 +783,8 @@ Value evaluate(const Position& pos) {
             {
                 Rank br = relative_rank(c, sq);
                 if (br >= RANK_4 && br <= RANK_6) {
-                    if ((pawn_attacks_bb(c, our_pawns) & square_bb(sq)) &&
-                        !(pawn_attacks_bb(them, their_pawns) & square_bb(sq))) {
+                    if ((our_pawn_attacks_bb & square_bb(sq)) &&
+                        !(enemy_pawn_attacks & square_bb(sq))) {
                         mg_score += sign * g_eval_params.outpost_bishop_mg;
                         eg_score += sign * g_eval_params.outpost_bishop_eg;
                     }
@@ -1089,13 +1109,11 @@ Value evaluate(const Position& pos) {
     // making them relatively stronger in closed positions (many pawns).
     // Bishop advantage with few pawns is already handled by imbalance term.
     {
-        int w_pawns = popcount(pos.pieces(WHITE, PAWN));
-        int b_pawns = popcount(pos.pieces(BLACK, PAWN));
-        int total_pawns = w_pawns + b_pawns;
+        int total_pawns = num_pawns[WHITE] + num_pawns[BLACK];
         // With 16 pawns (impossible): max bonus. With 0 pawns: no bonus.
         int knight_adj = total_pawns - 8;  // -8 to +8 range (typical: 0 to 8)
-        int w_knights = popcount(pos.pieces(WHITE, KNIGHT));
-        int b_knights = popcount(pos.pieces(BLACK, KNIGHT));
+        int w_knights = num_knights[WHITE];
+        int b_knights = num_knights[BLACK];
         if (knight_adj > 0) {
             mg_score += w_knights * knight_adj * 2;
             mg_score -= b_knights * knight_adj * 2;
@@ -1135,19 +1153,14 @@ Value evaluate(const Position& pos) {
         int attacker_count = 0;
 
         // Safe squares: not defended by our pawns
-        Bitboard our_pawn_attacks = pawn_attacks_bb(c, pos.pieces(c, PAWN));
-        Bitboard safe = ~our_pawn_attacks;
+        Bitboard safe = ~pawn_attacks_by_color[int(c)];
 
-        // Pawn attacks on king zone
+        // Pawn attacks on king zone (bulk computation instead of per-pawn loop)
         Bitboard enemy_pawns = pos.pieces(them, PAWN);
-        Bitboard ep = enemy_pawns;
-        while (ep) {
-            Square psq = pop_lsb(ep);
-            if (pawn_attacks_bb(them, square_bb(psq)) & king_zone) {
-                attack_units += 2;
-                attacker_count++;
-            }
-        }
+        Bitboard ep_kz = pawn_attacks_bb(c, king_zone) & enemy_pawns;
+        int pawn_kz_count = popcount(ep_kz);
+        attack_units += pawn_kz_count * 2;
+        attacker_count += pawn_kz_count;
 
         // Knight attacks + safe check bonus
         Bitboard enemy_kn = pos.pieces(them, KNIGHT);
@@ -1220,8 +1233,10 @@ Value evaluate(const Position& pos) {
     // -------------------------------------------------------
     // Phase calculation and score interpolation
     // -------------------------------------------------------
-    int phase = popcount(pos.pieces(KNIGHT)) + popcount(pos.pieces(BISHOP))
-              + popcount(pos.pieces(ROOK)) * 2 + popcount(pos.pieces(QUEEN)) * 4;
+    int phase = num_knights[WHITE] + num_knights[BLACK]
+              + num_bishops[WHITE] + num_bishops[BLACK]
+              + (num_rooks[WHITE] + num_rooks[BLACK]) * 2
+              + (num_queens[WHITE] + num_queens[BLACK]) * 4;
     phase = std::min(24, phase);
 
     // Interpolate MG/EG with endgame scaling
