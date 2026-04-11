@@ -564,8 +564,12 @@ Value evaluate(const Position& pos) {
         Bitboard our_pawns = pos.pieces(c, PAWN);
         Bitboard their_pawns = pos.pieces(them, PAWN);
 
+        // Cache pawn attack maps — used multiple times per color iteration
+        Bitboard own_pawn_attacks = pawn_attacks_bb(c, our_pawns);
+        Bitboard enemy_pawn_attacks = pawn_attacks_bb(them, their_pawns);
+
         // Mobility area: exclude squares attacked by enemy pawns
-        Bitboard mob_area = ~pawn_attacks_bb(them, their_pawns);
+        Bitboard mob_area = ~enemy_pawn_attacks;
 
         // -------------------------------------------------------
         // Passed pawn extra bonuses (beyond base table)
@@ -660,8 +664,7 @@ Value evaluate(const Position& pos) {
             // not attackable by enemy pawn (permanent advantage)
             Rank kr = relative_rank(c, sq);
             if (kr >= RANK_4 && kr <= RANK_6) {
-                if (pawn_attacks_bb(c, our_pawns) & square_bb(sq)) {
-                    Bitboard enemy_pawn_attacks = pawn_attacks_bb(them, their_pawns);
+                if (own_pawn_attacks & square_bb(sq)) {
                     if (!(enemy_pawn_attacks & square_bb(sq))) {
                         mg_score += sign * (g_eval_params.outpost_knight_mg + (kr - 3) * 5);
                         eg_score += sign * (g_eval_params.outpost_knight_eg + (kr - 3) * 3);
@@ -757,8 +760,8 @@ Value evaluate(const Position& pos) {
             {
                 Rank br = relative_rank(c, sq);
                 if (br >= RANK_4 && br <= RANK_6) {
-                    if ((pawn_attacks_bb(c, our_pawns) & square_bb(sq)) &&
-                        !(pawn_attacks_bb(them, their_pawns) & square_bb(sq))) {
+                    if ((own_pawn_attacks & square_bb(sq)) &&
+                        !(enemy_pawn_attacks & square_bb(sq))) {
                         mg_score += sign * g_eval_params.outpost_bishop_mg;
                         eg_score += sign * g_eval_params.outpost_bishop_eg;
                     }
@@ -1128,9 +1131,8 @@ Value evaluate(const Position& pos) {
         int attack_units = 0;
         int attacker_count = 0;
 
-        // Safe squares: not defended by our pawns
-        Bitboard our_pawn_attacks = pawn_attacks_bb(c, pos.pieces(c, PAWN));
-        Bitboard safe = ~our_pawn_attacks;
+        // Safe squares: not defended by our pawns (reuse precomputed attacks_by)
+        Bitboard safe = ~attacks_by[c][PAWN];
 
         // Pawn attacks on king zone
         Bitboard enemy_pawns = pos.pieces(them, PAWN);
