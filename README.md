@@ -5,7 +5,7 @@ A UCI chess engine written in C++23 with self-engineered handcrafted evaluation.
 ## Features
 
 - **Search**: PVS with LMR (log-depth x log-moves product formula), null move pruning (static R with verification), singular extensions with double/negative extensions, probcut, razoring, futility/reverse futility pruning, aspiration windows, phased move generation, qsearch with quiet check generation, mate score ply adjustment
-- **Evaluation**: Self-engineered piece values (MG/EG), PST tables from center-distance theory, linear mobility formulas (base + slope calibrated per piece), sigmoid king safety (Hill equation), value-ratio threat model, pawn structure (doubled/isolated/backward/candidate/connected/phalanx/lever), passed pawns with rook behind/king proximity/free passer, bishop pair, bishop same-color pawn penalty, outpost pieces, attack density, pinned piece penalty, pawn shield, pawn storm, rook on 7th/open file, space evaluation, OCB scaling, KXK endgame detection, castling evaluation
+- **Evaluation**: Self-engineered piece values (MG/EG), PST tables from center-distance theory, linear mobility formulas (base + slope calibrated per piece), sigmoid king safety (Hill equation), value-ratio threat model, pawn structure (doubled/isolated/backward/candidate/connected/phalanx/lever), passed pawns with rook behind/king proximity/free passer, bishop pair, bishop same-color pawn penalty, outpost pieces, attack density, pinned piece penalty, pawn shield, pawn storm, rook on 7th/open file, space evaluation, OCB scaling, KXK endgame detection, castling evaluation, trapped piece detection (0-mobility penalty)
 - **Move ordering**: Phased generation (TT -> captures -> quiets) with killer/counter-move/2-ply continuation history, low-ply history, capture history, escape-aware ordering, previous root PV bonus
 - **Heuristics**: TT cutoff stat updates, ttPv LMR reduction, history gravity, continuation pruning, TT prefetch, correction history (pawn-key based with depth^2 weighting)
 - **Tuning**: 24 UCI-tunable eval parameters via SPSA infrastructure
@@ -55,23 +55,31 @@ build/luminex.exe bench
 
 ## Strength
 
-Cutechess Elo vs Stash v14 (2060 CCRL Blitz) at tc=1+0.01:
+Cutechess Elo vs Stash v14/v15 (CCRL Blitz) at tc=1+0.01:
 
 | Version | Opponent | Score | Win% | Elo Diff | Games |
 |---------|----------|-------|------|----------|-------|
+| v5.4.0 | Stash v15 (2140) | 149-232-19 | 39.6% | -73.2 +/- 34.0 | 400 |
+| v5.4.0 | Stash v14 (2060) | 195-192-13 | 50.4% | +2.6 +/- 33.5 | 400 |
 | v5.3.0 | Stash v14 (2060) | 106-81-5 | 56.5% | +43.7 +/- 48.2 | 200 |
 | v5.2.0 | Stash v14 (2060) | 90-101-9 | 47.2% | -19.1 +/- 47.3 | 200 |
 | v5.1.0 | Stash v13 (1972) | 179-127-14 | 58.1% | +57.0 | 320 |
 
 ### Progress
 
-| Version | Change | vs Stash v13 | vs Stash v14 |
-|---------|--------|-------------|-------------|
-| v4.5.0 | Baseline (correction history) | 0.380 | - |
-| v5.0.0 | Eval rewrite from first principles | 0.533 | - |
-| v5.1.0 | Sigmoid king safety | 0.581 | - |
-| v5.2.0 | Search/board bug fixes + LMR | - | 0.472 |
-| v5.3.0 | Improving flag + recapture refinement | - | 0.565 |
+| Version | Change | vs Stash v13 | vs Stash v14 | vs Stash v15 |
+|---------|--------|-------------|-------------|-------------|
+| v4.5.0 | Baseline (correction history) | 0.380 | - | - |
+| v5.0.0 | Eval rewrite from first principles | 0.533 | - | - |
+| v5.1.0 | Sigmoid king safety | 0.581 | - | - |
+| v5.2.0 | Search/board bug fixes + LMR | - | 0.472 | - |
+| v5.3.0 | Improving flag + recapture refinement | - | 0.565 | - |
+| v5.4.0 | Trapped knight detection | - | 0.504 | 0.396 |
+
+### v5.4.0 Changes
+- Trapped knight detection: 0-mobility penalty (-10 MG, -5 EG)
+- Tested against Stash v15 (2140) for more accurate Elo measurement
+- Correction history confirmed valuable (-58 Elo without it)
 
 ### v5.2.0 Changes
 - Singular search cut_node fix
