@@ -675,17 +675,6 @@ Value evaluate(const Position& pos) {
                 eg_score -= sign * g_eval_params.far_knight_eg;
             }
 
-            // King tropism: knights near enemy king create latent tactical pressure
-            // Non-overlapping with king safety: tropism measures proximity (continuous),
-            // king safety measures direct attacks on king zone (binary).
-            // PST centralizes knights but doesn't account for dynamic enemy king position.
-            {
-                int enemy_dist = distance(sq, ksq_arr[c_idx ^ 1]);
-                if (enemy_dist <= 4) {
-                    mg_score += sign * (4 - enemy_dist) * 3;
-                }
-            }
-
             // Knight behind pawn: piece development pattern
             {
                 Square behind_sq = (c == WHITE)
@@ -780,15 +769,6 @@ Value evaluate(const Position& pos) {
             if (distance(sq, ksq_arr[c_idx]) > 3) {
                 mg_score -= sign * g_eval_params.far_bishop_mg;
                 eg_score -= sign * g_eval_params.far_bishop_eg;
-            }
-
-            // King tropism: bishops near enemy king create latent pressure
-            // Bishop proximity enables discovered attacks and battery threats
-            {
-                int enemy_dist = distance(sq, ksq_arr[c_idx ^ 1]);
-                if (enemy_dist <= 4) {
-                    mg_score += sign * (4 - enemy_dist) * 2;
-                }
             }
 
             // Bishop behind pawn
