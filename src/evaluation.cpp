@@ -605,6 +605,12 @@ Value evaluate(const Position& pos) {
                 int mg_passer = 0;
                 int eg_passer = 0;
 
+                // Passed pawn file bonus: central files are more dangerous
+                // A queen on d1/d8 controls the center; on a1/a8 it doesn't
+                // Independent of PST (which measures pawn position value, not promotion potential)
+                if (f == FILE_D || f == FILE_E) eg_passer += 15;
+                else if (f == FILE_C || f == FILE_F) eg_passer += 8;
+
                 // Rook behind passed pawn: supports advance
                 Bitboard behind = file_bb(f) & pos.pieces(c, ROOK);
                 if (behind) {
