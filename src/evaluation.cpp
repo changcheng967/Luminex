@@ -771,6 +771,12 @@ Value evaluate(const Position& pos) {
                 }
             }
 
+            // Trapped bishop: 0-mobility bishop is severely limited
+            if (mob == 0) {
+                mg_score -= sign * 10;
+                eg_score -= sign * 5;
+            }
+
             // Far bishop penalty
             if (distance(sq, ksq_arr[c_idx]) > 3) {
                 mg_score -= sign * g_eval_params.far_bishop_mg;
