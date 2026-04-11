@@ -669,6 +669,12 @@ Value evaluate(const Position& pos) {
                 }
             }
 
+            // Trapped knight: 0-mobility knight is severely limited
+            if (mob == 0) {
+                mg_score -= sign * 10;
+                eg_score -= sign * 5;
+            }
+
             // Far from own king: harder to defend
             if (distance(sq, ksq_arr[c_idx]) > 3) {
                 mg_score -= sign * g_eval_params.far_knight_mg;
