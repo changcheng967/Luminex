@@ -124,14 +124,20 @@ inline void update_correction(uint64_t pawn_key, int error, int depth) {
 static thread_local uint64_t local_nodes = 0;
 static thread_local uint64_t last_reported_nodes = 0;
 
-// Precomputed LMR reduction table: replaces log() calls with table lookup
-// reductions[i] = int(2763.0 / 128.0 * log(i)) for i = 0..63
+// Precomputed LMR reduction table
+// Stores log(i) * SCALE for the reduction formula:
+//   reduction = log(depth) * log(moves) / DIVISOR
+// This is the standard "log-depth times log-move-count" formula.
+// Using integer math: (reductions[d] * reductions[m] + DENOM/2) / DENOM
+// where reductions[i] = int(SCALE * log(i)) and DENOM = SCALE * SCALE
 static int reductions[64];
+static constexpr int LMR_SCALE = 32;
+static constexpr int LMR_DENOM = LMR_SCALE * LMR_SCALE;
 static bool reductions_initialized = false;
 
 static void init_reductions() {
     for (int i = 1; i < 64; ++i)
-        reductions[i] = int(2763.0 / 128.0 * std::log(double(i)));
+        reductions[i] = int(LMR_SCALE * std::log(double(i)));
     reductions[0] = 0;
     reductions_initialized = true;
 }
@@ -472,7 +478,8 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
 
     // Opponent worsening: our eval is better than opponent's eval from 1 ply ago
     // This means the opponent's last move didn't help them
-    bool opponent_worsening = (ss->ply >= 1 && eval > -(ss - 1)->static_eval);
+    // Skip when parent was in check (static_eval is 0, not meaningful)
+    bool opponent_worsening = (ss->ply >= 1 && (ss - 1)->static_eval != VALUE_ZERO && eval > -(ss - 1)->static_eval);
 
     // Internal Iterative Reduction (IIR): reduce depth by 1 when no TT move available
     // Only apply at non-PV nodes — PV nodes use IID instead (below)
@@ -621,7 +628,7 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
         (tte->bound() & BOUND_LOWER) && abs(tt_value) < VALUE_KNOWN_WIN) {
         Value sBeta = Value(tt_value - depth * 2);
         ss->excluded_move = tt_move;
-        Value singular_value = search_worker(pos, ss, sBeta - 1, sBeta, (depth - 1) / 2, cut_node);
+        Value singular_value = search_worker(pos, ss, sBeta - 1, sBeta, (depth - 1) / 2, !cut_node);
         ss->excluded_move = MOVE_NONE;
         if (singular_value < sBeta) {
             singular_extension = 1;
@@ -645,12 +652,12 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
 
     // Helper lambda: compute LMR reduction for a move (takes gives_chk to avoid recomputation)
     auto compute_reduction = [&](Move m, int mp, bool gives_chk) -> int {
-        // Precomputed LMR table: avoids repeated log() calls
+        // Log-depth * log-move-count reduction formula
         int d_idx = std::max(depth - 1, 1);
         int m_idx = std::max(mp, 1);
         if (d_idx >= 64) d_idx = 63;
         if (m_idx >= 64) m_idx = 63;
-        int reduction = reductions[d_idx] + reductions[m_idx] / 2;
+        int reduction = (reductions[d_idx] * reductions[m_idx] + LMR_DENOM / 2) / LMR_DENOM;
         if (!ss->improving && !opponent_worsening) reduction += 1;
         if (cut_node) reduction += 1;
         if (ttPv) reduction -= 2; // PV positions from TT get less reduction
@@ -1008,7 +1015,7 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
                     }
                 }
                 if (!stop.load(std::memory_order_relaxed)) {
-                    tte->save(pos.key(), value_to_tt(value, ss->ply), false, BOUND_LOWER, depth, m, eval, TT.generation());
+                    tte->save(pos.key(), value_to_tt(value, ss->ply), pv_node, BOUND_LOWER, depth, m, eval, TT.generation());
                 }
                 return true;  // beta cutoff
                 }
@@ -1382,6 +1389,7 @@ Move search(Position& pos, Limits& lim) {
     Value best_value = -VALUE_INFINITE;
     root_score = best_value;
     previous_root_best = MOVE_NONE;
+    int best_move_stability = 0;  // How many consecutive iterations best move stayed the same
 
     // Check if we have any legal moves at all
     ExtMove initial_moves[MAX_MOVES];
@@ -1492,11 +1500,16 @@ Move search(Position& pos, Limits& lim) {
 
         // Time management: stop before starting a new depth if we've used too much time
         // Always complete depth 1, then be aggressive about stopping
+        // Best-move stability: if best move is stable, we can stop earlier
         if (limits.use_time_management() && root_depth > 1) {
             auto now = std::chrono::steady_clock::now();
             int elapsed = static_cast<int>(std::chrono::duration_cast<std::chrono::milliseconds>(
                 now - search_start).count());
-            if (elapsed > ideal_time) {
+            // Reduce ideal time when best move is very stable
+            int stability_reduction = (best_move_stability >= 4) ? ideal_time * 3 / 5
+                                    : (best_move_stability >= 3) ? ideal_time * 3 / 4
+                                    : ideal_time;
+            if (elapsed > stability_reduction) {
                 break;
             }
         }
@@ -1676,6 +1689,12 @@ Move search(Position& pos, Limits& lim) {
 
         // Update overall best with this depth's result
         if (depth_best_move != MOVE_NONE) {
+            // Track best-move stability for time management
+            if (depth_best_move == best_move) {
+                best_move_stability++;
+            } else {
+                best_move_stability = 0;
+            }
             best_value = depth_best_value;
             best_move = depth_best_move;
             previous_root_best = depth_best_move;

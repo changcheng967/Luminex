@@ -206,7 +206,11 @@ void Position::set(const std::string& fen) {
     }
 
     if (st_->ep_square != SQUARE_NONE) {
-        k ^= Zobrist::en_passant[file_of(st_->ep_square)];
+        // Only hash EP if the side to move can actually capture en passant
+        Color capturer = side_to_move_;
+        if (pawn_attacks_bb(Color(capturer ^ 1), square_bb(st_->ep_square)) & pieces(capturer, PAWN)) {
+            k ^= Zobrist::en_passant[file_of(st_->ep_square)];
+        }
     }
 
     for (Color c : {WHITE, BLACK}) {
@@ -646,8 +650,14 @@ bool Position::do_move(Move m) {
     }
     st_->ep_square = SQUARE_NONE;
     if (pt == PAWN && std::abs(int(rank_of(to)) - int(rank_of(from))) == 2) {
-        st_->ep_square = Square((from + to) / 2);
-        st_->key ^= Zobrist::en_passant[file_of(st_->ep_square)];
+        Square ep_sq = Square((from + to) / 2);
+        // Only set/has EP square if opponent has a pawn that can capture en passant
+        // pawn_attacks_bb(us, ep_sq) = squares a pawn of our color on ep_sq would attack
+        // = squares where opponent pawns must be to attack ep_sq
+        if (pawn_attacks_bb(us, square_bb(ep_sq)) & pieces(them, PAWN)) {
+            st_->ep_square = ep_sq;
+            st_->key ^= Zobrist::en_passant[file_of(st_->ep_square)];
+        }
     }
 
     // Update castling rights efficiently
@@ -1002,6 +1012,12 @@ bool Position::see_ge(Move m, Value threshold) const {
         else if ((pca = stm_attackers & pieces(stm, ROOK)))   pt = ROOK;
         else if ((pca = stm_attackers & pieces(stm, QUEEN)))  pt = QUEEN;
         else { pt = KING; pca = stm_attackers & pieces(stm, KING); }
+
+        // King recapture: if opponent still has attackers, king move is illegal
+        if (pt == KING && (attackers & pieces(Color(stm ^ 1)))) {
+            // King can't recapture safely — opponent takes our last capturer for free
+            break;
+        }
 
         Square sq = lsb(pca);
         occupied &= ~square_bb(sq);
