@@ -656,6 +656,19 @@ Value evaluate(const Position& pos) {
             mg_score += sign * (KnightMobBaseMG + mob * KnightMobSlopeMG);
             eg_score += sign * (KnightMobBaseEG + mob * KnightMobSlopeEG);
 
+            // FIRST PRINCIPLES: Trapped knight detection
+            // A GM immediately spots a knight in the corner with no moves.
+            // If a knight has 0 mobility AND is attacked by enemy pawns, it's trapped.
+            if (mob == 0) {
+                // Knight has literally zero good squares — very bad
+                mg_score -= sign * 50;
+                eg_score -= sign * 30;
+            } else if (mob == 1 && (pawn_attacks_bb(them, their_pawns) & square_bb(sq))) {
+                // Knight has only one escape and it's attacked — nearly trapped
+                mg_score -= sign * 20;
+                eg_score -= sign * 10;
+            }
+
             // Outpost: knight on rank 4-6, protected by own pawn,
             // not attackable by enemy pawn (permanent advantage)
             Rank kr = relative_rank(c, sq);
@@ -717,6 +730,17 @@ Value evaluate(const Position& pos) {
             mob = std::min(mob, BishopMobMax);
             mg_score += sign * (BishopMobBaseMG + mob * BishopMobSlopeMG);
             eg_score += sign * (BishopMobBaseEG + mob * BishopMobSlopeEG);
+
+            // FIRST PRINCIPLES: Trapped bishop detection
+            // A bishop blocked by own pawns on its own color is bad.
+            // If bishop has 0 mobility, it's completely trapped.
+            if (mob == 0) {
+                mg_score -= sign * 40;
+                eg_score -= sign * 25;
+            } else if (mob == 1 && (pawn_attacks_bb(them, their_pawns) & square_bb(sq))) {
+                mg_score -= sign * 15;
+                eg_score -= sign * 8;
+            }
 
             // Bishop shielded by pawn above
             {
@@ -1209,6 +1233,137 @@ Value evaluate(const Position& pos) {
 
             mg_score -= sign * danger;
         }
+    }
+
+    // -------------------------------------------------------
+    // FIRST PRINCIPLES: Piece coordination near enemy king
+    // GMs sense when multiple pieces target the opponent's king.
+    // The bonus is super-linear: 1 piece = small, 2 = moderate,
+    // 3+ = very dangerous. This is separate from king safety
+    // (which measures enemy attacks on OUR king). This measures
+    // our offensive potential against THEIR king.
+    // -------------------------------------------------------
+    for (int c_idx = 0; c_idx < 2; ++c_idx) {
+        Color c = Color(c_idx);
+        Sign sign = (c == WHITE) ? 1 : -1;
+
+        // Enemy king zone: king square + surrounding squares
+        Square their_ksq = ksq_arr[c_idx ^ 1];
+        Bitboard their_king_zone = king_attacks_bb(their_ksq) | square_bb(their_ksq);
+
+        // Count how many of our non-pawn, non-king pieces attack the king zone
+        int attackers = 0;
+        if (attacks_by[c][KNIGHT] & their_king_zone) attackers++;
+        if (attacks_by[c][BISHOP] & their_king_zone) attackers++;
+        if (attacks_by[c][ROOK]   & their_king_zone) attackers++;
+        if (attacks_by[c][QUEEN]  & their_king_zone) attackers++;
+        // Pawns attacking king zone: count by popcount for partial contribution
+        int pawn_kz = popcount(attacks_by[c][PAWN] & their_king_zone);
+        attackers += pawn_kz / 2;  // 2 pawn attacks ≈ 1 piece attack
+
+        // Super-linear bonus: quadratic growth
+        // 0 = 0, 1 = 4, 2 = 16, 3 = 36, 4 = 64, 5 = 100
+        if (attackers >= 2) {
+            int coordination = attackers * attackers * 2;
+            mg_score += sign * coordination;
+            // Less in endgame (king is active, less vulnerable)
+            eg_score += sign * coordination / 4;
+        }
+    }
+
+    // -------------------------------------------------------
+    // FIRST PRINCIPLES: Simplification when ahead
+    // "When ahead, trade pieces. When behind, trade pawns."
+    // GMs simplify positions when they have material advantage.
+    // We add a bonus proportional to (material_advantage * piece_scarcity)
+    // -------------------------------------------------------
+    {
+        // Simple material count (pawns = 1, minors = 3, rooks = 5, queen = 9)
+        int w_material = popcount(pos.pieces(WHITE, PAWN))
+                       + popcount(pos.pieces(WHITE, KNIGHT)) * 3
+                       + popcount(pos.pieces(WHITE, BISHOP)) * 3
+                       + popcount(pos.pieces(WHITE, ROOK)) * 5
+                       + popcount(pos.pieces(WHITE, QUEEN)) * 9;
+        int b_material = popcount(pos.pieces(BLACK, PAWN))
+                       + popcount(pos.pieces(BLACK, KNIGHT)) * 3
+                       + popcount(pos.pieces(BLACK, BISHOP)) * 3
+                       + popcount(pos.pieces(BLACK, ROOK)) * 5
+                       + popcount(pos.pieces(BLACK, QUEEN)) * 9;
+        int material_diff = w_material - b_material;
+        int total_pieces = popcount(pos.pieces()) - 2;  // Exclude kings
+
+        // Simplification bonus: when ahead and pieces are few, it's easier to win
+        // When behind and pieces are few, it's harder to recover
+        // Scale by (32 - total_pieces) / 16 so bonus grows as pieces are traded
+        if (total_pieces > 0 && total_pieces < 28) {
+            int scarcity = (28 - total_pieces) / 4;  // 0-7 scale
+            int simplification_mg = material_diff * scarcity;
+            int simplification_eg = material_diff * scarcity * 2;  // More important in EG
+            mg_score += simplification_mg;
+            eg_score += simplification_eg;
+        }
+    }
+
+    // -------------------------------------------------------
+    // FIRST PRINCIPLES: King exposure without attackers
+    // A GM "feels" when a king is exposed even without seeing
+    // specific attack combinations. A king on an open file,
+    // or with no pawn cover in front, is vulnerable.
+    // This fires independent of the king safety attack model.
+    // -------------------------------------------------------
+    for (int c_idx = 0; c_idx < 2; ++c_idx) {
+        Color c = Color(c_idx);
+        Sign sign = (c == WHITE) ? 1 : -1;
+        Square our_ksq = ksq_arr[c_idx];
+        Rank krank = rank_of(our_ksq);
+        File kfile = file_of(our_ksq);
+
+        // Only penalize back-rank kings (not endgame king centralization)
+        bool on_back = (c == WHITE && krank <= RANK_2) || (c == BLACK && krank >= RANK_7);
+        if (!on_back) continue;
+
+        int exposure = 0;
+
+        // Open file in front of king: very dangerous
+        Bitboard all_pawns = pos.pieces(PAWN);
+        Bitboard kfile_pawns = all_pawns & file_bb(kfile);
+        if (!kfile_pawns) {
+            exposure += 15;  // Completely open file
+        } else {
+            // Check if own pawns are on the file
+            Bitboard own_file_pawns = pos.pieces(c, PAWN) & file_bb(kfile);
+            if (!own_file_pawns) exposure += 10;  // Semi-open (enemy pawn still there)
+        }
+
+        // Adjacent files open: king is exposed from the sides
+        if (kfile > FILE_A) {
+            if (!(all_pawns & file_bb(File(kfile - 1)))) exposure += 8;
+            else if (!(pos.pieces(c, PAWN) & file_bb(File(kfile - 1)))) exposure += 4;
+        }
+        if (kfile < FILE_H) {
+            if (!(all_pawns & file_bb(File(kfile + 1)))) exposure += 8;
+            else if (!(pos.pieces(c, PAWN) & file_bb(File(kfile + 1)))) exposure += 4;
+        }
+
+        // No pawn shield at all: extra penalty
+        // Check if any own pawn exists on files adjacent to king within 3 ranks
+        bool has_shield = false;
+        for (int df = -1; df <= 1; ++df) {
+            File f = File(int(kfile) + df);
+            if (f < FILE_A || f > FILE_H) continue;
+            for (int r = 1; r <= 3; ++r) {
+                Square shield_sq = relative_square(c, make_square(f, Rank(r)));
+                if (pos.pieces(c, PAWN) & square_bb(shield_sq)) {
+                    has_shield = true;
+                    break;
+                }
+            }
+            if (has_shield) break;
+        }
+        if (!has_shield) exposure += 20;
+
+        mg_score -= sign * exposure;
+        // In endgame, king exposure is less relevant (king should centralize)
     }
 
     // -------------------------------------------------------
