@@ -801,8 +801,8 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
         }
 
         // Late move pruning: prune quiet moves after examining a reasonable number
-        // More aggressive when improving (better position = less likely to need many moves)
-        int lmp_base = ss->improving ? 2 : 1;
+        // Improving positions can tolerate more pruning (more likely to recover)
+        int lmp_base = ss->improving ? 3 : 2;
         int lmp_threshold = lmp_base + depth * depth;
         if (is_quiet && !pv_node && ss->ply > 0 && depth <= 6 && moves_played >= lmp_threshold) {
             return false;
