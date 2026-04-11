@@ -508,7 +508,7 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
         }
     }
 
-    // Null move pruning (static R formula)
+    // Null move pruning (adaptive R based on depth and eval advantage)
     int piece_count = popcount(pos.pieces()) - popcount(pos.pieces(PAWN)) - 2;
     bool null_move_ok = !pv_node && !pos.is_check() && depth >= 2 && piece_count >= 1 &&
                           eval >= beta && ss->ply >= 1 && !ss->excluded_move;
@@ -516,8 +516,15 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
     if (null_move_ok) {
         pos.do_null_move();
 
+        // Adaptive R: base 3, increase with depth, increase with eval advantage
+        // Principle: larger advantage = safer to skip a move = deeper null search
         int R = 3 + (depth > 6 ? 1 : 0) + (depth > 12 ? 1 : 0);
 
+        // Eval advantage: if eval significantly above beta, reduce more aggressively
+        int eval_margin = (eval - beta) / 100;  // In pawn units
+        R += std::min(3, eval_margin);
+
+        // Reduce less when few pieces (endgames are dangerous for null move)
         if (piece_count < 4) R -= 1;
 
         R = std::max(2, std::min(R, depth - 1));
