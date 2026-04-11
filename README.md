@@ -59,6 +59,7 @@ Cutechess Elo vs Stash v14 (2060 CCRL Blitz) at tc=1+0.01:
 
 | Version | Opponent | Score | Win% | Elo Diff | Games |
 |---------|----------|-------|------|----------|-------|
+| v5.3.0 | Stash v14 (2060) | 106-81-5 | 56.5% | +43.7 +/- 48.2 | 200 |
 | v5.2.0 | Stash v14 (2060) | 90-101-9 | 47.2% | -19.1 +/- 47.3 | 200 |
 | v5.1.0 | Stash v13 (1972) | 179-127-14 | 58.1% | +57.0 | 320 |
 
@@ -70,6 +71,7 @@ Cutechess Elo vs Stash v14 (2060 CCRL Blitz) at tc=1+0.01:
 | v5.0.0 | Eval rewrite from first principles | 0.533 | - |
 | v5.1.0 | Sigmoid king safety | 0.581 | - |
 | v5.2.0 | Search/board bug fixes + LMR | - | 0.472 |
+| v5.3.0 | Improving flag + recapture refinement | - | 0.565 |
 
 ### v5.2.0 Changes
 - Singular search cut_node fix
