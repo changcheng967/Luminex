@@ -1038,8 +1038,8 @@ Value evaluate(const Position& pos) {
                                      | pos.pieces(them, ROOK) | pos.pieces(them, QUEEN))
                                      & ~all_attacks[them] & all_attacks[c];
             if (hanging_pieces) {
-                mg_score += sign * 15 * popcount(hanging_pieces);
-                eg_score += sign * 10 * popcount(hanging_pieces);
+                mg_score += sign * 25 * popcount(hanging_pieces);
+                eg_score += sign * 15 * popcount(hanging_pieces);
             }
         }
     }
