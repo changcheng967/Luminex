@@ -1459,7 +1459,7 @@ Move search(Position& pos, Limits& lim) {
         if (time_left < 0) time_left = 0;
         if (time_inc < 0) time_inc = 0;
 
-        int overhead = 15;
+        int overhead = 30;
 
         if (limits.movestogo > 0) {
             int mtg = std::max(1, limits.movestogo);
