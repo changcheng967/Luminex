@@ -125,19 +125,14 @@ static thread_local uint64_t local_nodes = 0;
 static thread_local uint64_t last_reported_nodes = 0;
 
 // Precomputed LMR reduction table
-// Stores log(i) * SCALE for the reduction formula:
-//   reduction = log(depth) * log(moves) / DIVISOR
-// This is the standard "log-depth times log-move-count" formula.
-// Using integer math: (reductions[d] * reductions[m] + DENOM/2) / DENOM
-// where reductions[i] = int(SCALE * log(i)) and DENOM = SCALE * SCALE
+// Old formula: reductions[i] = int(21.6 * log(i)), reduction = table[d] + table[m]/2
+// This is the baseline formula that the engine was calibrated with.
 static int reductions[64];
-static constexpr int LMR_SCALE = 32;
-static constexpr int LMR_DENOM = LMR_SCALE * LMR_SCALE;
 static bool reductions_initialized = false;
 
 static void init_reductions() {
     for (int i = 1; i < 64; ++i)
-        reductions[i] = int(LMR_SCALE * std::log(double(i)));
+        reductions[i] = int(2763.0 / 128.0 * std::log(double(i)));
     reductions[0] = 0;
     reductions_initialized = true;
 }
@@ -652,12 +647,12 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
 
     // Helper lambda: compute LMR reduction for a move (takes gives_chk to avoid recomputation)
     auto compute_reduction = [&](Move m, int mp, bool gives_chk) -> int {
-        // Log-depth * log-move-count reduction formula
+        // Original sum formula: reduction = reductions[d] + reductions[m]/2
         int d_idx = std::max(depth - 1, 1);
         int m_idx = std::max(mp, 1);
         if (d_idx >= 64) d_idx = 63;
         if (m_idx >= 64) m_idx = 63;
-        int reduction = (reductions[d_idx] * reductions[m_idx] + LMR_DENOM / 2) / LMR_DENOM;
+        int reduction = reductions[d_idx] + reductions[m_idx] / 2;
         if (!ss->improving && !opponent_worsening) reduction += 1;
         if (cut_node) reduction += 1;
         if (ttPv) reduction -= 2; // PV positions from TT get less reduction
