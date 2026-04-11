@@ -659,7 +659,7 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
         } else if (tt_value >= beta) {
             // TT move is NOT singular but expected to beat beta
             // Negative extension: reduce depth for non-singular expected cutoff
-            singular_extension = -1;
+            singular_extension = -2;
         } else if (cut_node) {
             singular_extension = -1;
         }
