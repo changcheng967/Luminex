@@ -458,6 +458,23 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
                 int bonus = depth > 17 ? -8 : 19 * depth * depth + 155 * depth - 132;
                 int& h = worker->history[int(moved)][int(tt_move.to())];
                 h += bonus - h * std::abs(bonus) / 32768;
+
+                // Counter-move history (1-ply)
+                if (ss->ply >= 1 && (ss - 1)->current_move != MOVE_NONE && (ss - 1)->moved_piece != NO_PIECE) {
+                    Move prev_move = (ss - 1)->current_move;
+                    Piece prev_pc = (ss - 1)->moved_piece;
+                    int& cm = counter_moves[int(prev_pc)][int(prev_move.to())][int(moved)][int(tt_move.to())];
+                    cm += bonus - cm * std::abs(bonus) / 32768;
+                    worker->counter_move_table[int(prev_pc)][int(prev_move.to())] = tt_move;
+                }
+
+                // Continuation history (2-ply)
+                if (ss->ply >= 2 && (ss - 2)->current_move != MOVE_NONE && (ss - 2)->moved_piece != NO_PIECE) {
+                    Move prev2_move = (ss - 2)->current_move;
+                    Piece prev2_pc = (ss - 2)->moved_piece;
+                    int& ch = continuation_history[int(prev2_pc)][int(prev2_move.to())][int(moved)][int(tt_move.to())];
+                    ch += bonus - ch * std::abs(bonus) / 32768;
+                }
             }
         }
         return tt_value;
