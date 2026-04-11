@@ -1113,9 +1113,16 @@ bool Position::legal(Move m, bool skip_pseudo) const {
         return true;
     }
 
+    // Fast path: if not in check and piece is not on a pin ray, move is always legal
+    // st_->block_checkers holds pieces that are pinned (between king and enemy sniper)
+    // When in check, all moves must be validated — only block/capture/king evade
+    if (!st_->checkers && !(st_->block_checkers & square_bb(from))) {
+        // Not pinned and not in check — only EP can create a discovered check
+        // by removing the captured pawn from a rank pin (horizontal pin through EP capture)
+        if (!m.is_en_passant()) return true;
+    }
+
     // For non-king moves, verify the king is not in check after the move
-    // Use attackers_to with updated occupancy - this is simpler and more correct
-    // than hand-rolled attack checks (which had the pawn direction bug)
     Bitboard occ_after = pieces();
     occ_after ^= square_bb(from);
     occ_after |= square_bb(to);  // Place piece on destination

@@ -675,7 +675,7 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
         int reduction = (reductions[d_idx] * reductions[m_idx] + LMR_DENOM / 2) / LMR_DENOM;
         if (!ss->improving && !opponent_worsening) reduction += 1;
         if (cut_node) reduction += 1;
-        if (ttPv) reduction -= 2; // PV positions from TT get less reduction
+        if (ttPv) reduction -= 1; // PV positions from TT get less reduction
 
         // TT move gets less reduction
         if (m == tt_move) reduction -= 1;
@@ -835,7 +835,7 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
                 reduction = compute_reduction(m, moves_played, gives_chk);
             }
             // Reduce less in PV nodes
-            if (pv_node) reduction = std::max(1, reduction - 1);
+            if (pv_node) reduction = std::max(0, reduction - 1);
             new_depth = depth - 1 - reduction;
             if (new_depth < 1) new_depth = 1;
         }
@@ -1546,7 +1546,7 @@ Move search(Position& pos, Limits& lim) {
         // Start with very wide window for stability
         Value alpha = -VALUE_INFINITE;
         Value beta = VALUE_INFINITE;
-        int aspiration_delta = 30;
+        int aspiration_delta = 18;
 
         if (root_depth >= 4 && best_value > -VALUE_KNOWN_WIN && best_value < VALUE_KNOWN_WIN) {
             alpha = std::max(Value(-VALUE_INFINITE), Value(best_value - aspiration_delta));
