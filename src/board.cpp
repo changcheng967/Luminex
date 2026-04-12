@@ -234,6 +234,18 @@ void Position::set(const std::string& fen) {
     }
     st_->pawn_key = pk;
 
+    // Compute non-pawn key per color for correction history
+    for (int c = 0; c < 2; ++c) {
+        Key npk = 0;
+        Bitboard np = pieces(Color(c)) & ~pieces(Color(c), PAWN);
+        while (np) {
+            Square s = pop_lsb(np);
+            Piece pc = board[s];
+            npk ^= Zobrist::psq[int(c)][int(piece_type_of(pc))][int(s)];
+        }
+        st_->non_pawn_key[c] = npk;
+    }
+
     // CRITICAL: game_ply_ is already computed from FEN fullmove above (line 186)
     // Do NOT reset to 0 here, or fen() will output wrong fullmove number
 
@@ -551,6 +563,8 @@ bool Position::do_move(Move m) {
             st_->key ^= Zobrist::psq[int(them)][int(captured)][int(to)];
             if (captured == PAWN) {
                 st_->pawn_key ^= Zobrist::psq[int(them)][int(PAWN)][int(to)];
+            } else {
+                st_->non_pawn_key[int(them)] ^= Zobrist::psq[int(them)][int(captured)][int(to)];
             }
         }
     }
@@ -563,6 +577,7 @@ bool Position::do_move(Move m) {
         PieceType promoted = m.promotion_type();
         put_piece(us, promoted, to);
         st_->key ^= Zobrist::psq[int(us)][int(promoted)][int(to)];
+        st_->non_pawn_key[int(us)] ^= Zobrist::psq[int(us)][int(promoted)][int(to)];
     } else {
         st_->key ^= Zobrist::psq[int(us)][int(pt)][int(from)];
         move_piece(from, to);
@@ -570,6 +585,9 @@ bool Position::do_move(Move m) {
         if (pt == PAWN) {
             st_->pawn_key ^= Zobrist::psq[int(us)][int(PAWN)][int(from)];
             st_->pawn_key ^= Zobrist::psq[int(us)][int(PAWN)][int(to)];
+        } else {
+            st_->non_pawn_key[int(us)] ^= Zobrist::psq[int(us)][int(pt)][int(from)];
+            st_->non_pawn_key[int(us)] ^= Zobrist::psq[int(us)][int(pt)][int(to)];
         }
     }
 
@@ -587,6 +605,8 @@ bool Position::do_move(Move m) {
         st_->key ^= Zobrist::psq[int(us)][int(ROOK)][int(rfrom)];
         move_piece(rfrom, rto);
         st_->key ^= Zobrist::psq[int(us)][int(ROOK)][int(rto)];
+        st_->non_pawn_key[int(us)] ^= Zobrist::psq[int(us)][int(ROOK)][int(rfrom)];
+        st_->non_pawn_key[int(us)] ^= Zobrist::psq[int(us)][int(ROOK)][int(rto)];
     }
 
     // Handle en passant
