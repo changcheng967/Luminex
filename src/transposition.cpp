@@ -1,5 +1,8 @@
 #include "luminex.h"
 #include <cstring>
+#if defined(_MSC_VER)
+#include <xmmintrin.h>
+#endif
 
 namespace luminex {
 
@@ -139,8 +142,11 @@ size_t TranspositionTable::hashfull() const {
 }
 
 void TranspositionTable::prefetch(uint64_t key) const {
+    const void* addr = &table[(size_t)key & (table.size() - 1)];
 #if defined(__GNUC__) || defined(__clang__)
-    __builtin_prefetch(&table[(size_t)key & (table.size() - 1)], 0, 3);
+    __builtin_prefetch(addr, 0, 3);
+#elif defined(_MSC_VER)
+    _mm_prefetch(static_cast<const char*>(addr), _MM_HINT_T0);
 #endif
 }
 
