@@ -139,7 +139,7 @@ private:
     int game_ply_ = 0;
     int st_ply = 0;  // Index into state_stack
 
-    static constexpr int MAX_STATES = 2048;  // Must support long games (not just search depth)
+    static constexpr int MAX_STATES = 512;  // 2x MAX_PLY + game moves, fits in L2 cache
     StateInfo state_stack[MAX_STATES] = {};
     StateInfo dummy_state;  // For default initialization
 
@@ -159,8 +159,8 @@ inline Bitboard Position::pieces(PieceType pt) const { return pieces_by_type[pt]
 inline Bitboard Position::pieces(Color c, PieceType pt) const { return pieces_by_color[c] & pieces_by_type[pt]; }
 inline Bitboard Position::pieces(Color c, PieceType pt1, PieceType pt2) const { return pieces_by_color[c] & (pieces_by_type[pt1] | pieces_by_type[pt2]); }
 
-inline Piece Position::piece_on(Square s) const { return is_ok(s) ? board[s] : NO_PIECE; }
-inline PieceType Position::piece_type_on(Square s) const { return is_ok(s) ? piece_type_of(board[s]) : PT_NONE; }
+inline Piece Position::piece_on(Square s) const { return board[s]; }
+inline PieceType Position::piece_type_on(Square s) const { return piece_type_of(board[s]); }
 inline Color Position::color_of_piece(Piece p) const { return p == NO_PIECE ? NO_COLOR : static_cast<Color>(p / 6); }
 inline Color Position::side_to_move() const { return side_to_move_; }
 

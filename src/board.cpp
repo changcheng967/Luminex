@@ -344,18 +344,6 @@ void Position::remove_piece(Square s) {
     int& count = piece_count[int(c)][int(pt)];
     int idx = index[s];
 
-    // Safety check: if idx is out of bounds, search for the piece
-    if (idx < 0 || idx >= count) {
-        idx = -1;
-        for (int i = 0; i < count; ++i) {
-            if (piece_list[int(c)][int(pt)][i] == s) {
-                idx = i;
-                break;
-            }
-        }
-        if (idx < 0) return;  // Piece not found, abort
-    }
-
     Square last_sq = piece_list[int(c)][int(pt)][count - 1];
 
     piece_list[int(c)][int(pt)][idx] = last_sq;
@@ -379,28 +367,9 @@ void Position::move_piece(Square from, Square to) {
     board[from] = NO_PIECE;
     board[to] = pc;
     int idx = index[from];
-
-    // FIXED: Use piece_count to check if index is valid, not just idx == 0
-    // idx could legitimately be 0 (first piece in list)
-    // Check if idx is within valid range instead
-    int count = piece_count[int(c)][int(pt)];
-    if (idx < 0 || idx >= count) {
-        // Search for the piece in piece_list
-        idx = -1;  // Assume not found
-        for (int i = 0; i < count; ++i) {
-            if (piece_list[int(c)][int(pt)][i] == from) {
-                idx = i;
-                break;
-            }
-        }
-        // If still not found, this is an error - skip the update
-        if (idx < 0) {
-            return;  // Can't find piece, abort
-        }
-    }
     piece_list[int(c)][int(pt)][idx] = to;
     index[to] = idx;
-    index[from] = -1;  // FIXED: Use -1 to indicate "not in list" instead of 0
+    index[from] = -1;
     if (pt == KING) {
         king_square[int(c)] = to;
     }
@@ -453,39 +422,36 @@ void Position::set_check_info(StateInfo* si) {
     si->pinned = 0;
     si->block_checkers = 0;
 
-    Square ksq = king_square[side_to_move_];
-    si->block_checkers = slider_blockers(pieces(Color(side_to_move_ ^ 1)), si->pinned);
+    Color us = side_to_move_;
+    Color them = Color(us ^ 1);
+    Square ksq = king_square[us];
+    Bitboard occupied = pieces();
+
+    si->block_checkers = slider_blockers(pieces(them), si->pinned);
 
     // Pawn checks
-    Bitboard pawns = pieces(Color(side_to_move_ ^ 1), PAWN);
+    Bitboard pawns = pieces(them, PAWN);
     if (pawns) {
-        Bitboard pawn_checks = pawn_attacks_bb(side_to_move_, ksq) & pawns;
-        si->checkers |= pawn_checks;
+        si->checkers |= pawn_attacks_bb(us, ksq) & pawns;
     }
 
     // Knight checks
-    Bitboard knights = pieces(Color(side_to_move_ ^ 1), KNIGHT);
+    Bitboard knights = pieces(them, KNIGHT);
     if (knights) {
-        Bitboard knight_checks = knight_attacks_bb(ksq) & knights;
-        si->checkers |= knight_checks;
+        si->checkers |= knight_attacks_bb(ksq) & knights;
     }
 
     // Bishop/Queen diagonal checks
-    Color them = Color(side_to_move_ ^ 1);
     Bitboard bishop_queens = pieces(them, BISHOP, QUEEN);
     if (bishop_queens) {
-        Bitboard diag_attacks = bishop_attacks_bb(ksq, pieces());
-        si->checkers |= diag_attacks & bishop_queens;
+        si->checkers |= bishop_attacks_bb(ksq, occupied) & bishop_queens;
     }
 
     // Rook/Queen straight checks
-    Bitboard rook_queens = pieces(Color(side_to_move_ ^ 1), ROOK, QUEEN);
+    Bitboard rook_queens = pieces(them, ROOK, QUEEN);
     if (rook_queens) {
-        Bitboard straight_attacks = rook_attacks_bb(ksq, pieces());
-        si->checkers |= straight_attacks & rook_queens;
+        si->checkers |= rook_attacks_bb(ksq, occupied) & rook_queens;
     }
-
-    // King checks (adjacent kings not possible in legal chess)
 }
 
 bool Position::do_move(Move m) {
@@ -528,25 +494,14 @@ bool Position::do_move(Move m) {
     st_ply++;
     StateInfo& next_st = state_stack[st_ply];
 
-    // Save state for undo - copy current state to next slot in state_stack
-    next_st.key = st_->key;
-    next_st.pawn_key = st_->pawn_key;
-    next_st.checkers = st_->checkers;
-    next_st.pinned = st_->pinned;
-    next_st.block_checkers = st_->block_checkers;
-    next_st.ep_square = st_->ep_square;
-    next_st.castling_rights = st_->castling_rights;
-    next_st.ply = st_->ply;
+    // Save state for undo - bulk copy then overwrite only fields that change
+    next_st = *st_;
     next_st.move = m;
     next_st.captured_piece = piece_type_on(to);
-    next_st.move_was_executed = true;  // Assume valid until validation proves otherwise
+    next_st.move_was_executed = true;
 
     // Update halfmove clock for 50-move rule
-    // Reset to 0 on pawn moves or captures, otherwise increment
-    next_st.halfmove_clock = st_->halfmove_clock + 1;
-    if (pt == PAWN || piece_type_on(to) != PT_NONE) {
-        next_st.halfmove_clock = 0;
-    }
+    next_st.halfmove_clock = (pt == PAWN || piece_type_on(to) != PT_NONE) ? 0 : st_->halfmove_clock + 1;
 
     st_ = &next_st;
     ++game_ply_;
@@ -800,18 +755,9 @@ void Position::undo_move(Move m) {
     st_ = &state_stack[st_ply];
     --game_ply_;
 
-    // CRITICAL FIX: Restore castling_rights_[] from the restored state
-    // do_move modifies castling_rights_[], but it wasn't being restored in undo_move
-    // This caused permanent castling rights corruption after the first move
-    for (Color c : {WHITE, BLACK}) {
-        castling_rights_[c] = 0;
-        if (st_->castling_rights & (c == WHITE ? WHITE_KINGSIDE : BLACK_KINGSIDE)) {
-            castling_rights_[c] |= (c == WHITE ? WHITE_KINGSIDE : BLACK_KINGSIDE);
-        }
-        if (st_->castling_rights & (c == WHITE ? WHITE_QUEENSIDE : BLACK_QUEENSIDE)) {
-            castling_rights_[c] |= (c == WHITE ? WHITE_QUEENSIDE : BLACK_QUEENSIDE);
-        }
-    }
+    // Restore castling_rights_[] from the state (direct mask extraction)
+    castling_rights_[WHITE] = st_->castling_rights & 0x03;
+    castling_rights_[BLACK] = st_->castling_rights & 0x0C;
 
 #ifndef NDEBUG
     // DEBUG: Check board consistency after every undo (debug builds only)
@@ -840,21 +786,11 @@ void Position::do_null_move() {
     st_ply++;
     StateInfo& next_st = state_stack[st_ply];
 
-    // CRITICAL: Ensure all fields are initialized (state_stack may contain garbage)
-    next_st = StateInfo{};
-
-    // Copy current state
-    next_st.key = st_->key;
-    next_st.pawn_key = st_->pawn_key;  // Preserve pawn key for eval cache
-    next_st.checkers = st_->checkers;
-    next_st.pinned = st_->pinned;
-    next_st.block_checkers = st_->block_checkers;
-    next_st.ep_square = st_->ep_square;
-    next_st.castling_rights = st_->castling_rights;
-    next_st.ply = st_->ply;
+    // Bulk copy then overwrite only the fields that differ
+    next_st = *st_;
     next_st.move = MOVE_NONE;
     next_st.captured_piece = PT_NONE;
-    next_st.halfmove_clock = st_->halfmove_clock;  // Don't increment — null move doesn't advance 50-move rule
+    // halfmove_clock stays the same (null move doesn't advance 50-move rule)
 
     st_ = &next_st;
 
