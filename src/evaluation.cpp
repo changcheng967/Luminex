@@ -831,12 +831,6 @@ Value evaluate(const Position& pos) {
                 eg_score += sign * 5;
             }
 
-            // Rook on enemy king file: direct pressure on the king
-            if (file_bb(f) & square_bb(ksq_arr[c_idx ^ 1])) {
-                mg_score += sign * 8;
-                eg_score += sign * 12;
-            }
-
             // Far rook penalty: rook disconnected from own king is harder to coordinate
             if (distance(sq, ksq_arr[c_idx]) > 3) {
                 mg_score -= sign * 8;
