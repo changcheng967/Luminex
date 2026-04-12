@@ -823,7 +823,7 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
         bool gives_chk = gives_check(m);
         bool is_losing_capture = m.is_capture() && !m.is_promotion() && depth >= 1 &&
                                   !pos.see_ge(m, Value(-depth * 80));
-        bool do_lmr = depth >= 3 && moves_played >= 3 &&
+        bool do_lmr = depth >= 3 && moves_played >= 2 &&
                       (is_quiet || is_losing_capture) && !gives_chk;
 
         if (do_lmr) {
