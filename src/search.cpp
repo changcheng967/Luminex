@@ -1398,6 +1398,9 @@ Move search(Position& pos, Limits& lim) {
     local_nodes = 0;
     last_reported_nodes = 0;
 
+    // Clear eval cache to avoid stale entries from previous searches
+    std::memset(eval_cache, 0, sizeof(eval_cache));
+
     // Track search start time for time management
     search_start = std::chrono::steady_clock::now();
 
