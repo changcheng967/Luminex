@@ -873,18 +873,9 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
                 pos.undo_move(m);
                 return false;
             }
-            // Deeper/shallower re-search adjustment
-            // Only apply when we have a valid best_value (not first move)
+            // Re-search with full window at standard depth if LMR found improvement
             if (value > alpha) {
-                if (best_value > -VALUE_INFINITE + 100) {
-                    bool do_deeper = value > best_value + 48;
-                    bool do_shallower = value < best_value + 9;
-                    int re_depth = depth - 1 + (do_deeper ? 1 : 0) - (do_shallower ? 1 : 0);
-                    re_depth = std::max(1, re_depth);
-                    value = -search_worker(pos, ss + 1, -beta, -alpha, re_depth, !cut_node);
-                } else {
-                    value = -search_worker(pos, ss + 1, -beta, -alpha, depth - 1, !cut_node);
-                }
+                value = -search_worker(pos, ss + 1, -beta, -alpha, depth - 1, !cut_node);
                 if (stop.load(std::memory_order_relaxed)) {
                     pos.undo_move(m);
                     return false;
