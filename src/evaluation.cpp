@@ -1218,6 +1218,25 @@ Value evaluate(const Position& pos) {
     }
 
     // -------------------------------------------------------
+    // Mating potential: stronger side's king should approach enemy king
+    // Principle: in endgames with material advantage, king proximity
+    // to the enemy king enables mating attacks. Only applies when
+    // one side has clearly more material (piece count as proxy).
+    // -------------------------------------------------------
+    {
+        int king_dist = distance(ksq_arr[0], ksq_arr[1]);
+        int w_np = popcount(pos.pieces(WHITE, KNIGHT)) + popcount(pos.pieces(WHITE, BISHOP))
+                 + popcount(pos.pieces(WHITE, ROOK)) + popcount(pos.pieces(WHITE, QUEEN));
+        int b_np = popcount(pos.pieces(BLACK, KNIGHT)) + popcount(pos.pieces(BLACK, BISHOP))
+                 + popcount(pos.pieces(BLACK, ROOK)) + popcount(pos.pieces(BLACK, QUEEN));
+        if (w_np != b_np && w_np + b_np <= 4) {
+            int bonus = (7 - king_dist) * 2;
+            if (w_np > b_np) eg_score += bonus;
+            else eg_score -= bonus;
+        }
+    }
+
+    // -------------------------------------------------------
     // Phase calculation and score interpolation
     // -------------------------------------------------------
     int phase = popcount(pos.pieces(KNIGHT)) + popcount(pos.pieces(BISHOP))
