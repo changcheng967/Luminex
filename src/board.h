@@ -10,7 +10,6 @@ namespace luminex {
 struct StateInfo {
     Key key = 0;
     Key pawn_key = 0;
-    Key non_pawn_key[2] = {0, 0};  // Non-pawn material hash per color
     Bitboard checkers = 0;
     Bitboard pinned = 0;
     Bitboard block_checkers = 0;
@@ -88,7 +87,6 @@ public:
 
     Key key() const;
     Key pawn_key() const;
-    Key non_pawn_key(Color c) const;
 
     bool is_draw() const;
     bool is_check() const;
@@ -141,7 +139,7 @@ private:
     int game_ply_ = 0;
     int st_ply = 0;  // Index into state_stack
 
-    static constexpr int MAX_STATES = 512;  // 2x MAX_PLY + game moves, fits in L2 cache
+    static constexpr int MAX_STATES = 2048;  // Must support long games (not just search depth)
     StateInfo state_stack[MAX_STATES] = {};
     StateInfo dummy_state;  // For default initialization
 
@@ -179,7 +177,6 @@ inline void Position::set_game_ply(int ply) { game_ply_ = ply; }
 
 inline Key Position::key() const { return st_->key; }
 inline Key Position::pawn_key() const { return st_->pawn_key; }
-inline Key Position::non_pawn_key(Color c) const { return st_->non_pawn_key[int(c)]; }
 
 inline bool Position::is_check() const { return checkers() != 0; }
 

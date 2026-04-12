@@ -17,7 +17,6 @@ public:
     Piece moved_piece = NO_PIECE;  // Piece that moved at this ply
     Value static_eval = VALUE_ZERO;
     int move_count = 0;
-    int reduction = 0;  // LMR reduction applied at this node (for hindsight adjustment)
     bool improving = false;
     Stack* previous = nullptr;
 };

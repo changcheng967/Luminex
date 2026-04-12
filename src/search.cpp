@@ -83,20 +83,15 @@ constexpr int EVAL_CACHE_SIZE = 524288;  // 512K entries for better hit rate
 EvalCacheEntry eval_cache[EVAL_CACHE_SIZE];
 
 // Correction history: corrects static eval based on search errors
-// Multi-dimensional: pawn structure + non-pawn material per color + continuation
+// Indexed by pawn structure hash. Stores rolling average of (search_value - static_eval).
+// Kept conservative: small table, gentle update, capped corrections.
 constexpr int CORRHIST_SIZE = 16384;
 struct CorrHistEntry {
     uint64_t key;
-    int32_t correction;
+    int32_t correction;  // Raw sum, divided by weight on read
     int32_t weight;
 };
-CorrHistEntry corrhist_table[CORRHIST_SIZE];          // Pawn-key indexed
-CorrHistEntry non_pawn_corrhist[2][CORRHIST_SIZE];    // Per-color non-pawn material indexed
-
-// Continuation correction history: [piece][to_square]
-// Corrects eval based on what move was played 2 plies ago
-constexpr int CONT_CORR_SIZE = 12 * 64;  // 768 entries
-int32_t cont_corrhist[CONT_CORR_SIZE];   // Simple gravity-based (no key check needed)
+CorrHistEntry corrhist_table[CORRHIST_SIZE];
 
 inline int get_correction(uint64_t pawn_key) {
     uint32_t idx = uint32_t(pawn_key) & (CORRHIST_SIZE - 1);
@@ -106,47 +101,23 @@ inline int get_correction(uint64_t pawn_key) {
     return 0;
 }
 
-inline int get_non_pawn_correction(Color c, uint64_t npk) {
-    uint32_t idx = uint32_t(npk) & (CORRHIST_SIZE - 1);
-    const CorrHistEntry& e = non_pawn_corrhist[int(c)][idx];
-    if (e.key == npk && e.weight > 0)
-        return e.correction / e.weight;
-    return 0;
-}
-
-inline int get_cont_correction(Piece pc, Square to) {
-    return cont_corrhist[int(pc) * 64 + int(to)];
-}
-
-inline void update_correction_table(CorrHistEntry& e, uint64_t key, int error, int depth) {
-    if (e.key != key) {
-        e.key = key;
+inline void update_correction(uint64_t pawn_key, int error, int depth) {
+    uint32_t idx = uint32_t(pawn_key) & (CORRHIST_SIZE - 1);
+    CorrHistEntry& e = corrhist_table[idx];
+    if (e.key != pawn_key) {
+        e.key = pawn_key;
         e.correction = 0;
         e.weight = 0;
     }
+    // Weight by depth squared for more reliable corrections at deeper searches
     int w = depth * depth;
     e.correction += error * w;
     e.weight += w;
+    // Cap total weight to prevent stale entries from dominating
     if (e.weight > 1024) {
         e.correction /= 2;
         e.weight /= 2;
     }
-}
-
-inline void update_correction(uint64_t pawn_key, int error, int depth) {
-    uint32_t idx = uint32_t(pawn_key) & (CORRHIST_SIZE - 1);
-    update_correction_table(corrhist_table[idx], pawn_key, error, depth);
-}
-
-inline void update_non_pawn_correction(Color c, uint64_t npk, int error, int depth) {
-    uint32_t idx = uint32_t(npk) & (CORRHIST_SIZE - 1);
-    update_correction_table(non_pawn_corrhist[int(c)][idx], npk, error, depth);
-}
-
-inline void update_cont_correction(Piece pc, Square to, int error, int depth) {
-    int32_t& v = cont_corrhist[int(pc) * 64 + int(to)];
-    int w = depth * depth;
-    v += error * w - v * std::abs(error * w) / 32768;
 }
 
 // Thread-local node counter to avoid atomic overhead on every node
@@ -173,22 +144,18 @@ inline Value eval_cached(const Position& pos) {
     uint32_t idx = uint32_t(key) & (EVAL_CACHE_SIZE - 1);
 
     if (eval_cache[idx].key == key) {
-        // Apply multi-dimensional correction to cached eval
-        int correction = get_correction(pos.pawn_key())
-                       + get_non_pawn_correction(WHITE, pos.non_pawn_key(WHITE))
-                       + get_non_pawn_correction(BLACK, pos.non_pawn_key(BLACK));
-        correction = std::max(-150, std::min(150, correction));
+        // Apply correction history to cached eval (capped for safety)
+        int correction = get_correction(pos.pawn_key());
+        correction = std::max(-100, std::min(100, correction));
         return Value(eval_cache[idx].value + correction);
     }
 
     Value eval = evaluate(pos);
     eval_cache[idx].key = key;
     eval_cache[idx].value = int32_t(eval);
-    // Apply multi-dimensional correction to fresh eval
-    int correction = get_correction(pos.pawn_key())
-                   + get_non_pawn_correction(WHITE, pos.non_pawn_key(WHITE))
-                   + get_non_pawn_correction(BLACK, pos.non_pawn_key(BLACK));
-    correction = std::max(-150, std::min(150, correction));
+    // Apply correction to fresh eval too
+    int correction = get_correction(pos.pawn_key());
+    correction = std::max(-100, std::min(100, correction));
     return Value(eval + correction);
 }
 
@@ -342,20 +309,15 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
                 it->value = 0;
             }
         }
+        // Sort captures by value
+        std::sort(moves, end, [](const ExtMove& a, const ExtMove& b) {
+            return a.value > b.value;
+        });
     }
 
     for (ExtMove* it = moves; it != end; ++it) {
         // FIX: Check for stop at top of move loop for faster response
         if (stop.load(std::memory_order_relaxed)) break;
-
-        // Pick-best selection sort (faster than std::sort for small arrays)
-        if (!in_check) {
-            ExtMove* best = it;
-            for (ExtMove* jt = it + 1; jt != end; ++jt) {
-                if (jt->value > best->value) best = jt;
-            }
-            if (best != it) { ExtMove tmp = *it; *it = *best; *best = tmp; }
-        }
 
         if (in_check) {
             // For evasions, legal() check already done by GEN_LEGAL
@@ -522,13 +484,6 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
     Value eval = VALUE_ZERO;
     if (!pos.is_check()) {
         eval = eval_cached(pos);
-        // Add continuation correction (ply-2 and ply-4 context)
-        if (ss->ply >= 2 && (ss - 2)->moved_piece != NO_PIECE && (ss - 2)->current_move != MOVE_NONE) {
-            eval += Value(get_cont_correction((ss - 2)->moved_piece, (ss - 2)->current_move.to()));
-        }
-        if (ss->ply >= 4 && (ss - 4)->moved_piece != NO_PIECE && (ss - 4)->current_move != MOVE_NONE) {
-            eval += Value(get_cont_correction((ss - 4)->moved_piece, (ss - 4)->current_move.to()));
-        }
     }
     ss->static_eval = eval;
 
@@ -540,19 +495,6 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
     // This means the opponent's last move didn't help them
     // Skip when parent was in check (static_eval is 0, not meaningful)
     bool opponent_worsening = (ss->ply >= 1 && (ss - 1)->static_eval != VALUE_ZERO && eval > -(ss - 1)->static_eval);
-
-    // Prior reduction hindsight: adjust depth based on parent's LMR reduction
-    // If parent reduced aggressively but eval didn't worsen, the position is harder than expected
-    if (ss->ply >= 1 && (ss - 1)->reduction >= 3 && !opponent_worsening) {
-        depth++;
-    }
-    // If evals sum to a big positive, position is likely easy, reduce depth
-    if (ss->ply >= 1 && (ss - 1)->reduction >= 2 && depth >= 2
-        && ss->static_eval + (ss - 1)->static_eval > 200) {
-        depth--;
-    }
-    // Reset reduction for this node
-    ss->reduction = 0;
 
     // Internal Iterative Reduction (IIR): reduce depth by 1 when no TT move available
     // Only apply at non-PV nodes — PV nodes use IID instead (below)
@@ -735,10 +677,6 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
         if (cut_node) reduction += 1;
         if (ttPv) reduction -= 2; // PV positions from TT get less reduction
 
-        // All-node scaling: at expected fail-low nodes, reduce more aggressively
-        if (!pv_node && !cut_node && reduction > 0)
-            reduction += reduction / (depth + 1);
-
         // TT move gets less reduction
         if (m == tt_move) reduction -= 1;
 
@@ -788,30 +726,19 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
     auto gives_check = [&](Move m) -> bool {
         Square opp_ksq = pos.king_sq(Color(pos.side_to_move() ^ 1));
         PieceType pt = piece_type_of(pos.piece_on(m.from()));
-        Square to = m.to();
 
         if (pt == PAWN) {
-            return (pawn_attacks_bb(pos.side_to_move(), to) & square_bb(opp_ksq)) != 0;
+            return (pawn_attacks_bb(pos.side_to_move(), m.to()) & square_bb(opp_ksq)) != 0;
         } else if (pt == KNIGHT) {
-            return (knight_attacks_bb(to) & square_bb(opp_ksq)) != 0;
+            return (knight_attacks_bb(m.to()) & square_bb(opp_ksq)) != 0;
         } else if (pt == BISHOP) {
-            // Pre-filter: must be on same diagonal
-            int df = std::abs(file_of(to) - file_of(opp_ksq));
-            int dr = std::abs(rank_of(to) - rank_of(opp_ksq));
-            if (df != dr) return false;
-            return (bishop_attacks_bb(to, pos.pieces() ^ square_bb(m.from())) & square_bb(opp_ksq)) != 0;
+            return (bishop_attacks_bb(m.to(), pos.pieces() ^ square_bb(m.from())) & square_bb(opp_ksq)) != 0;
         } else if (pt == ROOK) {
-            // Pre-filter: must be on same rank or file
-            if (file_of(to) != file_of(opp_ksq) && rank_of(to) != rank_of(opp_ksq)) return false;
-            return (rook_attacks_bb(to, pos.pieces() ^ square_bb(m.from())) & square_bb(opp_ksq)) != 0;
+            return (rook_attacks_bb(m.to(), pos.pieces() ^ square_bb(m.from())) & square_bb(opp_ksq)) != 0;
         } else if (pt == QUEEN) {
-            // Pre-filter: must be aligned
-            int df = std::abs(file_of(to) - file_of(opp_ksq));
-            int dr = std::abs(rank_of(to) - rank_of(opp_ksq));
-            if (df != dr && file_of(to) != file_of(opp_ksq) && rank_of(to) != rank_of(opp_ksq)) return false;
             Bitboard occ_no_from = pos.pieces() ^ square_bb(m.from());
-            return (bishop_attacks_bb(to, occ_no_from) & square_bb(opp_ksq)) != 0
-                || (rook_attacks_bb(to, occ_no_from) & square_bb(opp_ksq)) != 0;
+            return (bishop_attacks_bb(m.to(), occ_no_from) & square_bb(opp_ksq)) != 0
+                || (rook_attacks_bb(m.to(), occ_no_from) & square_bb(opp_ksq)) != 0;
         }
         return false;
     };
@@ -911,7 +838,6 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
             if (pv_node) reduction = std::max(1, reduction - 1);
             new_depth = depth - 1 - reduction;
             if (new_depth < 1) new_depth = 1;
-            ss->reduction = reduction;  // Store for child's hindsight adjustment
         }
 
         // Extensions
@@ -1293,14 +1219,7 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
         // Only update at reasonable depth where search is meaningful.
         if (!pv_node && abs(best_value) < VALUE_KNOWN_WIN && abs(eval) < VALUE_KNOWN_WIN
             && moves_played > 0 && depth >= 2) {
-            int error = best_value - eval;
-            update_correction(pos.pawn_key(), error, depth);
-            update_non_pawn_correction(WHITE, pos.non_pawn_key(WHITE), error, depth);
-            update_non_pawn_correction(BLACK, pos.non_pawn_key(BLACK), error, depth);
-            // Continuation correction (ply-2)
-            if (ss->ply >= 2 && (ss - 2)->moved_piece != NO_PIECE && (ss - 2)->current_move != MOVE_NONE) {
-                update_cont_correction((ss - 2)->moved_piece, (ss - 2)->current_move.to(), error, depth);
-            }
+            update_correction(pos.pawn_key(), best_value - eval, depth);
         }
     }
 
@@ -1475,7 +1394,6 @@ Move search(Position& pos, Limits& lim) {
 
     Move best_move = MOVE_NONE;
     Value best_value = -VALUE_INFINITE;
-    Value prev_iter_value = -VALUE_INFINITE;  // Previous iteration's score for score stability
     root_score = best_value;
     previous_root_best = MOVE_NONE;
     int best_move_stability = 0;  // How many consecutive iterations best move stayed the same
@@ -1590,24 +1508,15 @@ Move search(Position& pos, Limits& lim) {
         // Time management: stop before starting a new depth if we've used too much time
         // Always complete depth 1, then be aggressive about stopping
         // Best-move stability: if best move is stable, we can stop earlier
-        // Score instability: if score dropped, spend more time searching
         if (limits.use_time_management() && root_depth > 1) {
             auto now = std::chrono::steady_clock::now();
             int elapsed = static_cast<int>(std::chrono::duration_cast<std::chrono::milliseconds>(
                 now - search_start).count());
-
-            int opt_time = ideal_time;
-
-            // Best-move stability: stable best move → stop earlier
-            if (best_move_stability >= 4) opt_time = opt_time * 3 / 5;
-            else if (best_move_stability >= 3) opt_time = opt_time * 3 / 4;
-
-            // Score instability: score dropped significantly → spend more time
-            if (best_value < prev_iter_value - 20) {
-                opt_time = std::min(max_time, opt_time * 3 / 2);
-            }
-
-            if (elapsed > opt_time) {
+            // Reduce ideal time when best move is very stable
+            int stability_reduction = (best_move_stability >= 4) ? ideal_time * 3 / 5
+                                    : (best_move_stability >= 3) ? ideal_time * 3 / 4
+                                    : ideal_time;
+            if (elapsed > stability_reduction) {
                 break;
             }
         }
@@ -1798,9 +1707,6 @@ Move search(Position& pos, Limits& lim) {
             previous_root_best = depth_best_move;
         }
 
-        // Track score for time management (before it gets updated next iter)
-        prev_iter_value = best_value;
-
         // Save root position to TT for PV extraction
         if (depth_best_move != MOVE_NONE && !stop.load(std::memory_order_relaxed)) {
             bool root_found;
@@ -1944,8 +1850,6 @@ void uci_info([[maybe_unused]] const Position& pos, int depth, Value score, uint
 
 void clear_correction_history() {
     std::memset(corrhist_table, 0, sizeof(corrhist_table));
-    std::memset(non_pawn_corrhist, 0, sizeof(non_pawn_corrhist));
-    std::memset(cont_corrhist, 0, sizeof(cont_corrhist));
 }
 
 } // namespace luminex
