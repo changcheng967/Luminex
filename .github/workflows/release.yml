@@ -59,6 +59,7 @@ jobs:
     - name: Build
       run: cmake --build build --config Release
     - name: Test
+      shell: cmd /C {0}
       run: |
         (echo uci & echo isready & echo quit) | build\Release\luminex.exe
     - name: Package
