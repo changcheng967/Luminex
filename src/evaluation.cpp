@@ -881,22 +881,6 @@ Value evaluate(const Position& pos) {
             }
         }
 
-        // Connected rooks: two rooks on same open/semi-open file (mutual protection)
-        {
-            Bitboard our_rooks = pos.pieces(c, ROOK);
-            if (popcount(our_rooks) >= 2) {
-                Square r1 = pop_lsb(our_rooks);
-                Square r2 = pop_lsb(our_rooks);
-                if (file_of(r1) == file_of(r2)) {
-                    File rf = file_of(r1);
-                    if (!(pos.pieces(PAWN) & file_bb(rf)) || !(our_pawns & file_bb(rf))) {
-                        mg_score += sign * 10;
-                        eg_score += sign * 15;
-                    }
-                }
-            }
-        }
-
         // -------------------------------------------------------
         // Queens
         // -------------------------------------------------------
