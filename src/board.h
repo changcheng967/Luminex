@@ -159,8 +159,8 @@ inline Bitboard Position::pieces(PieceType pt) const { return pieces_by_type[pt]
 inline Bitboard Position::pieces(Color c, PieceType pt) const { return pieces_by_color[c] & pieces_by_type[pt]; }
 inline Bitboard Position::pieces(Color c, PieceType pt1, PieceType pt2) const { return pieces_by_color[c] & (pieces_by_type[pt1] | pieces_by_type[pt2]); }
 
-inline Piece Position::piece_on(Square s) const { return board[s]; }
-inline PieceType Position::piece_type_on(Square s) const { return piece_type_of(board[s]); }
+inline Piece Position::piece_on(Square s) const { return is_ok(s) ? board[s] : NO_PIECE; }
+inline PieceType Position::piece_type_on(Square s) const { return is_ok(s) ? piece_type_of(board[s]) : PT_NONE; }
 inline Color Position::color_of_piece(Piece p) const { return p == NO_PIECE ? NO_COLOR : static_cast<Color>(p / 6); }
 inline Color Position::side_to_move() const { return side_to_move_; }
 
