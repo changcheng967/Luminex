@@ -445,9 +445,9 @@ static void evaluate_pawns(const Position& pos, int32_t& mg_out, int32_t& eg_out
                 Bitboard stoppers = ahead & their_pawns;
                 Bitboard threats = their_pawns & pawn_attacks_bb(c, sq);
                 Bitboard support = our_pawns & pawn_attacks_bb(them, sq);
-                Bitboard push_sq_bb = relative_square(c, make_square(f, Rank(r + 1)));
-                Bitboard push_threats = their_pawns & pawn_attacks_bb(c, push_sq_bb);
-                Bitboard push_support = our_pawns & pawn_attacks_bb(them, push_sq_bb);
+                Square push_sq = relative_square(c, make_square(f, Rank(r + 1)));
+                Bitboard push_threats = their_pawns & pawn_attacks_bb(c, push_sq);
+                Bitboard push_support = our_pawns & pawn_attacks_bb(them, push_sq);
                 Bitboard leftovers = stoppers & ~(threats | push_threats);
                 bool supported = popcount(support) >= popcount(threats);
                 if (!leftovers && popcount(push_support) >= popcount(push_threats)) {
