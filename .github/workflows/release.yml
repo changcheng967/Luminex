@@ -1,0 +1,189 @@
+name: Release
+
+on:
+  push:
+    tags: [ 'v*' ]
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version tag (e.g. v5.5.0)'
+        required: true
+
+jobs:
+  build-linux:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        include:
+          - arch: modern
+            cmake_flags: -DCMAKE_CXX_FLAGS="-march=x86-64-v3 -mtune=generic"
+            suffix: linux-x86-64-modern
+          - arch: native
+            cmake_flags: -DCMAKE_CXX_FLAGS="-march=x86-64 -mtune=generic -msse4.2 -mpopcnt"
+            suffix: linux-x86-64
+    steps:
+    - uses: actions/checkout@v4
+    - name: Install dependencies
+      run: sudo apt-get update && sudo apt-get install -y ninja-build
+    - name: Configure
+      run: cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DCI=ON ${{ matrix.cmake_flags }}
+    - name: Build
+      run: cmake --build build --config Release
+    - name: Test
+      run: printf 'uci\nisready\nquit\n' | ./build/luminex
+    - name: Package
+      run: |
+        strip build/luminex
+        chmod +x build/luminex
+        mv build/luminex luminex-${{ matrix.suffix }}
+    - uses: actions/upload-artifact@v4
+      with:
+        name: luminex-${{ matrix.suffix }}
+        path: luminex-${{ matrix.suffix }}
+
+  build-windows:
+    runs-on: windows-latest
+    strategy:
+      matrix:
+        include:
+          - arch: modern
+            cmake_flags: -T ClangCL
+            suffix: windows-x86-64-modern
+          - arch: compat
+            cmake_flags:
+            suffix: windows-x86-64
+    steps:
+    - uses: actions/checkout@v4
+    - name: Configure
+      run: cmake -B build -G "Visual Studio 17 2022" -A x64 ${{ matrix.cmake_flags }}
+    - name: Build
+      run: cmake --build build --config Release
+    - name: Test
+      run: |
+        (echo uci & echo isready & echo quit) | build\Release\luminex.exe
+    - name: Package
+      shell: bash
+      run: mv build/Release/luminex.exe luminex-${{ matrix.suffix }}.exe
+    - uses: actions/upload-artifact@v4
+      with:
+        name: luminex-${{ matrix.suffix }}
+        path: luminex-${{ matrix.suffix }}.exe
+
+  build-macos:
+    runs-on: macos-latest
+    steps:
+    - uses: actions/checkout@v4
+    - name: Install dependencies
+      run: brew install ninja
+    - name: Configure
+      run: cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
+    - name: Build
+      run: cmake --build build --config Release
+    - name: Test
+      run: printf 'uci\nisready\nquit\n' | ./build/luminex
+    - name: Package
+      run: |
+        strip build/luminex
+        chmod +x build/luminex
+        mv build/luminex luminex-macos-arm64
+    - uses: actions/upload-artifact@v4
+      with:
+        name: luminex-macos-arm64
+        path: luminex-macos-arm64
+
+  build-wasm:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v4
+    - name: Install Emscripten
+      run: |
+        git clone https://github.com/emscripten-core/emsdk.git
+        cd emsdk
+        ./emsdk install latest
+        ./emsdk activate latest
+    - name: Configure
+      run: |
+        source emsdk/emsdk_env.sh
+        emcmake cmake -B build-wasm -DCMAKE_BUILD_TYPE=Release \
+          -DCMAKE_CXX_FLAGS="-O3 -flto -DNDEBUG" \
+          -DWASM_BUILD=ON
+    - name: Build
+      run: |
+        source emsdk/emsdk_env.sh
+        cmake --build build-wasm --config Release
+    - name: Package
+      run: |
+        mkdir -p wasm-package
+        cp build-wasm/luminex.js wasm-package/luminex.js
+        cp build-wasm/luminex.wasm wasm-package/luminex.wasm
+        # Create a simple HTML wrapper for web play
+        cat > wasm-package/index.html << 'HTMLEOF'
+        <!DOCTYPE html>
+        <html>
+        <head><title>Luminex Chess Engine</title></head>
+        <body>
+        <h1>Luminex Chess Engine (WASM)</h1>
+        <pre id="output"></pre>
+        <script>
+        var Module = {
+          print: function(text) {
+            var el = document.getElementById('output');
+            el.textContent += text + '\n';
+          },
+          printErr: function(text) {
+            var el = document.getElementById('output');
+            el.textContent += '[ERR] ' + text + '\n';
+          }
+        };
+        </script>
+        <script src="luminex.js"></script>
+        </body>
+        </html>
+        HTMLEOF
+        tar -czf luminex-wasm.tar.gz -C wasm-package .
+    - uses: actions/upload-artifact@v4
+      with:
+        name: luminex-wasm
+        path: luminex-wasm.tar.gz
+
+  create-release:
+    needs: [build-linux, build-windows, build-macos, build-wasm]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+    - uses: actions/checkout@v4
+    - uses: actions/download-artifact@v4
+      with:
+        path: artifacts
+    - name: Create Release
+      env:
+        GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        TAG: ${{ github.event.inputs.version || github.ref_name }}
+      run: |
+        gh release create "$TAG" \
+          artifacts/luminex-linux-x86-64-modern/luminex-linux-x86-64-modern \
+          artifacts/luminex-linux-x86-64/luminex-linux-x86-64 \
+          artifacts/luminex-windows-x86-64-modern/luminex-windows-x86-64-modern.exe \
+          artifacts/luminex-windows-x86-64/luminex-windows-x86-64.exe \
+          artifacts/luminex-macos-arm64/luminex-macos-arm64 \
+          artifacts/luminex-wasm/luminex-wasm.tar.gz \
+          --title "Luminex $TAG" \
+          --notes "## Luminex Chess Engine $TAG
+
+        ### Binaries
+        - **Linux x86-64 (modern)**: AVX2 + BMI2 optimized (most 64-bit CPUs since 2015)
+        - **Linux x86-64**: SSE4.2 + POPCNT compatible (older CPUs)
+        - **Windows x86-64 (modern)**: ClangCL optimized build
+        - **Windows x86-64**: MSVC compatible build
+        - **macOS ARM64**: Apple Silicon optimized
+        - **WASM**: Web browser build (luminex.js + luminex.wasm)
+
+        ### Usage
+        \`\`\`
+        ./luminex
+        uci
+        isready
+        position startpos
+        go movestime 1000
+        \`\`\`"
