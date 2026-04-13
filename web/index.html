@@ -45,22 +45,22 @@ body{background:var(--bg);color:var(--text);font-family:'Segoe UI',system-ui,-ap
 .board-wrap{display:flex;flex-direction:column;gap:4px}
 .player-bar{display:flex;align-items:center;gap:8px;padding:6px 10px;background:var(--bg2);border-radius:var(--radius-sm);border:1px solid var(--border);font-size:.82rem}
 .player-bar.active{border-color:var(--accent);box-shadow:0 0 8px rgba(124,106,255,.12)}
-.player-icon{font-size:1.1rem}
+.player-icon{font-size:1.1rem;font-family:'Segoe UI Symbol','Apple Symbols','Noto Sans Symbols 2',sans-serif}
 .player-name{font-weight:500}
 .player-eval{margin-left:auto;font-family:'Courier New',monospace;font-size:.78rem;color:var(--text2);padding:1px 6px;background:var(--bg);border-radius:3px}
-.captured{display:flex;flex-wrap:wrap;gap:0;font-size:.85rem;min-height:18px;opacity:.7;margin-left:6px}
+.captured{display:flex;flex-wrap:wrap;gap:0;font-size:.85rem;min-height:18px;opacity:.7;margin-left:6px;font-family:'Segoe UI Symbol','Apple Symbols','Noto Sans Symbols 2',sans-serif}
 
 .board-outer{border-radius:var(--radius);overflow:hidden;box-shadow:0 4px 20px rgba(0,0,0,.4);border:2px solid var(--border)}
 .board{display:grid;grid-template-columns:repeat(8,1fr);width:min(80vw,480px);height:min(80vw,480px);user-select:none}
 
-.sq{display:flex;align-items:center;justify-content:center;cursor:pointer;position:relative;-webkit-tap-highlight-color:transparent}
+.sq{display:flex;align-items:center;justify-content:center;cursor:pointer;position:relative;-webkit-tap-highlight-color:transparent;aspect-ratio:1}
 .sq.l{background:var(--sq-light)}.sq.d{background:var(--sq-dark)}
 .sq.l:hover{background:#e0cda0}.sq.d:hover{background:#c09870}
 .sq.sel{background:var(--sq-selected)!important}
 .sq.last.l{background:var(--sq-hl-light)}.sq.last.d{background:var(--sq-hl-dark)}
 .sq.chk{background:var(--sq-check)!important}
 
-.pc{font-size:min(9vw,3.6rem);line-height:1;pointer-events:none;filter:drop-shadow(0 1px 1px rgba(0,0,0,.25))}
+.pc{font-size:min(9vw,3.6rem);line-height:1;pointer-events:none;filter:drop-shadow(0 1px 1px rgba(0,0,0,.25));font-family:'Segoe UI Symbol','Apple Symbols','Noto Sans Symbols 2',sans-serif}
 @media(min-width:540px){.pc{font-size:3.6rem}}
 
 .dot{position:absolute;width:26%;height:26%;border-radius:50%;background:rgba(0,0,0,.15);pointer-events:none;z-index:2}
@@ -125,7 +125,7 @@ body{background:var(--bg);color:var(--text);font-family:'Segoe UI',system-ui,-ap
 <body>
 
 <div class="loading" id="loading">
-<div style="font-size:2.5rem">&#9816;</div>
+<div style="font-size:2.5rem;font-family:'Segoe UI Symbol','Apple Symbols','Noto Sans Symbols 2',sans-serif">&#9816;&#65038;</div>
 <div class="spinner"></div>
 <div class="load-txt" id="loadTxt">Loading Luminex engine...</div>
 </div>
@@ -150,14 +150,14 @@ body{background:var(--bg);color:var(--text);font-family:'Segoe UI',system-ui,-ap
 <div class="main">
 <div class="board-wrap">
 <div class="player-bar" id="topBar">
-<span class="player-icon" id="topIcon">&#9818;</span>
+<span class="player-icon" id="topIcon" style="font-family:'Segoe UI Symbol','Apple Symbols','Noto Sans Symbols 2',sans-serif">&#9818;&#65038;</span>
 <span class="player-name" id="topName">Luminex</span>
 <span class="captured" id="topCap"></span>
 <span class="player-eval" id="topEval"></span>
 </div>
 <div class="board-outer"><div class="board" id="board"></div></div>
 <div class="player-bar" id="botBar">
-<span class="player-icon" id="botIcon">&#9812;</span>
+<span class="player-icon" id="botIcon" style="font-family:'Segoe UI Symbol','Apple Symbols','Noto Sans Symbols 2',sans-serif">&#9812;&#65038;</span>
 <span class="player-name" id="botName">You</span>
 <span class="captured" id="botCap"></span>
 <span class="player-eval" id="botEval"></span>
@@ -204,7 +204,7 @@ body{background:var(--bg);color:var(--text);font-family:'Segoe UI',system-ui,-ap
 </div>
 
 <script>
-const PU={K:'\u2654',Q:'\u2655',R:'\u2656',B:'\u2657',N:'\u2658',P:'\u2659',k:'\u265A',q:'\u265B',r:'\u265C',b:'\u265D',n:'\u265E',p:'\u265F'};
+const PU={K:'\u2654\uFE0E',Q:'\u2655\uFE0E',R:'\u2656\uFE0E',B:'\u2657\uFE0E',N:'\u2658\uFE0E',P:'\u2659\uFE0E',k:'\u265A\uFE0E',q:'\u265B\uFE0E',r:'\u265C\uFE0E',b:'\u265D\uFE0E',n:'\u265E\uFE0E',p:'\u265F\uFE0E'};
 const PV={P:1,N:3,B:3,R:5,Q:9,K:0,p:1,n:3,b:3,r:5,q:9,k:0};
 const START='rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1';
 let board=[],turn='w',castling='KQkq',epSq=null,halfmove=0,fullmove=1;
