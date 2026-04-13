@@ -147,44 +147,30 @@ jobs:
         name: luminex-wasm
         path: luminex-wasm.tar.gz
 
-  create-release:
+  upload-assets:
     needs: [build-linux, build-windows, build-macos, build-wasm]
     runs-on: ubuntu-latest
     permissions:
       contents: write
     steps:
-    - uses: actions/checkout@v4
     - uses: actions/download-artifact@v4
       with:
         path: artifacts
-    - name: Create Release
+    - name: Upload binaries to release
       env:
         GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         TAG: ${{ github.event.inputs.version || github.ref_name }}
       run: |
-        gh release create "$TAG" \
+        if ! gh release view "$TAG" > /dev/null 2>&1; then
+          echo "ERROR: Release $TAG does not exist. Create it first with:"
+          echo "  gh release create $TAG --title \"Luminex $TAG\" --notes \"...\""
+          exit 1
+        fi
+        gh release upload "$TAG" \
           artifacts/luminex-linux-x86-64-modern/luminex-linux-x86-64-modern \
           artifacts/luminex-linux-x86-64/luminex-linux-x86-64 \
           artifacts/luminex-windows-x86-64-modern/luminex-windows-x86-64-modern.exe \
           artifacts/luminex-windows-x86-64/luminex-windows-x86-64.exe \
           artifacts/luminex-macos-arm64/luminex-macos-arm64 \
           artifacts/luminex-wasm/luminex-wasm.tar.gz \
-          --title "Luminex $TAG" \
-          --notes "## Luminex Chess Engine $TAG
-
-        ### Binaries
-        - **Linux x86-64 (modern)**: AVX2 + BMI2 optimized (most 64-bit CPUs since 2015)
-        - **Linux x86-64**: SSE4.2 + POPCNT compatible (older CPUs)
-        - **Windows x86-64 (modern)**: ClangCL optimized build
-        - **Windows x86-64**: MSVC compatible build
-        - **macOS ARM64**: Apple Silicon optimized
-        - **WASM**: Web browser build (luminex.js + luminex.wasm)
-
-        ### Usage
-        \`\`\`
-        ./luminex
-        uci
-        isready
-        position startpos
-        go movestime 1000
-        \`\`\`"
+          --clobber
