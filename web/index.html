@@ -1042,14 +1042,30 @@ function initEngine(){
       document.getElementById('loadingOverlay').classList.add('hidden');
       logMsg('Engine ready','info');
       render();
-      // If playing as black, engine starts
       if(humanColor==='b') engineGo();
       return;
     }
     if(line==='__loading__') return;
+    // Show debug/error messages in loading screen
+    if(line.startsWith('DBG:')){
+      document.getElementById('loadingText').textContent=line;
+      console.log(line);
+    }
+    if(line.startsWith('ERROR:')){
+      document.getElementById('loadingText').textContent=line;
+      document.getElementById('loadingText').style.color='var(--red)';
+      console.error(line);
+    }
     handleEngineLine(line);
   };
-  worker.onerror=(e)=>{logMsg('Error: '+e.message,'warn');};
+  worker.onerror=(e)=>{
+    const msg='Worker error: '+e.message;
+    document.getElementById('loadingText').textContent=msg;
+    document.getElementById('loadingText').style.color='var(--red)';
+    console.error(msg);
+  };
+  // Init the engine
+  worker.postMessage('__init__');
 }
 
 function sendCmd(cmd){worker.postMessage(cmd);}
