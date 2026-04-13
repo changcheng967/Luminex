@@ -92,63 +92,8 @@ jobs:
         name: luminex-macos-arm64
         path: luminex-macos-arm64
 
-  build-wasm:
-    runs-on: ubuntu-latest
-    steps:
-    - uses: actions/checkout@v4
-    - name: Install Emscripten
-      run: |
-        git clone https://github.com/emscripten-core/emsdk.git
-        cd emsdk
-        ./emsdk install latest
-        ./emsdk activate latest
-    - name: Configure
-      run: |
-        source emsdk/emsdk_env.sh
-        emcmake cmake -B build-wasm -DCMAKE_BUILD_TYPE=Release \
-          -DCMAKE_CXX_FLAGS="-O3 -flto -DNDEBUG" \
-          -DWASM_BUILD=ON
-    - name: Build
-      run: |
-        source emsdk/emsdk_env.sh
-        cmake --build build-wasm --config Release
-    - name: Package
-      run: |
-        mkdir -p wasm-package
-        cp build-wasm/luminex.js wasm-package/luminex.js
-        cp build-wasm/luminex.wasm wasm-package/luminex.wasm
-        # Create a simple HTML wrapper for web play
-        cat > wasm-package/index.html << 'HTMLEOF'
-        <!DOCTYPE html>
-        <html>
-        <head><title>Luminex Chess Engine</title></head>
-        <body>
-        <h1>Luminex Chess Engine (WASM)</h1>
-        <pre id="output"></pre>
-        <script>
-        var Module = {
-          print: function(text) {
-            var el = document.getElementById('output');
-            el.textContent += text + '\n';
-          },
-          printErr: function(text) {
-            var el = document.getElementById('output');
-            el.textContent += '[ERR] ' + text + '\n';
-          }
-        };
-        </script>
-        <script src="luminex.js"></script>
-        </body>
-        </html>
-        HTMLEOF
-        tar -czf luminex-wasm.tar.gz -C wasm-package .
-    - uses: actions/upload-artifact@v4
-      with:
-        name: luminex-wasm
-        path: luminex-wasm.tar.gz
-
   upload-assets:
-    needs: [build-linux, build-windows, build-macos, build-wasm]
+    needs: [build-linux, build-windows, build-macos]
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -172,5 +117,4 @@ jobs:
           artifacts/luminex-windows-x86-64-modern/luminex-windows-x86-64-modern.exe \
           artifacts/luminex-windows-x86-64/luminex-windows-x86-64.exe \
           artifacts/luminex-macos-arm64/luminex-macos-arm64 \
-          artifacts/luminex-wasm/luminex-wasm.tar.gz \
           --clobber

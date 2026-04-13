@@ -9,9 +9,6 @@ class Position;
 // UCI loop - main entry point
 void uci_loop();
 
-// Process a single UCI command (for WASM use)
-void process_uci_command(const std::string& line);
-
 // UCI command handlers
 void handle_uci();
 void handle_isready();

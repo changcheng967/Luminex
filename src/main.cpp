@@ -2,10 +2,6 @@
 #include <chrono>
 #include <iostream>
 #include <cstdio>
-#include <fstream>
-#ifdef __EMSCRIPTEN__
-#include <emscripten.h>
-#endif
 
 namespace luminex {
 
@@ -14,11 +10,7 @@ void init() {
     init_line_tables();
     init_zobrist();
     init_evaluation();
-#ifdef WASM_BUILD
-    TT.resize(32);  // 32 MB for WASM (browser memory constraints)
-#else
     TT.resize(256); // 256 MB transposition table
-#endif
     TT.clear();
 }
 
@@ -158,25 +150,3 @@ int main(int argc, char* argv[]) {
 
     return 0;
 }
-
-// WASM support: process a single UCI command without stdin
-#ifdef __EMSCRIPTEN__
-extern "C" {
-
-// Process one UCI command string (called from JavaScript)
-EMSCRIPTEN_KEEPALIVE
-void process_command(const char* cmd) {
-    luminex::process_uci_command(cmd);
-}
-
-// Initialize the engine (called once from JavaScript)
-EMSCRIPTEN_KEEPALIVE
-void engine_init() {
-    luminex::init();
-#ifdef WASM_BUILD
-    luminex::num_threads = 1;  // No threading in WASM
-#endif
-}
-
-} // extern "C"
-#endif

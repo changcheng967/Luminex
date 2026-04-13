@@ -13,7 +13,6 @@ Latest release: [github.com/changcheng967/Luminex/releases](https://github.com/c
 | Windows (ClangCL) | `luminex-windows-x86-64-modern.exe` |
 | Windows (MSVC) | `luminex-windows-x86-64.exe` |
 | macOS (Apple Silicon) | `luminex-macos-arm64` |
-| Web (WASM) | `luminex-wasm.tar.gz` |
 
 ## Usage
 
@@ -31,10 +30,6 @@ go movetime 1000
 | `Hash` | 128 | TT size in MB |
 | `Threads` | 1 | Search threads (lazy SMP) |
 | `Contempt` | 0 | Draw avoidance (centipawns) |
-
-### Web
-
-Extract `luminex-wasm.tar.gz` and serve `index.html` from any static host. Runs entirely in-browser.
 
 ## Build
 

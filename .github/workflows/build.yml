@@ -7,14 +7,14 @@ on:
     branches: [ main ]
 
 jobs:
-  ubuntu-gcc:
+  linux-modern:
     runs-on: ubuntu-latest
     steps:
     - uses: actions/checkout@v4
     - name: Install dependencies
       run: sudo apt-get update && sudo apt-get install -y ninja-build
     - name: Configure
-      run: cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_CXX_COMPILER=g++
+      run: cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DCI=ON -DCMAKE_CXX_FLAGS="-march=x86-64-v3 -mtune=generic"
     - name: Build
       run: cmake --build build --config Release
     - name: Run Bench
@@ -22,14 +22,14 @@ jobs:
     - name: Test UCI
       run: printf 'uci\nisready\nquit\n' | ./build/luminex
 
-  ubuntu-clang:
+  linux-compat:
     runs-on: ubuntu-latest
     steps:
     - uses: actions/checkout@v4
     - name: Install dependencies
-      run: sudo apt-get update && sudo apt-get install -y ninja-build clang
+      run: sudo apt-get update && sudo apt-get install -y ninja-build
     - name: Configure
-      run: cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_CXX_COMPILER=clang++ -DCMAKE_C_COMPILER=clang
+      run: cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DCI=ON -DCMAKE_CXX_FLAGS="-march=x86-64 -mtune=generic -msse4.2 -mpopcnt"
     - name: Build
       run: cmake --build build --config Release
     - name: Run Bench
@@ -37,7 +37,24 @@ jobs:
     - name: Test UCI
       run: printf 'uci\nisready\nquit\n' | ./build/luminex
 
-  windows-msvc:
+  windows-modern:
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: cmd
+    steps:
+    - uses: actions/checkout@v4
+    - name: Configure
+      run: cmake -B build -G "Visual Studio 17 2022" -A x64 -T ClangCL
+    - name: Build
+      run: cmake --build build --config Release
+    - name: Run Bench
+      run: build\Release\luminex.exe bench
+    - name: Test UCI
+      run: |
+        (echo uci & echo isready & echo quit) | build\Release\luminex.exe
+
+  windows-compat:
     runs-on: windows-latest
     defaults:
       run:
@@ -54,7 +71,7 @@ jobs:
       run: |
         (echo uci & echo isready & echo quit) | build\Release\luminex.exe
 
-  macos:
+  macos-arm64:
     runs-on: macos-latest
     steps:
     - uses: actions/checkout@v4
