@@ -65,4 +65,4 @@ src/
 
 ## License
 
-[MIT](LICENSE)
+[Luminex License](LICENSE) — non-commercial use
