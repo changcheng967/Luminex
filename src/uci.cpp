@@ -135,31 +135,31 @@ void handle_uci() {
     safe_output("option name Threads type spin default 1 min 1 max 64\n");
     safe_output("option name Contempt type spin default 0 min -1000 max 1000\n");
     safe_output("option name Clear Hash type button\n");
-    // Eval parameters (self-engineered defaults)
-    safe_output("option name BishopPairMG type spin default 40 min -100 max 200\n");
-    safe_output("option name BishopPairEG type spin default 100 min -100 max 300\n");
-    safe_output("option name RookOpenMG type spin default 25 min -50 max 150\n");
-    safe_output("option name RookOpenEG type spin default 40 min -50 max 150\n");
-    safe_output("option name RookSemiOpenMG type spin default 15 min -50 max 100\n");
-    safe_output("option name RookSemiOpenEG type spin default 20 min -50 max 100\n");
-    safe_output("option name Rook7thMG type spin default 30 min -50 max 100\n");
-    safe_output("option name Rook7thEG type spin default 25 min -50 max 150\n");
-    safe_output("option name PawnShieldCenter type spin default 12 min -20 max 40\n");
-    safe_output("option name PawnShieldKnight type spin default 15 min -20 max 40\n");
-    safe_output("option name PawnShieldRook type spin default 8 min -20 max 30\n");
-    safe_output("option name PawnStorm type spin default 10 min 0 max 30\n");
-    safe_output("option name OpenFilePenaltyMG type spin default 20 min -50 max 100\n");
-    safe_output("option name OpenFilePenaltyEG type spin default 15 min -50 max 100\n");
-    safe_output("option name OutpostKnightMG type spin default 30 min -20 max 60\n");
-    safe_output("option name OutpostKnightEG type spin default 15 min -20 max 40\n");
-    safe_output("option name OutpostBishopMG type spin default 40 min -20 max 100\n");
-    safe_output("option name OutpostBishopEG type spin default 25 min -20 max 60\n");
-    safe_output("option name HangingPawnMG type spin default 10 min -20 max 50\n");
-    safe_output("option name HangingPawnEG type spin default 35 min -20 max 100\n");
-    safe_output("option name FarKnightMG type spin default 15 min -50 max 60\n");
-    safe_output("option name FarKnightEG type spin default 5 min -50 max 60\n");
-    safe_output("option name FarBishopMG type spin default 10 min -50 max 40\n");
-    safe_output("option name FarBishopEG type spin default 5 min -50 max 40\n");
+    // Eval parameters (Texel-tuned from 71K self-play positions)
+    safe_output("option name BishopPairMG type spin default 50 min -100 max 200\n");
+    safe_output("option name BishopPairEG type spin default 43 min -100 max 300\n");
+    safe_output("option name RookOpenMG type spin default -20 min -50 max 150\n");
+    safe_output("option name RookOpenEG type spin default 4 min -50 max 150\n");
+    safe_output("option name RookSemiOpenMG type spin default -20 min -50 max 100\n");
+    safe_output("option name RookSemiOpenEG type spin default 15 min -50 max 100\n");
+    safe_output("option name Rook7thMG type spin default -50 min -50 max 100\n");
+    safe_output("option name Rook7thEG type spin default 22 min -50 max 150\n");
+    safe_output("option name PawnShieldCenter type spin default 18 min -20 max 40\n");
+    safe_output("option name PawnShieldKnight type spin default 40 min -20 max 40\n");
+    safe_output("option name PawnShieldRook type spin default 20 min -20 max 30\n");
+    safe_output("option name PawnStorm type spin default 0 min 0 max 30\n");
+    safe_output("option name OpenFilePenaltyMG type spin default 55 min -50 max 100\n");
+    safe_output("option name OpenFilePenaltyEG type spin default 50 min -50 max 100\n");
+    safe_output("option name OutpostKnightMG type spin default -20 min -20 max 60\n");
+    safe_output("option name OutpostKnightEG type spin default 20 min -20 max 40\n");
+    safe_output("option name OutpostBishopMG type spin default 0 min -20 max 100\n");
+    safe_output("option name OutpostBishopEG type spin default -20 min -20 max 60\n");
+    safe_output("option name HangingPawnMG type spin default -16 min -20 max 50\n");
+    safe_output("option name HangingPawnEG type spin default 46 min -20 max 100\n");
+    safe_output("option name FarKnightMG type spin default 8 min -50 max 60\n");
+    safe_output("option name FarKnightEG type spin default -14 min -50 max 60\n");
+    safe_output("option name FarBishopMG type spin default -20 min -50 max 40\n");
+    safe_output("option name FarBishopEG type spin default 15 min -50 max 40\n");
     safe_output("uciok\n");
 }
 
