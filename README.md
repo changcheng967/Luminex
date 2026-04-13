@@ -65,4 +65,4 @@ src/
 
 ## License
 
-[Luminex License](LICENSE)
+[MIT](LICENSE)
