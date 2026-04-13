@@ -3,6 +3,9 @@
 #include <iostream>
 #include <cstdio>
 #include <fstream>
+#ifdef __EMSCRIPTEN__
+#include <emscripten.h>
+#endif
 
 namespace luminex {
 
@@ -151,3 +154,22 @@ int main(int argc, char* argv[]) {
 
     return 0;
 }
+
+// WASM support: process a single UCI command without stdin
+#ifdef __EMSCRIPTEN__
+extern "C" {
+
+// Process one UCI command string (called from JavaScript)
+EMSCRIPTEN_KEEPALIVE
+void process_command(const char* cmd) {
+    luminex::process_uci_command(cmd);
+}
+
+// Initialize the engine (called once from JavaScript)
+EMSCRIPTEN_KEEPALIVE
+void engine_init() {
+    luminex::init();
+}
+
+} // extern "C"
+#endif

@@ -1,66 +1,51 @@
 // Web Worker for Luminex WASM engine
-// Handles UCI protocol communication with Emscripten module
+// Uses ccall to invoke engine functions directly (no stdin/stdout)
 
 let module = null;
-let pendingInput = [];
-let outputCallback = null;
+let stdoutBuffer = '';
 
-function initModule() {
-  try {
-    module = createModule({
-      locateFile: (path) => path,
-      stdin: () => {
-        if (pendingInput.length > 0) {
-          return pendingInput.shift();
-        }
-        return null;
-      },
-      stdout: (code) => {
-        if (outputCallback) {
-          outputCallback(String.fromCharCode(code));
-        }
-      },
-      print: (text) => {
-        self.postMessage(text);
-      },
-      printErr: (text) => {
-        // Suppress noisy Emscripten stderr
-      },
-      arguments: [],
-      noInitialRun: true,
-    });
+self.onmessage = function(e) {
+  const msg = e.data;
 
-    module.then((m) => {
-      module = m;
-      // Start the engine main loop (runs UCI loop)
-      m.callMain();
-    }).catch((err) => {
-      self.postMessage('ERROR: ' + err.message);
-    });
-  } catch (e) {
-    self.postMessage('ERROR: ' + e.message);
-  }
-}
-
-self.onmessage = (e) => {
-  const cmd = e.data;
-  if (cmd === '__init__') {
-    // Load the WASM module script
+  if (msg === '__init__') {
     try {
       importScripts('luminex.js');
-      initModule();
-      // Give Emscripten time to initialize
-      setTimeout(() => {
+    } catch(err) {
+      self.postMessage('ERROR: Failed to load luminex.js: ' + err.message);
+      return;
+    }
+
+    try {
+      createModule({
+        print: function(text) {
+          self.postMessage(text);
+        },
+        printErr: function(text) {
+          // Suppress noisy Emscripten internals
+        },
+        noInitialRun: true,
+      }).then(function(m) {
+        module = m;
+        // Initialize engine (magic bitboards, TT, etc.)
+        m.ccall('engine_init', null, [], []);
         self.postMessage('READY');
-      }, 500);
-    } catch (e) {
-      self.postMessage('ERROR loading engine: ' + e.message);
+      }).catch(function(err) {
+        self.postMessage('ERROR: Module init failed: ' + err.message);
+      });
+    } catch(err) {
+      self.postMessage('ERROR: ' + err.message);
     }
     return;
   }
-  // Send UCI command to engine via stdin
-  pendingInput.push(cmd + '\n');
+
+  // Send UCI command via ccall
+  if (module && msg !== '__loading__') {
+    try {
+      module.ccall('process_command', null, ['string'], [msg]);
+    } catch(err) {
+      self.postMessage('ERROR: command failed: ' + err.message);
+    }
+  }
 };
 
-// Kick off initialization
 self.postMessage('__loading__');

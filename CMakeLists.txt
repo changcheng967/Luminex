@@ -113,3 +113,11 @@ target_include_directories(luminex PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
 if(WIN32)
     target_link_libraries(luminex PRIVATE)
 endif()
+
+# WASM build settings
+if(WASM_BUILD)
+    target_compile_definitions(luminex PRIVATE WASM_BUILD)
+    set_target_properties(luminex PROPERTIES
+        LINK_FLAGS "-sALLOW_MEMORY_GROWTH=1 -sEXIT_RUNTIME=0 -sEXPORTED_RUNTIME_METHODS=[\"ccall\",\"cwrap\",\"UTF8ToString\",\"stringToUTF8\"] -sEXPORTED_FUNCTIONS=[\"_engine_init\",\"_process_command\",\"_main\"] -sMODULARIZE=1 -sEXPORT_NAME=createModule -sENVIRONMENT=web,worker"
+    )
+endif()

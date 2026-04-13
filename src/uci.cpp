@@ -417,6 +417,53 @@ void uci_loop() {
     if (dbglog) { fclose(dbglog); }
 }
 
+// Process a single UCI command (for WASM/web use)
+// This is the same logic as the while loop in uci_loop() but processes one command
+void process_uci_command(const std::string& line) {
+    if (line.empty()) return;
+
+    std::string cmd_line = line;
+    if (!cmd_line.empty() && cmd_line.back() == '\r') {
+        cmd_line.pop_back();
+    }
+    if (cmd_line.empty()) return;
+
+    std::istringstream ss(cmd_line);
+    std::string cmd;
+    ss >> cmd;
+
+    if (cmd == "uci") {
+        handle_uci();
+    } else if (cmd == "isready") {
+        safe_output("readyok\n");
+    } else if (cmd == "ucinewgame") {
+        stop.store(true, std::memory_order_seq_cst);
+        wait_for_search_thread();
+        stop.store(false, std::memory_order_seq_cst);
+        handle_ucinewgame();
+    } else if (cmd == "position") {
+        stop.store(true, std::memory_order_seq_cst);
+        wait_for_search_thread();
+        stop.store(false, std::memory_order_seq_cst);
+        handle_position(pos, cmd_line);
+    } else if (cmd == "go") {
+        handle_go(pos, cmd_line);
+    } else if (cmd == "setoption") {
+        handle_setoption(cmd_line);
+    } else if (cmd == "stop") {
+        g_stop_requested = true;
+        stop.store(true, std::memory_order_seq_cst);
+        std::atomic_thread_fence(std::memory_order_seq_cst);
+    } else if (cmd == "quit") {
+        g_stop_requested = true;
+        stop.store(true, std::memory_order_seq_cst);
+        std::atomic_thread_fence(std::memory_order_seq_cst);
+        wait_for_search_thread();
+    } else if (cmd == "d") {
+        safe_output(pos.fen() + "\n");
+    }
+}
+
 void uci_send(const char* msg, ...) {
     va_list args;
     va_start(args, msg);
