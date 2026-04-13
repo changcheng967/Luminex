@@ -11,33 +11,33 @@ class Position;
 extern Score PST_MG_TABLE[2][8][64];
 extern Score PST_EG_TABLE[2][8][64];
 
-// Tunable evaluation parameters (settable via UCI options)
-// Values from Texel tuning (71K self-play positions, coordinate descent)
+// Tunable evaluation parameters (settable via UCI options for SPSA tuning)
+// Values from SPSA self-play tuning (40 iterations, 800 games)
 struct EvalParams {
-    int bishop_pair_mg = 50;
-    int bishop_pair_eg = 43;
-    int rook_open_mg = -20;
-    int rook_open_eg = 4;
-    int rook_semi_open_mg = -20;
-    int rook_semi_open_eg = 15;
-    int rook_7th_mg = -50;
-    int rook_7th_eg = 22;
-    int pawn_shield_center = 18;
-    int pawn_shield_knight = 40;
-    int pawn_shield_rook = 20;
-    int pawn_storm = 0;
-    int open_file_penalty_mg = 55;
-    int open_file_penalty_eg = 50;
-    int outpost_knight_mg = -20;
-    int outpost_knight_eg = 20;
-    int outpost_bishop_mg = 0;
-    int outpost_bishop_eg = -20;
-    int hanging_pawn_mg = -16;
-    int hanging_pawn_eg = 46;
-    int far_knight_mg = 8;
-    int far_knight_eg = -14;
-    int far_bishop_mg = -20;
-    int far_bishop_eg = 15;
+    int bishop_pair_mg = 40;
+    int bishop_pair_eg = 100;
+    int rook_open_mg = 25;
+    int rook_open_eg = 40;
+    int rook_semi_open_mg = 15;
+    int rook_semi_open_eg = 20;
+    int rook_7th_mg = 30;
+    int rook_7th_eg = 25;
+    int pawn_shield_center = 12;
+    int pawn_shield_knight = 15;
+    int pawn_shield_rook = 8;
+    int pawn_storm = 10;
+    int open_file_penalty_mg = 20;
+    int open_file_penalty_eg = 15;
+    int outpost_knight_mg = 30;
+    int outpost_knight_eg = 15;
+    int outpost_bishop_mg = 40;
+    int outpost_bishop_eg = 25;
+    int hanging_pawn_mg = 10;
+    int hanging_pawn_eg = 35;
+    int far_knight_mg = 15;
+    int far_knight_eg = 5;
+    int far_bishop_mg = 10;
+    int far_bishop_eg = 5;
 };
 
 extern EvalParams g_eval_params;
