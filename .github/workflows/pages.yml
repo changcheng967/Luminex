@@ -1,0 +1,62 @@
+name: Deploy GitHub Pages
+
+on:
+  push:
+    branches: [ main ]
+    paths:
+      - 'web/**'
+      - 'src/**'
+      - 'CMakeLists.txt'
+      - '.github/workflows/pages.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  build-wasm:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v4
+    - name: Install Emscripten
+      run: |
+        git clone https://github.com/emscripten-core/emsdk.git
+        cd emsdk
+        ./emsdk install latest
+        ./emsdk activate latest
+    - name: Build WASM
+      run: |
+        source emsdk/emsdk_env.sh
+        emcmake cmake -B build-wasm -DCMAKE_BUILD_TYPE=Release \
+          -DCMAKE_CXX_FLAGS="-O3 -flto -DNDEBUG" \
+          -DWASM_BUILD=ON \
+          -DCMAKE_EXECUTABLE_SUFFIX=".js"
+        cmake --build build-wasm --config Release
+    - name: Prepare site
+      run: |
+        mkdir -p _site
+        cp web/index.html _site/index.html
+        cp web/worker.js _site/worker.js
+        cp build-wasm/luminex.js _site/luminex.js
+        cp build-wasm/luminex.wasm _site/luminex.wasm
+        # Create 404 page
+        cp web/index.html _site/404.html
+    - uses: actions/upload-pages-artifact@v3
+      with:
+        path: _site
+
+  deploy:
+    needs: build-wasm
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+    - uses: actions/deploy-pages@v4
+      id: deployment

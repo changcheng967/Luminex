@@ -65,4 +65,4 @@ src/
 
 ## License
 
-Open source.
+[Luminex License](LICENSE)

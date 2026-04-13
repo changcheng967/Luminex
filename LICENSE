@@ -1,0 +1,443 @@
+LUMINEX CHESS ENGINE LICENSE AGREEMENT
+Version 1.1
+
+A legally binding agreement between you ("Licensee", "You") and the copyright
+holders ("Licensor", "We", "Us") of the Luminex Chess Engine software.
+
+By obtaining, downloading, accessing, or using the Software, You acknowledge
+that You have read, understood, and agree to be bound by the terms and
+conditions of this License Agreement. If You do not agree with any part of
+this License, You must immediately cease all use of the Software and destroy
+all copies in Your possession.
+
+================================================================================
+ARTICLE I — DEFINITIONS
+================================================================================
+
+1.1  "Software" means the Luminex Chess Engine, including but not limited to:
+     all source code files, header files, build scripts, configuration files,
+     compiled binaries, WebAssembly modules, JavaScript glue code, HTML/CSS
+     web assets, documentation, images, logos, branding materials, and any
+     other files included in the official distribution or repository.
+
+1.2  "Derivative Work" means any modification, adaptation, translation,
+     compilation, or any other form of the Software in which the original
+     Software is materially altered, transformed, or built upon, including
+     but not limited to: modified source code, recompiled binaries, forked
+     versions, integrated products, or any work that incorporates any portion
+     of the Software.
+
+1.3  "Distribution" means any act of transferring, publishing, broadcasting,
+     hosting, uploading, sharing, or otherwise making the Software or any
+     Derivative Work available to any third party by any means, including but
+     not limited to: physical media, electronic download, web hosting, API
+     access, cloud deployment, or inclusion in any product or service.
+
+1.4  "Commercial Use" means any use of the Software that is primarily intended
+     for or directed toward commercial advantage or monetary compensation,
+     including but not limited to:
+
+     (a) Selling, licensing, sublicensing, renting, or leasing the Software
+     (b) Incorporating the Software into any product or service that is sold
+         or offered for a fee
+     (c) Using the Software as part of a subscription service, SaaS platform,
+         or pay-to-play gaming service
+     (d) Using the Software to generate revenue through advertisements,
+         sponsorships, or affiliate links
+     (e) Using the Software in a business context for competitive advantage,
+         including but not limited to: professional chess training services,
+         paid coaching platforms, or commercial chess analysis tools
+     (f) Offering the Software as a service (engine-as-a-service) to third
+         parties for compensation
+     (g) Using the Software in any fundraising, crowdfunding, or
+         revenue-sharing arrangement
+
+1.5  "Intellectual Property" means all patents, copyrights, trademarks, trade
+     secrets, and any other intellectual property rights associated with the
+     Software, whether registered or unregistered.
+
+1.6  "Authorized Recipient" means any individual or entity who has obtained
+     a copy of the Software through legitimate means directly from the Licensor
+     or from an Authorized Recipient who complied with the distribution terms
+     of this License.
+
+================================================================================
+ARTICLE II — GRANT OF LICENSE
+================================================================================
+
+2.1  Subject to full compliance with all terms and conditions of this License,
+     the Licensor hereby grants to You a limited, non-exclusive,
+     non-transferable, non-sublicensable, revocable license to:
+
+     (a) Use the Software for personal, non-commercial purposes, including
+         playing chess, studying chess, self-improvement, and entertainment
+
+     (b) Use the Software for educational purposes in academic institutions,
+         schools, universities, chess clubs, and non-profit educational
+         organizations, provided no tuition or fee is charged specifically
+         for access to or use of the Software
+
+     (c) Use the Software for academic and scientific research purposes,
+         including but not limited to: artificial intelligence research,
+         game theory research, search algorithm research, and computer
+         science education, provided such research is not funded by or
+         conducted on behalf of a for-profit entity for commercial purposes
+
+     (d) Study, inspect, and analyze the source code for the purpose of
+         learning programming techniques, chess programming concepts, and
+         software architecture
+
+     (e) Modify the source code solely for Your own personal, educational,
+         or research use, provided such modifications are not Distributed
+
+     (f) Participate in non-commercial chess engine competitions, rating
+         lists, and benchmarking events, provided that:
+         - The engine is clearly identified as "Luminex"
+         - Proper attribution to the original authors is given
+         - The competition does not generate revenue for the participant
+           through the use of the Software
+         - The competition rules are fully complied with
+
+     (g) Deploy the WebAssembly version of the Software on personal or
+         non-commercial websites, provided that:
+         - The website is freely accessible to all users at no cost
+         - No revenue is generated from the deployment (no ads, paywalls,
+           subscriptions, or premium tiers related to the Software)
+         - Proper attribution is clearly displayed to end users
+         - The deployed version is unmodified or clearly marked as modified
+
+2.2  No other rights are granted. Any rights not expressly granted in this
+     License are reserved by the Licensor.
+
+================================================================================
+ARTICLE III — RESTRICTIONS AND PROHIBITED USES
+================================================================================
+
+3.1  COMMERCIAL USE PROHIBITION
+     You shall not use the Software for any Commercial Use as defined in
+     Section 1.4. This prohibition applies regardless of the scale of
+     commercial activity and includes indirect commercial benefit.
+
+3.2  ILLEGAL USE PROHIBITION
+     You shall not use the Software for any purpose that violates any
+     applicable local, state, national, or international law, regulation,
+     or ordinance, including but not limited to:
+
+     (a) Cheating in any chess competition, tournament, match, or rated game,
+         whether online or over-the-board, including but not limited to:
+         using engine assistance during play, relaying engine moves to a
+         player, or integrating the Software with any platform in a way that
+         circumvents fair play policies
+
+     (b) Bypassing, circumventing, or disabling any security measure,
+         anti-cheat system, or fair play monitoring system used by any chess
+         platform, tournament organizer, or governing body
+
+     (c) Fraud, deception, misrepresentation, or any form of dishonest
+         activity involving the Software
+
+     (d) Unauthorized access to computer systems, networks, or data
+
+     (e) Any violation of the laws and regulations of the Fédération
+         Internationale des Échecs (FIDE), any national chess federation,
+         or any online chess platform's terms of service
+
+     (f) Any activity that would constitute a criminal offense under
+         applicable law
+
+3.3  INTELLECTUAL PROPERTY RESTRICTIONS
+     You shall not:
+
+     (a) Remove, alter, obscure, or falsify any copyright notice, license
+         terms, trademark, branding, or attribution present in or on the
+         Software or any associated documentation
+
+     (b) Claim authorship or ownership of the Software or any portion
+         thereof, except for modifications You have personally made and
+         clearly documented as Your own
+
+     (c) Register, apply for, or attempt to obtain any patent, trademark,
+         or other intellectual property right that would restrict the
+         Licensor's rights in the Software
+
+     (d) Reverse engineer, decompile, or disassemble any binary
+         distribution of the Software, except to the extent that such
+         activity is expressly permitted by applicable law despite this
+         limitation, and only for the purpose of achieving interoperability
+         with independently created software
+
+     (e) Use the Luminex name, logo, branding, or any confusingly similar
+         marks to endorse, promote, or market any product, service, or
+         entity without prior written consent from the Licensor
+
+3.4  DISTRIBUTION RESTRICTIONS
+     You shall not:
+
+     (a) Distribute Derivative Works without prior written consent from
+         the Licensor
+
+     (b) Distribute the Software through any channel that imposes additional
+         restrictions on recipients that conflict with this License
+
+     (c) Distribute the Software in any form that intentionally obscures
+         the source code availability or license terms
+
+     (d) Bundle the Software with malware, spyware, adware, or any other
+         malicious or unwanted software
+
+     (e) Distribute the Software on any platform or marketplace that
+         charges users for access to the Software
+
+3.5  HARMFUL USE PROHIBITION
+     You shall not use the Software in connection with:
+
+     (a) Any weapon system, military application, or tool of warfare
+
+     (b) Any system designed to cause physical harm, psychological harm,
+         or environmental damage
+
+     (c) Any system designed to harass, stalk, bully, or intimidate
+         any individual or group
+
+     (d) Any system designed to discriminate against individuals or groups
+         based on race, ethnicity, gender, religion, sexual orientation,
+         disability, or any other protected characteristic
+
+     (e) Any mass surveillance system or tool that infringes on
+         privacy rights
+
+================================================================================
+ARTICLE IV — DISTRIBUTION TERMS
+================================================================================
+
+4.1  You may redistribute exact, unmodified copies of the Software provided:
+
+     (a) All files are distributed together in their original form
+     (b) This License is included in full and unaltered
+     (c) All copyright notices are preserved exactly as they appear in the
+         original distribution
+     (d) No additional fees or charges are imposed for the copy beyond
+         reasonable costs of physical media or bandwidth
+     (e) The distribution channel does not conflict with any term of
+         this License
+
+4.2  Distribution of modified versions requires prior written consent from
+     the Licensor. If consent is granted, the distribution must:
+
+     (a) Clearly and conspicuously state that it is a modified version and
+         not the original Software
+     (b) Describe the nature and scope of modifications
+     (c) Include the date of the original Software and the date of modification
+     (d) Preserve attribution to the original authors
+     (e) Include a complete copy of this License
+
+================================================================================
+ARTICLE V — ATTRIBUTION REQUIREMENTS
+================================================================================
+
+5.1  Any use, display, or distribution of the Software must include proper
+     attribution to the original authors. Acceptable attribution includes:
+
+     (a) In source code: retaining all original copyright headers and comments
+     (b) In compiled binaries: including attribution in accompanying
+         documentation or about/version information
+     (c) On websites: displaying "Powered by Luminex" or equivalent
+         attribution prominently on the page where the engine is used
+     (d) In competitions: identifying the engine as "Luminex" with a
+         reference to the official repository
+     (e) In research papers: citing the Software by name and repository URL
+
+5.2  Attribution must be visible and accessible to end users, not hidden
+     in source code alone when the Software is used in a user-facing context.
+
+================================================================================
+ARTICLE VI — COMPETITION AND BENCHMARKING
+================================================================================
+
+6.1  The Licensee may enter the Software in chess engine competitions
+     (tournaments, rating lists, benchmarks, and similar events) provided:
+
+     (a) The engine participates under its official name "Luminex"
+     (b) No misrepresentation of the engine's identity, origin, or strength
+     (c) The competition organizers are provided with accurate information
+         about the Software and its license terms
+     (d) The participation does not involve any Commercial Use
+     (e) The Licensee complies with all rules and regulations of the
+         competition
+
+6.2  The Licensee may not:
+
+     (a) Submit the Software under a different name
+     (b) Claim the Software as their own creation without attribution
+     (c) Use the Software to gain unfair advantage in human chess competitions
+
+================================================================================
+ARTICLE VII — ONLINE AND WEB DEPLOYMENT
+================================================================================
+
+7.1  The WebAssembly version of the Software may be deployed on websites
+     under the following conditions:
+
+     (a) The deployment must be non-commercial as defined in Section 1.4
+     (b) The website must be freely accessible to all users without payment,
+         registration walls, or mandatory data collection
+     (c) Proper attribution must be displayed on the page where the engine
+         is used, including the name "Luminex" and a link to the official
+         repository when feasible
+     (d) The deployed files must not be obfuscated or modified to obscure
+         their origin
+     (e) The Licensee must not claim ownership of the engine or imply
+         official endorsement by the Licensor
+
+7.2  Web deployment must not:
+
+     (a) Expose the engine as a public API for commercial use by third parties
+     (b) Be embedded in any commercial product, iframe, or wrapper that
+         generates revenue
+     (c) Be deployed in any manner that exceeds reasonable usage limits or
+         imposes excessive load on the Licensor's infrastructure (if any)
+
+================================================================================
+ARTICLE VIII — TERMINATION
+================================================================================
+
+8.1  This License and all rights granted hereunder shall terminate
+     automatically and without notice if You fail to comply with any term
+     or condition of this License.
+
+8.2  Upon termination:
+
+     (a) You must immediately cease all use, reproduction, modification,
+         and distribution of the Software
+     (b) You must destroy all copies of the Software and Derivative Works
+         in Your possession or control
+     (c) Sections 1, 3, 5, 9, 10, 11, and 12 shall survive termination
+
+8.3  The Licensor reserves the right to terminate this License at any time
+     for any reason by providing thirty (30) days written notice to the
+     Licensee at the email address associated with their account or the
+     last known contact information.
+
+8.4  Termination does not affect the rights of Authorized Recipients who
+     obtained the Software in compliance with this License prior to
+     termination.
+
+================================================================================
+ARTICLE IX — DISCLAIMER OF WARRANTIES
+================================================================================
+
+9.1  THE SOFTWARE IS PROVIDED "AS IS" AND "AS AVAILABLE" WITHOUT WARRANTY
+     OF ANY KIND, WHETHER EXPRESS, IMPLIED, OR STATUTORY, INCLUDING BUT
+     NOT LIMITED TO THE IMPLIED WARRANTIES OF MERCHANTABILITY, FITNESS FOR
+     A PARTICULAR PURPOSE, TITLE, NON-INFRINGEMENT, AND ANY WARRANTIES
+     ARISING FROM COURSE OF DEALING, COURSE OF PERFORMANCE, OR USAGE OF
+     TRADE.
+
+9.2  THE LICENSOR DOES NOT WARRANT THAT:
+
+     (a) The Software will function uninterrupted, secure, or error-free
+     (b) The Software will meet Your specific requirements or expectations
+     (c) The chess engine's playing strength will achieve any particular
+         Elo rating or performance level
+     (d) Any defects or errors in the Software will be corrected
+     (e) The Software is free of harmful components, viruses, or defects
+     (f) The results obtained from the use of the Software will be accurate,
+         reliable, or complete
+
+9.3  NO ADVICE OR INFORMATION, WHETHER ORAL OR WRITTEN, OBTAINED FROM THE
+     LICENSOR OR THROUGH THE SOFTWARE SHALL CREATE ANY WARRANTY NOT
+     EXPRESSLY STATED IN THIS LICENSE.
+
+================================================================================
+ARTICLE X — LIMITATION OF LIABILITY
+================================================================================
+
+10.1 TO THE MAXIMUM EXTENT PERMITTED BY APPLICABLE LAW, IN NO EVENT SHALL
+     THE LICENSOR BE LIABLE FOR ANY INDIRECT, INCIDENTAL, SPECIAL,
+     CONSEQUENTIAL, OR PUNITIVE DAMAGES, INCLUDING BUT NOT LIMITED TO:
+
+     (a) Loss of profits, revenue, data, use, goodwill, or business
+         opportunities
+     (b) Damages arising from loss, corruption, or unauthorized access to
+         data
+     (c) Damages arising from the inability to use the Software
+     (d) Damages arising from chess game losses, rating decreases, or
+         competitive disadvantages
+     (e) Damages arising from any claim by any third party
+     (f) Damages arising from any breach of this License by You
+
+10.2 THE LICENSOR'S TOTAL LIABILITY FOR ANY CLAIM ARISING FROM OR RELATED
+     TO THIS LICENSE OR THE SOFTWARE SHALL NOT EXCEED THE AMOUNT PAID BY
+     YOU FOR THE SOFTWARE, WHICH IS ZERO (0) FOR FREELY DISTRIBUTED COPIES.
+
+10.3 THIS LIMITATION OF LIABILITY APPLIES REGARDLESS OF THE LEGAL THEORY
+     ON WHICH THE CLAIM IS BASED AND EVEN IF THE LICENSOR HAS BEEN ADVISED
+     OF THE POSSIBILITY OF SUCH DAMAGES.
+
+================================================================================
+ARTICLE XI — INDEMNIFICATION
+================================================================================
+
+11.1 You agree to indemnify, defend, and hold harmless the Licensor and its
+     contributors, officers, directors, employees, agents, and affiliates
+     from and against any and all claims, damages, losses, liabilities,
+     costs, and expenses (including reasonable attorneys' fees) arising from
+     or related to:
+
+     (a) Your use or misuse of the Software
+     (b) Your breach of any term of this License
+     (c) Your violation of any applicable law, regulation, or third-party
+         right
+     (d) Any Distribution or deployment of the Software by You
+     (e) Any claim that Your use of the Software caused harm to any third
+         party
+
+================================================================================
+ARTICLE XII — GENERAL PROVISIONS
+================================================================================
+
+12.1 ENTIRE AGREEMENT
+     This License constitutes the entire agreement between You and the
+     Licensor concerning the Software and supersedes all prior or
+     contemporaneous understandings, agreements, representations, and
+     warranties.
+
+12.2 SEVERABILITY
+     If any provision of this License is held to be unenforceable or invalid
+     by a court of competent jurisdiction, such provision shall be modified
+     to the minimum extent necessary to make it enforceable, and the
+     remaining provisions shall continue in full force and effect.
+
+12.3 WAIVER
+     The failure of the Licensor to enforce any right or provision of this
+     License shall not constitute a waiver of such right or provision. Any
+     waiver of any provision of this License must be in writing and signed
+     by the Licensor.
+
+12.4 AMENDMENTS
+     The Licensor reserves the right to amend, modify, or replace this
+     License at any time. Continued use of the Software following any
+     changes constitutes acceptance of the updated License. It is the
+     Licensee's responsibility to review the License periodically for changes.
+
+12.5 GOVERNING LAW AND JURISDICTION
+     This License shall be governed by and construed in accordance with the
+     laws of the People's Republic of China, without regard to its conflict
+     of law provisions. Any disputes arising from or relating to this License
+     shall be subject to the exclusive jurisdiction of the courts located in
+     the Licensor's jurisdiction.
+
+12.6 LANGUAGE
+     This License is written in English. Any translation is provided for
+     convenience only and shall not be used in the interpretation of this
+     License. In the event of any conflict between the English version and
+     any translation, the English version shall prevail.
+
+12.7 CONTACT
+     For questions regarding this License, commercial licensing inquiries,
+     or permission requests, please contact the Licensor through the official
+     GitHub repository: https://github.com/changcheng967/Luminex
+
+================================================================================
+END OF LICENSE
+================================================================================
