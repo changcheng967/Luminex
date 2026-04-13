@@ -118,6 +118,6 @@ endif()
 if(WASM_BUILD)
     target_compile_definitions(luminex PRIVATE WASM_BUILD)
     set_target_properties(luminex PROPERTIES
-        LINK_FLAGS "-sALLOW_MEMORY_GROWTH=1 -sEXIT_RUNTIME=0 -sEXPORTED_RUNTIME_METHODS=[\"ccall\",\"cwrap\",\"UTF8ToString\",\"stringToUTF8\"] -sEXPORTED_FUNCTIONS=[\"_engine_init\",\"_process_command\",\"_main\"] -sMODULARIZE=1 -sEXPORT_NAME=createModule -sENVIRONMENT=web,worker"
+        LINK_FLAGS "-sALLOW_MEMORY_GROWTH=1 -sEXIT_RUNTIME=0 -sEXPORTED_RUNTIME_METHODS=[\"ccall\",\"cwrap\",\"UTF8ToString\",\"stringToUTF8\"] -sEXPORTED_FUNCTIONS=[\"_engine_init\",\"_process_command\",\"_main\"] -sMODULARIZE=1 -sEXPORT_NAME=createModule -sENVIRONMENT=web,worker -sSTACK_SIZE=8388608 -sINITIAL_MEMORY=33554432"
     )
 endif()

@@ -41,9 +41,15 @@ bool check_for_stop_command() {
 
 // Thread-safe output
 static void safe_output(const std::string& msg) {
+#ifdef WASM_BUILD
+    // WASM: use printf (captured by Emscripten print callback), no mutex needed
+    printf("%s", msg.c_str());
+    fflush(stdout);
+#else
     std::lock_guard<std::mutex> lock(io_mutex);
     if (dbglog) { fprintf(dbglog, "SEND: [%s]\n", msg.c_str()); fflush(dbglog); }
     std::cout << msg << std::flush;
+#endif
 }
 
 // Thread-safe output for search.cpp (exports the mutex functionality)
@@ -287,8 +293,22 @@ void handle_go(Position& pos, const std::string& cmd) {
         limits.infinite = true;
     }
 
-    // Launch search thread with 4MB stack to prevent stack overflow
+#ifdef WASM_BUILD
+    // WASM: run search synchronously (we're already in a web worker, no threading needed)
+    g_stop_requested = false;
+    stop.store(false, std::memory_order_seq_cst);
+    Move best_move = search(pos, limits);
+    std::ostringstream oss;
+    if (best_move != MOVE_NONE) {
+        oss << "bestmove " << best_move << "\n";
+    } else {
+        oss << "bestmove 0000\n";
+    }
+    safe_output(oss.str());
+#else
+    // Native: launch search thread with large stack to prevent stack overflow
     launch_search_thread(pos, limits);
+#endif
 }
 
 void handle_setoption(const std::string& cmd) {

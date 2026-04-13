@@ -14,7 +14,11 @@ void init() {
     init_line_tables();
     init_zobrist();
     init_evaluation();
+#ifdef WASM_BUILD
+    TT.resize(32);  // 32 MB for WASM (browser memory constraints)
+#else
     TT.resize(256); // 256 MB transposition table
+#endif
     TT.clear();
 }
 
@@ -169,6 +173,9 @@ void process_command(const char* cmd) {
 EMSCRIPTEN_KEEPALIVE
 void engine_init() {
     luminex::init();
+#ifdef WASM_BUILD
+    luminex::num_threads = 1;  // No threading in WASM
+#endif
 }
 
 } // extern "C"
