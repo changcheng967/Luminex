@@ -457,8 +457,7 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
 
     // TT cutoff: require exact or greater depth for safety
     // IIR naturally improves TT population without aggressive margins
-    // CRITICAL: skip TT cutoff when doing singular extension (excluded_move set)
-    if (!pv_node && found && tt_depth >= depth && !ss->excluded_move &&
+    if (!pv_node && found && tt_depth >= depth &&
         (tt_value >= beta ? (tte->bound() & BOUND_LOWER) : (tte->bound() & BOUND_UPPER))) {
         // TT cutoff stat updates: reinforce heuristics even on TT hits
         if (tt_value >= beta && tt_move && ss->ply > 0) {
@@ -735,38 +734,21 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
     // Helper lambda: compute check extension for a move
     auto gives_check = [&](Move m) -> bool {
         Square opp_ksq = pos.king_sq(Color(pos.side_to_move() ^ 1));
-        Square from = m.from();
-        PieceType pt = piece_type_of(pos.piece_on(from));
+        PieceType pt = piece_type_of(pos.piece_on(m.from()));
 
-        // Direct check: moved piece attacks king from destination
         if (pt == PAWN) {
-            if ((pawn_attacks_bb(pos.side_to_move(), m.to()) & square_bb(opp_ksq)) != 0) return true;
+            return (pawn_attacks_bb(pos.side_to_move(), m.to()) & square_bb(opp_ksq)) != 0;
         } else if (pt == KNIGHT) {
-            if ((knight_attacks_bb(m.to()) & square_bb(opp_ksq)) != 0) return true;
+            return (knight_attacks_bb(m.to()) & square_bb(opp_ksq)) != 0;
         } else if (pt == BISHOP) {
-            Bitboard occ = pos.pieces() ^ square_bb(from);
-            if ((bishop_attacks_bb(m.to(), occ) & square_bb(opp_ksq)) != 0) return true;
+            return (bishop_attacks_bb(m.to(), pos.pieces() ^ square_bb(m.from())) & square_bb(opp_ksq)) != 0;
         } else if (pt == ROOK) {
-            Bitboard occ = pos.pieces() ^ square_bb(from);
-            if ((rook_attacks_bb(m.to(), occ) & square_bb(opp_ksq)) != 0) return true;
+            return (rook_attacks_bb(m.to(), pos.pieces() ^ square_bb(m.from())) & square_bb(opp_ksq)) != 0;
         } else if (pt == QUEEN) {
-            Bitboard occ = pos.pieces() ^ square_bb(from);
-            if ((bishop_attacks_bb(m.to(), occ) & square_bb(opp_ksq)) != 0
-                || (rook_attacks_bb(m.to(), occ) & square_bb(opp_ksq)) != 0) return true;
+            Bitboard occ_no_from = pos.pieces() ^ square_bb(m.from());
+            return (bishop_attacks_bb(m.to(), occ_no_from) & square_bb(opp_ksq)) != 0
+                || (rook_attacks_bb(m.to(), occ_no_from) & square_bb(opp_ksq)) != 0;
         }
-
-        // Discovered check: moving piece was blocking a sliding attack on opponent king
-        // Check if removing our piece from 'from' reveals a friendly slider attacking opp king
-        if (pt != KING) {
-            Bitboard occ_after = pos.pieces() ^ square_bb(from);
-            Color us = pos.side_to_move();
-            // Check if any of our rooks/queens can now see opp king along rank/file
-            if ((rook_attacks_bb(opp_ksq, occ_after) & pos.pieces(us, ROOK, QUEEN) & ~square_bb(from))
-             // Check if any of our bishops/queens can now see opp king along diagonals
-             || (bishop_attacks_bb(opp_ksq, occ_after) & pos.pieces(us, BISHOP, QUEEN) & ~square_bb(from)))
-                return true;
-        }
-
         return false;
     };
 
@@ -1148,9 +1130,6 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
 
             if (m == tt_move) {
                 score = -1;  // Already searched
-            } else if (m.is_promotion()) {
-                // Non-capture promotions: score same as Phase 2 capture promotions
-                score = 1800000 + m.promotion_type() * 10000;
             } else {
                 Piece pc = pos.piece_on(m.from());
                 if (pc != NO_PIECE) {
