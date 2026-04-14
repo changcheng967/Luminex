@@ -665,9 +665,6 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
         }
     }
 
-    // Tactical density: number of captures available (set after Phase 2 generation)
-    int tactical_density = 0;
-
     // Helper lambda: compute LMR reduction for a move (takes gives_chk to avoid recomputation)
     auto compute_reduction = [&](Move m, int mp, bool gives_chk) -> int {
         // Log-depth * log-move-count product formula
@@ -721,12 +718,6 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
 
         // Promotion moves: reduce less
         if (m.is_promotion()) reduction -= 1;
-
-        // INNOVATION: Complexity-Adaptive LMR
-        // Many captures available = tactical position → reduce less (moves are forcing)
-        // Few captures available = quiet position → reduce more (most moves equivalent)
-        if (tactical_density >= 6) reduction -= 1;
-        else if (tactical_density <= 2 && mp >= 5) reduction += 1;
 
         return std::max(1, std::min(reduction, depth - 2));
     };
@@ -1060,7 +1051,6 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
     {
         ExtMove captures[MAX_MOVES];
         ExtMove* cap_end = generate<GEN_CAPTURE>(pos, captures);
-        tactical_density = cap_end - captures;
 
         // Score captures: MVV-LVA + SEE classification
         static constexpr int piece_value[] = {100, 320, 330, 500, 900, 20000, 0};
