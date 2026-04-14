@@ -1,117 +1,64 @@
-LUMINEX CHESS ENGINE LICENSE
-Version 1.0
+Luminex Chess Engine License
+Version 1.1
 
 Copyright (c) 2025-2026 Chang Cheng. All rights reserved.
 
-By using this software you agree to all terms below. If you disagree with any
-term, you must stop using the software and delete all copies.
+By using this software you agree to all terms below.
 
-————————————————————————————————————————
 GRANT OF LICENSE
-————————————————————————————————————————
 
-You MAY:
+You may use, study, and modify this software for personal, educational,
+and research purposes. You may redistribute exact unmodified copies
+provided this license and all copyright notices are included.
 
-  • Use the software for personal, educational, and research purposes
-  • Study and modify the source code for personal learning
-  • Redistribute exact unmodified copies, provided this license and all
-    copyright notices are included
-  • Deploy the WebAssembly version on a personal or non-commercial website
-    that is free for all visitors
-  • Enter the engine in non-commercial chess engine competitions, provided
-    it is clearly identified as "Luminex" with attribution to the authors
+You may enter the engine in non-commercial competitions, provided it is
+clearly identified as "Luminex" with attribution to the authors.
 
-————————————————————————————————————————
 COMMERCIAL USE PROHIBITED
-————————————————————————————————————————
 
-You MAY NOT use this software for any commercial purpose, including but not
-limited to:
+Commercial use of any kind is prohibited without written permission,
+including sale, licensing, incorporation into paid products or services,
+subscription/SaaS platforms, ad-supported sites, paid coaching services,
+and engine-as-a-service APIs.
 
-  • Selling, licensing, renting, or leasing the software
-  • Incorporating it into a paid product or service
-  • Using it in a subscription, SaaS, or pay-to-play platform
-  • Generating revenue through ads, sponsorships, or affiliate links on a
-    page or product that includes or is built around this software
-  • Using it in professional chess coaching or training services that charge
-    a fee
-  • Offering it as an engine-as-a-service API for compensation
-  • Any use that provides commercial advantage without written permission
+Commercial licenses may be available on request.
 
-Commercial licenses may be available on request. Contact the author through
-the GitHub repository.
+CHEATING AND ILLEGAL USE PROHIBITED
 
-————————————————————————————————————————
-ILLEGAL AND HARMFUL USE PROHIBITED
-————————————————————————————————————————
+You may not use this software to cheat in any chess competition, bypass
+anti-cheat systems, or for any illegal, fraudulent, or harmful purpose.
 
-You MAY NOT:
-
-  • Use the software to cheat in any chess competition, tournament, or
-    rated game — online or over-the-board
-  • Bypass, circumvent, or disable any anti-cheat or fair-play system
-  • Use it for fraud, deception, or misrepresentation
-  • Use it for any purpose that violates applicable law
-  • Integrate it into any weapon system, surveillance tool, or malicious
-    software
-  • Use it to harass, discriminate against, or harm any person or group
-
-————————————————————————————————————————
 INTELLECTUAL PROPERTY
-————————————————————————————————————————
 
-  • Do not remove or alter copyright notices, license terms, or attribution
-  • Do not claim authorship of software you did not write
-  • Do not use the Luminex name or branding to endorse products without
-    written permission
-  • Reverse engineering of binary distributions is prohibited except where
-    expressly required by applicable law for interoperability
+Do not remove or alter copyright notices, license terms, or attribution.
+Do not claim authorship of software you did not write. Reverse engineering
+of binary distributions is prohibited except where required by law.
 
-————————————————————————————————————————
-DISTRIBUTION OF MODIFIED VERSIONS
-————————————————————————————————————————
+MODIFICATIONS
 
-Modified versions may not be distributed without prior written consent from
-the author. If consent is granted, you must:
+Modified versions may not be distributed without prior written consent
+from the author. If consent is granted, you must clearly identify it as
+a modified version, describe the changes, preserve original attribution,
+and include this license.
 
-  • Clearly state it is a modified version, not the original
-  • Describe the modifications and include dates
-  • Preserve attribution to the original authors
-  • Include a full copy of this license
-
-————————————————————————————————————————
 ATTRIBUTION
-————————————————————————————————————————
 
-Any public use of this software must credit the original authors. On
-websites, display "Powered by Luminex" visibly on the page where the engine
-is used. In competitions, identify the engine as "Luminex" with a reference
-to the official repository.
+Public use must credit the original authors. On websites, display
+"Powered by Luminex" visibly. In competitions, identify the engine as
+"Luminex" with a reference to the official repository.
 
-————————————————————————————————————————
 NO WARRANTY
-————————————————————————————————————————
 
-THE SOFTWARE IS PROVIDED "AS IS" WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-IMPLIED. THE AUTHORS ARE NOT LIABLE FOR ANY DAMAGES ARISING FROM USE OF THE
-SOFTWARE, INCLUDING BUT NOT LIMITED TO LOSS OF DATA, LOSS OF PROFITS, OR
-GAME RESULTS.
+THE SOFTWARE IS PROVIDED "AS IS" WITHOUT WARRANTY OF ANY KIND. THE
+AUTHORS ARE NOT LIABLE FOR ANY DAMAGES ARISING FROM USE OF THE SOFTWARE.
 
-————————————————————————————————————————
 TERMINATION
-————————————————————————————————————————
 
 This license terminates automatically if you violate any term. Upon
 termination you must stop using the software and destroy all copies.
 
-————————————————————————————————————————
-AMENDMENTS
-————————————————————————————————————————
-
-The author may update this license at any time. Continued use after changes
-means you accept the updated terms.
-
-————————————————————————————————————————
+The author may update this license at any time. Continued use after
+changes means you accept the updated terms.
 
 For questions or commercial licensing inquiries:
 https://github.com/changcheng967/Luminex
