@@ -165,11 +165,12 @@ inline Value eval_cached(const Position& pos) {
 
 // Reduction constants
 constexpr int futility_margin(int depth, bool improving) {
-    // Depth-dependent futility margins (slightly tighter for more pruning)
+    // Depth-dependent futility margins
+    // Improving = wider margin (less pruning), static eval underestimates true value
     int base = 130 * depth + 50;
 
-    if (improving) base -= 20;
-    else base += 25;
+    if (improving) base += 25;
+    else base -= 20;
 
     return base;
 }
@@ -285,13 +286,19 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
     }
 
     // Generate moves: captures normally, but ALL evasions when in check
+    // At depth 0 (first qsearch ply), also generate quiet check-giving moves
     // CRITICAL: When in check, we must consider king moves and blocking moves, not just captures
     ExtMove moves[MAX_MOVES];
     ExtMove* end;
     if (in_check) {
         end = generate<GEN_LEGAL>(pos, moves);  // All legal moves when in check
     } else {
-        end = generate<GEN_CAPTURE>(pos, moves);  // Only captures when not in check
+        end = generate<GEN_CAPTURE>(pos, moves);  // Captures when not in check
+        if (depth >= 0) {
+            // Generate quiet checks at the first qsearch ply (depth 0)
+            // These are non-capture moves that give check — essential for tactical accuracy
+            end = generate<GEN_QUIET_CHECK>(pos, end);
+        }
     }
 
     int moves_searched = 0;
@@ -300,16 +307,17 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
     if (!in_check) {
         for (ExtMove* it = moves; it != end; ++it) {
             if (it->move.is_capture()) {
-                PieceType captured = pos.piece_type_on(it->move.to());
+                PieceType captured = it->move.is_en_passant() ? PAWN : pos.piece_type_on(it->move.to());
                 PieceType attacker = pos.piece_type_on(it->move.from());
                 static constexpr int pv[] = {100, 320, 330, 500, 900, 20000, 0};
-                it->value = (captured != PT_NONE ? pv[captured] : 0) * 10 - pv[attacker];
+                it->value = pv[captured] * 10 - pv[attacker];
                 if (it->move.is_promotion()) it->value += pv[it->move.promotion_type()];
             } else {
-                it->value = 0;
+                // Quiet checks: score below captures so they're tried after
+                it->value = -1000;
             }
         }
-        // Sort captures by value
+        // Sort: captures first (by MVV-LVA), then quiet checks
         std::sort(moves, end, [](const ExtMove& a, const ExtMove& b) {
             return a.value > b.value;
         });
@@ -510,7 +518,8 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
     }
 
     // Reverse futility pruning (static null move): if eval is far above beta, prune immediately
-    if (!pv_node && !pos.is_check() && depth <= 8 && eval - 100 * depth - ((ss->improving || opponent_worsening) ? 0 : 30) >= beta) {
+    // Improving = less pruning (harder to prune a position that's getting better)
+    if (!pv_node && !pos.is_check() && depth <= 8 && eval - 100 * depth - ((ss->improving || opponent_worsening) ? 30 : 0) >= beta) {
         return eval;
     }
 
@@ -810,7 +819,7 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
 
         // Futility pruning: skip quiet moves that can't improve alpha
         if (is_quiet && !pv_node && ss->ply > 0 && !pos.is_check() && depth <= 5) {
-            int margin = depth * 150 + (ss->improving ? 30 : 100);
+            int margin = depth * 150 + (ss->improving ? 100 : 30);
             if (eval + margin < alpha) {
                 return false;
             }
