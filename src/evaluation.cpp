@@ -567,9 +567,6 @@ Value evaluate(const Position& pos) {
         // Mobility area: exclude squares attacked by enemy pawns
         Bitboard mob_area = ~pawn_attacks_bb(them, their_pawns);
 
-        // Enemy king zone: squares near enemy king for positional mobility bonus
-        Bitboard enemy_king_zone = king_attacks_bb(ksq_arr[c_idx ^ 1]) | square_bb(ksq_arr[c_idx ^ 1]);
-
         // -------------------------------------------------------
         // Passed pawn extra bonuses (beyond base table)
         // -------------------------------------------------------
@@ -659,10 +656,6 @@ Value evaluate(const Position& pos) {
             mg_score += sign * (KnightMobBaseMG + mob * KnightMobSlopeMG);
             eg_score += sign * (KnightMobBaseEG + mob * KnightMobSlopeEG);
 
-            // King-zone mobility: squares near enemy king are strategically more valuable
-            int king_zone_mob = popcount(attacks & mob_area & ~pos.pieces(c) & enemy_king_zone);
-            mg_score += sign * king_zone_mob * 2;
-
             // Outpost: knight on rank 4-6, protected by own pawn,
             // not attackable by enemy pawn (permanent advantage)
             Rank kr = relative_rank(c, sq);
@@ -730,10 +723,6 @@ Value evaluate(const Position& pos) {
             mob = std::min(mob, BishopMobMax);
             mg_score += sign * (BishopMobBaseMG + mob * BishopMobSlopeMG);
             eg_score += sign * (BishopMobBaseEG + mob * BishopMobSlopeEG);
-
-            // King-zone mobility: bishop aiming at enemy king
-            int king_zone_mob = popcount(attacks & mob_area & ~pos.pieces(c) & enemy_king_zone);
-            mg_score += sign * king_zone_mob * 2;
 
             // Bishop shielded by pawn above
             {
@@ -818,10 +807,6 @@ Value evaluate(const Position& pos) {
             mob = std::min(mob, RookMobMax);
             mg_score += sign * (RookMobBaseMG + mob * RookMobSlopeMG);
             eg_score += sign * (RookMobBaseEG + mob * RookMobSlopeEG);
-
-            // King-zone mobility: rook aiming at enemy king
-            int king_zone_mob = popcount(attacks & mob_area & ~pos.pieces(c) & enemy_king_zone);
-            mg_score += sign * king_zone_mob;
 
             // Open / semi-open file
             File f = file_of(sq);
@@ -915,10 +900,6 @@ Value evaluate(const Position& pos) {
             mob = std::min(mob, QueenMobMax);
             mg_score += sign * (QueenMobBaseMG + mob * QueenMobSlopeMG);
             eg_score += sign * (QueenMobBaseEG + mob * QueenMobSlopeEG);
-
-            // King-zone mobility: queen near enemy king is most dangerous
-            int king_zone_mob = popcount(attacks & mob_area & ~pos.pieces(c) & enemy_king_zone);
-            mg_score += sign * king_zone_mob;
 
             // Far queen: active queen in EG is good, disconnected queen in MG is bad
             if (distance(sq, ksq_arr[c_idx]) > 3) {
