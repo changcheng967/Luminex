@@ -75,7 +75,7 @@ constexpr Bitboard BB_CORNERS = BB_SQUARES[A1] | BB_SQUARES[H1] | BB_SQUARES[A8]
 
 // Bitboard utility functions
 constexpr Bitboard square_bb(Square s) {
-    return (s >= 0 && s < 64) ? BB_SQUARES[s] : BB_EMPTY;
+    return BB_SQUARES[s];
 }
 constexpr Square lsb(Bitboard b) { return static_cast<Square>(std::countr_zero(b)); }
 constexpr Square msb(Bitboard b) { return static_cast<Square>(63 - std::countl_zero(b)); }
