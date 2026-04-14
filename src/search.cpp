@@ -1397,6 +1397,9 @@ Move search(Position& pos, Limits& lim) {
     root_score = best_value;
     previous_root_best = MOVE_NONE;
     int best_move_stability = 0;  // How many consecutive iterations best move stayed the same
+    // Score volatility tracking for adaptive time management
+    Value score_history[128] = {};
+    int score_history_count = 0;
 
     // Check if we have any legal moves at all
     ExtMove initial_moves[MAX_MOVES];
@@ -1505,18 +1508,37 @@ Move search(Position& pos, Limits& lim) {
             break;
         }
 
-        // Time management: stop before starting a new depth if we've used too much time
-        // Always complete depth 1, then be aggressive about stopping
-        // Best-move stability: if best move is stable, we can stop earlier
+        // Adaptive time management: adjust time based on score volatility + move stability
         if (limits.use_time_management() && root_depth > 1) {
             auto now = std::chrono::steady_clock::now();
             int elapsed = static_cast<int>(std::chrono::duration_cast<std::chrono::milliseconds>(
                 now - search_start).count());
-            // Reduce ideal time when best move is very stable
-            int stability_reduction = (best_move_stability >= 4) ? ideal_time * 3 / 5
-                                    : (best_move_stability >= 3) ? ideal_time * 3 / 4
-                                    : ideal_time;
-            if (elapsed > stability_reduction) {
+
+            // Compute time multiplier based on score volatility
+            double time_mult = 1.0;
+            if (score_history_count >= 2) {
+                int vol = abs(int(score_history[score_history_count-1]) - int(score_history[score_history_count-2]));
+
+                if (vol > 40) time_mult = 1.5;       // High volatility: critical position
+                else if (vol > 20) time_mult = 1.25;  // Moderate volatility
+                else if (vol < 10 && best_move_stability >= 3) time_mult = 0.55;  // Very stable: stop early
+                else if (vol < 5 && best_move_stability >= 2) time_mult = 0.7;    // Stable
+            }
+
+            // Score trend: if declining for 3+ iterations, keep searching (finding defenses)
+            if (score_history_count >= 3 && time_mult < 1.3) {
+                bool declining = score_history[score_history_count-1] < score_history[score_history_count-2]
+                             && score_history[score_history_count-2] < score_history[score_history_count-3];
+                if (declining) time_mult = 1.3;
+            }
+
+            // Best move just changed: give extra time to verify
+            if (best_move_stability == 0 && score_history_count >= 2) time_mult = std::max(time_mult, 1.2);
+
+            int effective_ideal = int(ideal_time * time_mult);
+            effective_ideal = std::max(10, std::min(effective_ideal, max_time));
+
+            if (elapsed > effective_ideal) {
                 break;
             }
         }
@@ -1537,7 +1559,15 @@ Move search(Position& pos, Limits& lim) {
         // Start with very wide window for stability
         Value alpha = -VALUE_INFINITE;
         Value beta = VALUE_INFINITE;
+        // Aspiration window: adjust width based on score volatility
         int aspiration_delta = 30;
+        if (score_history_count >= 2) {
+            int vol = abs(int(score_history[score_history_count-1]) - int(score_history[score_history_count-2]));
+            if (vol > 40) aspiration_delta = 50;
+            else if (vol > 20) aspiration_delta = 40;
+            else if (vol < 5 && best_move_stability >= 3) aspiration_delta = 20;
+            else if (vol < 10 && best_move_stability >= 2) aspiration_delta = 25;
+        }
 
         if (root_depth >= 4 && best_value > -VALUE_KNOWN_WIN && best_value < VALUE_KNOWN_WIN) {
             alpha = std::max(Value(-VALUE_INFINITE), Value(best_value - aspiration_delta));
@@ -1705,6 +1735,11 @@ Move search(Position& pos, Limits& lim) {
             best_value = depth_best_value;
             best_move = depth_best_move;
             previous_root_best = depth_best_move;
+        }
+
+        // Track score history for adaptive time management
+        if (depth_best_move != MOVE_NONE && score_history_count < 128) {
+            score_history[score_history_count++] = depth_best_value;
         }
 
         // Save root position to TT for PV extraction
