@@ -649,7 +649,7 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
 
     // Singular extension: check if TT move is significantly better than alternatives
     int singular_extension = 0;
-    if (tt_move != MOVE_NONE && !pv_node && found && tt_depth >= depth - 3 && depth >= 6 &&
+    if (tt_move != MOVE_NONE && !pv_node && found && tt_depth >= depth - 3 && depth >= 8 &&
         (tte->bound() & BOUND_LOWER) && abs(tt_value) < VALUE_KNOWN_WIN) {
         Value sBeta = Value(tt_value - depth * 2);
         ss->excluded_move = tt_move;
@@ -684,7 +684,7 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
         if (m_idx >= 64) m_idx = 63;
         int reduction = (reductions[d_idx] * reductions[m_idx] + LMR_DENOM / 2) / LMR_DENOM;
         if (!ss->improving && !opponent_worsening) reduction += 1;
-        if (cut_node) reduction += 2;
+        if (cut_node) reduction += 1;
         if (ttPv) reduction -= 2; // PV positions from TT get less reduction
 
         // TT move gets less reduction
@@ -710,7 +710,7 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
             }
 
             // History influence on reduction
-            reduction -= history_score / 4096;
+            reduction -= history_score / 8192;
         }
 
         // Reduce less for killer moves
@@ -849,8 +849,8 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
         Depth new_depth = depth - 1;
         bool gives_chk = gives_check(m);
         bool is_losing_capture = m.is_capture() && !m.is_promotion() && depth >= 1 &&
-                                  !pos.see_ge(m, Value(-depth * 35));
-        bool do_lmr = depth >= 3 && moves_played >= 2 &&
+                                  !pos.see_ge(m, Value(-depth * 80));
+        bool do_lmr = depth >= 3 && moves_played >= 3 &&
                       (is_quiet || is_losing_capture) && !gives_chk;
 
         if (do_lmr) {
