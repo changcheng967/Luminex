@@ -222,48 +222,75 @@ Score PST_EG_TABLE[2][8][64] = {
 using Score = Value;
 
 // ============================================================
-// Mobility system: linear formula instead of lookup tables
-// Each additional square of mobility adds a fixed bonus.
-// A piece with 0 mobility is penalized (trapped = useless).
+// MATERIAL IMBALANCE
+// Quadratic model: piece value depends on OTHER pieces present.
+// Technique: second-degree polynomial indexed by piece counts.
 //
-// Principle: a piece that can't move is almost worthless.
-// Each freedom of movement adds incremental value.
-// Knights need mobility most (limited range).
-// Rooks/queens naturally have high mobility (lower per-square value).
+// Principle: pieces interact. Bishop pair > 2x single bishop.
+// Rook + open file (few pawns) > rook in closed position.
+// Queen + many minor pieces creates clutter. Knights need pawns.
+//
+// QuadraticOurs[pt1][pt2]: how pt1's value changes with OUR pt2 count
+// QuadraticTheirs[pt1][pt2]: how pt1's value changes with THEIR pt2 count
+// Index 0 = bishop pair flag, 1 = pawn, 2 = knight, 3 = bishop, 4 = rook, 5 = queen
 // ============================================================
 
-// Knight mobility: calibrated so average (mob=4) ≈ 0
-// base = -avg_mob * slope = -4 * 15 = -60
-// mob=0: -60 (trapped), mob=4: 0 (normal), mob=8: +60 (excellent)
-static constexpr int KnightMobBaseMG = -60;
-static constexpr int KnightMobSlopeMG = 15;
-static constexpr int KnightMobBaseEG = -75;
-static constexpr int KnightMobSlopeEG = 18;
-static constexpr int KnightMobMax = 8;
+// How OUR pieces interact with each other
+// Row = piece type, Column = piece type. Symmetric upper triangle used.
+static constexpr int QuadraticOurs[6][6] = {
+    //          pair  pawn  knight bishop rook  queen
+    {  1400,                                          }, // Bishop pair: huge standalone value
+    {   35,   30,                                    }, // Pawn: more pawns = slight synergy
+    {   25,  220,  -55,                              }, // Knight: loves pawns (closed), hates own knights
+    {    0,   90,    5,    0,                         }, // Bishop: loves pawns less, neutral self
+    {  -20,   -5,   40,   95,  -200,                 }, // Rook: loves bishops, hates own rooks
+    { -170,   20,  110,  125,  -130,  -10            }, // Queen: clutter penalty with own queen/rook
+};
 
-// Bishop mobility: calibrated so average (mob=7) ≈ 0
-// base = -7 * 7 = -49. mob=0: -48, mob=7: +1, mob=13: +43
-static constexpr int BishopMobBaseMG = -48;
-static constexpr int BishopMobSlopeMG = 7;
-static constexpr int BishopMobBaseEG = -56;
-static constexpr int BishopMobSlopeEG = 9;
-static constexpr int BishopMobMax = 13;
+// How THEIR pieces affect OUR value
+static constexpr int QuadraticTheirs[6][6] = {
+    //          pair  pawn  knight bishop rook  queen
+    {    0,                                           }, // Bishop pair vs their pieces
+    {   30,    0,                                    }, // Pawn: enemy pawns help us slightly (targets)
+    {   10,   55,    0,                              }, // Knight: enemy pawns = our knight targets
+    {   50,   60,   35,    0,                        }, // Bishop: enemy minor pieces = targets
+    {   40,   35,   20,  -20,    0,                  }, // Rook: enemy bishops good, enemy rooks neutral
+    {   90,   90,  -40,  130,  250,    0             }, // Queen: enemy queen = mutual danger
+};
 
-// Rook mobility: calibrated so average (mob=8) ≈ 0
-// base = -8 * 5 = -40. mob=0: -38, mob=8: +2, mob=14: +32
-static constexpr int RookMobBaseMG = -38;
-static constexpr int RookMobSlopeMG = 5;
-static constexpr int RookMobBaseEG = -48;
-static constexpr int RookMobSlopeEG = 7;
-static constexpr int RookMobMax = 14;
+// ============================================================
+// MOBILITY: Non-linear lookup tables
+// Principle: diminishing returns. A knight going from 0→2 squares
+// gains far more than going from 6→8. Tables capture this curve.
+// Values self-engineered from piece activity theory:
+//   - 0 mobility = severe penalty (trapped)
+//   - Average mobility ≈ neutral
+//   - Maximum mobility = diminishing bonus
+// ============================================================
 
-// Queen mobility: calibrated so average (mob=15) ≈ 0
-// base = -15 * 2 = -30. mob=0: -28, mob=15: +2, mob=27: +26
-static constexpr int QueenMobBaseMG = -28;
-static constexpr int QueenMobSlopeMG = 2;
-static constexpr int QueenMobBaseEG = -38;
-static constexpr int QueenMobSlopeEG = 3;
-static constexpr int QueenMobMax = 27;
+// Knight mobility [0..8]: MG / EG
+static constexpr int KnightMobMG[9] = { -65, -50, -30, -12,  5, 18, 28, 35, 40 };
+static constexpr int KnightMobEG[9] = { -80, -60, -35, -15,  5, 20, 32, 42, 50 };
+
+// Bishop mobility [0..13]: MG / EG
+static constexpr int BishopMobMG[14] = { -50, -35, -20, -8,  5, 15, 24, 32, 38, 44, 50, 55, 60, 64 };
+static constexpr int BishopMobEG[14] = { -60, -42, -25, -10,  5, 18, 30, 42, 52, 60, 68, 74, 80, 85 };
+
+// Rook mobility [0..14]: MG / EG
+static constexpr int RookMobMG[15] = { -55, -40, -25, -10,  0, 10, 18, 25, 32, 38, 45, 50, 55, 60, 65 };
+static constexpr int RookMobEG[15] = { -65, -48, -30, -12,  5, 20, 35, 50, 65, 80, 95, 110, 125, 138, 150 };
+
+// Queen mobility [0..27]: MG / EG
+static constexpr int QueenMobMG[28] = {
+    -30, -25, -18, -10,  -2,   5,  12,  18,  24,  30,
+     35,  40,  44,  48,  52,  55,  58,  60,  62,  64,
+     66,  68,  70,  72,  74,  76,  78,  80
+};
+static constexpr int QueenMobEG[28] = {
+    -40, -32, -22, -12,  -2,   8,  18,  28,  38,  48,
+     58,  68,  78,  88,  98, 108, 118, 128, 138, 148,
+    158, 168, 178, 188, 198, 208, 218, 228
+};
 
 // ============================================================
 // Threat evaluation: bonus proportional to value gap
@@ -650,11 +677,11 @@ Value evaluate(const Position& pos) {
             attacks_by[c][KNIGHT] |= attacks;
             all_attacks[c] |= attacks;
 
-            // Mobility: linear formula (trapped knight = useless)
+            // Mobility: non-linear lookup table
             int mob = popcount(attacks & mob_area & ~pos.pieces(c));
-            mob = std::min(mob, KnightMobMax);
-            mg_score += sign * (KnightMobBaseMG + mob * KnightMobSlopeMG);
-            eg_score += sign * (KnightMobBaseEG + mob * KnightMobSlopeEG);
+            mob = std::min(mob, 8);
+            mg_score += sign * KnightMobMG[mob];
+            eg_score += sign * KnightMobEG[mob];
 
             // Outpost: knight on rank 4-6, protected by own pawn,
             // not attackable by enemy pawn (permanent advantage)
@@ -718,11 +745,11 @@ Value evaluate(const Position& pos) {
             attacks_by[c][BISHOP] |= attacks;
             all_attacks[c] |= attacks;
 
-            // Mobility: linear formula
+            // Mobility: non-linear lookup table
             int mob = popcount(attacks & mob_area & ~pos.pieces(c));
-            mob = std::min(mob, BishopMobMax);
-            mg_score += sign * (BishopMobBaseMG + mob * BishopMobSlopeMG);
-            eg_score += sign * (BishopMobBaseEG + mob * BishopMobSlopeEG);
+            mob = std::min(mob, 13);
+            mg_score += sign * BishopMobMG[mob];
+            eg_score += sign * BishopMobEG[mob];
 
             // Bishop shielded by pawn above
             {
@@ -804,9 +831,9 @@ Value evaluate(const Position& pos) {
             all_attacks[c] |= attacks;
 
             int mob = popcount(attacks & mob_area & ~pos.pieces(c));
-            mob = std::min(mob, RookMobMax);
-            mg_score += sign * (RookMobBaseMG + mob * RookMobSlopeMG);
-            eg_score += sign * (RookMobBaseEG + mob * RookMobSlopeEG);
+            mob = std::min(mob, 14);
+            mg_score += sign * RookMobMG[mob];
+            eg_score += sign * RookMobEG[mob];
 
             // Open / semi-open file
             File f = file_of(sq);
@@ -897,9 +924,9 @@ Value evaluate(const Position& pos) {
             all_attacks[c] |= attacks;
 
             int mob = popcount(attacks & mob_area & ~pos.pieces(c));
-            mob = std::min(mob, QueenMobMax);
-            mg_score += sign * (QueenMobBaseMG + mob * QueenMobSlopeMG);
-            eg_score += sign * (QueenMobBaseEG + mob * QueenMobSlopeEG);
+            mob = std::min(mob, 27);
+            mg_score += sign * QueenMobMG[mob];
+            eg_score += sign * QueenMobEG[mob];
 
             // Far queen: active queen in EG is good, disconnected queen in MG is bad
             if (distance(sq, ksq_arr[c_idx]) > 3) {
@@ -1067,42 +1094,46 @@ Value evaluate(const Position& pos) {
     }
 
     // -------------------------------------------------------
-    // Material imbalance: bishop value increases with fewer pawns
-    // Principle: in open positions (few pawns), bishops shine
+    // Material imbalance: quadratic polynomial model
+    // Principle: pieces interact non-linearly. Bishop pair > 2x single.
+    // Knights love pawns (closed). Rooks hate own rooks (clutter).
+    // Queen + many pieces = redundant.
     // -------------------------------------------------------
-    for (int c_idx = 0; c_idx < 2; ++c_idx) {
-        Color c = Color(c_idx);
-        Sign sign = (c_idx == 0) ? 1 : -1;
-        int pawns = popcount(pos.pieces(c, PAWN));
-        int bishops = bishop_count[c_idx];
-        if (bishops >= 1) {
-            mg_score += sign * (25 - pawns * 2);
-            eg_score += sign * (45 - pawns * 3);
+    {
+        // Piece count table: [color][piece_type]
+        // Index 0 = bishop pair flag, 1 = pawn, 2 = knight, 3 = bishop, 4 = rook, 5 = queen
+        const int pieceCount[2][6] = {
+            { bishop_count[0] >= 2 ? 1 : 0, popcount(pos.pieces(WHITE, PAWN)),
+              popcount(pos.pieces(WHITE, KNIGHT)), popcount(pos.pieces(WHITE, BISHOP)),
+              popcount(pos.pieces(WHITE, ROOK)), popcount(pos.pieces(WHITE, QUEEN)) },
+            { bishop_count[1] >= 2 ? 1 : 0, popcount(pos.pieces(BLACK, PAWN)),
+              popcount(pos.pieces(BLACK, KNIGHT)), popcount(pos.pieces(BLACK, BISHOP)),
+              popcount(pos.pieces(BLACK, ROOK)), popcount(pos.pieces(BLACK, QUEEN)) }
+        };
+
+        int imbalance_mg = 0;
+        for (int c = 0; c < 2; ++c) {
+            int them = c ^ 1;
+            int bonus = 0;
+            for (int pt1 = 0; pt1 < 6; ++pt1) {
+                if (!pieceCount[c][pt1]) continue;
+                int v = 0;
+                for (int pt2 = 0; pt2 <= pt1; ++pt2) {
+                    v += QuadraticOurs[pt1][pt2] * pieceCount[c][pt2]
+                       + QuadraticTheirs[pt1][pt2] * pieceCount[them][pt2];
+                }
+                bonus += pieceCount[c][pt1] * v;
+            }
+            imbalance_mg += (c == 0) ? bonus : -bonus;
         }
+        // Scale imbalance to reasonable range and apply to both MG/EG
+        mg_score += imbalance_mg / 16;
+        eg_score += imbalance_mg / 24;
     }
 
     // Bishop pair: two bishops cover both color complexes
     if (bishop_count[WHITE] >= 2) { mg_score += g_eval_params.bishop_pair_mg; eg_score += g_eval_params.bishop_pair_eg; }
     if (bishop_count[BLACK] >= 2) { mg_score -= g_eval_params.bishop_pair_mg; eg_score -= g_eval_params.bishop_pair_eg; }
-
-    // Knight bonus with many pawns: knights can jump over pawn chains,
-    // making them relatively stronger in closed positions (many pawns).
-    // Bishop advantage with few pawns is already handled by imbalance term.
-    {
-        int w_pawns = popcount(pos.pieces(WHITE, PAWN));
-        int b_pawns = popcount(pos.pieces(BLACK, PAWN));
-        int total_pawns = w_pawns + b_pawns;
-        // With 16 pawns (impossible): max bonus. With 0 pawns: no bonus.
-        int knight_adj = total_pawns - 8;  // -8 to +8 range (typical: 0 to 8)
-        int w_knights = popcount(pos.pieces(WHITE, KNIGHT));
-        int b_knights = popcount(pos.pieces(BLACK, KNIGHT));
-        if (knight_adj > 0) {
-            mg_score += w_knights * knight_adj * 2;
-            mg_score -= b_knights * knight_adj * 2;
-            eg_score += w_knights * knight_adj;
-            eg_score -= b_knights * knight_adj;
-        }
-    }
 
     // -------------------------------------------------------
     // King safety: sigmoid danger model (Hill equation)
