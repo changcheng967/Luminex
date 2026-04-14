@@ -1218,36 +1218,6 @@ Value evaluate(const Position& pos) {
     }
 
     // -------------------------------------------------------
-    // Initiative/complexity: draw tendency correction
-    // Principle: the advantaged side benefits from complexity
-    // (pawns, outflanking, infiltration). Simplicity helps the defender.
-    // Self-engineered from endgame draw theory.
-    // -------------------------------------------------------
-    {
-        Square w_ksq = ksq_arr[0];
-        Square b_ksq = ksq_arr[1];
-        int outflanking = std::abs(file_of(w_ksq) - file_of(b_ksq))
-                        - std::abs(rank_of(w_ksq) - rank_of(b_ksq));
-        bool infiltration = (rank_of(w_ksq) > RANK_4) || (rank_of(b_ksq) < RANK_5);
-        int total_pawns = popcount(pos.pieces(PAWN));
-        bool pawns_both_flanks = (pos.pieces(PAWN) & (BB_FILE_A | BB_FILE_B | BB_FILE_C | BB_FILE_D))
-                               && (pos.pieces(PAWN) & (BB_FILE_E | BB_FILE_F | BB_FILE_G | BB_FILE_H));
-        int non_pawn_mat = popcount(pos.pieces(KNIGHT)) + popcount(pos.pieces(BISHOP))
-                         + popcount(pos.pieces(ROOK)) + popcount(pos.pieces(QUEEN));
-
-        int complexity = 8 * total_pawns
-                       + 10 * outflanking
-                       + 15 * int(infiltration)
-                       + 20 * int(pawns_both_flanks)
-                       + 50 * (non_pawn_mat == 0)
-                       - 80;
-
-        // Apply in the direction of the winning side (capped)
-        int eg_sign = (eg_score > 0) ? 1 : (eg_score < 0) ? -1 : 0;
-        eg_score += eg_sign * std::max(complexity, -std::abs(eg_score));
-    }
-
-    // -------------------------------------------------------
     // Phase calculation and score interpolation
     // -------------------------------------------------------
     int phase = popcount(pos.pieces(KNIGHT)) + popcount(pos.pieces(BISHOP))
