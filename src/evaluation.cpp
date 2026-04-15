@@ -1067,6 +1067,7 @@ Value evaluate(const Position& pos, bool tactical_only) {
 
     // -------------------------------------------------------
     // King safety: sigmoid danger model (Hill equation)
+    // Selective: skip if no enemy minor/major pieces near king zone
     // -------------------------------------------------------
     if (!tactical_only) {
     for (int c_idx = 0; c_idx < 2; ++c_idx) {
@@ -1083,6 +1084,11 @@ Value evaluate(const Position& pos, bool tactical_only) {
                 king_zone |= square_bb(make_square(f, fwd));
             }
         }
+
+        // Fast pre-check: are there enemy minor/major pieces near king?
+        Bitboard enemy_pieces_near = pos.pieces(them) & king_zone;
+        enemy_pieces_near &= ~(pos.pieces(them, PAWN) | pos.pieces(them, KING));
+        if (!enemy_pieces_near) continue;
 
         int attack_units = 0;
         int attacker_count = 0;
