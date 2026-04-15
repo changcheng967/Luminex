@@ -1165,6 +1165,20 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
                     if (pawn_attacks_bb(them, pos.pieces(them, PAWN)) & square_bb(m.from())) {
                         score += 15000;
                     }
+
+                    // Centralization bonus: pieces moving to central squares searched earlier
+                    // Principle: centralized pieces are disproportionately strong (Nimzowitsch)
+                    static constexpr int center_order[64] = {
+                        0, 0, 0, 0, 0, 0, 0, 0,
+                        0, 0, 0, 0, 0, 0, 0, 0,
+                        0, 0,200,300,300,200, 0, 0,
+                        0,200,400,500,500,400,200, 0,
+                        0,200,400,500,500,400,200, 0,
+                        0, 0,200,300,300,200, 0, 0,
+                        0, 0, 0, 0, 0, 0, 0, 0,
+                        0, 0, 0, 0, 0, 0, 0, 0
+                    };
+                    score += center_order[m.to()];
                 }
             }
             it->value = score;
