@@ -557,12 +557,6 @@ Value evaluate(const Position& pos, bool tactical_only) {
         eg_score += pawn_eg;
     }
 
-    // Position context: openness = how pawnless the position is (0=closed, 16=open)
-    // Used to make mobility context-aware: bishops thrive in open positions,
-    // knights relatively improve in closed positions (can jump over pawn chains)
-    int total_pawns = popcount(pos.pieces(PAWN));
-    int openness = 16 - total_pawns;  // Typical: 2-6 open, extreme: 0 or 16
-
     for (int c_idx = 0; c_idx < 2; ++c_idx) {
         Color c = Color(c_idx);
         Color them = Color(c_idx ^ 1);
@@ -659,16 +653,11 @@ Value evaluate(const Position& pos, bool tactical_only) {
             all_attacks[c] |= attacks;
 
             if (!tactical_only) {
-            // Mobility: weighted formula — king zone squares count double
-            // Principle: knight controlling squares near enemy king is disproportionately valuable
-            Bitboard mob_squares = attacks & mob_area & ~pos.pieces(c);
-            int mob = popcount(mob_squares);
+            // Mobility: linear formula (trapped knight = useless)
+            int mob = popcount(attacks & mob_area & ~pos.pieces(c));
             mob = std::min(mob, KnightMobMax);
-            // Context: knight mobility matters more in closed positions
-            int knight_slope_mg = KnightMobSlopeMG + std::max(-2, (8 - openness) / 3);
-            int knight_slope_eg = KnightMobSlopeEG + std::max(-1, (8 - openness) / 4);
-            mg_score += sign * (KnightMobBaseMG + mob * knight_slope_mg);
-            eg_score += sign * (KnightMobBaseEG + mob * knight_slope_eg);
+            mg_score += sign * (KnightMobBaseMG + mob * KnightMobSlopeMG);
+            eg_score += sign * (KnightMobBaseEG + mob * KnightMobSlopeEG);
 
             // Outpost: knight on rank 4-6, protected by own pawn,
             // not attackable by enemy pawn (permanent advantage)
@@ -712,17 +701,11 @@ Value evaluate(const Position& pos, bool tactical_only) {
             all_attacks[c] |= attacks;
 
             if (!tactical_only) {
-            // Mobility: weighted formula — king zone squares count more
-            Bitboard mob_squares = attacks & mob_area & ~pos.pieces(c);
-            int mob = popcount(mob_squares);
+            // Mobility: linear formula
+            int mob = popcount(attacks & mob_area & ~pos.pieces(c));
             mob = std::min(mob, BishopMobMax);
-            // Context: bishop mobility matters more in open positions
-            int bishop_slope_mg = BishopMobSlopeMG + std::max(-2, (openness - 8) / 3);
-            int bishop_slope_eg = BishopMobSlopeEG + std::max(-1, (openness - 8) / 4);
-            mg_score += sign * (BishopMobBaseMG + mob * bishop_slope_mg);
-            eg_score += sign * (BishopMobBaseEG + mob * bishop_slope_eg);
-
-
+            mg_score += sign * (BishopMobBaseMG + mob * BishopMobSlopeMG);
+            eg_score += sign * (BishopMobBaseEG + mob * BishopMobSlopeEG);
 
             // Bishop with many same-color pawns: bad bishop penalty
             {
@@ -779,16 +762,10 @@ Value evaluate(const Position& pos, bool tactical_only) {
             all_attacks[c] |= attacks;
 
             if (!tactical_only) {
-            Bitboard mob_squares = attacks & mob_area & ~pos.pieces(c);
-            int mob = popcount(mob_squares);
+            int mob = popcount(attacks & mob_area & ~pos.pieces(c));
             mob = std::min(mob, RookMobMax);
-            // Context: rooks benefit most from open positions (open files)
-            int rook_slope_mg = RookMobSlopeMG + std::max(-1, (openness - 8) / 4);
-            int rook_slope_eg = RookMobSlopeEG + std::max(-1, (openness - 8) / 4);
-            mg_score += sign * (RookMobBaseMG + mob * rook_slope_mg);
-            eg_score += sign * (RookMobBaseEG + mob * rook_slope_eg);
-
-
+            mg_score += sign * (RookMobBaseMG + mob * RookMobSlopeMG);
+            eg_score += sign * (RookMobBaseEG + mob * RookMobSlopeEG);
 
             // Open / semi-open file
             File f = file_of(sq);
@@ -878,14 +855,10 @@ Value evaluate(const Position& pos, bool tactical_only) {
             all_attacks[c] |= attacks;
 
             if (!tactical_only) {
-            Bitboard mob_squares = attacks & mob_area & ~pos.pieces(c);
-            int mob = popcount(mob_squares);
+            int mob = popcount(attacks & mob_area & ~pos.pieces(c));
             mob = std::min(mob, QueenMobMax);
-            // Queen: slight open position bonus (more scope for power)
-            int queen_slope_mg = QueenMobSlopeMG + std::max(-1, (openness - 8) / 6);
-            int queen_slope_eg = QueenMobSlopeEG + std::max(-1, (openness - 8) / 6);
-            mg_score += sign * (QueenMobBaseMG + mob * queen_slope_mg);
-            eg_score += sign * (QueenMobBaseEG + mob * queen_slope_eg);
+            mg_score += sign * (QueenMobBaseMG + mob * QueenMobSlopeMG);
+            eg_score += sign * (QueenMobBaseEG + mob * QueenMobSlopeEG);
 
             // Far queen penalty
             if (distance(sq, ksq_arr[c_idx]) > 3) {
@@ -1097,9 +1070,13 @@ Value evaluate(const Position& pos, bool tactical_only) {
 
     // Knight bonus with many pawns: knights can jump over pawn chains,
     // making them relatively stronger in closed positions (many pawns).
-    // Also penalized in open positions (fewer obstacles, bishops dominate).
+    // Bishop advantage with few pawns is already handled by imbalance term.
     {
-        int knight_adj = total_pawns - 8;  // -8 to +8 range (typical: 2 to 8)
+        int w_pawns = popcount(pos.pieces(WHITE, PAWN));
+        int b_pawns = popcount(pos.pieces(BLACK, PAWN));
+        int total_pawns = w_pawns + b_pawns;
+        // With 16 pawns (impossible): max bonus. With 0 pawns: no bonus.
+        int knight_adj = total_pawns - 8;  // -8 to +8 range (typical: 0 to 8)
         int w_knights = popcount(pos.pieces(WHITE, KNIGHT));
         int b_knights = popcount(pos.pieces(BLACK, KNIGHT));
         if (knight_adj > 0) {
