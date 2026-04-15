@@ -1116,10 +1116,6 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
         ExtMove quiets[MAX_MOVES];
         ExtMove* quiet_end = generate<GEN_QUIET>(pos, quiets);
 
-        // Precompute enemy king zone for king-attack ordering
-        Square opp_ksq = pos.king_sq(Color(pos.side_to_move() ^ 1));
-        Bitboard enemy_king_zone = king_attacks_bb(opp_ksq) | square_bb(opp_ksq);
-
         // Score quiets: killers + counter-moves + history + escape-aware
         for (ExtMove* it = quiets; it != quiet_end; ++it) {
             Move m = it->move;
@@ -1193,11 +1189,6 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
                     else if (pt == BISHOP) cbo = cbo * 3 / 2;
                     else if (pt == QUEEN) cbo = cbo / 2;
                     score += cbo;
-
-                    // King zone attack ordering: moves near enemy king searched earlier
-                    if (enemy_king_zone & square_bb(m.to())) {
-                        score += 600;
-                    }
                 }
             }
             it->value = score;
