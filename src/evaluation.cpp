@@ -1025,29 +1025,7 @@ Value evaluate(const Position& pos, bool tactical_only) {
         }
     }
 
-    // -------------------------------------------------------
-    // Space: control of central squares behind our pawns
-    // -------------------------------------------------------
-    if (!tactical_only) {
-    {
-        int space[2] = {0, 0};
-        int pawn_count[2] = {0, 0};
-        for (int c = 0; c < 2; ++c) {
-            Bitboard our_pawns = pos.pieces(Color(c), PAWN);
-            pawn_count[c] = popcount(our_pawns);
-            Bitboard our_pawn_attacks = pawn_attacks_bb(Color(c), our_pawns);
-            Bitboard their_pawn_attacks = pawn_attacks_bb(Color(c ^ 1), pos.pieces(Color(c ^ 1), PAWN));
-            Bitboard space_area = (BB_FILE_C | BB_FILE_D | BB_FILE_E | BB_FILE_F)
-                                 & (our_pawn_attacks & ~their_pawn_attacks);
-            space[c] = popcount(space_area);
-        }
-        if (pawn_count[WHITE] > pawn_count[BLACK]) {
-            mg_score += space[WHITE] * 4 - space[BLACK] * 2;
-        } else if (pawn_count[BLACK] > pawn_count[WHITE]) {
-            mg_score -= space[BLACK] * 4 - space[WHITE] * 2;
-        }
-    }
-    } // end !tactical_only space
+    // Space evaluation removed: marginal signal at bullet TC, computation saved
 
     // -------------------------------------------------------
     // Material imbalance: bishop value increases with fewer pawns
