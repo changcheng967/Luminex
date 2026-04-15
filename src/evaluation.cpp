@@ -936,7 +936,10 @@ Value evaluate(const Position& pos, bool tactical_only) {
 
         // -------------------------------------------------------
         // Threat evaluation
+        // Skip in tactical_only (qsearch): captures already searched,
+        // threat bonuses are redundant overhead during capture resolution
         // -------------------------------------------------------
+        if (!tactical_only) {
         {
             Bitboard their_pieces = pos.pieces(them);
 
@@ -1001,6 +1004,7 @@ Value evaluate(const Position& pos, bool tactical_only) {
                 eg_score += sign * 15 * popcount(hanging_pieces);
             }
         }
+        } // end !tactical_only threats
     }
 
     // -------------------------------------------------------
