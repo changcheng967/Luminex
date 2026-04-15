@@ -1270,8 +1270,8 @@ static void helper_thread_func(Position pos_copy, int thread_id) {
         Value alpha = -VALUE_INFINITE;
         Value beta = VALUE_INFINITE;
         if (d >= 4 && prev_score > -VALUE_KNOWN_WIN && prev_score < VALUE_KNOWN_WIN) {
-            alpha = prev_score - 30;
-            beta = prev_score + 30;
+            alpha = prev_score - 50;
+            beta = prev_score + 50;
         }
 
         // Generate moves
