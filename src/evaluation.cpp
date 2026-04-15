@@ -563,14 +563,6 @@ Value evaluate(const Position& pos, bool tactical_only) {
     int total_pawns = popcount(pos.pieces(PAWN));
     int openness = 16 - total_pawns;  // Typical: 2-6 open, extreme: 0 or 16
 
-    // Pre-compute enemy king zones for weighted mobility
-    Bitboard enemy_king_zone[2] = {};
-    for (int c = 0; c < 2; ++c) {
-        Color them = Color(c ^ 1);
-        Bitboard kz = king_attacks_bb(ksq_arr[them]) | square_bb(ksq_arr[them]);
-        enemy_king_zone[c] = kz;
-    }
-
     for (int c_idx = 0; c_idx < 2; ++c_idx) {
         Color c = Color(c_idx);
         Color them = Color(c_idx ^ 1);
@@ -678,10 +670,6 @@ Value evaluate(const Position& pos, bool tactical_only) {
             mg_score += sign * (KnightMobBaseMG + mob * knight_slope_mg);
             eg_score += sign * (KnightMobBaseEG + mob * knight_slope_eg);
 
-            // King zone attack potential: knight reaching squares near enemy king
-            int kz_squares = popcount(mob_squares & enemy_king_zone[c_idx]);
-            mg_score += sign * kz_squares * 3;
-
             // Outpost: knight on rank 4-6, protected by own pawn,
             // not attackable by enemy pawn (permanent advantage)
             Rank kr = relative_rank(c, sq);
@@ -734,9 +722,7 @@ Value evaluate(const Position& pos, bool tactical_only) {
             mg_score += sign * (BishopMobBaseMG + mob * bishop_slope_mg);
             eg_score += sign * (BishopMobBaseEG + mob * bishop_slope_eg);
 
-            // King zone attack potential: bishop reaching squares near enemy king
-            int kz_squares = popcount(mob_squares & enemy_king_zone[c_idx]);
-            mg_score += sign * kz_squares * 2;
+
 
             // Bishop with many same-color pawns: bad bishop penalty
             {
@@ -802,9 +788,7 @@ Value evaluate(const Position& pos, bool tactical_only) {
             mg_score += sign * (RookMobBaseMG + mob * rook_slope_mg);
             eg_score += sign * (RookMobBaseEG + mob * rook_slope_eg);
 
-            // King zone attack potential: rook reaching squares near enemy king
-            int kz_squares = popcount(mob_squares & enemy_king_zone[c_idx]);
-            mg_score += sign * kz_squares * 2;
+
 
             // Open / semi-open file
             File f = file_of(sq);
@@ -902,10 +886,6 @@ Value evaluate(const Position& pos, bool tactical_only) {
             int queen_slope_eg = QueenMobSlopeEG + std::max(-1, (openness - 8) / 6);
             mg_score += sign * (QueenMobBaseMG + mob * queen_slope_mg);
             eg_score += sign * (QueenMobBaseEG + mob * queen_slope_eg);
-
-            // King zone attack potential: queen reaching enemy king zone
-            int kz_squares = popcount(mob_squares & enemy_king_zone[c_idx]);
-            mg_score += sign * kz_squares;
 
             // Far queen penalty
             if (distance(sq, ksq_arr[c_idx]) > 3) {
