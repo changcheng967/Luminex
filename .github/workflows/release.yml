@@ -107,9 +107,8 @@ jobs:
         TAG: ${{ github.event.inputs.version || github.ref_name }}
       run: |
         if ! gh release view "$TAG" > /dev/null 2>&1; then
-          echo "ERROR: Release $TAG does not exist. Create it first with:"
-          echo "  gh release create $TAG --title \"Luminex $TAG\" --notes \"...\""
-          exit 1
+          echo "Creating release $TAG..."
+          gh release create "$TAG" --title "Luminex $TAG" --notes "## Luminex $TAG" --target $(git ls-remote origin refs/tags/$TAG | cut -f1)
         fi
         gh release upload "$TAG" \
           artifacts/luminex-linux-x86-64-modern/luminex-linux-x86-64-modern \
