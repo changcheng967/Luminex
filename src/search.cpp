@@ -806,7 +806,7 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
         // Improving positions can tolerate more pruning (more likely to recover)
         int lmp_base = ss->improving ? 3 : 2;
         int lmp_threshold = lmp_base + depth * depth;
-        if (is_quiet && !pv_node && ss->ply > 0 && depth <= 8 && moves_played >= lmp_threshold) {
+        if (is_quiet && !pv_node && ss->ply > 0 && depth <= 6 && moves_played >= lmp_threshold) {
             return false;
         }
 
