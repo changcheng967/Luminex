@@ -680,28 +680,6 @@ Value evaluate(const Position& pos) {
                 mg_score -= sign * g_eval_params.far_knight_mg;
                 eg_score -= sign * g_eval_params.far_knight_eg;
             }
-
-            // Knight behind pawn: piece development pattern
-            {
-                Square behind_sq = (c == WHITE)
-                    ? make_square(file_of(sq), Rank(rank_of(sq) - 1))
-                    : make_square(file_of(sq), Rank(rank_of(sq) + 1));
-                if (behind_sq < SQUARE_NONE && (our_pawns & square_bb(behind_sq))) {
-                    mg_score += sign * 15;
-                    eg_score += sign * 3;
-                }
-            }
-
-            // Knight shielded by own pawn above (protected from above)
-            {
-                Square shield_sq = (c == WHITE)
-                    ? make_square(file_of(sq), Rank(rank_of(sq) + 1))
-                    : make_square(file_of(sq), Rank(rank_of(sq) - 1));
-                if (shield_sq < SQUARE_NONE && (our_pawns & square_bb(shield_sq))) {
-                    mg_score += sign * 4;
-                    eg_score += sign * 15;
-                }
-            }
         }
 
         // -------------------------------------------------------
@@ -723,17 +701,6 @@ Value evaluate(const Position& pos) {
             mob = std::min(mob, BishopMobMax);
             mg_score += sign * (BishopMobBaseMG + mob * BishopMobSlopeMG);
             eg_score += sign * (BishopMobBaseEG + mob * BishopMobSlopeEG);
-
-            // Bishop shielded by pawn above
-            {
-                Square shield_sq = (c == WHITE)
-                    ? make_square(file_of(sq), Rank(rank_of(sq) + 1))
-                    : make_square(file_of(sq), Rank(rank_of(sq) - 1));
-                if (shield_sq < SQUARE_NONE && (our_pawns & square_bb(shield_sq))) {
-                    mg_score += sign * 2;
-                    eg_score += sign * 5;
-                }
-            }
 
             // Bishop with many same-color pawns: bad bishop penalty
             // Principle: each same-color pawn blocks ~2 diagonal squares.
@@ -775,17 +742,6 @@ Value evaluate(const Position& pos) {
             if (distance(sq, ksq_arr[c_idx]) > 3) {
                 mg_score -= sign * g_eval_params.far_bishop_mg;
                 eg_score -= sign * g_eval_params.far_bishop_eg;
-            }
-
-            // Bishop behind pawn
-            {
-                Square behind_sq = (c == WHITE)
-                    ? make_square(file_of(sq), Rank(rank_of(sq) - 1))
-                    : make_square(file_of(sq), Rank(rank_of(sq) + 1));
-                if (behind_sq < SQUARE_NONE && (our_pawns & square_bb(behind_sq))) {
-                    mg_score += sign * 15;
-                    eg_score += sign * 3;
-                }
             }
         }
 
