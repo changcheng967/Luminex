@@ -239,12 +239,12 @@ bool check_time() {
 Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
     // Check for max ply to prevent stack overflow
     if (ss->ply >= MAX_PLY) {
-        return eval_cached(pos);
+        return evaluate(pos, true);
     }
 
     // Search captures to depth -4 to avoid horizon effect
     if (depth < -4) {
-        return eval_cached(pos);
+        return evaluate(pos, true);
     }
 
     // Memory barrier for ensure we see the latest stop flag
@@ -267,7 +267,9 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
 
     if (!in_check) {
         // Stand pat only when NOT in check
-        eval = eval_cached(pos);
+        // Use tactical eval in qsearch: material + PST + pawn structure + threats
+        // Skips expensive positional terms (mobility, king safety, space)
+        eval = evaluate(pos, true);
         if (eval >= beta) {
             return beta;
         }

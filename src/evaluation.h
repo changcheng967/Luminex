@@ -43,7 +43,7 @@ struct EvalParams {
 extern EvalParams g_eval_params;
 
 // Main evaluation function
-Value evaluate(const Position& pos);
+Value evaluate(const Position& pos, bool tactical_only = false);
 
 // Evaluation scaling
 int scale_factor(const Position& pos, Value eg);

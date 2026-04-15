@@ -474,7 +474,7 @@ static void evaluate_pawns(const Position& pos, int32_t& mg_out, int32_t& eg_out
 // ============================================================
 // Main evaluation function
 // ============================================================
-Value evaluate(const Position& pos) {
+Value evaluate(const Position& pos, bool tactical_only) {
     // KXK endgame: one side has only a king
     for (int strong = 0; strong < 2; ++strong) {
         Color c = Color(strong);
@@ -565,11 +565,12 @@ Value evaluate(const Position& pos) {
         Bitboard their_pawns = pos.pieces(them, PAWN);
 
         // Mobility area: exclude squares attacked by enemy pawns
-        Bitboard mob_area = ~pawn_attacks_bb(them, their_pawns);
+        Bitboard mob_area = tactical_only ? Bitboard(0) : ~pawn_attacks_bb(them, their_pawns);
 
         // -------------------------------------------------------
         // Passed pawn extra bonuses (beyond base table)
         // -------------------------------------------------------
+        if (!tactical_only) {
         Bitboard pawns = our_pawns;
         while (pawns) {
             Square sq = pop_lsb(pawns);
@@ -636,6 +637,7 @@ Value evaluate(const Position& pos) {
                 eg_score += sign * eg_passer;
             }
         }
+        } // end !tactical_only passed pawns
 
         // -------------------------------------------------------
         // Knights
@@ -650,6 +652,7 @@ Value evaluate(const Position& pos) {
             attacks_by[c][KNIGHT] |= attacks;
             all_attacks[c] |= attacks;
 
+            if (!tactical_only) {
             // Mobility: linear formula (trapped knight = useless)
             int mob = popcount(attacks & mob_area & ~pos.pieces(c));
             mob = std::min(mob, KnightMobMax);
@@ -680,6 +683,7 @@ Value evaluate(const Position& pos) {
                 mg_score -= sign * g_eval_params.far_knight_mg;
                 eg_score -= sign * g_eval_params.far_knight_eg;
             }
+            } // end !tactical_only knight
         }
 
         // -------------------------------------------------------
@@ -696,6 +700,7 @@ Value evaluate(const Position& pos) {
             attacks_by[c][BISHOP] |= attacks;
             all_attacks[c] |= attacks;
 
+            if (!tactical_only) {
             // Mobility: linear formula
             int mob = popcount(attacks & mob_area & ~pos.pieces(c));
             mob = std::min(mob, BishopMobMax);
@@ -703,9 +708,6 @@ Value evaluate(const Position& pos) {
             eg_score += sign * (BishopMobBaseEG + mob * BishopMobSlopeEG);
 
             // Bishop with many same-color pawns: bad bishop penalty
-            // Principle: each same-color pawn blocks ~2 diagonal squares.
-            // Good bishop (0 same-color pawns) = +20 MG, bad (6+) = -15 MG
-            // Spread ~35cp = ~0.35 pawns (consistent with classical theory)
             {
                 static constexpr Bitboard BB_DARK_SQ = 0x55AA55AA55AA55AAULL;
                 static constexpr Bitboard BB_LIGHT_SQ = 0xAA55AA55AA55AA55ULL;
@@ -720,7 +722,6 @@ Value evaluate(const Position& pos) {
             }
 
             // Bishop on long diagonal (sees 2+ center squares)
-            // Principle: bishop controlling center from distance = strong
             if (popcount(attacks & BB_CENTER) >= 2) {
                 mg_score += sign * 12;
                 eg_score += sign * 20;
@@ -743,6 +744,7 @@ Value evaluate(const Position& pos) {
                 mg_score -= sign * g_eval_params.far_bishop_mg;
                 eg_score -= sign * g_eval_params.far_bishop_eg;
             }
+            } // end !tactical_only bishop
         }
 
         // -------------------------------------------------------
@@ -759,6 +761,7 @@ Value evaluate(const Position& pos) {
             attacks_by[c][ROOK] |= attacks;
             all_attacks[c] |= attacks;
 
+            if (!tactical_only) {
             int mob = popcount(attacks & mob_area & ~pos.pieces(c));
             mob = std::min(mob, RookMobMax);
             mg_score += sign * (RookMobBaseMG + mob * RookMobSlopeMG);
@@ -787,7 +790,7 @@ Value evaluate(const Position& pos) {
                 eg_score += sign * 5;
             }
 
-            // Far rook penalty: rook disconnected from own king is harder to coordinate
+            // Far rook penalty
             if (distance(sq, ksq_arr[c_idx]) > 3) {
                 mg_score -= sign * 8;
                 eg_score -= sign * 5;
@@ -818,13 +821,11 @@ Value evaluate(const Position& pos) {
             {
                 Bitboard ahead_pawns;
                 if (c == WHITE) {
-                    // For White, ahead = ranks above rook
                     Bitboard below_and_same = 0;
                     for (int r = RANK_1; r <= rank_of(sq); ++r)
                         below_and_same |= rank_bb(Rank(r));
                     ahead_pawns = our_pawns & file_bb(f) & ~below_and_same;
                 } else {
-                    // For Black, ahead = ranks below rook (toward rank 1)
                     Bitboard above_and_same = 0;
                     for (int r = rank_of(sq); r <= RANK_8; ++r)
                         above_and_same |= rank_bb(Rank(r));
@@ -835,6 +836,7 @@ Value evaluate(const Position& pos) {
                     eg_score += sign * (-8);
                 }
             }
+            } // end !tactical_only rook
         }
 
         // -------------------------------------------------------
@@ -852,16 +854,18 @@ Value evaluate(const Position& pos) {
             attacks_by[c][QUEEN] |= attacks;
             all_attacks[c] |= attacks;
 
+            if (!tactical_only) {
             int mob = popcount(attacks & mob_area & ~pos.pieces(c));
             mob = std::min(mob, QueenMobMax);
             mg_score += sign * (QueenMobBaseMG + mob * QueenMobSlopeMG);
             eg_score += sign * (QueenMobBaseEG + mob * QueenMobSlopeEG);
 
-            // Far queen: active queen in EG is good, disconnected queen in MG is bad
+            // Far queen penalty
             if (distance(sq, ksq_arr[c_idx]) > 3) {
                 mg_score -= sign * 8;
                 eg_score -= sign * 3;
             }
+            } // end !tactical_only queen
 
             // Weak queen: pinned to own king (forced passivity)
             // NOTE: pos.pinned() returns enemy sniper positions, not our pinned pieces.
@@ -876,12 +880,12 @@ Value evaluate(const Position& pos) {
         mg_score += sign * (PieceValueMG[KING] + PST_MG_TABLE[int(c)][int(KING)][int(ksq)]);
         eg_score += sign * (PieceValueEG[KING] + PST_EG_TABLE[int(c)][int(KING)][int(ksq)]);
 
+        if (!tactical_only) {
         // King pawn shield (MG only: safety matters in middlegame)
         Rank krank = rank_of(ksq);
         File kfile = file_of(ksq);
         bool on_back = (c == WHITE && krank <= RANK_2) || (c == BLACK && krank >= RANK_7);
         if (on_back) {
-            // Check 3 ranks in front of king for friendly pawns
             for (int r = 1; r <= 3; ++r) {
                 int weight = (r == 1) ? g_eval_params.pawn_shield_knight
                              : (r == 2) ? g_eval_params.pawn_shield_center
@@ -896,13 +900,11 @@ Value evaluate(const Position& pos) {
                 }
             }
 
-            // Open file penalty: no pawns on king's file = exposed
             Bitboard all_pawns = pos.pieces(PAWN);
             if (!(all_pawns & file_bb(kfile))) mg_score -= sign * g_eval_params.open_file_penalty_mg;
             if (kfile > FILE_A && !(all_pawns & file_bb(File(kfile - 1)))) mg_score -= sign * g_eval_params.open_file_penalty_eg;
             if (kfile < FILE_H && !(all_pawns & file_bb(File(kfile + 1)))) mg_score -= sign * g_eval_params.open_file_penalty_eg;
 
-            // Pawn storm: enemy pawns advancing toward castled king
             for (int df = -1; df <= 1; ++df) {
                 File storm_file = File(int(kfile) + df);
                 if (storm_file < FILE_A || storm_file > FILE_H) continue;
@@ -930,6 +932,7 @@ Value evaluate(const Position& pos) {
             mg_score -= sign * 25;
             eg_score -= sign * 10;
         }
+        } // end !tactical_only king
 
         // -------------------------------------------------------
         // Threat evaluation
@@ -1003,6 +1006,7 @@ Value evaluate(const Position& pos) {
     // -------------------------------------------------------
     // Space: control of central squares behind our pawns
     // -------------------------------------------------------
+    if (!tactical_only) {
     {
         int space[2] = {0, 0};
         int pawn_count[2] = {0, 0};
@@ -1021,6 +1025,7 @@ Value evaluate(const Position& pos) {
             mg_score -= space[BLACK] * 4 - space[WHITE] * 2;
         }
     }
+    } // end !tactical_only space
 
     // -------------------------------------------------------
     // Material imbalance: bishop value increases with fewer pawns
@@ -1062,16 +1067,8 @@ Value evaluate(const Position& pos) {
 
     // -------------------------------------------------------
     // King safety: sigmoid danger model (Hill equation)
-    // Principle: attack probability follows a logistic curve.
-    //   - Few attackers: flat, low danger (defense copes)
-    //   - 3-5 attackers: rapidly escalating (each one devastating)
-    //   - 6+: saturation (king already lost, diminishing returns)
-    // Formula: danger = 500 * au^2 / (au^2 + 200) — S-curve
-    // Attack unit weights based on piece danger:
-    //   Pawn = 2, Knight = 4, Bishop = 3, Rook = 5, Queen = 7
-    // Safe checks (undefended check squares) add extra danger.
-    // No queen: danger / 4. No queen + no rook: danger / 16.
     // -------------------------------------------------------
+    if (!tactical_only) {
     for (int c_idx = 0; c_idx < 2; ++c_idx) {
         Color c = Color(c_idx);
         Color them = Color(c_idx ^ 1);
@@ -1172,6 +1169,7 @@ Value evaluate(const Position& pos) {
             mg_score -= sign * danger;
         }
     }
+    } // end !tactical_only king safety
 
     // -------------------------------------------------------
     // Phase calculation and score interpolation
