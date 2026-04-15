@@ -702,7 +702,7 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
             }
 
             // History influence on reduction
-            reduction -= history_score / 8192;
+            reduction -= history_score / 4096;
         }
 
         // Reduce less for killer moves
