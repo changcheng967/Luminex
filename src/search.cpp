@@ -1168,6 +1168,7 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
 
                     // Centralization bonus: pieces moving to central squares searched earlier
                     // Principle: centralized pieces are disproportionately strong (Nimzowitsch)
+                    // Piece-type dependent: knights benefit most, queens least
                     static constexpr int center_order[64] = {
                         0, 0, 0, 0, 0, 0, 0, 0,
                         0, 0, 0, 0, 0, 0, 0, 0,
@@ -1178,7 +1179,16 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
                         0, 0, 0, 0, 0, 0, 0, 0,
                         0, 0, 0, 0, 0, 0, 0, 0
                     };
-                    score += center_order[m.to()];
+                    int cbo = center_order[m.to()];
+                    PieceType pt = piece_type_of(moved_piece);
+                    // Knights: 2x bonus (most dependent on centralization)
+                    // Bishops: 1.5x (benefit from central diagonals)
+                    // Rooks: 1x (already strong on files)
+                    // Queen: 0.5x (strong everywhere)
+                    if (pt == KNIGHT) cbo = cbo * 2;
+                    else if (pt == BISHOP) cbo = cbo * 3 / 2;
+                    else if (pt == QUEEN) cbo = cbo / 2;
+                    score += cbo;
                 }
             }
             it->value = score;
