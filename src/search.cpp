@@ -1599,31 +1599,13 @@ Move search(Position& pos, Limits& lim) {
             else if (m.is_promotion()) {
                 score = 900000 + m.promotion_type() * 10000;
             }
-            // Quiet moves: use history + killer + centralization ordering
+            // Quiet moves: use history + killer ordering
             else {
                 Piece pc = pos.piece_on(m.from());
                 if (pc != NO_PIECE) {
                     score = worker->history[int(pc)][int(m.to())];
                     if (m == worker->killers[0][0]) score += 500000;
                     else if (m == worker->killers[0][1]) score += 400000;
-
-                    // Centralization bonus at root (same as non-root)
-                    static constexpr int center_order[64] = {
-                        0, 0, 0, 0, 0, 0, 0, 0,
-                        0, 0, 0, 0, 0, 0, 0, 0,
-                        0, 0,200,300,300,200, 0, 0,
-                        0,200,400,500,500,400,200, 0,
-                        0,200,400,500,500,400,200, 0,
-                        0, 0,200,300,300,200, 0, 0,
-                        0, 0, 0, 0, 0, 0, 0, 0,
-                        0, 0, 0, 0, 0, 0, 0, 0
-                    };
-                    PieceType pt = piece_type_of(pc);
-                    int cbo = center_order[m.to()];
-                    if (pt == KNIGHT) cbo = cbo * 2;
-                    else if (pt == BISHOP) cbo = cbo * 3 / 2;
-                    else if (pt == QUEEN) cbo = cbo / 2;
-                    score += cbo;
                 }
             }
 
