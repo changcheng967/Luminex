@@ -1399,6 +1399,7 @@ Move search(Position& pos, Limits& lim) {
     root_score = best_value;
     previous_root_best = MOVE_NONE;
     int best_move_stability = 0;  // How many consecutive iterations best move stayed the same
+    bool score_dropped_sharply = false;  // Score drop extension flag
 
     // Check if we have any legal moves at all
     ExtMove initial_moves[MAX_MOVES];
@@ -1518,6 +1519,10 @@ Move search(Position& pos, Limits& lim) {
             int stability_reduction = (best_move_stability >= 4) ? ideal_time * 3 / 5
                                     : (best_move_stability >= 3) ? ideal_time * 3 / 4
                                     : ideal_time;
+            // Score-drop extension: when eval drops sharply, spend more time investigating
+            if (score_dropped_sharply) {
+                stability_reduction = std::min(stability_reduction * 3 / 2, max_time);
+            }
             if (elapsed > stability_reduction) {
                 break;
             }
@@ -1704,6 +1709,8 @@ Move search(Position& pos, Limits& lim) {
             } else {
                 best_move_stability = 0;
             }
+            // Score-drop extension: detect sharp eval drops between iterations
+            score_dropped_sharply = (root_depth > 2 && depth_best_value < best_value - 30);
             best_value = depth_best_value;
             best_move = depth_best_move;
             previous_root_best = depth_best_move;
