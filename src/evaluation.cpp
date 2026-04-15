@@ -557,19 +557,6 @@ Value evaluate(const Position& pos) {
         eg_score += pawn_eg;
     }
 
-    // Pre-compute enemy king zones for positional mobility
-    // King zone = king attacks + king square + one rank extended toward opponent
-    Bitboard enemy_king_zone[2] = {};
-    for (int c = 0; c < 2; ++c) {
-        Square their_ksq = ksq_arr[c ^ 1];
-        enemy_king_zone[c] = king_attacks_bb(their_ksq) | square_bb(their_ksq);
-        Rank extend = (c == 0) ? Rank(rank_of(their_ksq) - 1) : Rank(rank_of(their_ksq) + 1);
-        if (extend >= RANK_1 && extend <= RANK_8) {
-            for (File f = FILE_A; f <= FILE_H; f = File(f + 1))
-                enemy_king_zone[c] |= square_bb(make_square(f, extend));
-        }
-    }
-
     for (int c_idx = 0; c_idx < 2; ++c_idx) {
         Color c = Color(c_idx);
         Color them = Color(c_idx ^ 1);
@@ -669,13 +656,6 @@ Value evaluate(const Position& pos) {
             mg_score += sign * (KnightMobBaseMG + mob * KnightMobSlopeMG);
             eg_score += sign * (KnightMobBaseEG + mob * KnightMobSlopeEG);
 
-            // Positional mobility: knight controlling enemy king zone
-            {
-                int kz = popcount(attacks & enemy_king_zone[c_idx]);
-                mg_score += sign * kz * 4;
-                eg_score += sign * kz * 2;
-            }
-
             // Outpost: knight on rank 4-6, protected by own pawn,
             // not attackable by enemy pawn (permanent advantage)
             Rank kr = relative_rank(c, sq);
@@ -743,13 +723,6 @@ Value evaluate(const Position& pos) {
             mob = std::min(mob, BishopMobMax);
             mg_score += sign * (BishopMobBaseMG + mob * BishopMobSlopeMG);
             eg_score += sign * (BishopMobBaseEG + mob * BishopMobSlopeEG);
-
-            // Positional mobility: bishop controlling enemy king zone
-            {
-                int kz = popcount(attacks & enemy_king_zone[c_idx]);
-                mg_score += sign * kz * 3;
-                eg_score += sign * kz * 1;
-            }
 
             // Bishop shielded by pawn above
             {
@@ -834,13 +807,6 @@ Value evaluate(const Position& pos) {
             mob = std::min(mob, RookMobMax);
             mg_score += sign * (RookMobBaseMG + mob * RookMobSlopeMG);
             eg_score += sign * (RookMobBaseEG + mob * RookMobSlopeEG);
-
-            // Positional mobility: rook controlling enemy king zone
-            {
-                int kz = popcount(attacks & enemy_king_zone[c_idx]);
-                mg_score += sign * kz * 2;
-                eg_score += sign * kz * 1;
-            }
 
             // Open / semi-open file
             File f = file_of(sq);
@@ -934,13 +900,6 @@ Value evaluate(const Position& pos) {
             mob = std::min(mob, QueenMobMax);
             mg_score += sign * (QueenMobBaseMG + mob * QueenMobSlopeMG);
             eg_score += sign * (QueenMobBaseEG + mob * QueenMobSlopeEG);
-
-            // Positional mobility: queen controlling enemy king zone
-            {
-                int kz = popcount(attacks & enemy_king_zone[c_idx]);
-                mg_score += sign * kz * 1;
-                eg_score += sign * kz * 1;
-            }
 
             // Far queen: active queen in EG is good, disconnected queen in MG is bad
             if (distance(sq, ksq_arr[c_idx]) > 3) {
