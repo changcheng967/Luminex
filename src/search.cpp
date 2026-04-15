@@ -616,6 +616,10 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
     Value best_value = -VALUE_INFINITE;
     int moves_played = 0;
 
+    // Capture Phase Intelligence: track how close captures came to beta
+    // Used by search_move lambda to modulate quiet move LMR
+    Value capture_phase_best = -VALUE_INFINITE;
+
     // Track quiet moves for history gravity (penalizing non-cutoff moves)
     Move quiets_searched[64];
     int quiet_count = 0;
@@ -836,6 +840,19 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
             } else {
                 reduction = compute_reduction(m, moves_played, gives_chk);
             }
+
+            // INNOVATION: "Capture Phase Intelligence"
+            // Capture tension modulates quiet move LMR:
+            // - Low tension (captures nearly beat beta): position is tactically
+            //   rich, quiet moves are more likely to be relevant → reduce less
+            // - High tension (captures far from beta): position is quiet, only
+            //   exceptional quiet moves matter → reduce more
+            if (is_quiet && capture_phase_best > -VALUE_INFINITE) {
+                int tension = beta - capture_phase_best;
+                if (tension <= 40) reduction -= 1;   // captures almost beat beta
+                else if (tension >= 200) reduction += 1; // captures far from beta
+            }
+
             // Reduce less in PV nodes
             if (pv_node) reduction = std::max(1, reduction - 1);
             new_depth = depth - 1 - reduction;
@@ -1049,6 +1066,9 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
 
     // ========================================
     // PHASE 2: Captures + promotions
+    // INNOVATION: "Capture Phase Intelligence" — track how close
+    // the best capture came to beta. This information is unique
+    // to phased move generation and modulates quiet move search.
     // ========================================
     {
         ExtMove captures[MAX_MOVES];
@@ -1105,9 +1125,10 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
                 }
             }
         }
+        // Capture Phase Intelligence: record best value from captures
+        capture_phase_best = best_value;
     }
 
-    // ========================================
     // PHASE 3: Quiet moves (only if no cutoff from captures)
     // This is the key savings: we never generate quiet moves
     // when a capture already caused beta cutoff.
