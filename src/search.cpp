@@ -146,7 +146,7 @@ inline Value eval_cached(const Position& pos) {
     if (eval_cache[idx].key == key) {
         // Apply correction history to cached eval (capped for safety)
         int correction = get_correction(pos.pawn_key());
-        correction = std::max(-150, std::min(150, correction));
+        correction = std::max(-100, std::min(100, correction));
         return Value(eval_cache[idx].value + correction);
     }
 
@@ -155,7 +155,7 @@ inline Value eval_cached(const Position& pos) {
     eval_cache[idx].value = int32_t(eval);
     // Apply correction to fresh eval too
     int correction = get_correction(pos.pawn_key());
-    correction = std::max(-150, std::min(150, correction));
+    correction = std::max(-100, std::min(100, correction));
     return Value(eval + correction);
 }
 
