@@ -1188,32 +1188,6 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
                     else if (pt == BISHOP) cbo = cbo * 3 / 2;
                     else if (pt == QUEEN) cbo = cbo / 2;
                     score += cbo;
-
-                    // INNOVATION: "Threat-Aware Ordering"
-                    // Chess principle: a move that attacks undefended enemy material
-                    // creates a concrete threat the opponent MUST respond to.
-                    // These forcing moves narrow the search tree and are more likely
-                    // to be the best move. Checks attacks from target square against
-                    // enemy pieces NOT defended by enemy pawns.
-                    Bitboard enemy_not_pawn_defended = pos.pieces(them)
-                        & ~pawn_attacks_bb(them, pos.pieces(them, PAWN));
-                    Bitboard attacks_from_target;
-                    Bitboard occ_no_from = pos.pieces() ^ square_bb(m.from());
-                    if (pt == KNIGHT) {
-                        attacks_from_target = knight_attacks_bb(m.to());
-                    } else if (pt == BISHOP) {
-                        attacks_from_target = bishop_attacks_bb(m.to(), occ_no_from);
-                    } else if (pt == ROOK) {
-                        attacks_from_target = rook_attacks_bb(m.to(), occ_no_from);
-                    } else if (pt == QUEEN) {
-                        attacks_from_target = bishop_attacks_bb(m.to(), occ_no_from)
-                            | rook_attacks_bb(m.to(), occ_no_from);
-                    } else {
-                        attacks_from_target = 0; // King: not useful here
-                    }
-                    if (attacks_from_target & enemy_not_pawn_defended) {
-                        score += 8000;
-                    }
                 }
             }
             it->value = score;
