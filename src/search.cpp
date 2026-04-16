@@ -1107,7 +1107,40 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
         }
     }
 
-    // PHASE 3: Quiet moves (only if no cutoff from captures)
+    // ========================================
+    // PHASE 2.5: Known good quiet moves (killers, counter-move)
+    // INNOVATION: "Deferred Quiet Generation" — extends PMG philosophy.
+    // Before generating ALL quiet moves (expensive), try the pre-known
+    // likely-best quiets individually. If one causes cutoff, we skip
+    // the entire quiet generation + scoring cost.
+    // ========================================
+    {
+        // Killer move 1
+        Move km1 = worker->killers[ss->ply][0];
+        if (km1 && km1 != tt_move && pos.pseudo_legal(km1)) {
+            if (search_move(km1, true)) {
+                if (!stop.load(std::memory_order_relaxed)) return best_value;
+            }
+        }
+        // Killer move 2
+        Move km2 = worker->killers[ss->ply][1];
+        if (km2 && km2 != tt_move && pos.pseudo_legal(km2)) {
+            if (search_move(km2, true)) {
+                if (!stop.load(std::memory_order_relaxed)) return best_value;
+            }
+        }
+        // Counter-move
+        if (ss->ply >= 1 && (ss-1)->current_move != MOVE_NONE && (ss-1)->moved_piece != NO_PIECE) {
+            Move cm = worker->counter_move_table[int((ss-1)->moved_piece)][int((ss-1)->current_move.to())];
+            if (cm && cm != tt_move && cm != km1 && cm != km2 && pos.pseudo_legal(cm)) {
+                if (search_move(cm, true)) {
+                    if (!stop.load(std::memory_order_relaxed)) return best_value;
+                }
+            }
+        }
+    }
+
+    // PHASE 3: Quiet moves (only if no cutoff from captures or known-good quiets)
     // This is the key savings: we never generate quiet moves
     // when a capture already caused beta cutoff.
     // ========================================
@@ -1122,6 +1155,12 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
 
             if (m == tt_move) {
                 score = -1;  // Already searched
+            } else if (m == worker->killers[ss->ply][0]
+                    || m == worker->killers[ss->ply][1]) {
+                score = -1;  // Already searched in Phase 2.5
+            } else if (ss->ply >= 1 && (ss-1)->current_move != MOVE_NONE && (ss-1)->moved_piece != NO_PIECE
+                    && m == worker->counter_move_table[int((ss-1)->moved_piece)][int((ss-1)->current_move.to())]) {
+                score = -1;  // Already searched in Phase 2.5
             } else {
                 Piece pc = pos.piece_on(m.from());
                 if (pc != NO_PIECE) {
