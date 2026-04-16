@@ -1188,6 +1188,31 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
                     else if (pt == BISHOP) cbo = cbo * 3 / 2;
                     else if (pt == QUEEN) cbo = cbo / 2;
                     score += cbo;
+
+                    // INNOVATION: "Piece-Value Threat Ordering"
+                    // Chess principle: attacking a more valuable enemy piece is
+                    // always a concrete threat, regardless of our piece's safety.
+                    // A knight threatening a queen forces a response — the queen
+                    // must move or be defended, giving us tempo advantage.
+                    // Bonus scales with value difference.
+                    static constexpr int piece_val[] = {100, 320, 330, 500, 900, 20000, 0};
+                    Bitboard attacks_from_target;
+                    Bitboard occ_no_from = pos.pieces() ^ square_bb(m.from());
+                    if (pt == KNIGHT) attacks_from_target = knight_attacks_bb(m.to());
+                    else if (pt == BISHOP) attacks_from_target = bishop_attacks_bb(m.to(), occ_no_from);
+                    else if (pt == ROOK) attacks_from_target = rook_attacks_bb(m.to(), occ_no_from);
+                    else attacks_from_target = 0;
+
+                    if (attacks_from_target) {
+                        int my_val = piece_val[pt];
+                        // Check for attacks on higher-value enemy pieces
+                        for (int enemy_pt = pt + 1; enemy_pt <= QUEEN; ++enemy_pt) {
+                            Bitboard targets = attacks_from_target & pos.pieces(them, PieceType(enemy_pt));
+                            if (targets) {
+                                score += (piece_val[enemy_pt] - my_val) / 10;
+                            }
+                        }
+                    }
                 }
             }
             it->value = score;
