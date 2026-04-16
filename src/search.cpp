@@ -1117,14 +1117,14 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
     {
         // Killer move 1
         Move km1 = worker->killers[ss->ply][0];
-        if (km1 && km1 != tt_move && pos.pseudo_legal(km1)) {
+        if (km1 && km1 != tt_move && is_ok(km1.from()) && is_ok(km1.to()) && pos.legal(km1)) {
             if (search_move(km1, true)) {
                 if (!stop.load(std::memory_order_relaxed)) return best_value;
             }
         }
         // Killer move 2
         Move km2 = worker->killers[ss->ply][1];
-        if (km2 && km2 != tt_move && pos.pseudo_legal(km2)) {
+        if (km2 && km2 != tt_move && is_ok(km2.from()) && is_ok(km2.to()) && pos.legal(km2)) {
             if (search_move(km2, true)) {
                 if (!stop.load(std::memory_order_relaxed)) return best_value;
             }
@@ -1132,7 +1132,7 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
         // Counter-move
         if (ss->ply >= 1 && (ss-1)->current_move != MOVE_NONE && (ss-1)->moved_piece != NO_PIECE) {
             Move cm = worker->counter_move_table[int((ss-1)->moved_piece)][int((ss-1)->current_move.to())];
-            if (cm && cm != tt_move && cm != km1 && cm != km2 && pos.pseudo_legal(cm)) {
+            if (cm && cm != tt_move && cm != km1 && cm != km2 && is_ok(cm.from()) && is_ok(cm.to()) && pos.legal(cm)) {
                 if (search_move(cm, true)) {
                     if (!stop.load(std::memory_order_relaxed)) return best_value;
                 }
