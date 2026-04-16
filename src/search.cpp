@@ -667,6 +667,9 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
         }
     }
 
+    // Precompute enemy king zone for LMR (nearly free: one king lookup per node)
+    Square enemy_ksq = pos.king_sq(Color(pos.side_to_move() ^ 1));
+
     // Helper lambda: compute LMR reduction for a move (takes gives_chk to avoid recomputation)
     auto compute_reduction = [&](Move m, int mp, bool gives_chk) -> int {
         // Log-depth * log-move-count product formula
@@ -741,6 +744,15 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
                 // Only apply for pieces that benefit from centralization
                 if (pt == KNIGHT || pt == BISHOP) reduction -= 1;
             }
+        }
+
+        // King-zone pressure: reduce less for piece moves adjacent to enemy king
+        // These create threats and restrict king movement (Lasker)
+        // Only for non-check moves (check already gets -1)
+        if (!gives_chk) {
+            int kdist = std::max(abs(int(m.to() % 8) - int(enemy_ksq % 8)),
+                                 abs(int(m.to() / 8) - int(enemy_ksq / 8)));
+            if (kdist <= 1) reduction -= 1;
         }
 
         return std::max(1, std::min(reduction, depth - 2));
