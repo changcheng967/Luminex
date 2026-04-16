@@ -724,66 +724,24 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
         return std::max(1, std::min(reduction, depth - 2));
     };
 
-    // Precompute discovered check candidates: squares that, when vacated,
-    // reveal a slider attack on the enemy king. Computed once per node (cheap).
-    Bitboard dc_candidates = 0;
-    {
-        Color us = pos.side_to_move();
-        Square opp_ksq_dc = pos.king_sq(Color(us ^ 1));
-        Bitboard occ = pos.pieces();
-        Bitboard our_pieces = pos.pieces(us);
-        Bitboard their_pieces = pos.pieces(Color(us ^ 1));
-
-        // Diagonal sliders (bishop + queen): check if one of our pieces blocks their line to king
-        Bitboard diag_sliders = our_pieces & (pos.pieces(BISHOP) | pos.pieces(QUEEN));
-        while (diag_sliders) {
-            Square sl = pop_lsb(diag_sliders);
-            Bitboard attacks = bishop_attacks_bb(sl, occ);
-            if (attacks & square_bb(opp_ksq_dc)) continue; // Already sees king
-            Bitboard between = attacks & bishop_attacks_bb(opp_ksq_dc, occ);
-            Bitboard our_blockers = between & our_pieces;
-            Bitboard their_blockers = between & their_pieces;
-            if (our_blockers && !their_blockers && popcount(our_blockers) == 1) {
-                dc_candidates |= our_blockers;
-            }
-        }
-        // Straight sliders (rook + queen)
-        Bitboard straight_sliders = our_pieces & (pos.pieces(ROOK) | pos.pieces(QUEEN));
-        while (straight_sliders) {
-            Square sl = pop_lsb(straight_sliders);
-            Bitboard attacks = rook_attacks_bb(sl, occ);
-            if (attacks & square_bb(opp_ksq_dc)) continue;
-            Bitboard between = attacks & rook_attacks_bb(opp_ksq_dc, occ);
-            Bitboard our_blockers = between & our_pieces;
-            Bitboard their_blockers = between & their_pieces;
-            if (our_blockers && !their_blockers && popcount(our_blockers) == 1) {
-                dc_candidates |= our_blockers;
-            }
-        }
-    }
-
     // Helper lambda: compute check extension for a move
     auto gives_check = [&](Move m) -> bool {
         Square opp_ksq = pos.king_sq(Color(pos.side_to_move() ^ 1));
         PieceType pt = piece_type_of(pos.piece_on(m.from()));
 
         if (pt == PAWN) {
-            if ((pawn_attacks_bb(pos.side_to_move(), m.to()) & square_bb(opp_ksq)) != 0) return true;
+            return (pawn_attacks_bb(pos.side_to_move(), m.to()) & square_bb(opp_ksq)) != 0;
         } else if (pt == KNIGHT) {
-            if ((knight_attacks_bb(m.to()) & square_bb(opp_ksq)) != 0) return true;
+            return (knight_attacks_bb(m.to()) & square_bb(opp_ksq)) != 0;
         } else if (pt == BISHOP) {
-            if ((bishop_attacks_bb(m.to(), pos.pieces() ^ square_bb(m.from())) & square_bb(opp_ksq)) != 0) return true;
+            return (bishop_attacks_bb(m.to(), pos.pieces() ^ square_bb(m.from())) & square_bb(opp_ksq)) != 0;
         } else if (pt == ROOK) {
-            if ((rook_attacks_bb(m.to(), pos.pieces() ^ square_bb(m.from())) & square_bb(opp_ksq)) != 0) return true;
+            return (rook_attacks_bb(m.to(), pos.pieces() ^ square_bb(m.from())) & square_bb(opp_ksq)) != 0;
         } else if (pt == QUEEN) {
             Bitboard occ_no_from = pos.pieces() ^ square_bb(m.from());
-            if ((bishop_attacks_bb(m.to(), occ_no_from) & square_bb(opp_ksq)) != 0
-                || (rook_attacks_bb(m.to(), occ_no_from) & square_bb(opp_ksq)) != 0) return true;
+            return (bishop_attacks_bb(m.to(), occ_no_from) & square_bb(opp_ksq)) != 0
+                || (rook_attacks_bb(m.to(), occ_no_from) & square_bb(opp_ksq)) != 0;
         }
-
-        // Discovered check: removing our piece reveals a slider attack on the enemy king
-        if (dc_candidates & square_bb(m.from())) return true;
-
         return false;
     };
 
