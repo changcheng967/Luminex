@@ -500,7 +500,7 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
 
     // Internal Iterative Reduction (IIR): reduce depth by 1 when no TT move available
     // Only apply at non-PV nodes — PV nodes use IID instead (below)
-    if (!pv_node && tt_move == MOVE_NONE && depth >= 4) {
+    if (!pv_node && tt_move == MOVE_NONE && depth >= 3) {
         depth--;
     }
 
