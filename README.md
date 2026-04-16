@@ -33,7 +33,7 @@ go movetime 1000
 
 ## Build
 
-Requires C++23 compiler (GCC 12+, Clang 15+, MSVC 2022+) and CMake 3.15+.
+Requires C++23 compiler (GCC 12+, Clang 15+, MSVC 2022+) and CMake 3.20+.
 
 ```bash
 cmake -B build -DCMAKE_BUILD_TYPE=Release
@@ -51,12 +51,22 @@ src/
   board.h / cpp      # Position representation, make/unmake
   movegen.h / cpp    # Legal move generation
   evaluation.h / cpp # Hand-crafted evaluation
-  search.h / cpp     # PVS search with LMR
+  search.h / cpp     # PVS search with LMR, phased move generation
   transposition.h / cpp # Transposition table
   uci.h / cpp        # UCI protocol
   texel_tune.cpp     # Texel tuning
   main.cpp           # Entry point
 ```
+
+## Strength
+
+| Version | Estimated Elo | Key Feature |
+|---------|--------------|-------------|
+| v5.8.0 | ~2330 | LMR positional awareness |
+| v5.7.0 | ~2275 | Aspiration + centralization ordering |
+| v5.6.0 | ~2217 | Selective king safety |
+| v5.5.0 | ~2199 | Tactical qsearch eval |
+| v5.4.0 | ~2067 | Baseline |
 
 ## License
 
