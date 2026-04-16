@@ -1188,6 +1188,16 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
                     else if (pt == BISHOP) cbo = cbo * 3 / 2;
                     else if (pt == QUEEN) cbo = cbo / 2;
                     score += cbo;
+
+                    // Knight threat bonus: knights attacking higher-value
+                    // enemy pieces create concrete threats (fork potential).
+                    // Only for knights — free lookup, zero cost for others.
+                    if (pt == KNIGHT) {
+                        Bitboard knight_attacks = knight_attacks_bb(m.to());
+                        if (knight_attacks & (pos.pieces(them, ROOK) | pos.pieces(them, QUEEN))) {
+                            score += 500;
+                        }
+                    }
                 }
             }
             it->value = score;
