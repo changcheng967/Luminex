@@ -96,17 +96,6 @@ set(HEADERS
 
 add_executable(luminex ${SOURCES} ${HEADERS})
 
-# Texel tuning utility
-add_executable(texel_tune
-    src/texel_tune.cpp
-    src/board.cpp
-    src/evaluation.cpp
-    src/magic.cpp
-    src/movegen.cpp
-    src/transposition.cpp
-)
-target_include_directories(texel_tune PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
-
 target_include_directories(luminex PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
 
 # Platform specific libraries

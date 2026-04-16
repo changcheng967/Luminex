@@ -50,3 +50,5 @@ CLAUDE.md
 *.py
 *.cpp
 !src/*.cpp
+build-check/
+build-check/

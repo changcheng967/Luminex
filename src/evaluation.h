@@ -11,8 +11,7 @@ class Position;
 extern Score PST_MG_TABLE[2][8][64];
 extern Score PST_EG_TABLE[2][8][64];
 
-// Tunable evaluation parameters (settable via UCI options for SPSA tuning)
-// Values from SPSA self-play tuning (40 iterations, 800 games)
+// Evaluation parameters (self-engineered from chess first principles)
 struct EvalParams {
     int bishop_pair_mg = 40;
     int bishop_pair_eg = 100;

@@ -54,7 +54,7 @@ src/
   search.h / cpp     # PVS search with LMR, phased move generation
   transposition.h / cpp # Transposition table
   uci.h / cpp        # UCI protocol
-  texel_tune.cpp     # Texel tuning
+  main.cpp           # Entry point
   main.cpp           # Entry point
 ```
 
