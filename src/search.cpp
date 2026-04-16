@@ -755,17 +755,6 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
             if (kdist <= 1) reduction -= 1;
         }
 
-        // Pawn threat: reduce less for pawn advances that attack enemy pieces
-        // A pawn push creating a threat is forcing (Philidor: "pawns are the soul")
-        {
-            PieceType pt = piece_type_of(pos.piece_on(m.from()));
-            if (pt == PAWN) {
-                Bitboard enemy_pieces = pos.pieces(Color(pos.side_to_move() ^ 1));
-                Bitboard pawn_att = pawn_attacks_bb(pos.side_to_move(), square_bb(m.to()));
-                if (pawn_att & enemy_pieces) reduction -= 1;
-            }
-        }
-
         return std::max(1, std::min(reduction, depth - 2));
     };
 
@@ -1203,37 +1192,46 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
                     }
                 }
 
-                // Escape-Aware + Centralization ordering
+                // Escape-Aware + Centralization + Pawn Threat ordering
                 Piece moved_piece = pos.piece_on(m.from());
-                if (moved_piece != NO_PIECE && piece_type_of(moved_piece) != PAWN) {
-                    // Escape-aware: pieces under pawn attack should move first
-                    if (enemy_pawn_attacks & square_bb(m.from())) {
-                        score += 15000;
-                    }
-
-                    // Centralization bonus: pieces moving to central squares searched earlier
-                    // Principle: centralized pieces are disproportionately strong (Nimzowitsch)
-                    // Piece-type dependent: knights benefit most, queens least
-                    static constexpr int center_order[64] = {
-                        0, 0, 0, 0, 0, 0, 0, 0,
-                        0, 0, 0, 0, 0, 0, 0, 0,
-                        0, 0,200,300,300,200, 0, 0,
-                        0,200,400,500,500,400,200, 0,
-                        0,200,400,500,500,400,200, 0,
-                        0, 0,200,300,300,200, 0, 0,
-                        0, 0, 0, 0, 0, 0, 0, 0,
-                        0, 0, 0, 0, 0, 0, 0, 0
-                    };
-                    int cbo = center_order[m.to()];
+                if (moved_piece != NO_PIECE) {
                     PieceType pt = piece_type_of(moved_piece);
-                    // Knights: 2x bonus (most dependent on centralization)
-                    // Bishops: 1.5x (benefit from central diagonals)
-                    // Rooks: 1x (already strong on files)
-                    // Queen: 0.5x (strong everywhere)
-                    if (pt == KNIGHT) cbo = cbo * 2;
-                    else if (pt == BISHOP) cbo = cbo * 3 / 2;
-                    else if (pt == QUEEN) cbo = cbo / 2;
-                    score += cbo;
+
+                    if (pt != PAWN) {
+                        // Escape-aware: pieces under pawn attack should move first
+                        if (enemy_pawn_attacks & square_bb(m.from())) {
+                            score += 15000;
+                        }
+
+                        // Centralization bonus: pieces moving to central squares searched earlier
+                        // Principle: centralized pieces are disproportionately strong (Nimzowitsch)
+                        // Piece-type dependent: knights benefit most, queens least
+                        static constexpr int center_order[64] = {
+                            0, 0, 0, 0, 0, 0, 0, 0,
+                            0, 0, 0, 0, 0, 0, 0, 0,
+                            0, 0,200,300,300,200, 0, 0,
+                            0,200,400,500,500,400,200, 0,
+                            0,200,400,500,500,400,200, 0,
+                            0, 0,200,300,300,200, 0, 0,
+                            0, 0, 0, 0, 0, 0, 0, 0,
+                            0, 0, 0, 0, 0, 0, 0, 0
+                        };
+                        int cbo = center_order[m.to()];
+                        // Knights: 2x bonus (most dependent on centralization)
+                        // Bishops: 1.5x (benefit from central diagonals)
+                        // Rooks: 1x (already strong on files)
+                        // Queen: 0.5x (strong everywhere)
+                        if (pt == KNIGHT) cbo = cbo * 2;
+                        else if (pt == BISHOP) cbo = cbo * 3 / 2;
+                        else if (pt == QUEEN) cbo = cbo / 2;
+                        score += cbo;
+                    } else {
+                        // Pawn threat ordering: pawn advances that threaten enemy pieces
+                        // are forcing and should be searched earlier (Philidor)
+                        Bitboard enemy_pieces = pos.pieces(Color(pos.side_to_move() ^ 1));
+                        Bitboard pawn_att = pawn_attacks_bb(pos.side_to_move(), square_bb(m.to()));
+                        if (pawn_att & enemy_pieces) score += 8000;
+                    }
                 }
             }
             it->value = score;
