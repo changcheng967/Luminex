@@ -817,25 +817,9 @@ Value evaluate(const Position& pos, bool tactical_only) {
                 }
             }
 
-            // Rook on blocked file: own pawns ahead restrict activity
-            {
-                Bitboard ahead_pawns;
-                if (c == WHITE) {
-                    Bitboard below_and_same = 0;
-                    for (int r = RANK_1; r <= rank_of(sq); ++r)
-                        below_and_same |= rank_bb(Rank(r));
-                    ahead_pawns = our_pawns & file_bb(f) & ~below_and_same;
-                } else {
-                    Bitboard above_and_same = 0;
-                    for (int r = rank_of(sq); r <= RANK_8; ++r)
-                        above_and_same |= rank_bb(Rank(r));
-                    ahead_pawns = our_pawns & file_bb(f) & ~above_and_same;
-                }
-                if (ahead_pawns) {
-                    mg_score += sign * (-8);
-                    eg_score += sign * (-8);
-                }
-            }
+            // Rook behind own pawns: removed penalty — supporting pawn
+            // advances is often GOOD, not bad (v5.5.0 removed similar
+            // passive penalties for knight/bishop behind pawn for +106 Elo)
             } // end !tactical_only rook
         }
 
@@ -1031,21 +1015,16 @@ Value evaluate(const Position& pos, bool tactical_only) {
     if (!tactical_only) {
     {
         int space[2] = {0, 0};
-        int pawn_count[2] = {0, 0};
         for (int c = 0; c < 2; ++c) {
             Bitboard our_pawns = pos.pieces(Color(c), PAWN);
-            pawn_count[c] = popcount(our_pawns);
             Bitboard our_pawn_attacks = pawn_attacks_bb(Color(c), our_pawns);
             Bitboard their_pawn_attacks = pawn_attacks_bb(Color(c ^ 1), pos.pieces(Color(c ^ 1), PAWN));
             Bitboard space_area = (BB_FILE_C | BB_FILE_D | BB_FILE_E | BB_FILE_F)
                                  & (our_pawn_attacks & ~their_pawn_attacks);
             space[c] = popcount(space_area);
         }
-        if (pawn_count[WHITE] > pawn_count[BLACK]) {
-            mg_score += space[WHITE] * 4 - space[BLACK] * 2;
-        } else if (pawn_count[BLACK] > pawn_count[WHITE]) {
-            mg_score -= space[BLACK] * 4 - space[WHITE] * 2;
-        }
+        // Space advantage regardless of pawn count — central control always matters
+        mg_score += (space[WHITE] - space[BLACK]) * 3;
     }
     } // end !tactical_only space
 
