@@ -58,16 +58,6 @@ src/
   main.cpp           # Entry point
 ```
 
-## Strength
-
-| Version | Estimated Elo | Key Feature |
-|---------|--------------|-------------|
-| v5.8.0 | ~2330 | LMR positional awareness |
-| v5.7.0 | ~2275 | Aspiration + centralization ordering |
-| v5.6.0 | ~2217 | Selective king safety |
-| v5.5.0 | ~2199 | Tactical qsearch eval |
-| v5.4.0 | ~2067 | Baseline |
-
 ## License
 
 [Luminex License](LICENSE) — non-commercial use
