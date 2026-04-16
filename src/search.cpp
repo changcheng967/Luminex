@@ -1158,16 +1158,12 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
                     }
                 }
 
-                // Escape-Aware + Danger-Aware + Centralization ordering
+                // Escape-Aware + Centralization ordering
                 Piece moved_piece = pos.piece_on(m.from());
                 if (moved_piece != NO_PIECE && piece_type_of(moved_piece) != PAWN) {
                     // Escape-aware: pieces under pawn attack should move first
                     if (enemy_pawn_attacks & square_bb(m.from())) {
                         score += 15000;
-                    }
-                    // Danger-aware: penalize moving INTO enemy pawn attacks
-                    if (enemy_pawn_attacks & square_bb(m.to())) {
-                        score -= 5000;
                     }
 
                     // Centralization bonus: pieces moving to central squares searched earlier
