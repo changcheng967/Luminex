@@ -517,7 +517,7 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
     }
 
     // Razoring: at low depths, if eval is far below alpha, try qsearch to confirm
-    if (!pv_node && !pos.is_check() && depth <= 3) {
+    if (!pv_node && !pos.is_check() && depth <= 4) {
         Value razor_margin = 300 + depth * depth * 60;
         if (eval + razor_margin < alpha) {
             // Try quiescence search to confirm the position is really losing
