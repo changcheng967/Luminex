@@ -721,6 +721,28 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
         // Promotion moves: reduce less
         if (m.is_promotion()) reduction -= 1;
 
+        // Centralization: reduce less for moves to central squares
+        // Central pieces are positionally stronger (Nimzowitsch)
+        // Piece-type dependent: knights benefit most, queens least
+        {
+            static constexpr int center_order[64] = {
+                0, 0, 0, 0, 0, 0, 0, 0,
+                0, 0, 0, 0, 0, 0, 0, 0,
+                0, 0, 2, 3, 3, 2, 0, 0,
+                0, 2, 4, 5, 5, 4, 2, 0,
+                0, 2, 4, 5, 5, 4, 2, 0,
+                0, 0, 2, 3, 3, 2, 0, 0,
+                0, 0, 0, 0, 0, 0, 0, 0,
+                0, 0, 0, 0, 0, 0, 0, 0
+            };
+            int cbo = center_order[m.to()];
+            if (cbo >= 4) {
+                PieceType pt = piece_type_of(pos.piece_on(m.from()));
+                // Only apply for pieces that benefit from centralization
+                if (pt == KNIGHT || pt == BISHOP) reduction -= 1;
+            }
+        }
+
         return std::max(1, std::min(reduction, depth - 2));
     };
 
