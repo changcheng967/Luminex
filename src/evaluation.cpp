@@ -1194,13 +1194,6 @@ Value evaluate(const Position& pos, bool tactical_only) {
             // No queen and no rook: even less dangerous
             if (!enemy_qu && !enemy_ro) danger = danger / 4;
 
-            // Attacker coordination: coordinated attacks are disproportionately dangerous
-            // 3 attackers can create forcing sequences that 2 cannot
-            // (Tartakower: "the threat is stronger than the execution")
-            if (attacker_count >= 3) {
-                danger = danger * 5 / 4;  // +25% for 3+ coordinated attackers
-            }
-
             mg_score -= sign * danger;
         }
     }
