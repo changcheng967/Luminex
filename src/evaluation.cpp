@@ -535,7 +535,6 @@ Value evaluate(const Position& pos, bool tactical_only) {
 
     Square ksq_arr[2] = {pos.king_sq(WHITE), pos.king_sq(BLACK)};
     int bishop_count[2] = {0, 0};
-    int shield_count[2] = {0, 0};  // Pawn shield pawns for danger amplification
 
     Bitboard occupied = pos.pieces();
 
@@ -897,7 +896,6 @@ Value evaluate(const Position& pos, bool tactical_only) {
                     Square shield_sq = relative_square(c, make_square(sf, Rank(r)));
                     if (our_pawns & square_bb(shield_sq)) {
                         mg_score += sign * weight;
-                        if (r <= 2) shield_count[c_idx]++;  // Track front-rank shield pawns
                     }
                 }
             }
@@ -1195,15 +1193,6 @@ Value evaluate(const Position& pos, bool tactical_only) {
             if (!enemy_qu) danger = danger / 4;
             // No queen and no rook: even less dangerous
             if (!enemy_qu && !enemy_ro) danger = danger / 4;
-
-            // Shield-aware danger: missing shield pawns amplify danger
-            // Chess principle: pawn shield and attack danger are multiplicative,
-            // not additive. An exposed king under attack is in disproportionate peril.
-            // shield_count: 0-4 (front 2 ranks × 3 files). Full shield = 4+, exposed = 0-1.
-            int missing = std::max(0, 4 - shield_count[c_idx]);
-            if (missing > 0) {
-                danger = danger * (4 + missing * 2) / 4;
-            }
 
             mg_score -= sign * danger;
         }
