@@ -755,6 +755,17 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
             if (kdist <= 1) reduction -= 1;
         }
 
+        // Pawn threat: reduce less for pawn advances that attack enemy pieces
+        // A pawn push creating a threat is forcing (Philidor: "pawns are the soul")
+        {
+            PieceType pt = piece_type_of(pos.piece_on(m.from()));
+            if (pt == PAWN) {
+                Bitboard enemy_pieces = pos.pieces(Color(pos.side_to_move() ^ 1));
+                Bitboard pawn_att = pawn_attacks_bb(pos.side_to_move(), square_bb(m.to()));
+                if (pawn_att & enemy_pieces) reduction -= 1;
+            }
+        }
+
         return std::max(1, std::min(reduction, depth - 2));
     };
 
