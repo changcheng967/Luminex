@@ -1564,10 +1564,13 @@ Move search(Position& pos, Limits& lim) {
         if (stop.load(std::memory_order_relaxed)) break;
 
         // Aspiration window - use previous depth's score
-        // Start with very wide window for stability
+        // INNOVATION: "Depth-Adaptive Aspiration Windows"
+        // Chess principle: eval is volatile at shallow depth, stable at deep depth.
+        // Wide windows at shallow depth avoid wasted re-searches from normal swings.
+        // Tight windows at deep depth add precision where score is reliable.
         Value alpha = -VALUE_INFINITE;
         Value beta = VALUE_INFINITE;
-        int aspiration_delta = 50;
+        int aspiration_delta = (root_depth <= 6) ? 100 : (root_depth >= 10) ? 30 : 50;
 
         if (root_depth >= 4 && best_value > -VALUE_KNOWN_WIN && best_value < VALUE_KNOWN_WIN) {
             alpha = std::max(Value(-VALUE_INFINITE), Value(best_value - aspiration_delta));
