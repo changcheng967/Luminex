@@ -667,6 +667,10 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
         }
     }
 
+    // Precompute enemy pawn attacks for LMR (nearly free: one lookup per node)
+    Bitboard enemy_pawn_attacks_lmr = pawn_attacks_bb(Color(pos.side_to_move() ^ 1),
+                                                        pos.pieces(Color(pos.side_to_move() ^ 1), PAWN));
+
     // Helper lambda: compute LMR reduction for a move (takes gives_chk to avoid recomputation)
     auto compute_reduction = [&](Move m, int mp, bool gives_chk) -> int {
         // Log-depth * log-move-count product formula
@@ -740,6 +744,15 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
                 PieceType pt = piece_type_of(pos.piece_on(m.from()));
                 // Only apply for pieces that benefit from centralization
                 if (pt == KNIGHT || pt == BISHOP) reduction -= 1;
+            }
+        }
+
+        // Pawn-threat LMR: increase reduction for pieces moving to pawn-attacked squares
+        // Pieces on pawn-attacked squares are unstable — the move is often weak
+        {
+            PieceType pt = piece_type_of(pos.piece_on(m.from()));
+            if (pt != PAWN && (enemy_pawn_attacks_lmr & square_bb(m.to()))) {
+                reduction += 1;
             }
         }
 
