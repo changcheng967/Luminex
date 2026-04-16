@@ -1580,7 +1580,8 @@ Move search(Position& pos, Limits& lim) {
         ExtMove moves[MAX_MOVES];
         ExtMove* end = generate<GEN_LEGAL>(pos, moves);
 
-        // Order moves at root for better efficiency
+        // Order moves at root: SEE-classified captures + cap_history + centralization
+        // Consistent with non-root ordering — winning captures above losing, learned knowledge used
         for (ExtMove* it = moves; it != end; ++it) {
             Move m = it->move;
             int score = 0;
@@ -1589,24 +1590,55 @@ Move search(Position& pos, Limits& lim) {
             if (root_depth > 1 && m == best_move) {
                 score = 2000000;  // Highest priority - previous PV move
             }
-            // Prioritize winning captures (MVV-LVA)
+            // Captures: SEE classification + capture history (same as non-root)
             else if (m.is_capture()) {
                 PieceType captured = pos.piece_type_on(m.to());
                 PieceType attacker = pos.piece_type_on(m.from());
                 static constexpr int piece_value[] = {100, 320, 330, 500, 900, 20000, 0};
-                score = 1000000 + piece_value[captured] * 10 - piece_value[attacker];
+                int mvv_lva = piece_value[captured] * 10 - piece_value[attacker];
+                int cap_hist = worker->capture_history[int(pos.piece_on(m.from()))][int(m.to())][int(captured)];
+                if (pos.see_ge(m, VALUE_ZERO)) {
+                    score = 1500000 + mvv_lva + cap_hist;
+                } else {
+                    score = 500000 + mvv_lva + cap_hist;
+                }
             }
             // Promotions
             else if (m.is_promotion()) {
-                score = 900000 + m.promotion_type() * 10000;
+                score = 1800000 + m.promotion_type() * 10000;
             }
-            // Quiet moves: use history + killer ordering
+            // Quiet moves: history + killers + centralization + escape-aware (same as non-root)
             else {
                 Piece pc = pos.piece_on(m.from());
                 if (pc != NO_PIECE) {
                     score = worker->history[int(pc)][int(m.to())];
-                    if (m == worker->killers[0][0]) score += 500000;
-                    else if (m == worker->killers[0][1]) score += 400000;
+                    if (m == worker->killers[0][0]) score += 60000;
+                    else if (m == worker->killers[0][1]) score += 50000;
+
+                    PieceType pt = piece_type_of(pc);
+                    if (pt != PAWN) {
+                        Color them = Color(pos.side_to_move() ^ 1);
+                        // Escape-aware: piece under enemy pawn attack
+                        if (pawn_attacks_bb(them, pos.pieces(them, PAWN)) & square_bb(m.from())) {
+                            score += 15000;
+                        }
+                        // Centralization bonus (same weights as non-root)
+                        static constexpr int center_order[64] = {
+                            0, 0, 0, 0, 0, 0, 0, 0,
+                            0, 0, 0, 0, 0, 0, 0, 0,
+                            0, 0,200,300,300,200, 0, 0,
+                            0,200,400,500,500,400,200, 0,
+                            0,200,400,500,500,400,200, 0,
+                            0, 0,200,300,300,200, 0, 0,
+                            0, 0, 0, 0, 0, 0, 0, 0,
+                            0, 0, 0, 0, 0, 0, 0, 0
+                        };
+                        int cbo = center_order[m.to()];
+                        if (pt == KNIGHT) cbo = cbo * 2;
+                        else if (pt == BISHOP) cbo = cbo * 3 / 2;
+                        else if (pt == QUEEN) cbo = cbo / 2;
+                        score += cbo;
+                    }
                 }
             }
 
