@@ -850,13 +850,11 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
         if (gives_chk) {
             ext_count++;
         }
-        // Recapture extension: only for winning/equal minor/major recaptures
-        // Chess principle: extending a losing recapture (e.g. QxN defended) wastes
-        // depth — the opponent benefits more from deeper search when ahead in material
+        // Recapture extension: only for significant piece captures (not pawns)
         if (ss->ply >= 1 && (ss - 1)->current_move != MOVE_NONE && m.to() == (ss - 1)->current_move.to()) {
             if (m.is_capture()) {
                 PieceType captured = pos.piece_type_on(m.to());
-                if (captured >= KNIGHT && pos.see_ge(m, VALUE_ZERO)) ext_count++;
+                if (captured >= KNIGHT) ext_count++;  // Only extend for minor/major recaptures
             }
         }
         new_depth += ext_count;
@@ -1075,7 +1073,7 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
                 if (pos.see_ge(m, VALUE_ZERO)) {
                     score = 1500000 + mvv_lva + cap_hist;
                 } else {
-                    score = 500000 + mvv_lva + cap_hist;
+                    score = 500000 + mvv_lva;
                 }
             }
             it->value = score;
