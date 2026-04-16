@@ -755,15 +755,6 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
             if (kdist <= 1) reduction -= 1;
         }
 
-        // Major pieces: reduce more at high move count
-        // Rooks and queens are already strong; random quiet moves are rarely best
-        // (Capablanca: "major pieces need specific purpose to move")
-        {
-            PieceType pt = piece_type_of(pos.piece_on(m.from()));
-            if (pt == ROOK && mp >= 6) reduction += 1;
-            else if (pt == QUEEN && mp >= 5) reduction += 1;
-        }
-
         return std::max(1, std::min(reduction, depth - 2));
     };
 
