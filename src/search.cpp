@@ -1252,6 +1252,8 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
 
         // Score quiets: killers + counter-moves + history + escape-aware + danger-aware
         Bitboard enemy_pawn_attacks = pawn_attacks_bb(Color(pos.side_to_move() ^ 1), pos.pieces(Color(pos.side_to_move() ^ 1), PAWN));
+        Color us = pos.side_to_move();
+        Square opp_ksq = pos.king_sq(Color(us ^ 1));
         for (ExtMove* it = quiets; it != quiet_end; ++it) {
             Move m = it->move;
             int score = 0;
@@ -1339,6 +1341,14 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
                         Bitboard enemy_pieces = pos.pieces(Color(pos.side_to_move() ^ 1));
                         Bitboard pawn_att = pawn_attacks_bb(pos.side_to_move(), square_bb(m.to()));
                         if (pawn_att & enemy_pieces) score += 8000;
+
+                        // Check-giving pawn advances: forcing, opponent must respond
+                        if (pawn_att & square_bb(opp_ksq)) score += 20000;
+                    }
+
+                    // Check-giving knight moves: nearly free detection, highly forcing
+                    if (pt == KNIGHT && (knight_attacks_bb(m.to()) & square_bb(opp_ksq))) {
+                        score += 20000;
                     }
                 }
             }
