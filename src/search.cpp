@@ -93,53 +93,30 @@ struct CorrHistEntry {
 };
 CorrHistEntry corrhist_table[CORRHIST_SIZE];
 
-// Second correction table indexed by position key (captures piece config errors
-// that pawn structure alone misses — different error sources need different tables)
-constexpr int CORRHIST2_SIZE = 16384;
-CorrHistEntry corrhist2_table[CORRHIST2_SIZE];
-
-inline int get_correction(uint64_t pawn_key, uint64_t pos_key) {
-    int corr = 0;
-    uint32_t idx1 = uint32_t(pawn_key) & (CORRHIST_SIZE - 1);
-    const CorrHistEntry& e1 = corrhist_table[idx1];
-    if (e1.key == pawn_key && e1.weight > 0)
-        corr += e1.correction / e1.weight;
-    uint32_t idx2 = uint32_t(pos_key) & (CORRHIST2_SIZE - 1);
-    const CorrHistEntry& e2 = corrhist2_table[idx2];
-    if (e2.key == pos_key && e2.weight > 0)
-        corr += e2.correction / e2.weight;
-    return corr;
+inline int get_correction(uint64_t pawn_key) {
+    uint32_t idx = uint32_t(pawn_key) & (CORRHIST_SIZE - 1);
+    const CorrHistEntry& e = corrhist_table[idx];
+    if (e.key == pawn_key && e.weight > 0)
+        return e.correction / e.weight;
+    return 0;
 }
 
-inline void update_correction(uint64_t pawn_key, uint64_t pos_key, int error, int depth) {
-    // Pawn-key indexed correction
-    uint32_t idx1 = uint32_t(pawn_key) & (CORRHIST_SIZE - 1);
-    CorrHistEntry& e1 = corrhist_table[idx1];
-    if (e1.key != pawn_key) {
-        e1.key = pawn_key;
-        e1.correction = 0;
-        e1.weight = 0;
+inline void update_correction(uint64_t pawn_key, int error, int depth) {
+    uint32_t idx = uint32_t(pawn_key) & (CORRHIST_SIZE - 1);
+    CorrHistEntry& e = corrhist_table[idx];
+    if (e.key != pawn_key) {
+        e.key = pawn_key;
+        e.correction = 0;
+        e.weight = 0;
     }
+    // Weight by depth squared for more reliable corrections at deeper searches
     int w = depth * depth;
-    e1.correction += error * w;
-    e1.weight += w;
-    if (e1.weight > 1024) {
-        e1.correction /= 2;
-        e1.weight /= 2;
-    }
-    // Position-key indexed correction (captures piece configuration errors)
-    uint32_t idx2 = uint32_t(pos_key) & (CORRHIST2_SIZE - 1);
-    CorrHistEntry& e2 = corrhist2_table[idx2];
-    if (e2.key != pos_key) {
-        e2.key = pos_key;
-        e2.correction = 0;
-        e2.weight = 0;
-    }
-    e2.correction += error * w;
-    e2.weight += w;
-    if (e2.weight > 1024) {
-        e2.correction /= 2;
-        e2.weight /= 2;
+    e.correction += error * w;
+    e.weight += w;
+    // Cap total weight to prevent stale entries from dominating
+    if (e.weight > 1024) {
+        e.correction /= 2;
+        e.weight /= 2;
     }
 }
 
@@ -168,8 +145,8 @@ inline Value eval_cached(const Position& pos) {
 
     if (eval_cache[idx].key == key) {
         // Apply correction history to cached eval (capped for safety)
-        int correction = get_correction(pos.pawn_key(), pos.key());
-        correction = std::max(-150, std::min(150, correction));
+        int correction = get_correction(pos.pawn_key());
+        correction = std::max(-100, std::min(100, correction));
         return Value(eval_cache[idx].value + correction);
     }
 
@@ -177,8 +154,8 @@ inline Value eval_cached(const Position& pos) {
     eval_cache[idx].key = key;
     eval_cache[idx].value = int32_t(eval);
     // Apply correction to fresh eval too
-    int correction = get_correction(pos.pawn_key(), pos.key());
-    correction = std::max(-150, std::min(150, correction));
+    int correction = get_correction(pos.pawn_key());
+    correction = std::max(-100, std::min(100, correction));
     return Value(eval + correction);
 }
 
@@ -1398,7 +1375,7 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
         // Only update at reasonable depth where search is meaningful.
         if (!pv_node && abs(best_value) < VALUE_KNOWN_WIN && abs(eval) < VALUE_KNOWN_WIN
             && moves_played > 0 && depth >= 2) {
-            update_correction(pos.pawn_key(), pos.key(), best_value - eval, depth);
+            update_correction(pos.pawn_key(), best_value - eval, depth);
         }
     }
 
