@@ -2,6 +2,20 @@
 
 A UCI chess engine written in C++23. All evaluation values are self-engineered from chess first principles.
 
+**Current version: v5.10.0** — [Download](https://github.com/changcheng967/Luminex/releases/latest)
+
+## Version History
+
+| Version | Key Feature | Est. Elo |
+|---------|-------------|----------|
+| v5.4.0 | Baseline HCE | ~2067 |
+| v5.5.0 | Tactical qsearch eval | ~2173 |
+| v5.6.0 | Correction history | ~2200 |
+| v5.7.0 | Aspiration + centralization ordering | ~2258 |
+| v5.8.0 | LMR positional awareness | ~2300 |
+| v5.9.0 | Qsearch check generation + History-Adaptive LMP | ~2350 |
+| v5.10.0 | Capture history TT + bad capture ordering | ~2390 |
+
 ## Download
 
 Latest release: [github.com/changcheng967/Luminex/releases](https://github.com/changcheng967/Luminex/releases)
@@ -54,7 +68,6 @@ src/
   search.h / cpp     # PVS search with LMR, phased move generation
   transposition.h / cpp # Transposition table
   uci.h / cpp        # UCI protocol
-  main.cpp           # Entry point
   main.cpp           # Entry point
 ```
 
