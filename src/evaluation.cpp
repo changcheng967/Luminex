@@ -1195,6 +1195,15 @@ Value evaluate(const Position& pos, bool tactical_only) {
             else if (attacker_count >= 4) danger = danger * 13 / 10;
             else if (attacker_count >= 3) danger = danger * 23 / 20;
 
+            // No flight squares: king with no escape is disproportionately dangerous
+            // Flight = king moves not blocked by own pieces and not attacked by enemy
+            Bitboard king_moves = king_attacks_bb(our_ksq);
+            Bitboard blocked = pos.pieces(c) | all_attacks[them];
+            int flight_squares = popcount(king_moves & ~blocked);
+            if (flight_squares == 0 && attacker_count >= 2) {
+                danger += 30;
+            }
+
             // No queen: much less dangerous
             if (!enemy_qu) danger = danger / 4;
             // No queen and no rook: even less dangerous
