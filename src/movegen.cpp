@@ -12,6 +12,9 @@ ExtMove* generate_moves(const Position& pos, ExtMove* moveList) {
 
     [[maybe_unused]] const Bitboard pinned = pos.pinned();
     const Bitboard checkers = pos.checkers();
+    const Bitboard their_pieces = pos.pieces(them) & ~pos.pieces(them, KING);
+    const Bitboard occupied = pos.pieces();
+    const Bitboard empty = ~occupied;
 
     // Generate moves for each piece type
     // Pawns
@@ -23,7 +26,7 @@ ExtMove* generate_moves(const Position& pos, ExtMove* moveList) {
         Square to = Square(from + NORTH);
 
         // Single pawn push
-        if (!(pos.pieces() & square_bb(to))) {
+        if (!(occupied & square_bb(to))) {
             if (relative_rank(us, to) == RANK_8) {
                 // Promotion
                 if constexpr (T == GEN_QUIET || T == GEN_ALL || T == GEN_LEGAL || T == GEN_NON_EVASION) {
@@ -40,7 +43,7 @@ ExtMove* generate_moves(const Position& pos, ExtMove* moveList) {
                 // Double pawn push
                 if (relative_rank(us, from) == RANK_2) {
                     Square to2 = Square(from + NORTH * 2);
-                    if (!(pos.pieces() & square_bb(to2))) {
+                    if (!(occupied & square_bb(to2))) {
                         if constexpr (T == GEN_QUIET || T == GEN_ALL || T == GEN_LEGAL || T == GEN_EVASION || T == GEN_NON_EVASION) {
                             *moveList++ = Move(from, to2, MF_DOUBLE_PAWN);
                         }
@@ -50,10 +53,7 @@ ExtMove* generate_moves(const Position& pos, ExtMove* moveList) {
         }
 
         // Pawn captures
-        // Exclude enemy king from captures
-        Bitboard their_pieces = pos.pieces(them) & ~pos.pieces(them, KING);
         // Only include EP square if it's actually set (not SQUARE_NONE)
-        // square_bb(SQUARE_NONE) where SQUARE_NONE=64 causes UB: 1ULL << 64
         Bitboard ep_bb = BB_EMPTY;
         if (pos.ep_square() != SQUARE_NONE) {
             ep_bb = square_bb(pos.ep_square());
@@ -90,11 +90,8 @@ ExtMove* generate_moves(const Position& pos, ExtMove* moveList) {
     Bitboard knights = pos.pieces(us, KNIGHT);
     while (knights) {
         Square from = pop_lsb(knights);
-        // Captures: enemy pieces except king
-        Bitboard their_pieces = pos.pieces(them) & ~pos.pieces(them, KING);
         Bitboard attacks = knight_attacks_bb(from) & their_pieces;
-        // Quiets: empty squares only
-        Bitboard quiets = knight_attacks_bb(from) & ~pos.pieces();
+        Bitboard quiets = knight_attacks_bb(from) & empty;
 
         // Captures
         if constexpr (T == GEN_CAPTURE || T == GEN_ALL || T == GEN_LEGAL || T == GEN_EVASION || T == GEN_NON_EVASION) {
@@ -118,12 +115,9 @@ ExtMove* generate_moves(const Position& pos, ExtMove* moveList) {
     Bitboard bishops = pos.pieces(us, BISHOP);
     while (bishops) {
         Square from = pop_lsb(bishops);
-        Bitboard all_attacks = bishop_attacks_bb(from, pos.pieces());
-        // Captures: enemy pieces except king
-        Bitboard their_pieces = pos.pieces(them) & ~pos.pieces(them, KING);
+        Bitboard all_attacks = bishop_attacks_bb(from, occupied);
         Bitboard attacks = all_attacks & their_pieces;
-        // Quiets: empty squares only
-        Bitboard quiets = all_attacks & ~pos.pieces();
+        Bitboard quiets = all_attacks & empty;
 
         // Captures
         if constexpr (T == GEN_CAPTURE || T == GEN_ALL || T == GEN_LEGAL || T == GEN_EVASION || T == GEN_NON_EVASION) {
@@ -135,7 +129,6 @@ ExtMove* generate_moves(const Position& pos, ExtMove* moveList) {
 
         // Quiets
         if constexpr (T == GEN_QUIET || T == GEN_ALL || T == GEN_LEGAL || T == GEN_EVASION || T == GEN_NON_EVASION) {
-            quiets &= ~pos.pieces(us);
             while (quiets) {
                 Square to = pop_lsb(quiets);
                 *moveList++ = Move(from, to, MF_QUIET);
@@ -147,12 +140,9 @@ ExtMove* generate_moves(const Position& pos, ExtMove* moveList) {
     Bitboard rooks = pos.pieces(us, ROOK);
     while (rooks) {
         Square from = pop_lsb(rooks);
-        Bitboard all_attacks = rook_attacks_bb(from, pos.pieces());
-        // Captures: enemy pieces except king (kings cannot be captured)
-        Bitboard their_pieces = pos.pieces(them) & ~pos.pieces(them, KING);
+        Bitboard all_attacks = rook_attacks_bb(from, occupied);
         Bitboard attacks = all_attacks & their_pieces;
-        // Quiets: empty squares only (king squares are NOT valid destinations)
-        Bitboard quiets = all_attacks & ~pos.pieces();
+        Bitboard quiets = all_attacks & empty;
 
         // Captures
         if constexpr (T == GEN_CAPTURE || T == GEN_ALL || T == GEN_LEGAL || T == GEN_EVASION || T == GEN_NON_EVASION) {
@@ -164,7 +154,6 @@ ExtMove* generate_moves(const Position& pos, ExtMove* moveList) {
 
         // Quiets
         if constexpr (T == GEN_QUIET || T == GEN_ALL || T == GEN_LEGAL || T == GEN_EVASION || T == GEN_NON_EVASION) {
-            quiets &= ~pos.pieces(us);
             while (quiets) {
                 Square to = pop_lsb(quiets);
                 *moveList++ = Move(from, to, MF_QUIET);
@@ -176,12 +165,9 @@ ExtMove* generate_moves(const Position& pos, ExtMove* moveList) {
     Bitboard queens = pos.pieces(us, QUEEN);
     while (queens) {
         Square from = pop_lsb(queens);
-        Bitboard all_attacks = queen_attacks_bb(from, pos.pieces());
-        // Captures: enemy pieces except king
-        Bitboard their_pieces = pos.pieces(them) & ~pos.pieces(them, KING);
+        Bitboard all_attacks = queen_attacks_bb(from, occupied);
         Bitboard attacks = all_attacks & their_pieces;
-        // Quiets: empty squares only
-        Bitboard quiets = all_attacks & ~pos.pieces();
+        Bitboard quiets = all_attacks & empty;
 
         // Captures
         if constexpr (T == GEN_CAPTURE || T == GEN_ALL || T == GEN_LEGAL || T == GEN_EVASION || T == GEN_NON_EVASION) {
@@ -193,7 +179,6 @@ ExtMove* generate_moves(const Position& pos, ExtMove* moveList) {
 
         // Quiets
         if constexpr (T == GEN_QUIET || T == GEN_ALL || T == GEN_LEGAL || T == GEN_EVASION || T == GEN_NON_EVASION) {
-            quiets &= ~pos.pieces(us);
             while (quiets) {
                 Square to = pop_lsb(quiets);
                 *moveList++ = Move(from, to, MF_QUIET);
@@ -202,22 +187,19 @@ ExtMove* generate_moves(const Position& pos, ExtMove* moveList) {
     }
 
     // King
-    // Exclude enemy king from captures (king cannot capture enemy king)
-    Bitboard their_pieces = pos.pieces(them) & ~pos.pieces(them, KING);
-    Bitboard king_attacks = king_attacks_bb(ksq) & their_pieces;
-    Bitboard king_quiets = king_attacks_bb(ksq) & ~pos.pieces();
+    Bitboard king_captures = king_attacks_bb(ksq) & their_pieces;
+    Bitboard king_quiets = king_attacks_bb(ksq) & empty;
 
     // King captures
     if constexpr (T == GEN_CAPTURE || T == GEN_ALL || T == GEN_LEGAL || T == GEN_EVASION || T == GEN_NON_EVASION) {
-        while (king_attacks) {
-            Square to = pop_lsb(king_attacks);
+        while (king_captures) {
+            Square to = pop_lsb(king_captures);
             *moveList++ = Move(ksq, to, MF_CAPTURE);
         }
     }
 
     // King quiets
     if constexpr (T == GEN_QUIET || T == GEN_ALL || T == GEN_LEGAL || T == GEN_EVASION || T == GEN_NON_EVASION) {
-        king_quiets &= ~pos.pieces(us);
         while (king_quiets) {
             Square to = pop_lsb(king_quiets);
             *moveList++ = Move(ksq, to, MF_QUIET);

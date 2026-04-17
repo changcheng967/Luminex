@@ -1004,22 +1004,25 @@ Value evaluate(const Position& pos, bool tactical_only) {
     }
 
     // -------------------------------------------------------
+    // Phase (computed once, reused for quick exit and final score)
+    // -------------------------------------------------------
+    int phase = popcount(pos.pieces(KNIGHT)) + popcount(pos.pieces(BISHOP))
+              + popcount(pos.pieces(ROOK)) * 2 + popcount(pos.pieces(QUEEN)) * 4;
+    phase = std::min(24, phase);
+
+    // -------------------------------------------------------
     // Early eval exit: if score is clearly decisive after
     // material+PST+pawns+threats+mobility, skip expensive
     // positional terms (space, king safety).
     // Remaining terms typically add ±150cp max.
     // -------------------------------------------------------
     if (!tactical_only) {
-        int quick_phase = popcount(pos.pieces(KNIGHT)) + popcount(pos.pieces(BISHOP))
-                        + popcount(pos.pieces(ROOK)) * 2 + popcount(pos.pieces(QUEEN)) * 4;
-        quick_phase = std::min(24, quick_phase);
-        int quick_score = (mg_score * quick_phase + eg_score * (24 - quick_phase)) / 24;
+        int quick_score = (mg_score * phase + eg_score * (24 - phase)) / 24;
         if (quick_score > 500 || quick_score < -500) {
-            // Skip space, imbalance calc, king safety — position is decisive
             int sf = scale_factor(pos, eg_score);
             Score eg_scaled = eg_score * sf / 32;
-            Score score = (mg_score * quick_phase + eg_scaled * (24 - quick_phase)) / 24;
-            Score tempo = (15 * quick_phase + 5 * (24 - quick_phase)) / 24;
+            Score score = (mg_score * phase + eg_scaled * (24 - phase)) / 24;
+            Score tempo = (15 * phase + 5 * (24 - phase)) / 24;
             score += (pos.side_to_move() == WHITE) ? tempo : -tempo;
             return pos.side_to_move() == WHITE ? score : -score;
         }
@@ -1200,11 +1203,8 @@ Value evaluate(const Position& pos, bool tactical_only) {
     } // end !tactical_only king safety
 
     // -------------------------------------------------------
-    // Phase calculation and score interpolation
+    // Score interpolation (phase computed above)
     // -------------------------------------------------------
-    int phase = popcount(pos.pieces(KNIGHT)) + popcount(pos.pieces(BISHOP))
-              + popcount(pos.pieces(ROOK)) * 2 + popcount(pos.pieces(QUEEN)) * 4;
-    phase = std::min(24, phase);
 
     // Interpolate MG/EG with endgame scaling
     int sf = scale_factor(pos, eg_score);
