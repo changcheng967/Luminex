@@ -532,6 +532,14 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
                     int& ch = continuation_history[int(prev2_pc)][int(prev2_move.to())][int(moved)][int(tt_move.to())];
                     ch += bonus - ch * std::abs(bonus) / 32768;
                 }
+            } else if (moved != NO_PIECE && tt_move.is_capture()) {
+                // Capture history bonus for TT cutoff captures
+                int bonus = depth > 17 ? -8 : 19 * depth * depth + 155 * depth - 132;
+                PieceType captured = pos.piece_type_on(tt_move.to());
+                if (captured != PT_NONE) {
+                    int& ch = worker->capture_history[int(moved)][int(tt_move.to())][int(captured)];
+                    ch += bonus - ch * std::abs(bonus) / 32768;
+                }
             }
         }
         return tt_value;
