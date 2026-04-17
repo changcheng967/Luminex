@@ -363,12 +363,13 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
         }
     }
 
-    // Generate and search quiet check-giving moves (not in check, depth >= 0)
+    // Generate and search quiet check-giving moves (not in check, at qsearch depth 0)
     // These are forcing tactical moves that can lead to material gain
-    if (!in_check && depth >= 0) {
+    if (!in_check && depth >= 0 && alpha < beta) {
         ExtMove quiet_checks[MAX_MOVES];
         ExtMove* qc_end = generate<GEN_QUIET>(pos, quiet_checks);
         Square opp_ksq = pos.king_sq(Color(pos.side_to_move() ^ 1));
+        int checks_searched = 0;
 
         for (ExtMove* it = quiet_checks; it != qc_end; ++it) {
             if (stop.load(std::memory_order_relaxed)) break;
@@ -395,6 +396,7 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
             }
 
             if (!gives_chk) continue;
+            if (++checks_searched > 5) break;  // Limit quiet checks per node
 
             ss->current_move = m;
             ss->moved_piece = pos.piece_on(m.from());
