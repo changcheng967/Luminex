@@ -1221,6 +1221,13 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
                             score += 15000;
                         }
 
+                        // King-zone pressure ordering: pieces moving adjacent to
+                        // the enemy king create threats (Lasker) — same principle
+                        // as king-zone LMR, applied to move ordering
+                        int kdist = std::max(abs(int(m.to() % 8) - int(enemy_ksq % 8)),
+                                             abs(int(m.to() / 8) - int(enemy_ksq / 8)));
+                        if (kdist <= 1) score += 3000;
+
                         // Centralization bonus: pieces moving to central squares searched earlier
                         // Principle: centralized pieces are disproportionately strong (Nimzowitsch)
                         // Piece-type dependent: knights benefit most, queens least
