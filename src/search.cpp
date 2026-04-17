@@ -670,6 +670,10 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
     // Precompute enemy king zone for LMR (nearly free: one king lookup per node)
     Square enemy_ksq = pos.king_sq(Color(pos.side_to_move() ^ 1));
 
+    // Precompute enemy pawn attacks for escape-aware LMR (nearly free: one lookup per node)
+    Bitboard enemy_pawn_attacks_for_lmr = pawn_attacks_bb(Color(pos.side_to_move() ^ 1),
+        pos.pieces(Color(pos.side_to_move() ^ 1), PAWN));
+
     // Helper lambda: compute LMR reduction for a move (takes gives_chk to avoid recomputation)
     auto compute_reduction = [&](Move m, int mp, bool gives_chk) -> int {
         // Log-depth * log-move-count product formula
@@ -753,6 +757,13 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
             int kdist = std::max(abs(int(m.to() % 8) - int(enemy_ksq % 8)),
                                  abs(int(m.to() / 8) - int(enemy_ksq / 8)));
             if (kdist <= 1) reduction -= 1;
+        }
+
+        // Escape-aware: reduce less for pieces under enemy pawn attack
+        // A threatened piece must move urgently (Steinitz) — same principle
+        // as escape-aware ordering, extended to LMR reduction decisions
+        if (enemy_pawn_attacks_for_lmr & square_bb(m.from())) {
+            reduction -= 1;
         }
 
         return std::max(1, std::min(reduction, depth - 2));
