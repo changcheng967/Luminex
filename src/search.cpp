@@ -298,7 +298,7 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
 
     int moves_searched = 0;
 
-    // Score captures in qsearch by MVV-LVA for better ordering
+    // Score captures in qsearch by MVV-LVA + capture history
     if (!in_check) {
         for (ExtMove* it = moves; it != end; ++it) {
             if (it->move.is_capture()) {
@@ -307,6 +307,11 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
                 static constexpr int pv[] = {100, 320, 330, 500, 900, 20000, 0};
                 it->value = (captured != PT_NONE ? pv[captured] : 0) * 10 - pv[attacker];
                 if (it->move.is_promotion()) it->value += pv[it->move.promotion_type()];
+                // Add capture history for better ordering
+                Piece pc = pos.piece_on(it->move.from());
+                if (pc != NO_PIECE && captured != PT_NONE) {
+                    it->value += worker->capture_history[int(pc)][int(it->move.to())][int(captured)];
+                }
             } else {
                 it->value = 0;
             }
