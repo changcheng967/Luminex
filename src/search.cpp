@@ -911,10 +911,24 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
 
         // Late move pruning: prune quiet moves after examining a reasonable number
         // Improving positions can tolerate more pruning (more likely to recover)
+        // BUT: moves with strong history should never be pruned (they're likely good)
         int lmp_base = ss->improving ? 3 : 2;
         int lmp_threshold = lmp_base + depth * depth;
         if (is_quiet && !pv_node && ss->ply > 0 && depth <= 6 && moves_played >= lmp_threshold) {
-            return false;
+            // History escape: if the move has strong positive combined history,
+            // it has been good in similar positions — don't prune it
+            Piece pc = pos.piece_on(m.from());
+            bool has_good_history = false;
+            if (pc != NO_PIECE) {
+                int hist = worker->history[int(pc)][int(m.to())];
+                if (ss->ply >= 1 && (ss - 1)->current_move != MOVE_NONE && (ss - 1)->moved_piece != NO_PIECE) {
+                    Move prev_move = (ss - 1)->current_move;
+                    Piece prev_pc = (ss - 1)->moved_piece;
+                    hist += counter_moves[int(prev_pc)][int(prev_move.to())][int(pc)][int(m.to())];
+                }
+                has_good_history = hist > 0;
+            }
+            if (!has_good_history) return false;  // No good history: prune
         }
 
         // Futility pruning: skip quiet moves that can't improve alpha
