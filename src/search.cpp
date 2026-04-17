@@ -926,9 +926,15 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
                     Piece prev_pc = (ss - 1)->moved_piece;
                     hist += counter_moves[int(prev_pc)][int(prev_move.to())][int(pc)][int(m.to())];
                 }
+                if (ss->ply >= 2 && (ss - 2)->current_move != MOVE_NONE && (ss - 2)->moved_piece != NO_PIECE) {
+                    Move prev2_move = (ss - 2)->current_move;
+                    Piece prev2_pc = (ss - 2)->moved_piece;
+                    hist += continuation_history[int(prev2_pc)][int(prev2_move.to())][int(pc)][int(m.to())];
+                }
                 has_good_history = hist > 0;
             }
-            if (!has_good_history) return false;  // No good history: prune
+            if (!has_good_history && m != worker->killers[ss->ply][0] && m != worker->killers[ss->ply][1])
+                return false;  // No good history and not killer: prune
         }
 
         // Futility pruning: skip quiet moves that can't improve alpha
