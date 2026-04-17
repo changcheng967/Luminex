@@ -840,12 +840,9 @@ void Position::do_null_move() {
     st_ply++;
     StateInfo& next_st = state_stack[st_ply];
 
-    // CRITICAL: Ensure all fields are initialized (state_stack may contain garbage)
-    next_st = StateInfo{};
-
-    // Copy current state
+    // Initialize fields directly (avoids full zero-init then overwrite)
     next_st.key = st_->key;
-    next_st.pawn_key = st_->pawn_key;  // Preserve pawn key for eval cache
+    next_st.pawn_key = st_->pawn_key;
     next_st.checkers = st_->checkers;
     next_st.pinned = st_->pinned;
     next_st.block_checkers = st_->block_checkers;
@@ -854,7 +851,8 @@ void Position::do_null_move() {
     next_st.ply = st_->ply;
     next_st.move = MOVE_NONE;
     next_st.captured_piece = PT_NONE;
-    next_st.halfmove_clock = st_->halfmove_clock;  // Don't increment — null move doesn't advance 50-move rule
+    next_st.move_was_executed = true;
+    next_st.halfmove_clock = st_->halfmove_clock;
 
     st_ = &next_st;
 

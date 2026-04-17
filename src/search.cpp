@@ -311,10 +311,16 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
                 it->value = 0;
             }
         }
-        // Sort captures by value
-        std::sort(moves, end, [](const ExtMove& a, const ExtMove& b) {
-            return a.value > b.value;
-        });
+        // Sort captures by value (insertion sort for small N)
+        for (ExtMove* i = moves + 1; i < end; ++i) {
+            ExtMove tmp = *i;
+            ExtMove* j = i;
+            while (j > moves && (j - 1)->value < tmp.value) {
+                *j = *(j - 1);
+                --j;
+            }
+            *j = tmp;
+        }
     }
 
     for (ExtMove* it = moves; it != end; ++it) {
@@ -735,7 +741,7 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
     Square enemy_ksq = pos.king_sq(Color(pos.side_to_move() ^ 1));
 
     // Helper lambda: compute LMR reduction for a move (takes gives_chk to avoid recomputation)
-    auto compute_reduction = [&](Move m, int mp, bool gives_chk) -> int {
+    auto compute_reduction = [&](Move m, int mp, bool gives_chk, int hist) -> int {
         // Log-depth * log-move-count product formula
         int d_idx = std::max(depth - 1, 1);
         int m_idx = std::max(mp, 1);
@@ -749,28 +755,8 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
         // TT move gets less reduction
         if (m == tt_move) reduction -= 1;
 
-        // History-based adjustment: combine plain + counter + continuation
-        Piece pc = pos.piece_on(m.from());
-        if (pc != NO_PIECE) {
-            int history_score = worker->history[int(pc)][int(m.to())];
-
-            // Counter-move history (1-ply)
-            if (ss->ply >= 1 && (ss - 1)->current_move != MOVE_NONE && (ss - 1)->moved_piece != NO_PIECE) {
-                Move prev_move = (ss - 1)->current_move;
-                Piece prev_pc = (ss - 1)->moved_piece;
-                history_score += counter_moves[int(prev_pc)][int(prev_move.to())][int(pc)][int(m.to())];
-            }
-
-            // Continuation history (2-ply)
-            if (ss->ply >= 2 && (ss - 2)->current_move != MOVE_NONE && (ss - 2)->moved_piece != NO_PIECE) {
-                Move prev2_move = (ss - 2)->current_move;
-                Piece prev2_pc = (ss - 2)->moved_piece;
-                history_score += continuation_history[int(prev2_pc)][int(prev2_move.to())][int(pc)][int(m.to())];
-            }
-
-            // History influence on reduction
-            reduction -= history_score / 4096;
-        }
+        // History-based adjustment
+        reduction -= hist / 4096;
 
         // Reduce less for killer moves
         if (m == worker->killers[ss->ply][0]) reduction -= 1;
@@ -879,6 +865,21 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
         if (!pos.legal(m, true)) return false;  // Skip pseudo_legal check for generated moves
         any_legal_move = true;  // Legal move exists (even if later pruned)
 
+        // Compute combined history once for quiet moves (plain + counter + continuation)
+        int combined_hist = 0;
+        if (is_quiet) {
+            Piece pc = pos.piece_on(m.from());
+            if (pc != NO_PIECE) {
+                combined_hist = worker->history[int(pc)][int(m.to())];
+                if (ss->ply >= 1 && (ss - 1)->current_move != MOVE_NONE && (ss - 1)->moved_piece != NO_PIECE) {
+                    combined_hist += counter_moves[int((ss - 1)->moved_piece)][int((ss - 1)->current_move.to())][int(pc)][int(m.to())];
+                }
+                if (ss->ply >= 2 && (ss - 2)->current_move != MOVE_NONE && (ss - 2)->moved_piece != NO_PIECE) {
+                    combined_hist += continuation_history[int((ss - 2)->moved_piece)][int((ss - 2)->current_move.to())][int(pc)][int(m.to())];
+                }
+            }
+        }
+
         // SEE-based capture pruning with depth-scaled margin
         if (!pv_node && ss->ply > 0 && m.is_capture() && !m.is_promotion() && depth <= 5) {
             int see_margin = depth * 80;
@@ -888,25 +889,9 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
         }
 
         // Continuation pruning: skip quiet moves with very poor history at low depth
-        // Worth ~10 ELO (from Ethereal). Uses combined counter+continuation history.
         if (is_quiet && !pv_node && depth <= 4 && moves_played > 0) {
-            Piece pc = pos.piece_on(m.from());
-            if (pc != NO_PIECE) {
-                int hist_score = worker->history[int(pc)][int(m.to())];
-                if (ss->ply >= 1 && (ss - 1)->current_move != MOVE_NONE && (ss - 1)->moved_piece != NO_PIECE) {
-                    Move prev_move = (ss - 1)->current_move;
-                    Piece prev_pc = (ss - 1)->moved_piece;
-                    hist_score += counter_moves[int(prev_pc)][int(prev_move.to())][int(pc)][int(m.to())];
-                }
-                if (ss->ply >= 2 && (ss - 2)->current_move != MOVE_NONE && (ss - 2)->moved_piece != NO_PIECE) {
-                    Move prev2_move = (ss - 2)->current_move;
-                    Piece prev2_pc = (ss - 2)->moved_piece;
-                    hist_score += continuation_history[int(prev2_pc)][int(prev2_move.to())][int(pc)][int(m.to())];
-                }
-                // Prune if history is very negative (move has historically been bad)
-                if (hist_score < 783 - 4872 * (depth - 1)) {
-                    return false;
-                }
+            if (combined_hist < 783 - 4872 * (depth - 1)) {
+                return false;
             }
         }
 
@@ -923,26 +908,8 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
         int lmp_base = ss->improving ? 3 : 2;
         int lmp_threshold = lmp_base + depth * depth;
         if (is_quiet && !pv_node && ss->ply > 0 && depth <= 6 && moves_played >= lmp_threshold) {
-            // History escape: if the move has strong positive combined history,
-            // it has been good in similar positions — don't prune it
-            Piece pc = pos.piece_on(m.from());
-            bool has_good_history = false;
-            if (pc != NO_PIECE) {
-                int hist = worker->history[int(pc)][int(m.to())];
-                if (ss->ply >= 1 && (ss - 1)->current_move != MOVE_NONE && (ss - 1)->moved_piece != NO_PIECE) {
-                    Move prev_move = (ss - 1)->current_move;
-                    Piece prev_pc = (ss - 1)->moved_piece;
-                    hist += counter_moves[int(prev_pc)][int(prev_move.to())][int(pc)][int(m.to())];
-                }
-                if (ss->ply >= 2 && (ss - 2)->current_move != MOVE_NONE && (ss - 2)->moved_piece != NO_PIECE) {
-                    Move prev2_move = (ss - 2)->current_move;
-                    Piece prev2_pc = (ss - 2)->moved_piece;
-                    hist += continuation_history[int(prev2_pc)][int(prev2_move.to())][int(pc)][int(m.to())];
-                }
-                has_good_history = hist > 0;
-            }
-            if (!has_good_history && m != worker->killers[ss->ply][0] && m != worker->killers[ss->ply][1])
-                return false;  // No good history and not killer: prune
+            if (combined_hist <= 0 && m != worker->killers[ss->ply][0] && m != worker->killers[ss->ply][1])
+                return false;
         }
 
         // Futility pruning: skip quiet moves that can't improve alpha
@@ -969,7 +936,7 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
             if (is_losing_capture) {
                 reduction = gives_chk ? 2 : 3;
             } else {
-                reduction = compute_reduction(m, moves_played, gives_chk);
+                reduction = compute_reduction(m, moves_played, gives_chk, combined_hist);
             }
             // Reduce less in PV nodes
             if (pv_node) reduction = std::max(1, reduction - 1);

@@ -358,6 +358,8 @@ static void evaluate_pawns(const Position& pos, int32_t& mg_out, int32_t& eg_out
 
         // Adjacent file pawn support for connected pawn detection
         Bitboard supported_by_adj = pawn_attacks_bb(c, our_pawns);
+        Bitboard their_pawn_attacks = pawn_attacks_bb(them, their_pawns);
+        Bitboard our_pawn_attacks_all = pawn_attacks_bb(c, our_pawns);
 
         Bitboard pawns = our_pawns;
         while (pawns) {
@@ -419,10 +421,9 @@ static void evaluate_pawns(const Position& pos, int32_t& mg_out, int32_t& eg_out
             {
                 Square push = relative_square(c, make_square(f, Rank(r + 1)));
                 if (push < SQUARE_NONE && r >= RANK_2 && r <= RANK_5) {
-                    bool push_attacked = (pawn_attacks_bb(them, their_pawns) & square_bb(push)) != 0;
+                    bool push_attacked = (their_pawn_attacks & square_bb(push)) != 0;
                     if (push_attacked) {
-                        Bitboard our_pawn_attacks = pawn_attacks_bb(c, our_pawns);
-                        bool defended = (our_pawn_attacks & square_bb(push)) != 0;
+                        bool defended = (our_pawn_attacks_all & square_bb(push)) != 0;
                         if (!defended) {
                             mg -= sign * 12;
                             eg -= sign * 15;
@@ -532,6 +533,10 @@ Value evaluate(const Position& pos, bool tactical_only) {
 
     Score mg_score = 0;
     Score eg_score = 0;
+
+    int phase = popcount(pos.pieces(KNIGHT)) + popcount(pos.pieces(BISHOP))
+              + popcount(pos.pieces(ROOK)) * 2 + popcount(pos.pieces(QUEEN)) * 4;
+    phase = std::min(24, phase);
 
     Square ksq_arr[2] = {pos.king_sq(WHITE), pos.king_sq(BLACK)};
     int bishop_count[2] = {0, 0};
@@ -1010,16 +1015,12 @@ Value evaluate(const Position& pos, bool tactical_only) {
     // Remaining terms typically add ±150cp max.
     // -------------------------------------------------------
     if (!tactical_only) {
-        int quick_phase = popcount(pos.pieces(KNIGHT)) + popcount(pos.pieces(BISHOP))
-                        + popcount(pos.pieces(ROOK)) * 2 + popcount(pos.pieces(QUEEN)) * 4;
-        quick_phase = std::min(24, quick_phase);
-        int quick_score = (mg_score * quick_phase + eg_score * (24 - quick_phase)) / 24;
+        int quick_score = (mg_score * phase + eg_score * (24 - phase)) / 24;
         if (quick_score > 500 || quick_score < -500) {
-            // Skip space, imbalance calc, king safety — position is decisive
             int sf = scale_factor(pos, eg_score);
             Score eg_scaled = eg_score * sf / 32;
-            Score score = (mg_score * quick_phase + eg_scaled * (24 - quick_phase)) / 24;
-            Score tempo = (15 * quick_phase + 5 * (24 - quick_phase)) / 24;
+            Score score = (mg_score * phase + eg_scaled * (24 - phase)) / 24;
+            Score tempo = (15 * phase + 5 * (24 - phase)) / 24;
             score += (pos.side_to_move() == WHITE) ? tempo : -tempo;
             return pos.side_to_move() == WHITE ? score : -score;
         }
@@ -1200,11 +1201,8 @@ Value evaluate(const Position& pos, bool tactical_only) {
     } // end !tactical_only king safety
 
     // -------------------------------------------------------
-    // Phase calculation and score interpolation
+    // Score interpolation (phase computed at top of evaluate)
     // -------------------------------------------------------
-    int phase = popcount(pos.pieces(KNIGHT)) + popcount(pos.pieces(BISHOP))
-              + popcount(pos.pieces(ROOK)) * 2 + popcount(pos.pieces(QUEEN)) * 4;
-    phase = std::min(24, phase);
 
     // Interpolate MG/EG with endgame scaling
     int sf = scale_factor(pos, eg_score);
