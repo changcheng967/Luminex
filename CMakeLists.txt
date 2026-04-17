@@ -51,8 +51,6 @@ else()
         add_compile_options(-O0 -g)
     else()
         add_compile_options(-O3)
-        try_add_flag(-fno-exceptions)
-        try_add_flag(-fno-rtti)
 
         # CPU-specific optimizations
         if(NOT CI)
