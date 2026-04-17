@@ -571,71 +571,95 @@ Value evaluate(const Position& pos, bool tactical_only) {
         // Passed pawn extra bonuses (beyond base table)
         // -------------------------------------------------------
         if (!tactical_only) {
-        Bitboard pawns = our_pawns;
-        while (pawns) {
-            Square sq = pop_lsb(pawns);
+        // First pass: collect passed pawns
+        Bitboard passed_pawns_bb = BB_EMPTY;
+        {
+            Bitboard pawns = our_pawns;
+            while (pawns) {
+                Square sq = pop_lsb(pawns);
+                File f = file_of(sq);
+                Rank r = relative_rank(c, sq);
+                Bitboard ahead = 0;
+                for (int rr = r + 1; rr <= RANK_7; ++rr) {
+                    Square rsq = relative_square(c, make_square(f, Rank(rr)));
+                    ahead |= square_bb(rsq);
+                    if (f > FILE_A) ahead |= square_bb(relative_square(c, make_square(File(f - 1), Rank(rr))));
+                    if (f < FILE_H) ahead |= square_bb(relative_square(c, make_square(File(f + 1), Rank(rr))));
+                }
+                if (!(ahead & their_pawns)) passed_pawns_bb |= square_bb(sq);
+            }
+        }
+
+        // Second pass: evaluate passed pawn bonuses
+        Bitboard pp = passed_pawns_bb;
+        while (pp) {
+            Square sq = pop_lsb(pp);
             File f = file_of(sq);
             Rank r = relative_rank(c, sq);
 
-            Bitboard ahead = 0;
             Bitboard ahead_file = 0;
             for (int rr = r + 1; rr <= RANK_7; ++rr) {
-                Square rsq = relative_square(c, make_square(f, Rank(rr)));
-                ahead |= square_bb(rsq);
-                ahead_file |= square_bb(rsq);
-                if (f > FILE_A) ahead |= square_bb(relative_square(c, make_square(File(f - 1), Rank(rr))));
-                if (f < FILE_H) ahead |= square_bb(relative_square(c, make_square(File(f + 1), Rank(rr))));
+                ahead_file |= square_bb(relative_square(c, make_square(f, Rank(rr))));
             }
 
-            if (!(ahead & their_pawns)) {
-                int mg_passer = 0;
-                int eg_passer = 0;
+            int mg_passer = 0;
+            int eg_passer = 0;
 
-                // Rook behind passed pawn: supports advance
-                Bitboard behind = file_bb(f) & pos.pieces(c, ROOK);
-                if (behind) {
-                    Square rsq2 = lsb(behind);
-                    bool rook_behind = (c == WHITE) ? (rank_of(rsq2) < rank_of(sq)) : (rank_of(rsq2) > rank_of(sq));
-                    if (rook_behind) {
-                        mg_passer += 20;
-                        eg_passer += 30;
-                    }
-                }
-
-                // Enemy rook behind: reduces bonus (can blockade)
-                Bitboard enemy_behind = file_bb(f) & pos.pieces(them, ROOK);
-                if (enemy_behind) {
-                    Square ersq = lsb(enemy_behind);
-                    bool enemy_rook_behind = (c == WHITE) ? (rank_of(ersq) < rank_of(sq)) : (rank_of(ersq) > rank_of(sq));
-                    if (enemy_rook_behind) {
-                        mg_passer -= 10;
-                        eg_passer -= 15;
-                    }
-                }
-
-                // King proximity (EG only): closer king = better support
-                Square our_ksq = ksq_arr[c_idx];
-                Square their_ksq = ksq_arr[c_idx ^ 1];
-                Square promo_sq = relative_square(c, make_square(f, RANK_8));
-                int our_kdist = distance(our_ksq, promo_sq);
-                int their_kdist = distance(their_ksq, promo_sq);
-                eg_passer += (their_kdist - our_kdist) * 8;
-
-                // Free passed pawn: enemy king can't catch it
-                if (their_kdist > our_kdist + (c == pos.side_to_move() ? 0 : 1)) {
-                    int unreachable = their_kdist - our_kdist;
-                    eg_passer += unreachable * (unreachable > 4 ? 25 : 15);
-                }
-
-                // Blocked by enemy pieces: harder to push
-                if (ahead_file & pos.pieces(them)) {
-                    mg_passer -= 15;
-                    eg_passer -= 20;
-                }
-
-                mg_score += sign * mg_passer;
-                eg_score += sign * eg_passer;
+            // Connected passed pawns: adjacent passed pawn on same rank
+            Bitboard adjacent_files = BB_EMPTY;
+            if (f > FILE_A) adjacent_files |= file_bb(File(f - 1));
+            if (f < FILE_H) adjacent_files |= file_bb(File(f + 1));
+            Bitboard connected = passed_pawns_bb & adjacent_files & rank_bb(rank_of(sq));
+            if (connected) {
+                int n_connected = popcount(connected);
+                mg_passer += n_connected * 15;
+                eg_passer += n_connected * (10 + r * 8);  // stronger at higher ranks
             }
+
+            // Rook behind passed pawn: supports advance
+            Bitboard behind = file_bb(f) & pos.pieces(c, ROOK);
+            if (behind) {
+                Square rsq2 = lsb(behind);
+                bool rook_behind = (c == WHITE) ? (rank_of(rsq2) < rank_of(sq)) : (rank_of(rsq2) > rank_of(sq));
+                if (rook_behind) {
+                    mg_passer += 20;
+                    eg_passer += 30;
+                }
+            }
+
+            // Enemy rook behind: reduces bonus (can blockade)
+            Bitboard enemy_behind = file_bb(f) & pos.pieces(them, ROOK);
+            if (enemy_behind) {
+                Square ersq = lsb(enemy_behind);
+                bool enemy_rook_behind = (c == WHITE) ? (rank_of(ersq) < rank_of(sq)) : (rank_of(ersq) > rank_of(sq));
+                if (enemy_rook_behind) {
+                    mg_passer -= 10;
+                    eg_passer -= 15;
+                }
+            }
+
+            // King proximity (EG only): closer king = better support
+            Square our_ksq = ksq_arr[c_idx];
+            Square their_ksq = ksq_arr[c_idx ^ 1];
+            Square promo_sq = relative_square(c, make_square(f, RANK_8));
+            int our_kdist = distance(our_ksq, promo_sq);
+            int their_kdist = distance(their_ksq, promo_sq);
+            eg_passer += (their_kdist - our_kdist) * 8;
+
+            // Free passed pawn: enemy king can't catch it
+            if (their_kdist > our_kdist + (c == pos.side_to_move() ? 0 : 1)) {
+                int unreachable = their_kdist - our_kdist;
+                eg_passer += unreachable * (unreachable > 4 ? 25 : 15);
+            }
+
+            // Blocked by enemy pieces: harder to push
+            if (ahead_file & pos.pieces(them)) {
+                mg_passer -= 15;
+                eg_passer -= 20;
+            }
+
+            mg_score += sign * mg_passer;
+            eg_score += sign * eg_passer;
         }
         } // end !tactical_only passed pawns
 
