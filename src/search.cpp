@@ -82,10 +82,6 @@ struct EvalCacheEntry {
 constexpr int EVAL_CACHE_SIZE = 524288;  // 512K entries for better hit rate
 EvalCacheEntry eval_cache[EVAL_CACHE_SIZE];
 
-// Tactical eval cache for qsearch (separate cache since tactical eval differs from full eval)
-constexpr int TACTICAL_CACHE_SIZE = 262144;  // 256K entries
-EvalCacheEntry tactical_eval_cache[TACTICAL_CACHE_SIZE];
-
 // Correction history: corrects static eval based on search errors
 // Indexed by pawn structure hash. Stores rolling average of (search_value - static_eval).
 // Kept conservative: small table, gentle update, capped corrections.
@@ -165,22 +161,6 @@ inline Value eval_cached(const Position& pos) {
 
 [[maybe_unused]] inline void clear_eval_cache() {
     std::memset(eval_cache, 0, sizeof(eval_cache));
-    std::memset(tactical_eval_cache, 0, sizeof(tactical_eval_cache));
-}
-
-// Tactical eval cache for qsearch: avoids recomputing material+PST+pawns+threats
-inline Value tactical_eval_cached(const Position& pos) {
-    uint64_t key = pos.key();
-    uint32_t idx = uint32_t(key) & (TACTICAL_CACHE_SIZE - 1);
-
-    if (tactical_eval_cache[idx].key == key) {
-        return Value(tactical_eval_cache[idx].value);
-    }
-
-    Value eval = evaluate(pos, true);
-    tactical_eval_cache[idx].key = key;
-    tactical_eval_cache[idx].value = int32_t(eval);
-    return eval;
 }
 
 // Reduction constants
@@ -259,12 +239,12 @@ bool check_time() {
 Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
     // Check for max ply to prevent stack overflow
     if (ss->ply >= MAX_PLY) {
-        return tactical_eval_cached(pos);
+        return evaluate(pos, true);
     }
 
     // Search captures to depth -4 to avoid horizon effect
     if (depth < -4) {
-        return tactical_eval_cached(pos);
+        return evaluate(pos, true);
     }
 
     // Memory barrier for ensure we see the latest stop flag
@@ -287,9 +267,9 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
 
     if (!in_check) {
         // Stand pat only when NOT in check
-        // Use cached tactical eval: material + PST + pawn structure + threats
+        // Use tactical eval in qsearch: material + PST + pawn structure + threats
         // Skips expensive positional terms (mobility, king safety, space)
-        eval = tactical_eval_cached(pos);
+        eval = evaluate(pos, true);
         if (eval >= beta) {
             return beta;
         }
