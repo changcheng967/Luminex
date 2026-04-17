@@ -615,6 +615,7 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
 
     Value best_value = -VALUE_INFINITE;
     int moves_played = 0;
+    bool any_legal_move = false;  // Track if any legal move exists (vs all pruned)
 
     // Track quiet moves for history gravity (penalizing non-cutoff moves)
     Move quiets_searched[64];
@@ -724,6 +725,22 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
         // Promotion moves: reduce less
         if (m.is_promotion()) reduction -= 1;
 
+        // Pawn advancing to 7th rank: about to promote, extremely forcing
+        // The opponent MUST respond to this (Capablanca)
+        {
+            PieceType pt = piece_type_of(pos.piece_on(m.from()));
+            if (pt == PAWN) {
+                Color us = pos.side_to_move();
+                Rank to_rank = rank_of(m.to());
+                if (relative_rank(us, to_rank) >= RANK_7) {
+                    reduction -= 1;
+                }
+            }
+        }
+
+        // Castling: king safety is paramount, never reduce aggressively
+        if (m.is_castling()) reduction -= 1;
+
         // Centralization: reduce less for moves to central squares
         // Central pieces are positionally stronger (Nimzowitsch)
         // Piece-type dependent: knights benefit most, queens least
@@ -797,6 +814,7 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
 
         // Skip pseudo_legal check: moves from generator are already pseudo-legal
         if (!pos.legal(m, true)) return false;  // Skip pseudo_legal check for generated moves
+        any_legal_move = true;  // Legal move exists (even if later pruned)
 
         // SEE-based capture pruning with depth-scaled margin
         if (!pv_node && ss->ply > 0 && m.is_capture() && !m.is_promotion() && depth <= 5) {
@@ -1265,12 +1283,19 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
         }
     }
 
-    // Checkmate/stalemate detection: if no moves were played, there are no legal moves
-    if (moves_played == 0 && !stop.load(std::memory_order_relaxed)) {
+    // Checkmate/stalemate detection: only when NO legal moves exist
+    // (not when all legal moves were pruned by SEE/futility/LMP)
+    if (moves_played == 0 && !any_legal_move && !stop.load(std::memory_order_relaxed)) {
         if (pos.is_check()) {
             return -VALUE_MATE + ss->ply;
         }
         return VALUE_DRAW - (pos.side_to_move() == WHITE ? params.contempt / 2 : -params.contempt / 2);
+    }
+
+    // All legal moves were pruned: return eval as best estimate
+    // This prevents -INFINITE garbage from polluting TT
+    if (moves_played == 0 && !stop.load(std::memory_order_relaxed)) {
+        return eval;
     }
 
     // CRITICAL FIX: Only save to TT if search completed fully
