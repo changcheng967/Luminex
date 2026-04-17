@@ -1347,11 +1347,6 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
                     // Check-giving knight: cheap lookup, forcing move
                     if (pt == KNIGHT && (knight_attacks_bb(m.to()) & square_bb(opp_ksq)))
                         score += 5000;
-                    // Check-giving bishop/rook: magic lookup, still O(1)
-                    else if (pt == BISHOP && (bishop_attacks_bb(m.to(), pos.pieces()) & square_bb(opp_ksq)))
-                        score += 5000;
-                    else if (pt == ROOK && (rook_attacks_bb(m.to(), pos.pieces()) & square_bb(opp_ksq)))
-                        score += 5000;
                 }
             }
             it->value = score;
