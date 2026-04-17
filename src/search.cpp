@@ -804,18 +804,6 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
         // Castling: king safety is paramount, never reduce aggressively
         if (m.is_castling()) reduction -= 1;
 
-        // Escape from pawn attack: pieces under enemy pawn attack should not be reduced
-        // Moving an attacked piece is often the only good move (obviously correct defense)
-        {
-            PieceType pt = piece_type_of(pos.piece_on(m.from()));
-            if (pt != PAWN && pt != KING) {
-                Color them = Color(pos.side_to_move() ^ 1);
-                Bitboard their_pawns = pos.pieces(them, PAWN);
-                if (pawn_attacks_bb(them, their_pawns) & square_bb(m.from()))
-                    reduction -= 1;
-            }
-        }
-
         // Centralization: reduce less for moves to central squares
         // Central pieces are positionally stronger (Nimzowitsch)
         // Piece-type dependent: knights benefit most, queens least
