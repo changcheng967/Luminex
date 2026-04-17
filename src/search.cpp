@@ -1201,23 +1201,14 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
                 score = 1800000 + m.promotion_type() * 10000;
             } else {
                 PieceType captured = pos.piece_type_on(m.to());
-                PieceType attacker = piece_type_of(pos.piece_on(m.from()));
+                PieceType attacker = pos.piece_type_on(m.from());
                 int mvv_lva = piece_value[captured] * 10 - piece_value[attacker];
                 // Add capture history for better ordering
                 int cap_hist = worker->capture_history[int(pos.piece_on(m.from()))][int(m.to())][int(captured)];
-                // Counter-move bonus: if this capture matches the counter-move, order it higher
-                int cm_bonus = 0;
-                if (ss->ply >= 1 && (ss - 1)->current_move != MOVE_NONE && (ss - 1)->moved_piece != NO_PIECE) {
-                    Move prev_move = (ss - 1)->current_move;
-                    Piece prev_pc = (ss - 1)->moved_piece;
-                    if (m == worker->counter_move_table[int(prev_pc)][int(prev_move.to())]) {
-                        cm_bonus = 40000;
-                    }
-                }
                 if (pos.see_ge(m, VALUE_ZERO)) {
-                    score = 1500000 + mvv_lva + cap_hist + cm_bonus;
+                    score = 1500000 + mvv_lva + cap_hist;
                 } else {
-                    score = 500000 + mvv_lva + cap_hist / 2 + cm_bonus / 2;
+                    score = 500000 + mvv_lva + cap_hist / 2;
                 }
             }
             it->value = score;
