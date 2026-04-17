@@ -345,7 +345,10 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
         // This move passed do_move - count it as searched
         moves_searched++;
 
-        Value value = -qsearch(pos, ss + 1, -beta, -alpha, depth - 1);
+        // Check extension in qsearch: don't reduce depth when in check
+        // (must respond to check — extends search to find forced mates)
+        Depth qdepth = in_check ? depth : depth - 1;
+        Value value = -qsearch(pos, ss + 1, -beta, -alpha, qdepth);
 
         // CRITICAL: Check stop immediately after recursive call
         if (stop.load(std::memory_order_relaxed)) {
