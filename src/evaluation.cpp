@@ -1189,6 +1189,12 @@ Value evaluate(const Position& pos, bool tactical_only) {
             int au2 = attack_units * attack_units;
             int danger = std::min(500, (500 * au2) / (au2 + 200));
 
+            // Attacker coordination: each additional attacker beyond 2
+            // disproportionately increases danger (coordinated threats)
+            if (attacker_count >= 5) danger = danger * 3 / 2;
+            else if (attacker_count >= 4) danger = danger * 13 / 10;
+            else if (attacker_count >= 3) danger = danger * 23 / 20;
+
             // No queen: much less dangerous
             if (!enemy_qu) danger = danger / 4;
             // No queen and no rook: even less dangerous
