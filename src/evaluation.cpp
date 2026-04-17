@@ -806,6 +806,12 @@ Value evaluate(const Position& pos, bool tactical_only) {
             if (rr == RANK_7) {
                 mg_score += sign * g_eval_params.rook_7th_mg;
                 eg_score += sign * g_eval_params.rook_7th_eg;
+                // Extra bonus when enemy king trapped on 8th (back-rank mate threat)
+                Square their_king = pos.king_sq(them);
+                if (relative_rank(them, rank_of(their_king)) == RANK_8) {
+                    mg_score += sign * 20;
+                    eg_score += sign * 30;
+                }
             }
 
             // Rook xray: same file as enemy queen
