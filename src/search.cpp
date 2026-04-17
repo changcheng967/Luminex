@@ -311,16 +311,10 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
                 it->value = 0;
             }
         }
-        // Insertion sort captures by value (faster than introsort for small N)
-        for (ExtMove* it = moves + 1; it != end; ++it) {
-            ExtMove tmp = *it;
-            ExtMove* jt = it;
-            while (jt != moves && (jt - 1)->value < tmp.value) {
-                *jt = *(jt - 1);
-                --jt;
-            }
-            *jt = tmp;
-        }
+        // Sort captures by value
+        std::sort(moves, end, [](const ExtMove& a, const ExtMove& b) {
+            return a.value > b.value;
+        });
     }
 
     for (ExtMove* it = moves; it != end; ++it) {
