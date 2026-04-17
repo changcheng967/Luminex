@@ -80,7 +80,6 @@ set(SOURCES
     src/evaluation.cpp
     src/transposition.cpp
     src/magic.cpp
-    src/opening_book.cpp
 )
 
 set(HEADERS
@@ -93,7 +92,6 @@ set(HEADERS
     src/transposition.h
     src/bitboard.h
     src/types.h
-    src/opening_book.h
 )
 
 add_executable(luminex ${SOURCES} ${HEADERS})

@@ -1,6 +1,5 @@
 #define _CRT_SECURE_NO_WARNINGS
 #include "luminex.h"
-#include "opening_book.h"
 #include <algorithm>
 #include <chrono>
 #include <cmath>
@@ -1619,18 +1618,7 @@ Move search(Position& pos, Limits& lim) {
         worker->stack[i].pv[0] = MOVE_NONE;
     }
 
-    // Opening book probe
-    {
-        Move book_move = book_probe(pos.key());
-        if (book_move != MOVE_NONE) {
-            for (ExtMove* it = initial_moves; it != initial_end; ++it) {
-                if (it->move == book_move) {
-                    delete main_worker;
-                    return book_move;
-                }
-            }
-        }
-    }
+    // No opening book - rely on search for best opening moves
 
     // Launch helper threads for lazy SMP
     helpers_running = true;
