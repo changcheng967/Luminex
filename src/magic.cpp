@@ -1,5 +1,9 @@
 #include "luminex.h"
 
+#if defined(__BMI2__) && defined(__x86_64__)
+#include <immintrin.h>
+#endif
+
 namespace luminex {
 
 // Precomputed line and between tables
@@ -11,6 +15,11 @@ Magic RookMagics[64];
 Magic BishopMagics[64];
 Bitboard RookTable[262144];   // Large enough for all rook entries
 Bitboard BishopTable[65536];  // Large enough for all bishop entries
+
+#if defined(__BMI2__) && defined(__x86_64__)
+Bitboard RookPEXT[64][4096];
+Bitboard BishopPEXT[64][512];
+#endif
 
 namespace {
 
@@ -201,6 +210,26 @@ void init_magic_bitboards() {
 
     init_magics(RookMagics, RookTable, true);
     init_magics(BishopMagics, BishopTable, false);
+
+#if defined(__BMI2__) && defined(__x86_64__)
+    // Build PEXT tables from magic masks using slow attack generation
+    for (int sq = 0; sq < 64; ++sq) {
+        Bitboard mask = RookMagics[sq].mask;
+        Bitboard occ = 0;
+        do {
+            RookPEXT[sq][_pext_u64(occ, mask)] = slow_rook_attacks(Square(sq), occ);
+            occ = (occ - mask) & mask;
+        } while (occ);
+    }
+    for (int sq = 0; sq < 64; ++sq) {
+        Bitboard mask = BishopMagics[sq].mask;
+        Bitboard occ = 0;
+        do {
+            BishopPEXT[sq][_pext_u64(occ, mask)] = slow_bishop_attacks(Square(sq), occ);
+            occ = (occ - mask) & mask;
+        } while (occ);
+    }
+#endif
 }
 
 void init_line_tables() {
