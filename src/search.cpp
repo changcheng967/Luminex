@@ -1208,7 +1208,7 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
                 if (pos.see_ge(m, VALUE_ZERO)) {
                     score = 1500000 + mvv_lva + cap_hist;
                 } else {
-                    score = 500000 + mvv_lva;
+                    score = 500000 + mvv_lva + cap_hist / 2;
                 }
             }
             it->value = score;
