@@ -1251,9 +1251,40 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
         }
     }
 
-    // PHASE 3: Quiet moves (only if no cutoff from captures)
+    // PHASE 2.5: Killer/Countermove lookahead
+    // Check the most promising quiet moves before generating ALL quiet moves.
+    // If a killer causes cutoff, we skip the expensive GEN_QUIET entirely.
+    // ========================================
+    Move searched_killers[3];
+    int searched_killer_count = 0;
+    {
+        Move candidates[3];
+        candidates[0] = worker->killers[ss->ply][0];
+        candidates[1] = worker->killers[ss->ply][1];
+        candidates[2] = MOVE_NONE;
+        if (ss->ply >= 1 && (ss - 1)->current_move != MOVE_NONE && (ss - 1)->moved_piece != NO_PIECE) {
+            Move prev_move = (ss - 1)->current_move;
+            Piece prev_pc = (ss - 1)->moved_piece;
+            candidates[2] = worker->counter_move_table[int(prev_pc)][int(prev_move.to())];
+        }
+
+        for (int i = 0; i < 3; ++i) {
+            Move km = candidates[i];
+            if (km == MOVE_NONE || km == tt_move || km.is_capture() || km.is_promotion()) continue;
+            if (!pos.legal(km)) continue;
+            searched_killers[searched_killer_count++] = km;
+
+            if (search_move(km, true)) {
+                if (!stop.load(std::memory_order_relaxed)) {
+                    return best_value;
+                }
+            }
+        }
+    }
+
+    // PHASE 3: Quiet moves (only if no cutoff from captures or killers)
     // This is the key savings: we never generate quiet moves
-    // when a capture already caused beta cutoff.
+    // when a capture or killer already caused beta cutoff.
     // ========================================
     {
         ExtMove quiets[MAX_MOVES];
@@ -1359,6 +1390,14 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
                 }
             }
             it->value = score;
+
+            // Skip moves already searched in Phase 2.5 (killers/countermove)
+            for (int k = 0; k < searched_killer_count; ++k) {
+                if (it->move.raw() == searched_killers[k].raw()) {
+                    it->value = -1;
+                    break;
+                }
+            }
         }
 
         // Pick-best through quiets
