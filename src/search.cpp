@@ -561,27 +561,6 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
     // Skip when parent was in check (static_eval is 0, not meaningful)
     bool opponent_worsening = (ss->ply >= 1 && (ss - 1)->static_eval != VALUE_ZERO && eval > -(ss - 1)->static_eval);
 
-    // ========================================
-    // THREAT SCORE: holistic danger assessment
-    // Chess truth: at shallow depth (bullet TC), the engine can't find threats
-    // through raw search. Detect danger cheaply via bitboard operations.
-    // Positive = we're threatened, negative = we're threatening.
-    // Used to modulate pruning: be careful when threatened, aggressive when safe.
-    // ========================================
-    int threat_score = 0;
-    {
-        Color us = pos.side_to_move();
-        Color them = Color(us ^ 1);
-        Bitboard our_valuable = pos.pieces(us) & ~(pos.pieces(us, PAWN) | pos.pieces(us, KING));
-        Bitboard their_valuable = pos.pieces(them) & ~(pos.pieces(them, PAWN) | pos.pieces(them, KING));
-        Bitboard their_pawn_att = pawn_attacks_bb(them, pos.pieces(them, PAWN));
-        Bitboard our_pawn_att = pawn_attacks_bb(us, pos.pieces(us, PAWN));
-        // How many of our pieces are under enemy pawn attack
-        threat_score += popcount(our_valuable & their_pawn_att);
-        // How many of their pieces are under our pawn attack
-        threat_score -= popcount(their_valuable & our_pawn_att);
-    }
-
     // Internal Iterative Reduction (IIR): reduce depth by 1 when no TT move available
     // Only apply at non-PV nodes — PV nodes use IID instead (below)
     if (!pv_node && tt_move == MOVE_NONE && depth >= 4) {
@@ -591,13 +570,8 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
     // Futility pruning - use improving for better pruning decisions
     // Depth <= 6 for balance between pruning and tactical accuracy
     // More aggressive when opponent is worsening (wider margin)
-    // Threat-aware: when threatened, widen margin (don't prune defensive needs)
-    {
-        int fut_margin = futility_margin(depth, ss->improving || opponent_worsening);
-        if (threat_score > 0) fut_margin += threat_score * 40;
-        if (!pv_node && !pos.is_check() && depth <= 6 && eval - fut_margin >= beta) {
-            return eval;
-        }
+    if (!pv_node && !pos.is_check() && depth <= 6 && eval - futility_margin(depth, ss->improving || opponent_worsening) >= beta) {
+        return eval;
     }
 
     // Reverse futility pruning (static null move): if eval is far above beta, prune immediately
@@ -948,8 +922,6 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
         // BUT: moves with strong history should never be pruned (they're likely good)
         int lmp_base = ss->improving ? 3 : 2;
         int lmp_threshold = lmp_base + depth * depth;
-        // Threat-aware: when under threat, search more moves (defensive moves might be late)
-        if (threat_score > 0) lmp_threshold += depth;
         if (is_quiet && !pv_node && ss->ply > 0 && depth <= 6 && moves_played >= lmp_threshold) {
             // History escape: if the move has strong positive combined history,
             // it has been good in similar positions — don't prune it
@@ -974,10 +946,8 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
         }
 
         // Futility pruning: skip quiet moves that can't improve alpha
-        // Threat-aware: widen margin when threatened (saving pieces can swing eval)
         if (is_quiet && !pv_node && ss->ply > 0 && !pos.is_check() && depth <= 5) {
             int margin = depth * 150 + (ss->improving ? 30 : 100);
-            if (threat_score > 0) margin += threat_score * 50;
             if (eval + margin < alpha) {
                 return false;
             }
