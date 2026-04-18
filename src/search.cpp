@@ -1252,6 +1252,8 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
             Move killer = worker->killers[ss->ply][k];
             if (killer && killer != tt_move && !killer.is_capture() && !killer.is_promotion()
                 && killer.from() < SQUARE_NONE && killer.to() < SQUARE_NONE
+                && pos.piece_on(killer.from()) != NO_PIECE
+                && !(pos.pieces(pos.side_to_move()) & square_bb(killer.to()))
                 && pos.legal(killer)) {
                 if (search_move(killer, true)) {
                     if (!stop.load(std::memory_order_relaxed)) {
