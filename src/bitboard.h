@@ -79,9 +79,9 @@ constexpr Bitboard square_bb(Square s) {
 }
 #if defined(_MSC_VER)
 #include <intrin.h>
-constexpr Square lsb(Bitboard b) { unsigned long idx; _BitScanForward64(&idx, b); return static_cast<Square>(idx); }
-constexpr Square msb(Bitboard b) { unsigned long idx; _BitScanReverse64(&idx, b); return static_cast<Square>(idx); }
-constexpr int popcount(Bitboard b) { return static_cast<int>(__popcnt64(b)); }
+inline Square lsb(Bitboard b) { unsigned long idx; _BitScanForward64(&idx, b); return static_cast<Square>(idx); }
+inline Square msb(Bitboard b) { unsigned long idx; _BitScanReverse64(&idx, b); return static_cast<Square>(idx); }
+inline int popcount(Bitboard b) { return static_cast<int>(__popcnt64(b)); }
 #else
 constexpr Square lsb(Bitboard b) { return static_cast<Square>(__builtin_ctzll(b)); }
 constexpr Square msb(Bitboard b) { return static_cast<Square>(63 - __builtin_clzll(b)); }
