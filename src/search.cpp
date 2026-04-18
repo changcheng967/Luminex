@@ -128,7 +128,7 @@ static thread_local uint64_t last_reported_nodes = 0;
 // Product formula: reduction = log(depth) * log(moves) / divisor
 // Using integer math with SCALE factor for precision
 static int reductions[64];
-static constexpr int LMR_SCALE = 32;
+static constexpr int LMR_SCALE = 30;
 static constexpr int LMR_DENOM = LMR_SCALE * LMR_SCALE;
 static bool reductions_initialized = false;
 
