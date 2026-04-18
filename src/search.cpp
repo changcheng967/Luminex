@@ -144,18 +144,16 @@ inline Value eval_cached(const Position& pos) {
     uint32_t idx = uint32_t(key) & (EVAL_CACHE_SIZE - 1);
 
     if (eval_cache[idx].key == key) {
+        // Apply correction history to cached eval (capped for safety)
         int correction = get_correction(pos.pawn_key());
         correction = std::max(-100, std::min(100, correction));
         return Value(eval_cache[idx].value + correction);
     }
 
-    // Eval-Lite: use tactical-only eval (material+PST+pawn structure+threats)
-    // in the main search. Skip expensive positional terms (mobility, king safety,
-    // space). Correction history compensates for missing terms. Full eval used
-    // in qsearch for tactical accuracy.
-    Value eval = evaluate(pos, true);
+    Value eval = evaluate(pos);
     eval_cache[idx].key = key;
     eval_cache[idx].value = int32_t(eval);
+    // Apply correction to fresh eval too
     int correction = get_correction(pos.pawn_key());
     correction = std::max(-100, std::min(100, correction));
     return Value(eval + correction);
