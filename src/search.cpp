@@ -363,18 +363,40 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
         }
     }
 
-    // Quiet check-giving moves: use dedicated generator instead of
-    // generating all quiets + filtering (much cheaper).
+    // Generate and search quiet check-giving moves (not in check, at qsearch depth 0)
+    // These are forcing tactical moves that can lead to material gain
     if (!in_check && depth >= 0 && alpha < beta) {
         ExtMove quiet_checks[MAX_MOVES];
-        ExtMove* qc_end = generate<GEN_QUIET_CHECK>(pos, quiet_checks);
+        ExtMove* qc_end = generate<GEN_QUIET>(pos, quiet_checks);
+        Square opp_ksq = pos.king_sq(Color(pos.side_to_move() ^ 1));
         int checks_searched = 0;
 
         for (ExtMove* it = quiet_checks; it != qc_end; ++it) {
             if (stop.load(std::memory_order_relaxed)) break;
             Move m = it->move;
 
-            if (++checks_searched > 5) break;
+            if (!pos.legal(m, true)) continue;
+
+            // Check if this quiet move gives check
+            PieceType pt = piece_type_of(pos.piece_on(m.from()));
+            bool gives_chk = false;
+            Bitboard occ_no_from = pos.pieces() ^ square_bb(m.from());
+
+            if (pt == PAWN) {
+                gives_chk = (pawn_attacks_bb(pos.side_to_move(), m.to()) & square_bb(opp_ksq)) != 0;
+            } else if (pt == KNIGHT) {
+                gives_chk = (knight_attacks_bb(m.to()) & square_bb(opp_ksq)) != 0;
+            } else if (pt == BISHOP) {
+                gives_chk = (bishop_attacks_bb(m.to(), occ_no_from) & square_bb(opp_ksq)) != 0;
+            } else if (pt == ROOK) {
+                gives_chk = (rook_attacks_bb(m.to(), occ_no_from) & square_bb(opp_ksq)) != 0;
+            } else if (pt == QUEEN) {
+                gives_chk = (bishop_attacks_bb(m.to(), occ_no_from) & square_bb(opp_ksq)) != 0
+                          || (rook_attacks_bb(m.to(), occ_no_from) & square_bb(opp_ksq)) != 0;
+            }
+
+            if (!gives_chk) continue;
+            if (++checks_searched > 5) break;  // Limit quiet checks per node
 
             ss->current_move = m;
             ss->moved_piece = pos.piece_on(m.from());
