@@ -380,19 +380,33 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
             // Check if this quiet move gives check
             PieceType pt = piece_type_of(pos.piece_on(m.from()));
             bool gives_chk = false;
-            Bitboard occ_no_from = pos.pieces() ^ square_bb(m.from());
 
             if (pt == PAWN) {
                 gives_chk = (pawn_attacks_bb(pos.side_to_move(), m.to()) & square_bb(opp_ksq)) != 0;
             } else if (pt == KNIGHT) {
                 gives_chk = (knight_attacks_bb(m.to()) & square_bb(opp_ksq)) != 0;
             } else if (pt == BISHOP) {
-                gives_chk = (bishop_attacks_bb(m.to(), occ_no_from) & square_bb(opp_ksq)) != 0;
+                int df = abs(int(m.to() % 8) - int(opp_ksq % 8));
+                int dr = abs(int(m.to() / 8) - int(opp_ksq / 8));
+                if (df == dr && df > 0) {
+                    Bitboard occ_no_from = pos.pieces() ^ square_bb(m.from());
+                    gives_chk = (bishop_attacks_bb(m.to(), occ_no_from) & square_bb(opp_ksq)) != 0;
+                }
             } else if (pt == ROOK) {
-                gives_chk = (rook_attacks_bb(m.to(), occ_no_from) & square_bb(opp_ksq)) != 0;
+                int df = abs(int(m.to() % 8) - int(opp_ksq % 8));
+                int dr = abs(int(m.to() / 8) - int(opp_ksq / 8));
+                if ((df == 0 || dr == 0) && (df + dr) > 0) {
+                    Bitboard occ_no_from = pos.pieces() ^ square_bb(m.from());
+                    gives_chk = (rook_attacks_bb(m.to(), occ_no_from) & square_bb(opp_ksq)) != 0;
+                }
             } else if (pt == QUEEN) {
-                gives_chk = (bishop_attacks_bb(m.to(), occ_no_from) & square_bb(opp_ksq)) != 0
-                          || (rook_attacks_bb(m.to(), occ_no_from) & square_bb(opp_ksq)) != 0;
+                int df = abs(int(m.to() % 8) - int(opp_ksq % 8));
+                int dr = abs(int(m.to() / 8) - int(opp_ksq / 8));
+                if ((df == dr || df == 0 || dr == 0) && (df + dr) > 0) {
+                    Bitboard occ_no_from = pos.pieces() ^ square_bb(m.from());
+                    gives_chk = (bishop_attacks_bb(m.to(), occ_no_from) & square_bb(opp_ksq)) != 0
+                              || (rook_attacks_bb(m.to(), occ_no_from) & square_bb(opp_ksq)) != 0;
+                }
             }
 
             if (!gives_chk) continue;
@@ -814,10 +828,20 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
         } else if (pt == KNIGHT) {
             return (knight_attacks_bb(m.to()) & square_bb(opp_ksq)) != 0;
         } else if (pt == BISHOP) {
+            int df = abs(int(m.to() % 8) - int(opp_ksq % 8));
+            int dr = abs(int(m.to() / 8) - int(opp_ksq / 8));
+            if (df != dr || df == 0) return false;
             return (bishop_attacks_bb(m.to(), pos.pieces() ^ square_bb(m.from())) & square_bb(opp_ksq)) != 0;
         } else if (pt == ROOK) {
+            int df = abs(int(m.to() % 8) - int(opp_ksq % 8));
+            int dr = abs(int(m.to() / 8) - int(opp_ksq / 8));
+            if ((df != 0 && dr != 0) || (df + dr) == 0) return false;
             return (rook_attacks_bb(m.to(), pos.pieces() ^ square_bb(m.from())) & square_bb(opp_ksq)) != 0;
         } else if (pt == QUEEN) {
+            int df = abs(int(m.to() % 8) - int(opp_ksq % 8));
+            int dr = abs(int(m.to() / 8) - int(opp_ksq / 8));
+            if (df != dr && df != 0 && dr != 0) return false;
+            if (df + dr == 0) return false;
             Bitboard occ_no_from = pos.pieces() ^ square_bb(m.from());
             return (bishop_attacks_bb(m.to(), occ_no_from) & square_bb(opp_ksq)) != 0
                 || (rook_attacks_bb(m.to(), occ_no_from) & square_bb(opp_ksq)) != 0;
