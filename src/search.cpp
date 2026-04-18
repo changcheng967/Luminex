@@ -917,12 +917,12 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
             }
         }
 
-        // Deep Beam Search: aggressive LMP at ALL depths (not just shallow)
-        // Cap quiet moves searched per node — captures are always searched.
-        // At bullet TC, the first few quiets (killers, high-history) are
-        // overwhelmingly likely to cause cutoff. Searching 20+ quiets wastes time.
-        int lmp_threshold = ss->improving ? 8 : 5;
-        if (is_quiet && !pv_node && ss->ply > 0 && moves_played >= lmp_threshold) {
+        // Late move pruning: prune quiet moves after examining a reasonable number
+        // Improving positions can tolerate more pruning (more likely to recover)
+        // BUT: moves with strong history should never be pruned (they're likely good)
+        int lmp_base = ss->improving ? 3 : 2;
+        int lmp_threshold = lmp_base + depth * depth;
+        if (is_quiet && !pv_node && ss->ply > 0 && depth <= 6 && moves_played >= lmp_threshold) {
             // History escape: if the move has strong positive combined history,
             // it has been good in similar positions — don't prune it
             Piece pc = pos.piece_on(m.from());
