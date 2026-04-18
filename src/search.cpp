@@ -913,21 +913,15 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
                     hist_score += continuation_history[int(prev2_pc)][int(prev2_move.to())][int(pc)][int(m.to())];
                 }
                 // Prune if history is very negative (move has historically been bad)
-                // More aggressive when opponent is worsening (position favors us)
-                int cont_threshold = 783 - 4872 * (depth - 1);
-                if (opponent_worsening) cont_threshold += 500;
-                if (hist_score < cont_threshold) {
+                if (hist_score < 783 - 4872 * (depth - 1)) {
                     return false;
                 }
             }
         }
 
         // SEE-based quiet move pruning at shallow depth
-        // More aggressive when opponent is worsening
         if (is_quiet && !pv_node && ss->ply > 0 && depth <= 3) {
-            int see_margin = -20 * depth * depth;
-            if (opponent_worsening) see_margin += 10 * depth;
-            if (!pos.see_ge(m, Value(see_margin))) {
+            if (!pos.see_ge(m, Value(-20 * depth * depth))) {
                 return false;
             }
         }
@@ -962,7 +956,7 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
 
         // Futility pruning: skip quiet moves that can't improve alpha
         if (is_quiet && !pv_node && ss->ply > 0 && !pos.is_check() && depth <= 5) {
-            int margin = depth * 150 + ((ss->improving || opponent_worsening) ? 30 : 100);
+            int margin = depth * 150 + (ss->improving ? 30 : 100);
             if (eval + margin < alpha) {
                 return false;
             }
