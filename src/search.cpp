@@ -1242,9 +1242,30 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
         }
     }
 
-    // PHASE 3: Quiet moves (only if no cutoff from captures)
+    // ========================================
+    // PHASE 2.5: Killer moves (before generating all quiets)
+    // If a killer causes cutoff, skip the expensive quiet generation.
+    // This is the PMG philosophy applied deeper: defer work until needed.
+    // ========================================
+    {
+        for (int k = 0; k < 2; ++k) {
+            Move killer = worker->killers[ss->ply][k];
+            if (killer && killer != tt_move && !killer.is_capture() && !killer.is_promotion()
+                && killer.from() < SQUARE_NONE && killer.to() < SQUARE_NONE
+                && pos.legal(killer)) {
+                if (search_move(killer, true)) {
+                    if (!stop.load(std::memory_order_relaxed)) {
+                        return best_value;
+                    }
+                }
+            }
+        }
+    }
+
+    // ========================================
+    // PHASE 3: Quiet moves (only if no cutoff from captures or killers)
     // This is the key savings: we never generate quiet moves
-    // when a capture already caused beta cutoff.
+    // when a capture or killer already caused beta cutoff.
     // ========================================
     {
         ExtMove quiets[MAX_MOVES];
@@ -1257,7 +1278,7 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
             Move m = it->move;
             int score = 0;
 
-            if (m == tt_move) {
+            if (m == tt_move || m == worker->killers[ss->ply][0] || m == worker->killers[ss->ply][1]) {
                 score = -1;  // Already searched
             } else {
                 Piece pc = pos.piece_on(m.from());
