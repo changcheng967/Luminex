@@ -26,6 +26,10 @@ std::atomic<bool> stop;
 int root_depth;
 Value root_score;
 
+// Bullet-specific pruning: at fast TC, pruning errors are less exploitable
+// because the opponent also has limited time. Computed once at root search start.
+static bool bullet_tc = false;
+
 // Lazy SMP thread management
 int num_threads = 1;
 Move previous_root_best = MOVE_NONE;
@@ -844,6 +848,11 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
             if (kdist <= 1) reduction -= 1;
         }
 
+        // Bullet-specific speculative pruning: at fast TC, extra reduction
+        // for clearly unpromising moves. The opponent can't exploit pruning
+        // errors when they also have only 1 second per move.
+        if (bullet_tc && mp >= 5 && !gives_chk) reduction += 1;
+
         return std::max(1, std::min(reduction, depth - 2));
     };
 
@@ -930,6 +939,7 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
         // Improving positions can tolerate more pruning (more likely to recover)
         // BUT: moves with strong history should never be pruned (they're likely good)
         int lmp_base = (ss->improving || opponent_worsening) ? 3 : 2;
+        if (bullet_tc) lmp_base -= 1;  // Try fewer moves at bullet TC
         int lmp_threshold = lmp_base + depth * depth;
         if (is_quiet && !pv_node && ss->ply > 0 && depth <= 6 && moves_played >= lmp_threshold) {
             // History escape: if the move has strong positive combined history,
@@ -957,6 +967,7 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
         // Futility pruning: skip quiet moves that can't improve alpha
         if (is_quiet && !pv_node && ss->ply > 0 && !pos.is_check() && depth <= 5) {
             int margin = depth * 150 + (ss->improving ? 30 : 100);
+            if (bullet_tc) margin += 30;  // Wider margin at bullet TC
             if (eval + margin < alpha) {
                 return false;
             }
@@ -1673,6 +1684,12 @@ Move search(Position& pos, Limits& lim) {
         ideal_time = 0;
         max_time = 0;
     }
+
+    // Bullet-specific pruning: at fast TC, the opponent can't exploit pruning errors
+    // as effectively because they also have limited time. This lets us be more aggressive.
+    bullet_tc = limits.use_time_management() &&
+                limits.time[int(pos.side_to_move())] > 0 &&
+                limits.time[int(pos.side_to_move())] < 3000;
 
     // Initialize killers (clear for new search)
     for (int i = 0; i < MAX_PLY; ++i) {
