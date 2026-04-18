@@ -1027,6 +1027,11 @@ Value evaluate(const Position& pos, bool tactical_only) {
         }
     }
 
+    // Phase: material phase for MG/EG interpolation (computed once, used for quick exit and final)
+    int phase = popcount(pos.pieces(KNIGHT)) + popcount(pos.pieces(BISHOP))
+              + popcount(pos.pieces(ROOK)) * 2 + popcount(pos.pieces(QUEEN)) * 4;
+    phase = std::min(24, phase);
+
     // -------------------------------------------------------
     // Early eval exit: if score is clearly decisive after
     // material+PST+pawns+threats+mobility, skip expensive
@@ -1034,9 +1039,7 @@ Value evaluate(const Position& pos, bool tactical_only) {
     // Remaining terms typically add ±150cp max.
     // -------------------------------------------------------
     if (!tactical_only) {
-        int quick_phase = popcount(pos.pieces(KNIGHT)) + popcount(pos.pieces(BISHOP))
-                        + popcount(pos.pieces(ROOK)) * 2 + popcount(pos.pieces(QUEEN)) * 4;
-        quick_phase = std::min(24, quick_phase);
+        int quick_phase = phase;
         int quick_score = (mg_score * quick_phase + eg_score * (24 - quick_phase)) / 24;
         if (quick_score > 500 || quick_score < -500) {
             // Skip space, imbalance calc, king safety — position is decisive
@@ -1224,11 +1227,8 @@ Value evaluate(const Position& pos, bool tactical_only) {
     } // end !tactical_only king safety
 
     // -------------------------------------------------------
-    // Phase calculation and score interpolation
+    // Score interpolation (phase already computed above)
     // -------------------------------------------------------
-    int phase = popcount(pos.pieces(KNIGHT)) + popcount(pos.pieces(BISHOP))
-              + popcount(pos.pieces(ROOK)) * 2 + popcount(pos.pieces(QUEEN)) * 4;
-    phase = std::min(24, phase);
 
     // Interpolate MG/EG with endgame scaling
     int sf = scale_factor(pos, eg_score);
