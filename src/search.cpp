@@ -120,44 +120,6 @@ inline void update_correction(uint64_t pawn_key, int error, int depth) {
     }
 }
 
-// Pawn-Structure Killer (PSK): learn which quiet moves cause cutoffs
-// in specific pawn structures. When the same pawn skeleton appears,
-// boost the move that previously worked. Index by pawn_key (16K entries)
-// — same approach as correction history, proven to be well-populated.
-struct PSKEntry {
-    uint64_t key;
-    uint32_t move_from_to; // packed: from()<<6 | to()
-    int16_t score;
-    uint16_t weight;
-};
-static constexpr int PSK_SIZE = 16384;
-static PSKEntry psk_table[PSK_SIZE];
-
-inline uint32_t pack_psk_move(Move m) { return uint32_t(m.from()) << 6 | uint32_t(m.to()); }
-
-inline void update_psk(uint64_t pawn_key, Move m, int depth) {
-    uint32_t idx = uint32_t(pawn_key) & (PSK_SIZE - 1);
-    PSKEntry& e = psk_table[idx];
-    int bonus = depth * depth;
-    if (e.key != pawn_key || e.move_from_to != pack_psk_move(m)) {
-        e.key = pawn_key;
-        e.move_from_to = pack_psk_move(m);
-        e.score = int16_t(bonus);
-        e.weight = 1;
-    } else {
-        e.score = int16_t(e.score + bonus - e.score * abs(bonus) / 32768);
-        e.weight = uint16_t(std::min(int(e.weight) + 1, 512));
-    }
-}
-
-inline int psk_bonus(uint64_t pawn_key, Move m) {
-    uint32_t idx = uint32_t(pawn_key) & (PSK_SIZE - 1);
-    const PSKEntry& e = psk_table[idx];
-    if (e.key == pawn_key && e.move_from_to == pack_psk_move(m) && e.weight > 0)
-        return std::min(int(e.score) / 8, 45000);
-    return 0;
-}
-
 // Thread-local node counter to avoid atomic overhead on every node
 static thread_local uint64_t local_nodes = 0;
 static thread_local uint64_t last_reported_nodes = 0;
@@ -1121,8 +1083,6 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
                         worker->killers[ss->ply][1] = worker->killers[ss->ply][0];
                         worker->killers[ss->ply][0] = m;
                     }
-                    // PSK: record that this quiet move caused cutoff in this pawn structure
-                    update_psk(pos.pawn_key(), m, depth);
                     Piece pc = ss->moved_piece;
                     if (pc != NO_PIECE) {
                         // Stockfish 11 stat_bonus: conservative quadratic scaling
@@ -1319,9 +1279,6 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
                         score += worker->low_ply_history[ss->ply][int(pc)][int(m.to())];
                     }
                 }
-
-                // Pawn-Structure Killer bonus
-                score += psk_bonus(pos.pawn_key(), m);
 
                 // Previous iteration's root best move bonus
                 if (m == previous_root_best) score += 70000;
