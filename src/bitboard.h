@@ -77,9 +77,16 @@ constexpr Bitboard BB_CORNERS = BB_SQUARES[A1] | BB_SQUARES[H1] | BB_SQUARES[A8]
 constexpr Bitboard square_bb(Square s) {
     return (s >= 0 && s < 64) ? BB_SQUARES[s] : BB_EMPTY;
 }
-constexpr Square lsb(Bitboard b) { return static_cast<Square>(std::countr_zero(b)); }
-constexpr Square msb(Bitboard b) { return static_cast<Square>(63 - std::countl_zero(b)); }
-constexpr int popcount(Bitboard b) { return static_cast<int>(std::popcount(b)); }
+#if defined(_MSC_VER)
+#include <intrin.h>
+constexpr Square lsb(Bitboard b) { unsigned long idx; _BitScanForward64(&idx, b); return static_cast<Square>(idx); }
+constexpr Square msb(Bitboard b) { unsigned long idx; _BitScanReverse64(&idx, b); return static_cast<Square>(idx); }
+constexpr int popcount(Bitboard b) { return static_cast<int>(__popcnt64(b)); }
+#else
+constexpr Square lsb(Bitboard b) { return static_cast<Square>(__builtin_ctzll(b)); }
+constexpr Square msb(Bitboard b) { return static_cast<Square>(63 - __builtin_clzll(b)); }
+constexpr int popcount(Bitboard b) { return static_cast<int>(__builtin_popcountll(b)); }
+#endif
 constexpr Bitboard square_bb(File f, Rank r) { return BB_SQUARES[make_square(f, r)]; }
 constexpr Bitboard rank_bb(Rank r) { return BB_RANKS[r]; }
 constexpr Bitboard file_bb(File f) { return BB_FILES[f]; }
