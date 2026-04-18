@@ -110,21 +110,42 @@ static void launch_search_thread(Position pos_copy, Limits lim) {
 
 // Worker function that runs search in a separate thread
 static void search_worker(Position pos_copy, Limits lim) {
-    if (dbglog) { fprintf(dbglog, "SEARCH_START: depth=%d time[W]=%d time[B]=%d movetime=%d\n",
-        lim.depth, lim.time[0], lim.time[1], lim.movetime); fflush(dbglog); }
+    if (dbglog) { fprintf(dbglog, "SEARCH_START: depth=%d time[W]=%d time[B]=%d movetime=%d ponder=%d\n",
+        lim.depth, lim.time[0], lim.time[1], lim.movetime, lim.ponder); fflush(dbglog); }
 
     Move best_move = search(pos_copy, lim);
 
     if (dbglog) { fprintf(dbglog, "SEARCH_DONE: about to send bestmove\n"); fflush(dbglog); }
 
+    // Extract ponder move from TT (opponent's expected response)
+    Move ponder_move = MOVE_NONE;
+    if (best_move != MOVE_NONE) {
+        if (pos_copy.do_move(best_move)) {
+            bool found;
+            TTEntry* tte = TT.probe(pos_copy.key(), found);
+            if (found && tte->move() != MOVE_NONE) {
+                Move pm = tte->move();
+                if (pm.from() < SQUARE_NONE && pm.to() < SQUARE_NONE) {
+                    ponder_move = pm;
+                }
+            }
+        }
+    }
+
     // Output best move directly from search thread (thread-safe)
     std::ostringstream oss;
     if (best_move != MOVE_NONE) {
-        oss << "bestmove " << best_move << "\n";
+        oss << "bestmove " << best_move;
+        if (ponder_move != MOVE_NONE) {
+            oss << " ponder " << ponder_move;
+        }
+        oss << "\n";
     } else {
         oss << "bestmove 0000\n";
     }
     safe_output(oss.str());
+
+    ponder_mode.store(false, std::memory_order_relaxed);
 }
 
 void handle_uci() {
@@ -133,6 +154,7 @@ void handle_uci() {
     safe_output("id author " + std::string(ENGINE_AUTHOR) + "\n");
     safe_output("option name Hash type spin default 128 min 1 max 1048576\n");
     safe_output("option name Threads type spin default 1 min 1 max 64\n");
+    safe_output("option name Ponder type check default false\n");
     safe_output("option name Contempt type spin default 0 min -1000 max 1000\n");
     safe_output("option name Clear Hash type button\n");
     // Eval parameters (self-engineered defaults)
@@ -274,6 +296,7 @@ void handle_go(Position& pos, const std::string& cmd) {
         else if (token == "nodes") ss >> limits.nodes;
         else if (token == "movetime") ss >> limits.movetime;
         else if (token == "infinite") limits.infinite = true;
+        else if (token == "ponder") limits.ponder = true;
         else if (token == "wtime") ss >> limits.time[WHITE];
         else if (token == "btime") ss >> limits.time[BLACK];
         else if (token == "winc") ss >> limits.inc[WHITE];
@@ -285,6 +308,11 @@ void handle_go(Position& pos, const std::string& cmd) {
     if (limits.depth == 0 && !limits.infinite && limits.movetime == 0 &&
         limits.time[WHITE] == 0 && limits.time[BLACK] == 0 && limits.nodes == 0) {
         limits.infinite = true;
+    }
+
+    // Set ponder mode if go ponder
+    if (limits.ponder) {
+        ponder_mode.store(true, std::memory_order_relaxed);
     }
 
     // Launch search thread with large stack to prevent stack overflow
@@ -401,6 +429,9 @@ void uci_loop() {
             stop.store(true, std::memory_order_seq_cst);
             std::atomic_thread_fence(std::memory_order_seq_cst);  // Ensure visibility
             // Do NOT join here - search thread will see flag and terminate
+        } else if (cmd == "ponderhit") {
+            // Opponent played the expected move - switch from ponder to normal mode
+            ponderhit_received.store(true, std::memory_order_relaxed);
         } else if (cmd == "quit") {
             g_stop_requested = true;
             stop.store(true, std::memory_order_seq_cst);

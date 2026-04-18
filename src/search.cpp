@@ -30,6 +30,10 @@ Value root_score;
 int num_threads = 1;
 Move previous_root_best = MOVE_NONE;
 
+// Pondering support
+std::atomic<bool> ponder_mode{false};
+std::atomic<bool> ponderhit_received{false};
+
 namespace {
 
 // Mate score TT adjustment: mate scores are relative to root, not current ply.
@@ -198,6 +202,11 @@ bool check_time() {
     if (limits.nodes && nodes >= uint64_t(limits.nodes)) {
         stop = true;
         return true;
+    }
+
+    // During pondering, skip all time-based stops
+    if (ponder_mode.load(std::memory_order_relaxed)) {
+        return false;
     }
 
     if (limits.movetime) {
@@ -920,7 +929,7 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
         // Late move pruning: prune quiet moves after examining a reasonable number
         // Improving positions can tolerate more pruning (more likely to recover)
         // BUT: moves with strong history should never be pruned (they're likely good)
-        int lmp_base = ss->improving ? 3 : 2;
+        int lmp_base = (ss->improving || opponent_worsening) ? 3 : 2;
         int lmp_threshold = lmp_base + depth * depth;
         if (is_quiet && !pv_node && ss->ply > 0 && depth <= 6 && moves_played >= lmp_threshold) {
             // History escape: if the move has strong positive combined history,
@@ -1697,10 +1706,18 @@ Move search(Position& pos, Limits& lim) {
             break;
         }
 
+        // Handle ponderhit: switch from ponder to normal mode
+        if (ponderhit_received.load(std::memory_order_relaxed)) {
+            ponderhit_received.store(false);
+            ponder_mode.store(false);
+            search_start = std::chrono::steady_clock::now();
+        }
+
         // Time management: stop before starting a new depth if we've used too much time
         // Always complete depth 1, then be aggressive about stopping
         // Best-move stability: if best move is stable, we can stop earlier
-        if (limits.use_time_management() && root_depth > 1) {
+        // Skip time management during ponder (search indefinitely until ponderhit/stop)
+        if (!ponder_mode.load(std::memory_order_relaxed) && limits.use_time_management() && root_depth > 1) {
             auto now = std::chrono::steady_clock::now();
             int elapsed = static_cast<int>(std::chrono::duration_cast<std::chrono::milliseconds>(
                 now - search_start).count());
@@ -1716,7 +1733,7 @@ Move search(Position& pos, Limits& lim) {
                 break;
             }
         }
-        if (limits.movetime) {
+        if (limits.movetime && !ponder_mode.load(std::memory_order_relaxed)) {
             auto now = std::chrono::steady_clock::now();
             int elapsed = static_cast<int>(std::chrono::duration_cast<std::chrono::milliseconds>(
                 now - search_start).count());
