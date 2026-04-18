@@ -242,6 +242,15 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
         return evaluate(pos, true);
     }
 
+    // TT probe in qsearch: avoid re-evaluating positions we've seen before
+    bool tt_found;
+    TTEntry* tte = TT.probe(pos.key(), tt_found);
+    if (tt_found) {
+        Value tt_value = value_from_tt(tte->value(), ss->ply);
+        if (tte->bound() & BOUND_UPPER && tt_value <= alpha) return alpha;
+        if (tte->bound() & BOUND_LOWER && tt_value >= beta) return tt_value;
+    }
+
     // Search captures to depth -4 to avoid horizon effect
     if (depth < -4) {
         return evaluate(pos, true);
@@ -421,6 +430,12 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
     // Checkmate detection - if in check and no legal evasions
     if (in_check && moves_searched == 0) {
         return -VALUE_MATE + ss->ply;
+    }
+
+    // Store qsearch result to TT
+    if (!stop.load(std::memory_order_relaxed)) {
+        Bound bound = alpha >= beta ? BOUND_LOWER : BOUND_UPPER;
+        tte->save(pos.key(), value_to_tt(alpha, ss->ply), false, bound, Depth(0), MOVE_NONE, eval, TT.generation());
     }
 
     return alpha;
