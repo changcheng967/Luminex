@@ -311,19 +311,15 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
                 it->value = 0;
             }
         }
+        // Sort captures by value
+        std::sort(moves, end, [](const ExtMove& a, const ExtMove& b) {
+            return a.value > b.value;
+        });
     }
 
     for (ExtMove* it = moves; it != end; ++it) {
+        // FIX: Check for stop at top of move loop for faster response
         if (stop.load(std::memory_order_relaxed)) break;
-
-        // Pick-best for qsearch captures (faster than std::sort for small arrays)
-        if (!in_check) {
-            ExtMove* best = it;
-            for (ExtMove* jt = it + 1; jt != end; ++jt) {
-                if (jt->value > best->value) best = jt;
-            }
-            if (best != it) { ExtMove tmp = *it; *it = *best; *best = tmp; }
-        }
 
         if (in_check) {
             // For evasions, legal() check already done by GEN_LEGAL
@@ -384,33 +380,19 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
             // Check if this quiet move gives check
             PieceType pt = piece_type_of(pos.piece_on(m.from()));
             bool gives_chk = false;
+            Bitboard occ_no_from = pos.pieces() ^ square_bb(m.from());
 
             if (pt == PAWN) {
                 gives_chk = (pawn_attacks_bb(pos.side_to_move(), m.to()) & square_bb(opp_ksq)) != 0;
             } else if (pt == KNIGHT) {
                 gives_chk = (knight_attacks_bb(m.to()) & square_bb(opp_ksq)) != 0;
             } else if (pt == BISHOP) {
-                int df = abs(int(m.to() % 8) - int(opp_ksq % 8));
-                int dr = abs(int(m.to() / 8) - int(opp_ksq / 8));
-                if (df == dr && df > 0) {
-                    Bitboard occ_no_from = pos.pieces() ^ square_bb(m.from());
-                    gives_chk = (bishop_attacks_bb(m.to(), occ_no_from) & square_bb(opp_ksq)) != 0;
-                }
+                gives_chk = (bishop_attacks_bb(m.to(), occ_no_from) & square_bb(opp_ksq)) != 0;
             } else if (pt == ROOK) {
-                int df = abs(int(m.to() % 8) - int(opp_ksq % 8));
-                int dr = abs(int(m.to() / 8) - int(opp_ksq / 8));
-                if ((df == 0 || dr == 0) && (df + dr) > 0) {
-                    Bitboard occ_no_from = pos.pieces() ^ square_bb(m.from());
-                    gives_chk = (rook_attacks_bb(m.to(), occ_no_from) & square_bb(opp_ksq)) != 0;
-                }
+                gives_chk = (rook_attacks_bb(m.to(), occ_no_from) & square_bb(opp_ksq)) != 0;
             } else if (pt == QUEEN) {
-                int df = abs(int(m.to() % 8) - int(opp_ksq % 8));
-                int dr = abs(int(m.to() / 8) - int(opp_ksq / 8));
-                if ((df == dr || df == 0 || dr == 0) && (df + dr) > 0) {
-                    Bitboard occ_no_from = pos.pieces() ^ square_bb(m.from());
-                    gives_chk = (bishop_attacks_bb(m.to(), occ_no_from) & square_bb(opp_ksq)) != 0
-                              || (rook_attacks_bb(m.to(), occ_no_from) & square_bb(opp_ksq)) != 0;
-                }
+                gives_chk = (bishop_attacks_bb(m.to(), occ_no_from) & square_bb(opp_ksq)) != 0
+                          || (rook_attacks_bb(m.to(), occ_no_from) & square_bb(opp_ksq)) != 0;
             }
 
             if (!gives_chk) continue;
@@ -749,6 +731,9 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
         }
     }
 
+    // Precompute enemy king zone for LMR (nearly free: one king lookup per node)
+    Square enemy_ksq = pos.king_sq(Color(pos.side_to_move() ^ 1));
+
     // Helper lambda: compute LMR reduction for a move (takes gives_chk to avoid recomputation)
     auto compute_reduction = [&](Move m, int mp, bool gives_chk) -> int {
         // Log-depth * log-move-count product formula
@@ -819,6 +804,37 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
         // Castling: king safety is paramount, never reduce aggressively
         if (m.is_castling()) reduction -= 1;
 
+        // Centralization: reduce less for moves to central squares
+        // Central pieces are positionally stronger (Nimzowitsch)
+        // Piece-type dependent: knights benefit most, queens least
+        {
+            static constexpr int center_order[64] = {
+                0, 0, 0, 0, 0, 0, 0, 0,
+                0, 0, 0, 0, 0, 0, 0, 0,
+                0, 0, 2, 3, 3, 2, 0, 0,
+                0, 2, 4, 5, 5, 4, 2, 0,
+                0, 2, 4, 5, 5, 4, 2, 0,
+                0, 0, 2, 3, 3, 2, 0, 0,
+                0, 0, 0, 0, 0, 0, 0, 0,
+                0, 0, 0, 0, 0, 0, 0, 0
+            };
+            int cbo = center_order[m.to()];
+            if (cbo >= 4) {
+                PieceType pt = piece_type_of(pos.piece_on(m.from()));
+                // Only apply for pieces that benefit from centralization
+                if (pt == KNIGHT || pt == BISHOP) reduction -= 1;
+            }
+        }
+
+        // King-zone pressure: reduce less for piece moves adjacent to enemy king
+        // These create threats and restrict king movement (Lasker)
+        // Only for non-check moves (check already gets -1)
+        if (!gives_chk) {
+            int kdist = std::max(abs(int(m.to() % 8) - int(enemy_ksq % 8)),
+                                 abs(int(m.to() / 8) - int(enemy_ksq / 8)));
+            if (kdist <= 1) reduction -= 1;
+        }
+
         return std::max(1, std::min(reduction, depth - 2));
     };
 
@@ -832,20 +848,10 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
         } else if (pt == KNIGHT) {
             return (knight_attacks_bb(m.to()) & square_bb(opp_ksq)) != 0;
         } else if (pt == BISHOP) {
-            int df = abs(int(m.to() % 8) - int(opp_ksq % 8));
-            int dr = abs(int(m.to() / 8) - int(opp_ksq / 8));
-            if (df != dr || df == 0) return false;
             return (bishop_attacks_bb(m.to(), pos.pieces() ^ square_bb(m.from())) & square_bb(opp_ksq)) != 0;
         } else if (pt == ROOK) {
-            int df = abs(int(m.to() % 8) - int(opp_ksq % 8));
-            int dr = abs(int(m.to() / 8) - int(opp_ksq / 8));
-            if ((df != 0 && dr != 0) || (df + dr) == 0) return false;
             return (rook_attacks_bb(m.to(), pos.pieces() ^ square_bb(m.from())) & square_bb(opp_ksq)) != 0;
         } else if (pt == QUEEN) {
-            int df = abs(int(m.to() % 8) - int(opp_ksq % 8));
-            int dr = abs(int(m.to() / 8) - int(opp_ksq / 8));
-            if (df != dr && df != 0 && dr != 0) return false;
-            if (df + dr == 0) return false;
             Bitboard occ_no_from = pos.pieces() ^ square_bb(m.from());
             return (bishop_attacks_bb(m.to(), occ_no_from) & square_bb(opp_ksq)) != 0
                 || (rook_attacks_bb(m.to(), occ_no_from) & square_bb(opp_ksq)) != 0;
@@ -1299,6 +1305,35 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
                             score += 15000;
                         }
 
+                        // King-zone pressure ordering: pieces moving adjacent to
+                        // the enemy king create threats (Lasker) — same principle
+                        // as king-zone LMR, applied to move ordering
+                        int kdist = std::max(abs(int(m.to() % 8) - int(enemy_ksq % 8)),
+                                             abs(int(m.to() / 8) - int(enemy_ksq / 8)));
+                        if (kdist <= 1) score += 3000;
+
+                        // Centralization bonus: pieces moving to central squares searched earlier
+                        // Principle: centralized pieces are disproportionately strong (Nimzowitsch)
+                        // Piece-type dependent: knights benefit most, queens least
+                        static constexpr int center_order[64] = {
+                            0, 0, 0, 0, 0, 0, 0, 0,
+                            0, 0, 0, 0, 0, 0, 0, 0,
+                            0, 0,200,300,300,200, 0, 0,
+                            0,200,400,500,500,400,200, 0,
+                            0,200,400,500,500,400,200, 0,
+                            0, 0,200,300,300,200, 0, 0,
+                            0, 0, 0, 0, 0, 0, 0, 0,
+                            0, 0, 0, 0, 0, 0, 0, 0
+                        };
+                        int cbo = center_order[m.to()];
+                        // Knights: 2x bonus (most dependent on centralization)
+                        // Bishops: 1.5x (benefit from central diagonals)
+                        // Rooks: 1x (already strong on files)
+                        // Queen: 0.5x (strong everywhere)
+                        if (pt == KNIGHT) cbo = cbo * 2;
+                        else if (pt == BISHOP) cbo = cbo * 3 / 2;
+                        else if (pt == QUEEN) cbo = cbo / 2;
+                        score += cbo;
                     } else {
                         // Pawn threat ordering: pawn advances that threaten enemy pieces
                         // are forcing and should be searched earlier (Philidor)
