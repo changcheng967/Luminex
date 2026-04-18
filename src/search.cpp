@@ -1927,6 +1927,145 @@ Move search(Position& pos, Limits& lim) {
         uci_info(pos, root_depth, depth_best_value, local_nodes, time_ms);
     }
 
+    // ========================================================
+    // Focused Deep Phase: search top 2 root moves deeper
+    // After main ID stabilizes, use remaining time to verify
+    // the best move choice at greater depth. Only searches 2
+    // moves per depth → much cheaper than full iteration.
+    // ========================================================
+    if (limits.use_time_management() && best_move != MOVE_NONE &&
+        best_move_stability >= 2 && !stop.load(std::memory_order_relaxed)) {
+
+        auto now_fdp = std::chrono::steady_clock::now();
+        int elapsed_fdp = static_cast<int>(std::chrono::duration_cast<std::chrono::milliseconds>(
+            now_fdp - search_start).count());
+        int remaining = ideal_time - elapsed_fdp;
+
+        // Only enter if we have at least 30% of ideal time remaining
+        if (remaining > ideal_time * 3 / 10) {
+            // Find the top 2 root moves: best_move + second best
+            Move second_best = MOVE_NONE;
+            Value second_value = -VALUE_INFINITE;
+
+            for (ExtMove* it = initial_moves; it != initial_end; ++it) {
+                if (it->move == best_move) continue;
+                // Probe TT for this root move's score
+                if (!pos.do_move(it->move)) continue;
+                bool found2;
+                TTEntry* tte2 = TT.probe(pos.key(), found2);
+                if (found2 && tte2->depth() > 0) {
+                    Value v = value_from_tt(tte2->value(), 1);
+                    if (v > second_value) {
+                        second_value = v;
+                        second_best = it->move;
+                    }
+                }
+                pos.undo_move(it->move);
+            }
+
+            if (second_best != MOVE_NONE) {
+                Move focused_moves[2] = {best_move, second_best};
+                int focused_count = 2;
+                int focused_start_depth = root_depth + 1;
+
+                for (int fd = focused_start_depth; fd <= focused_start_depth + 3; ++fd) {
+                    if (stop.load(std::memory_order_relaxed)) break;
+                    check_time();
+                    if (stop.load(std::memory_order_relaxed)) break;
+
+                    // Check if we have time for another focused depth
+                    auto now_fd = std::chrono::steady_clock::now();
+                    int elapsed_fd = static_cast<int>(std::chrono::duration_cast<std::chrono::milliseconds>(
+                        now_fd - search_start).count());
+                    // Don't exceed max_time or use more than remaining ideal time
+                    if (elapsed_fd >= max_time - 20) break;
+                    if (elapsed_fd >= ideal_time) break;
+
+                    Value focused_alpha = -VALUE_INFINITE;
+                    Value focused_beta = VALUE_INFINITE;
+                    int aspiration_fd = 50;
+                    if (fd >= 4 && best_value > -VALUE_KNOWN_WIN && best_value < VALUE_KNOWN_WIN) {
+                        focused_alpha = std::max(Value(-VALUE_INFINITE), Value(best_value - aspiration_fd));
+                        focused_beta = std::min(Value(VALUE_INFINITE), Value(best_value + aspiration_fd));
+                    }
+
+                    Value focused_best_value = -VALUE_INFINITE;
+                    Move focused_best_move = best_move;
+
+                    // Search only the focused moves with PVS
+                    Value running_alpha = focused_alpha;
+                    for (int mi = 0; mi < focused_count; ++mi) {
+                        if (stop.load(std::memory_order_relaxed)) break;
+
+                        Move fm = focused_moves[mi];
+                        if (!pos.do_move(fm)) continue;
+
+                        Value fv;
+                        if (mi == 0) {
+                            fv = -search_worker(pos, worker->stack + 1, -focused_beta, -running_alpha,
+                                                fd - 1, false);
+                        } else {
+                            fv = -search_worker(pos, worker->stack + 1, -running_alpha - 1, -running_alpha,
+                                                fd - 1, true);
+                            if (!stop.load(std::memory_order_relaxed) && fv > running_alpha && fv < focused_beta) {
+                                fv = -search_worker(pos, worker->stack + 1, -focused_beta, -running_alpha,
+                                                    fd - 1, false);
+                            }
+                        }
+
+                        if (stop.load(std::memory_order_relaxed)) {
+                            pos.undo_move(fm);
+                            break;
+                        }
+
+                        pos.undo_move(fm);
+
+                        if (fv > focused_best_value) {
+                            focused_best_value = fv;
+                            focused_best_move = fm;
+                        }
+                        if (fv > running_alpha) running_alpha = fv;
+                        if (fv >= focused_beta) break;
+                    }
+
+                    if (!stop.load(std::memory_order_relaxed) && focused_best_move != MOVE_NONE) {
+                        // Update best if focused search confirmed or changed
+                        best_value = focused_best_value;
+                        best_move = focused_best_move;
+                        previous_root_best = focused_best_move;
+
+                        // Update TT
+                        bool rf;
+                        TTEntry* rtte = TT.probe(pos.key(), rf);
+                        rtte->save(pos.key(), focused_best_value, true, BOUND_EXACT,
+                                   fd, focused_best_move, VALUE_ZERO, TT.generation());
+
+                        root_score = focused_best_value;
+
+                        // Report
+                        nodes.fetch_add(local_nodes - last_reported_nodes, std::memory_order_relaxed);
+                        last_reported_nodes = local_nodes;
+                        auto fd_end = std::chrono::steady_clock::now();
+                        int fd_time = static_cast<int>(std::chrono::duration_cast<std::chrono::milliseconds>(
+                            fd_end - search_start).count());
+                        uci_info(pos, fd, focused_best_value, local_nodes, fd_time);
+                    }
+
+                    // Aspiration recheck
+                    if (!stop.load(std::memory_order_relaxed)) {
+                        if (focused_best_value < focused_alpha) {
+                            aspiration_fd += aspiration_fd / 2;
+                        } else if (focused_best_value >= focused_beta) {
+                            aspiration_fd += aspiration_fd / 2;
+                        } else {
+                            break;  // Score inside window — accept
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     // Fallback: if best_move is still MOVE_NONE, use the first legal move we found
     if (best_move == MOVE_NONE) {
         if (initial_end > initial_moves) {
