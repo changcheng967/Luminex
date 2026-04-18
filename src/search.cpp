@@ -1344,9 +1344,17 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
                         if (pawn_att & square_bb(opp_ksq)) score += 5000;
                     }
 
-                    // Check-giving knight: cheap lookup, forcing move
-                    if (pt == KNIGHT && (knight_attacks_bb(m.to()) & square_bb(opp_ksq)))
-                        score += 5000;
+                    // Knight: check-giving and piece threats (cheap lookup)
+                    if (pt == KNIGHT) {
+                        Bitboard knight_att = knight_attacks_bb(m.to());
+                        if (knight_att & square_bb(opp_ksq))
+                            score += 5000;
+                        Color them = Color(pos.side_to_move() ^ 1);
+                        if (knight_att & pos.pieces(them, QUEEN))
+                            score += 3000;
+                        else if (knight_att & pos.pieces(them, ROOK))
+                            score += 1500;
+                    }
                 }
             }
             it->value = score;
