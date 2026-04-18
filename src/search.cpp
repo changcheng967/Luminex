@@ -731,9 +731,6 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
         }
     }
 
-    // Precompute enemy king zone for LMR (nearly free: one king lookup per node)
-    Square enemy_ksq = pos.king_sq(Color(pos.side_to_move() ^ 1));
-
     // Helper lambda: compute LMR reduction for a move (takes gives_chk to avoid recomputation)
     auto compute_reduction = [&](Move m, int mp, bool gives_chk) -> int {
         // Log-depth * log-move-count product formula
@@ -803,37 +800,6 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
 
         // Castling: king safety is paramount, never reduce aggressively
         if (m.is_castling()) reduction -= 1;
-
-        // Centralization: reduce less for moves to central squares
-        // Central pieces are positionally stronger (Nimzowitsch)
-        // Piece-type dependent: knights benefit most, queens least
-        {
-            static constexpr int center_order[64] = {
-                0, 0, 0, 0, 0, 0, 0, 0,
-                0, 0, 0, 0, 0, 0, 0, 0,
-                0, 0, 2, 3, 3, 2, 0, 0,
-                0, 2, 4, 5, 5, 4, 2, 0,
-                0, 2, 4, 5, 5, 4, 2, 0,
-                0, 0, 2, 3, 3, 2, 0, 0,
-                0, 0, 0, 0, 0, 0, 0, 0,
-                0, 0, 0, 0, 0, 0, 0, 0
-            };
-            int cbo = center_order[m.to()];
-            if (cbo >= 4) {
-                PieceType pt = piece_type_of(pos.piece_on(m.from()));
-                // Only apply for pieces that benefit from centralization
-                if (pt == KNIGHT || pt == BISHOP) reduction -= 1;
-            }
-        }
-
-        // King-zone pressure: reduce less for piece moves adjacent to enemy king
-        // These create threats and restrict king movement (Lasker)
-        // Only for non-check moves (check already gets -1)
-        if (!gives_chk) {
-            int kdist = std::max(abs(int(m.to() % 8) - int(enemy_ksq % 8)),
-                                 abs(int(m.to() / 8) - int(enemy_ksq / 8)));
-            if (kdist <= 1) reduction -= 1;
-        }
 
         return std::max(1, std::min(reduction, depth - 2));
     };
@@ -1305,35 +1271,6 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
                             score += 15000;
                         }
 
-                        // King-zone pressure ordering: pieces moving adjacent to
-                        // the enemy king create threats (Lasker) — same principle
-                        // as king-zone LMR, applied to move ordering
-                        int kdist = std::max(abs(int(m.to() % 8) - int(enemy_ksq % 8)),
-                                             abs(int(m.to() / 8) - int(enemy_ksq / 8)));
-                        if (kdist <= 1) score += 3000;
-
-                        // Centralization bonus: pieces moving to central squares searched earlier
-                        // Principle: centralized pieces are disproportionately strong (Nimzowitsch)
-                        // Piece-type dependent: knights benefit most, queens least
-                        static constexpr int center_order[64] = {
-                            0, 0, 0, 0, 0, 0, 0, 0,
-                            0, 0, 0, 0, 0, 0, 0, 0,
-                            0, 0,200,300,300,200, 0, 0,
-                            0,200,400,500,500,400,200, 0,
-                            0,200,400,500,500,400,200, 0,
-                            0, 0,200,300,300,200, 0, 0,
-                            0, 0, 0, 0, 0, 0, 0, 0,
-                            0, 0, 0, 0, 0, 0, 0, 0
-                        };
-                        int cbo = center_order[m.to()];
-                        // Knights: 2x bonus (most dependent on centralization)
-                        // Bishops: 1.5x (benefit from central diagonals)
-                        // Rooks: 1x (already strong on files)
-                        // Queen: 0.5x (strong everywhere)
-                        if (pt == KNIGHT) cbo = cbo * 2;
-                        else if (pt == BISHOP) cbo = cbo * 3 / 2;
-                        else if (pt == QUEEN) cbo = cbo / 2;
-                        score += cbo;
                     } else {
                         // Pawn threat ordering: pawn advances that threaten enemy pieces
                         // are forcing and should be searched earlier (Philidor)
