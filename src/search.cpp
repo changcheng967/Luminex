@@ -561,22 +561,6 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
     // Skip when parent was in check (static_eval is 0, not meaningful)
     bool opponent_worsening = (ss->ply >= 1 && (ss - 1)->static_eval != VALUE_ZERO && eval > -(ss - 1)->static_eval);
 
-    // ========================================
-    // INITIATIVE SCORE: do we have the attack?
-    // Chess truth: when our pawns threaten their pieces, opponent's
-    // quiet moves are unlikely to help — we can prune more aggressively.
-    // At bullet depth, initiative detection is critical because we can't
-    // search deep enough to verify attacks through raw computation.
-    // ========================================
-    bool we_have_initiative = false;
-    {
-        Color us = pos.side_to_move();
-        Color them = Color(us ^ 1);
-        Bitboard their_valuable = pos.pieces(them) & ~(pos.pieces(them, PAWN) | pos.pieces(them, KING));
-        Bitboard our_pawn_att = pawn_attacks_bb(us, pos.pieces(us, PAWN));
-        we_have_initiative = (our_pawn_att & their_valuable) != 0;
-    }
-
     // Internal Iterative Reduction (IIR): reduce depth by 1 when no TT move available
     // Only apply at non-PV nodes — PV nodes use IID instead (below)
     if (!pv_node && tt_move == MOVE_NONE && depth >= 4) {
@@ -585,12 +569,9 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
 
     // Futility pruning - use improving for better pruning decisions
     // Depth <= 6 for balance between pruning and tactical accuracy
-    // More aggressive when opponent is worsening or we have initiative
-    {
-        bool boosted = ss->improving || opponent_worsening || we_have_initiative;
-        if (!pv_node && !pos.is_check() && depth <= 6 && eval - futility_margin(depth, boosted) >= beta) {
-            return eval;
-        }
+    // More aggressive when opponent is worsening (wider margin)
+    if (!pv_node && !pos.is_check() && depth <= 6 && eval - futility_margin(depth, ss->improving || opponent_worsening) >= beta) {
+        return eval;
     }
 
     // Reverse futility pruning (static null move): if eval is far above beta, prune immediately
