@@ -190,9 +190,12 @@ void handle_isready() {
 }
 
 void handle_ucinewgame() {
-    TT.clear();
+    // Don't clear TT between games — preserve opening entries from previous games.
+    // TT.new_search() increments the generation so old entries are deprioritized
+    // by the replacement policy, but survive for probing. At bullet TC, this means
+    // the engine has instant deep TT entries for positions seen in previous games.
+    // Self-learning: the TT fills with better entries each game, compounding over a match.
     TT.new_search();
-    clear_correction_history();
     pos.set("rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1");
 }
 
