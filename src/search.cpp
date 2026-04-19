@@ -320,15 +320,19 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
                 it->value = 0;
             }
         }
-        // Sort captures by value
-        std::sort(moves, end, [](const ExtMove& a, const ExtMove& b) {
-            return a.value > b.value;
-        });
     }
 
     for (ExtMove* it = moves; it != end; ++it) {
-        // FIX: Check for stop at top of move loop for faster response
         if (stop.load(std::memory_order_relaxed)) break;
+
+        // Pick-best for captures (faster than std::sort for small arrays)
+        if (!in_check) {
+            ExtMove* best = it;
+            for (ExtMove* jt = it + 1; jt != end; ++jt) {
+                if (jt->value > best->value) best = jt;
+            }
+            if (best != it) { ExtMove tmp = *it; *it = *best; *best = tmp; }
+        }
 
         if (in_check) {
             // For evasions, legal() check already done by GEN_LEGAL
@@ -389,17 +393,27 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
             // Check if this quiet move gives check
             PieceType pt = piece_type_of(pos.piece_on(m.from()));
             bool gives_chk = false;
-            Bitboard occ_no_from = pos.pieces() ^ square_bb(m.from());
 
             if (pt == PAWN) {
                 gives_chk = (pawn_attacks_bb(pos.side_to_move(), m.to()) & square_bb(opp_ksq)) != 0;
             } else if (pt == KNIGHT) {
                 gives_chk = (knight_attacks_bb(m.to()) & square_bb(opp_ksq)) != 0;
             } else if (pt == BISHOP) {
-                gives_chk = (bishop_attacks_bb(m.to(), occ_no_from) & square_bb(opp_ksq)) != 0;
+                int df = abs(int(m.to() % 8) - int(opp_ksq % 8));
+                int dr = abs(int(m.to() / 8) - int(opp_ksq / 8));
+                if (df == dr && df > 0) {
+                    Bitboard occ_no_from = pos.pieces() ^ square_bb(m.from());
+                    gives_chk = (bishop_attacks_bb(m.to(), occ_no_from) & square_bb(opp_ksq)) != 0;
+                }
             } else if (pt == ROOK) {
-                gives_chk = (rook_attacks_bb(m.to(), occ_no_from) & square_bb(opp_ksq)) != 0;
+                int df = abs(int(m.to() % 8) - int(opp_ksq % 8));
+                int dr = abs(int(m.to() / 8) - int(opp_ksq / 8));
+                if ((df == 0 || dr == 0) && (df + dr) > 0) {
+                    Bitboard occ_no_from = pos.pieces() ^ square_bb(m.from());
+                    gives_chk = (rook_attacks_bb(m.to(), occ_no_from) & square_bb(opp_ksq)) != 0;
+                }
             } else if (pt == QUEEN) {
+                Bitboard occ_no_from = pos.pieces() ^ square_bb(m.from());
                 gives_chk = (bishop_attacks_bb(m.to(), occ_no_from) & square_bb(opp_ksq)) != 0
                           || (rook_attacks_bb(m.to(), occ_no_from) & square_bb(opp_ksq)) != 0;
             }
@@ -857,8 +871,14 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
         } else if (pt == KNIGHT) {
             return (knight_attacks_bb(m.to()) & square_bb(opp_ksq)) != 0;
         } else if (pt == BISHOP) {
+            int df = abs(int(m.to() % 8) - int(opp_ksq % 8));
+            int dr = abs(int(m.to() / 8) - int(opp_ksq / 8));
+            if (df != dr || df == 0) return false;
             return (bishop_attacks_bb(m.to(), pos.pieces() ^ square_bb(m.from())) & square_bb(opp_ksq)) != 0;
         } else if (pt == ROOK) {
+            int df = abs(int(m.to() % 8) - int(opp_ksq % 8));
+            int dr = abs(int(m.to() / 8) - int(opp_ksq / 8));
+            if ((df != 0 && dr != 0) || (df + dr) == 0) return false;
             return (rook_attacks_bb(m.to(), pos.pieces() ^ square_bb(m.from())) & square_bb(opp_ksq)) != 0;
         } else if (pt == QUEEN) {
             Bitboard occ_no_from = pos.pieces() ^ square_bb(m.from());

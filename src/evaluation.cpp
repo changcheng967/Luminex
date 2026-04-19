@@ -1169,6 +1169,7 @@ Value evaluate(const Position& pos, bool tactical_only) {
 
         // Bishop attacks + safe check bonus
         Bitboard enemy_bi = pos.pieces(them, BISHOP);
+        Bitboard ksq_diag = bb_diag_attacks(our_ksq, Bitboard(0));
         while (enemy_bi) {
             Square bsq = pop_lsb(enemy_bi);
             Bitboard bi_attacks = bishop_attacks_bb(bsq, occupied);
@@ -1176,12 +1177,13 @@ Value evaluate(const Position& pos, bool tactical_only) {
                 attack_units += 3;
                 attacker_count++;
             }
-            Bitboard bi_checks = bi_attacks & bb_diag_attacks(our_ksq, Bitboard(0));
+            Bitboard bi_checks = bi_attacks & ksq_diag;
             if (bi_checks & safe) attack_units += 4;
         }
 
         // Rook attacks + safe check bonus
         Bitboard enemy_ro = pos.pieces(them, ROOK);
+        Bitboard ksq_orth = rook_attacks_bb(our_ksq, Bitboard(0));
         while (enemy_ro) {
             Square rsq = pop_lsb(enemy_ro);
             Bitboard ro_attacks = rook_attacks_bb(rsq, occupied);
@@ -1189,7 +1191,7 @@ Value evaluate(const Position& pos, bool tactical_only) {
                 attack_units += 5;
                 attacker_count++;
             }
-            Bitboard ro_checks = ro_attacks & rook_attacks_bb(our_ksq, Bitboard(0));
+            Bitboard ro_checks = ro_attacks & ksq_orth;
             if (ro_checks & safe) attack_units += 6;
         }
 
@@ -1202,7 +1204,7 @@ Value evaluate(const Position& pos, bool tactical_only) {
                 attack_units += 7;
                 attacker_count++;
             }
-            Bitboard qu_checks = qu_attacks & (bb_diag_attacks(our_ksq, Bitboard(0)) | rook_attacks_bb(our_ksq, Bitboard(0)));
+            Bitboard qu_checks = qu_attacks & (ksq_diag | ksq_orth);
             if (qu_checks & safe) attack_units += 8;
         }
 
