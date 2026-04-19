@@ -51,7 +51,6 @@ else()
         add_compile_options(-O0 -g)
     else()
         add_compile_options(-O3)
-        add_compile_options(-fno-exceptions -fno-rtti)
 
         # CPU-specific optimizations
         if(NOT CI)

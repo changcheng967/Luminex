@@ -1,0 +1,50 @@
+[
+{
+  "directory": "C:/Users/chang/Downloads/Luminex/build_check",
+  "command": "C:\\PROGRA~1\\LLVM\\bin\\CLANG_~1.EXE -IC:/Users/chang/Downloads/Luminex/src -O3 -DNDEBUG -std=c++23 -D_DLL -D_MT -Xclang --dependent-lib=msvcrt -Wall -Wextra -fno-fast-math -funroll-loops -fomit-frame-pointer -fno-strict-aliasing -O3 -fno-exceptions -fno-rtti -march=native -mtune=native -flto -o CMakeFiles\\luminex.dir\\src\\main.cpp.obj -c C:\\Users\\chang\\Downloads\\Luminex\\src\\main.cpp",
+  "file": "C:/Users/chang/Downloads/Luminex/src/main.cpp",
+  "output": "C:/Users/chang/Downloads/Luminex/build_check/CMakeFiles/luminex.dir/src/main.cpp.obj"
+},
+{
+  "directory": "C:/Users/chang/Downloads/Luminex/build_check",
+  "command": "C:\\PROGRA~1\\LLVM\\bin\\CLANG_~1.EXE -IC:/Users/chang/Downloads/Luminex/src -O3 -DNDEBUG -std=c++23 -D_DLL -D_MT -Xclang --dependent-lib=msvcrt -Wall -Wextra -fno-fast-math -funroll-loops -fomit-frame-pointer -fno-strict-aliasing -O3 -fno-exceptions -fno-rtti -march=native -mtune=native -flto -o CMakeFiles\\luminex.dir\\src\\uci.cpp.obj -c C:\\Users\\chang\\Downloads\\Luminex\\src\\uci.cpp",
+  "file": "C:/Users/chang/Downloads/Luminex/src/uci.cpp",
+  "output": "C:/Users/chang/Downloads/Luminex/build_check/CMakeFiles/luminex.dir/src/uci.cpp.obj"
+},
+{
+  "directory": "C:/Users/chang/Downloads/Luminex/build_check",
+  "command": "C:\\PROGRA~1\\LLVM\\bin\\CLANG_~1.EXE -IC:/Users/chang/Downloads/Luminex/src -O3 -DNDEBUG -std=c++23 -D_DLL -D_MT -Xclang --dependent-lib=msvcrt -Wall -Wextra -fno-fast-math -funroll-loops -fomit-frame-pointer -fno-strict-aliasing -O3 -fno-exceptions -fno-rtti -march=native -mtune=native -flto -o CMakeFiles\\luminex.dir\\src\\board.cpp.obj -c C:\\Users\\chang\\Downloads\\Luminex\\src\\board.cpp",
+  "file": "C:/Users/chang/Downloads/Luminex/src/board.cpp",
+  "output": "C:/Users/chang/Downloads/Luminex/build_check/CMakeFiles/luminex.dir/src/board.cpp.obj"
+},
+{
+  "directory": "C:/Users/chang/Downloads/Luminex/build_check",
+  "command": "C:\\PROGRA~1\\LLVM\\bin\\CLANG_~1.EXE -IC:/Users/chang/Downloads/Luminex/src -O3 -DNDEBUG -std=c++23 -D_DLL -D_MT -Xclang --dependent-lib=msvcrt -Wall -Wextra -fno-fast-math -funroll-loops -fomit-frame-pointer -fno-strict-aliasing -O3 -fno-exceptions -fno-rtti -march=native -mtune=native -flto -o CMakeFiles\\luminex.dir\\src\\movegen.cpp.obj -c C:\\Users\\chang\\Downloads\\Luminex\\src\\movegen.cpp",
+  "file": "C:/Users/chang/Downloads/Luminex/src/movegen.cpp",
+  "output": "C:/Users/chang/Downloads/Luminex/build_check/CMakeFiles/luminex.dir/src/movegen.cpp.obj"
+},
+{
+  "directory": "C:/Users/chang/Downloads/Luminex/build_check",
+  "command": "C:\\PROGRA~1\\LLVM\\bin\\CLANG_~1.EXE -IC:/Users/chang/Downloads/Luminex/src -O3 -DNDEBUG -std=c++23 -D_DLL -D_MT -Xclang --dependent-lib=msvcrt -Wall -Wextra -fno-fast-math -funroll-loops -fomit-frame-pointer -fno-strict-aliasing -O3 -fno-exceptions -fno-rtti -march=native -mtune=native -flto -o CMakeFiles\\luminex.dir\\src\\search.cpp.obj -c C:\\Users\\chang\\Downloads\\Luminex\\src\\search.cpp",
+  "file": "C:/Users/chang/Downloads/Luminex/src/search.cpp",
+  "output": "C:/Users/chang/Downloads/Luminex/build_check/CMakeFiles/luminex.dir/src/search.cpp.obj"
+},
+{
+  "directory": "C:/Users/chang/Downloads/Luminex/build_check",
+  "command": "C:\\PROGRA~1\\LLVM\\bin\\CLANG_~1.EXE -IC:/Users/chang/Downloads/Luminex/src -O3 -DNDEBUG -std=c++23 -D_DLL -D_MT -Xclang --dependent-lib=msvcrt -Wall -Wextra -fno-fast-math -funroll-loops -fomit-frame-pointer -fno-strict-aliasing -O3 -fno-exceptions -fno-rtti -march=native -mtune=native -flto -o CMakeFiles\\luminex.dir\\src\\evaluation.cpp.obj -c C:\\Users\\chang\\Downloads\\Luminex\\src\\evaluation.cpp",
+  "file": "C:/Users/chang/Downloads/Luminex/src/evaluation.cpp",
+  "output": "C:/Users/chang/Downloads/Luminex/build_check/CMakeFiles/luminex.dir/src/evaluation.cpp.obj"
+},
+{
+  "directory": "C:/Users/chang/Downloads/Luminex/build_check",
+  "command": "C:\\PROGRA~1\\LLVM\\bin\\CLANG_~1.EXE -IC:/Users/chang/Downloads/Luminex/src -O3 -DNDEBUG -std=c++23 -D_DLL -D_MT -Xclang --dependent-lib=msvcrt -Wall -Wextra -fno-fast-math -funroll-loops -fomit-frame-pointer -fno-strict-aliasing -O3 -fno-exceptions -fno-rtti -march=native -mtune=native -flto -o CMakeFiles\\luminex.dir\\src\\transposition.cpp.obj -c C:\\Users\\chang\\Downloads\\Luminex\\src\\transposition.cpp",
+  "file": "C:/Users/chang/Downloads/Luminex/src/transposition.cpp",
+  "output": "C:/Users/chang/Downloads/Luminex/build_check/CMakeFiles/luminex.dir/src/transposition.cpp.obj"
+},
+{
+  "directory": "C:/Users/chang/Downloads/Luminex/build_check",
+  "command": "C:\\PROGRA~1\\LLVM\\bin\\CLANG_~1.EXE -IC:/Users/chang/Downloads/Luminex/src -O3 -DNDEBUG -std=c++23 -D_DLL -D_MT -Xclang --dependent-lib=msvcrt -Wall -Wextra -fno-fast-math -funroll-loops -fomit-frame-pointer -fno-strict-aliasing -O3 -fno-exceptions -fno-rtti -march=native -mtune=native -flto -o CMakeFiles\\luminex.dir\\src\\magic.cpp.obj -c C:\\Users\\chang\\Downloads\\Luminex\\src\\magic.cpp",
+  "file": "C:/Users/chang/Downloads/Luminex/src/magic.cpp",
+  "output": "C:/Users/chang/Downloads/Luminex/build_check/CMakeFiles/luminex.dir/src/magic.cpp.obj"
+}
+]
