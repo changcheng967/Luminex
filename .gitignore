@@ -52,3 +52,4 @@ CLAUDE.md
 !src/*.cpp
 build-check/
 build-check/
+build_check/
