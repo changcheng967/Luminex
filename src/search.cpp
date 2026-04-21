@@ -379,13 +379,6 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
             continue;
         }
 
-        // Per-move futility: if this capture can't raise alpha even with margin, skip
-        if (!in_check && eval < alpha && !it->move.is_promotion()) {
-            static constexpr int cap_val[] = {100, 330, 330, 500, 1000, 0, 0};
-            PieceType cap_pt = it->move.is_en_passant() ? PAWN : pos.piece_type_on(it->move.to());
-            if (eval + cap_val[cap_pt] + 150 < alpha) continue;
-        }
-
         ss->current_move = it->move;
         ss->moved_piece = pos.piece_on(it->move.from());
 
