@@ -1037,6 +1037,7 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
 
         pos.undo_move(m);
 
+        int moves_played_before = moves_played;
         moves_played++;
         if (is_quiet) g_stats.quiets_searched++;
         else g_stats.captures_searched++;
@@ -1156,7 +1157,7 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
                 if (!stop.load(std::memory_order_relaxed)) {
                     tte->save(pos.key(), value_to_tt(value, ss->ply), pv_node, BOUND_LOWER, depth, m, eval, TT.generation());
                 }
-                if (moves_played == 0) g_stats.first_move_cutoffs++;
+                if (moves_played_before == 0) g_stats.first_move_cutoffs++;
                 return true;  // beta cutoff
                 }
             }
