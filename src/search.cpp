@@ -313,6 +313,7 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
         eval = Value(eval + correction);
 
         if (eval >= beta) {
+            g_stats.qs_stand_pat_cutoffs++;
             return beta;
         }
         if (eval > alpha) {
@@ -325,6 +326,7 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
         Value delta = 200 + QUEEN_VALUE;  // Assume best case: can capture a queen
         if (eval + delta < alpha) {
             g_stats.delta_prunes_qs++;
+            g_stats.qs_delta_prunes++;
             return alpha;
         }
     }
@@ -340,6 +342,7 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
     }
 
     int moves_searched = 0;
+    bool cap_cutoff = false;
 
     // Score captures in qsearch by MVV-LVA for better ordering
     if (!in_check) {
@@ -408,6 +411,7 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
         pos.undo_move(it->move);
 
         if (value >= beta) {
+            g_stats.qs_cap_cutoffs++;
             return value;  // fail-soft
         }
         if (value > alpha) {
@@ -418,6 +422,9 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
     // Quiet checks removed: generating all quiet moves to find ~2-3 checks
     // is expensive. The speed gain from removal outweighs tactical accuracy
     // at bullet time controls.
+
+    if (moves_searched > 0) g_stats.qs_cap_searched++;
+    else if (!in_check) g_stats.qs_no_moves++;
 
     // Checkmate detection - if in check and no legal evasions
     if (in_check && moves_searched == 0) {
@@ -2026,6 +2033,22 @@ Move search(Position& pos, Limits& lim) {
             ec << " qs_rate=" << (g_stats.eval_cache_hits_qs * 100 / qs_eval_total) << "%";
         ec << "\n";
         uci_safe_output(ec.str());
+
+        // Qsearch breakdown
+        std::ostringstream qs;
+        qs << "info string STATS qsearch: stand_pat=" << g_stats.qs_stand_pat_cutoffs
+           << " delta=" << g_stats.qs_delta_prunes
+           << " cap_searched=" << g_stats.qs_cap_searched
+           << " cap_cutoffs=" << g_stats.qs_cap_cutoffs
+           << " no_moves=" << g_stats.qs_no_moves;
+        if (g_stats.qs_nodes > 0) {
+            int64_t total_qs = g_stats.qs_stand_pat_cutoffs + g_stats.qs_delta_prunes
+                             + g_stats.qs_cap_searched + g_stats.qs_no_moves;
+            // remaining are in-check nodes that searched evasions
+            qs << " accounted=" << (total_qs * 100 / g_stats.qs_nodes) << "%";
+        }
+        qs << "\n";
+        uci_safe_output(qs.str());
 
         // Pruning breakdown
         std::ostringstream pr;

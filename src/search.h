@@ -60,6 +60,13 @@ struct SearchStats {
     int64_t eval_cache_hits_qs = 0;
     int64_t eval_cache_misses_qs = 0;
 
+    // Qsearch depth stats
+    int64_t qs_stand_pat_cutoffs = 0;   // eval >= beta, no captures searched
+    int64_t qs_delta_prunes = 0;        // delta pruning cutoffs
+    int64_t qs_cap_searched = 0;        // nodes where at least 1 capture was searched
+    int64_t qs_cap_cutoffs = 0;         // nodes where a capture caused cutoff
+    int64_t qs_no_moves = 0;            // nodes with no legal captures (all pruned or none)
+
     // Pruning stats
     int64_t null_move_prunes = 0;
     int64_t futility_prunes = 0;
