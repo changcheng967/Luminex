@@ -515,8 +515,8 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
     // ttPv: this position was a PV node when stored in TT
     bool ttPv = found && tte->is_pv();
 
-    // TT cutoff: allow 1 ply shallower entries (41% of hits are "almost deep enough")
-    if (!pv_node && found && tt_depth >= depth - 1 &&
+    // TT cutoff: require exact or greater depth for safety
+    if (!pv_node && found && tt_depth >= depth &&
         (tt_value >= beta ? (tte->bound() & BOUND_LOWER) : (tte->bound() & BOUND_UPPER))) {
         g_stats.tt_cutoffs++;
         // TT cutoff stat updates: reinforce heuristics even on TT hits
