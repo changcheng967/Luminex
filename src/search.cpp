@@ -338,15 +338,24 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
                 it->value = 0;
             }
         }
-        // Sort captures by value
-        std::sort(moves, end, [](const ExtMove& a, const ExtMove& b) {
-            return a.value > b.value;
-        });
     }
 
     for (ExtMove* it = moves; it != end; ++it) {
         // FIX: Check for stop at top of move loop for faster response
         if (stop.load(std::memory_order_relaxed)) break;
+
+        // Pick-best for captures: swap highest-scored remaining move to front
+        if (!in_check) {
+            ExtMove* best = it;
+            for (ExtMove* jt = it + 1; jt != end; ++jt) {
+                if (jt->value > best->value) best = jt;
+            }
+            if (best != it) {
+                ExtMove tmp = *it;
+                *it = *best;
+                *best = tmp;
+            }
+        }
 
         if (in_check) {
             // For evasions, legal() check already done by GEN_LEGAL
