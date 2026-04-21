@@ -1181,7 +1181,10 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
         ExtMove captures[MAX_MOVES];
         ExtMove* cap_end = generate<GEN_CAPTURE>(pos, captures);
 
-        // Score captures: MVV-LVA + SEE classification
+        // Precompute enemy king check rays for capture check bonus
+        Square cap_opp_ksq = pos.king_sq(Color(pos.side_to_move() ^ 1));
+
+        // Score captures: MVV-LVA + SEE classification + check bonus
         static constexpr int piece_value[] = {100, 320, 330, 500, 900, 20000, 0};
         for (ExtMove* it = captures; it != cap_end; ++it) {
             Move m = it->move;
@@ -1195,13 +1198,20 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
                 PieceType captured = pos.piece_type_on(m.to());
                 PieceType attacker = pos.piece_type_on(m.from());
                 int mvv_lva = piece_value[captured] * 10 - piece_value[attacker];
-                // Add capture history for better ordering
                 int cap_hist = worker->capture_history[int(pos.piece_on(m.from()))][int(m.to())][int(captured)];
                 if (pos.see_ge(m, VALUE_ZERO)) {
                     score = 1500000 + mvv_lva + cap_hist;
                 } else {
                     score = 500000 + mvv_lva + cap_hist / 2;
                 }
+                // Check bonus: captures that give check are forcing, prioritize them
+                bool gives_chk = false;
+                if (attacker == PAWN) {
+                    gives_chk = (pawn_attacks_bb(pos.side_to_move(), m.to()) & square_bb(cap_opp_ksq)) != 0;
+                } else if (attacker == KNIGHT) {
+                    gives_chk = (knight_attacks_bb(m.to()) & square_bb(cap_opp_ksq)) != 0;
+                }
+                if (gives_chk) score += 200000;
             }
             it->value = score;
         }
