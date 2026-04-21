@@ -896,7 +896,7 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
             if (pc != NO_PIECE) {
                 int hist_score = combined_history(worker, ss, pc, m.to());
                 // Prune if history is very negative (move has historically been bad)
-                if (hist_score < 783 - 4872 * (depth - 1)) {
+                if (hist_score < 400 - 4872 * (depth - 1)) {
                     g_stats.history_prunes++;
                     return false;
                 }
