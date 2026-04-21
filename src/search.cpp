@@ -967,8 +967,16 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
             ext_count++;
             g_stats.check_extensions++;
         }
-        // Recapture extension removed: recaptures are naturally ordered first
-        // by MVV-LVA, so extending them wastes search budget on obvious moves
+        // Recapture extension: only for significant piece captures (not pawns)
+        if (ss->ply >= 1 && (ss - 1)->current_move != MOVE_NONE && m.to() == (ss - 1)->current_move.to()) {
+            if (m.is_capture()) {
+                PieceType captured = pos.piece_type_on(m.to());
+                if (captured >= KNIGHT) {
+                    ext_count++;  // Only extend for minor/major recaptures
+                    g_stats.recapture_extensions++;
+                }
+            }
+        }
         new_depth += ext_count;
 
         // Store current move and moved piece for counter-move history
