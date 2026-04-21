@@ -293,10 +293,20 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
     Value eval = VALUE_ZERO;
 
     if (!in_check) {
-        // Stand pat only when NOT in check
-        // Use tactical eval in qsearch: material + PST + pawn structure + threats
-        // Skips expensive positional terms (mobility, king safety, space)
-        eval = evaluate(pos, true);
+        // PMG philosophy: reuse cached full eval if available (free + more accurate)
+        // Falls back to tactical_only on cache miss (cheaper than full eval)
+        uint64_t key = pos.key();
+        uint32_t idx = uint32_t(key) & (EVAL_CACHE_SIZE - 1);
+        if (eval_cache[idx].key == key) {
+            eval = Value(eval_cache[idx].value);
+        } else {
+            eval = evaluate(pos, true);
+        }
+        // Apply correction history to eval (capped for safety)
+        int correction = get_correction(pos.pawn_key());
+        correction = std::max(-100, std::min(100, correction));
+        eval = Value(eval + correction);
+
         if (eval >= beta) {
             return beta;
         }
