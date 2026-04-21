@@ -342,7 +342,6 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
     }
 
     int moves_searched = 0;
-    bool cap_cutoff = false;
 
     // Score captures in qsearch by MVV-LVA for better ordering
     if (!in_check) {
@@ -937,18 +936,10 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
         // But NEVER reduce moves that give check — they are forcing
         Depth new_depth = depth - 1;
         bool gives_chk = gives_check(m);
-        bool is_losing_capture = false;
-        bool do_lmr = depth >= 3 && moves_played >= 3 && !gives_chk;
-        if (do_lmr) {
-            if (is_quiet) {
-                // quiet — always LMR eligible
-            } else if (m.is_capture() && !m.is_promotion()) {
-                is_losing_capture = !pos.see_ge(m, Value(-depth * 80));
-                if (!is_losing_capture) do_lmr = false;
-            } else {
-                do_lmr = false;
-            }
-        }
+        bool is_losing_capture = m.is_capture() && !m.is_promotion() && depth >= 1 &&
+                                  !pos.see_ge(m, Value(-depth * 80));
+        bool do_lmr = depth >= 3 && moves_played >= 3 &&
+                      (is_quiet || is_losing_capture) && !gives_chk;
 
         if (do_lmr) g_stats.lmr_total++;
 
