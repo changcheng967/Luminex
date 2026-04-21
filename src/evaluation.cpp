@@ -1244,6 +1244,14 @@ Value evaluate(const Position& pos, bool tactical_only) {
             // No queen and no rook: even less dangerous
             if (!enemy_qu && !enemy_ro) danger = danger / 4;
 
+            // King flight: fewer safe escape squares = more dangerous
+            // A trapped king (0-1 safe squares) is far more vulnerable to attack
+            Bitboard king_moves = king_attacks_bb(our_ksq);
+            Bitboard safe_king_squares = king_moves & ~pos.pieces(c) & ~all_attacks[them];
+            int flight = popcount(safe_king_squares);
+            if (flight <= 1) danger += 80;
+            else if (flight == 2) danger += 30;
+
             mg_score -= sign * danger;
         }
     }
