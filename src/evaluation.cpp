@@ -1143,6 +1143,10 @@ Value evaluate(const Position& pos, bool tactical_only) {
         Bitboard our_pawn_attacks = pawn_attacks_bb(c, pos.pieces(c, PAWN));
         Bitboard safe = ~our_pawn_attacks;
 
+        // Precompute king check rays (invariant across piece loops)
+        Bitboard king_diag_rays = bb_diag_attacks(our_ksq, Bitboard(0));
+        Bitboard king_orth_rays = rook_attacks_bb(our_ksq, Bitboard(0));
+
         // Pawn attacks on king zone
         Bitboard enemy_pawns = pos.pieces(them, PAWN);
         Bitboard ep = enemy_pawns;
@@ -1176,7 +1180,7 @@ Value evaluate(const Position& pos, bool tactical_only) {
                 attack_units += 3;
                 attacker_count++;
             }
-            Bitboard bi_checks = bi_attacks & bb_diag_attacks(our_ksq, Bitboard(0));
+            Bitboard bi_checks = bi_attacks & king_diag_rays;
             if (bi_checks & safe) attack_units += 4;
         }
 
@@ -1189,7 +1193,7 @@ Value evaluate(const Position& pos, bool tactical_only) {
                 attack_units += 5;
                 attacker_count++;
             }
-            Bitboard ro_checks = ro_attacks & rook_attacks_bb(our_ksq, Bitboard(0));
+            Bitboard ro_checks = ro_attacks & king_orth_rays;
             if (ro_checks & safe) attack_units += 6;
         }
 
@@ -1202,7 +1206,7 @@ Value evaluate(const Position& pos, bool tactical_only) {
                 attack_units += 7;
                 attacker_count++;
             }
-            Bitboard qu_checks = qu_attacks & (bb_diag_attacks(our_ksq, Bitboard(0)) | rook_attacks_bb(our_ksq, Bitboard(0)));
+            Bitboard qu_checks = qu_attacks & (king_diag_rays | king_orth_rays);
             if (qu_checks & safe) attack_units += 8;
         }
 
