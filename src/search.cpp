@@ -1212,6 +1212,15 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
                     gives_chk = (knight_attacks_bb(m.to()) & square_bb(cap_opp_ksq)) != 0;
                 }
                 if (gives_chk) score += 200000;
+                // Counter-move recapture bonus: if this capture is the counter-move
+                // (best response to opponent's last move), order it highly
+                if (ss->ply >= 1 && (ss - 1)->current_move != MOVE_NONE && (ss - 1)->moved_piece != NO_PIECE) {
+                    Move prev_move = (ss - 1)->current_move;
+                    Piece prev_pc = (ss - 1)->moved_piece;
+                    if (m == worker->counter_move_table[int(prev_pc)][int(prev_move.to())]) {
+                        score += 100000;
+                    }
+                }
             }
             it->value = score;
         }
