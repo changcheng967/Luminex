@@ -543,12 +543,7 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
     // Static evaluation
     Value eval = VALUE_ZERO;
     if (!pos.is_check()) {
-        // Use TT eval if available (already computed by previous search — free and accurate)
-        if (found && tte->eval() != VALUE_ZERO) {
-            eval = tte->eval();
-        } else {
-            eval = eval_cached(pos);
-        }
+        eval = eval_cached(pos);
     }
     ss->static_eval = eval;
 
