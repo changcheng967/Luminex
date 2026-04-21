@@ -890,15 +890,6 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
         if (!pos.legal(m, true)) return false;  // Skip pseudo_legal check for generated moves
         any_legal_move = true;  // Legal move exists (even if later pruned)
 
-        // SEE-based capture pruning with depth-scaled margin
-        if (!pv_node && ss->ply > 0 && m.is_capture() && !m.is_promotion() && depth <= 5) {
-            int see_margin = depth * 80;
-            if (!pos.see_ge(m, Value(-see_margin))) {
-                g_stats.see_prunes_capture++;
-                return false;
-            }
-        }
-
         // Continuation pruning: skip quiet moves with very poor history at low depth
         // Worth ~10 ELO (from Ethereal). Uses combined counter+continuation history.
         if (is_quiet && !pv_node && depth <= 4 && moves_played > 0) {
@@ -910,14 +901,6 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
                     g_stats.history_prunes++;
                     return false;
                 }
-            }
-        }
-
-        // SEE-based quiet move pruning at shallow depth
-        if (is_quiet && !pv_node && ss->ply > 0 && depth <= 3) {
-            if (!pos.see_ge(m, Value(-20 * depth * depth))) {
-                g_stats.see_prunes_quiet++;
-                return false;
             }
         }
 
@@ -2063,8 +2046,6 @@ Move search(Position& pos, Limits& lim) {
            << " razoring=" << g_stats.razoring_prunes
            << " probcut=" << g_stats.probcut_prunes
            << " delta_qs=" << g_stats.delta_prunes_qs
-           << " see_cap=" << g_stats.see_prunes_capture
-           << " see_quiet=" << g_stats.see_prunes_quiet
            << " lmp=" << g_stats.lmp_prunes
            << " history=" << g_stats.history_prunes
            << "\n";

@@ -75,8 +75,6 @@ struct SearchStats {
     int64_t razoring_prunes = 0;
     int64_t probcut_prunes = 0;
     int64_t delta_prunes_qs = 0;
-    int64_t see_prunes_capture = 0;
-    int64_t see_prunes_quiet = 0;
     int64_t lmp_prunes = 0;
     int64_t history_prunes = 0;
 
