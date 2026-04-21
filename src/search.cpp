@@ -542,12 +542,6 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
                     int& ch = continuation_history[int(prev2_pc)][int(prev2_move.to())][int(moved)][int(tt_move.to())];
                     ch += bonus - ch * std::abs(bonus) / 32768;
                 }
-
-                // Update killers from TT cutoff quiet moves
-                if (tt_move != worker->killers[ss->ply][0]) {
-                    worker->killers[ss->ply][1] = worker->killers[ss->ply][0];
-                    worker->killers[ss->ply][0] = tt_move;
-                }
             } else if (moved != NO_PIECE && tt_move.is_capture()) {
                 // Capture history bonus for TT cutoff captures
                 int bonus = depth > 17 ? -8 : 19 * depth * depth + 155 * depth - 132;
