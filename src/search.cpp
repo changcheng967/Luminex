@@ -271,8 +271,8 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
         return evaluate(pos, true);
     }
 
-    // Search captures to depth -3 to avoid horizon effect
-    if (depth < -3) {
+    // Search captures to depth -4 to avoid horizon effect
+    if (depth < -4) {
         return evaluate(pos, true);
     }
 
