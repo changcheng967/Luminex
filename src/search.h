@@ -45,21 +45,51 @@ struct SearchParams {
 
 // Search statistics for debugging
 struct SearchStats {
+    // Node counts
+    int64_t main_nodes = 0;
+    int64_t qs_nodes = 0;
+
+    // TT stats
+    int64_t tt_probes = 0;
+    int64_t tt_hits = 0;
     int64_t tt_cutoffs = 0;
-    int64_t null_moves_prunes = 0;
+
+    // Eval cache stats
+    int64_t eval_cache_hits_main = 0;
+    int64_t eval_cache_misses_main = 0;
+    int64_t eval_cache_hits_qs = 0;
+    int64_t eval_cache_misses_qs = 0;
+
+    // Pruning stats
+    int64_t null_move_prunes = 0;
     int64_t futility_prunes = 0;
     int64_t rev_futility_prunes = 0;
     int64_t razoring_prunes = 0;
     int64_t probcut_prunes = 0;
-    int64_t lmr_reductions = 0;
+    int64_t delta_prunes_qs = 0;
+    int64_t see_prunes_capture = 0;
+    int64_t see_prunes_quiet = 0;
+    int64_t lmp_prunes = 0;
+    int64_t history_prunes = 0;
+
+    // LMR stats
+    int64_t lmr_total = 0;
     int64_t lmr_researches = 0;
+    int64_t lmr_improved = 0;
+
+    // Extension stats
     int64_t singular_extensions = 0;
     int64_t check_extensions = 0;
     int64_t recapture_extensions = 0;
-    int64_t late_move_prunes = 0;
-    int64_t see_prunes = 0;
-    int64_t history_prunes = 0;
-    int64_t qs_nodes = 0;
+
+    // Move ordering stats
+    int64_t captures_generated = 0;
+    int64_t captures_searched = 0;
+    int64_t quiets_generated = 0;
+    int64_t quiets_searched = 0;
+    int64_t first_move_cutoffs = 0;    // Cutoff on first non-TT move searched
+    int64_t iir_reductions = 0;
+
     int max_depth_reached = 0;
 
     // PMG phase statistics

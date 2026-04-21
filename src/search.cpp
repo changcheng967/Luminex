@@ -166,12 +166,14 @@ inline Value eval_cached(const Position& pos) {
     uint32_t idx = uint32_t(key) & (EVAL_CACHE_SIZE - 1);
 
     if (eval_cache[idx].key == key) {
+        g_stats.eval_cache_hits_main++;
         // Apply correction history to cached eval (capped for safety)
         int correction = get_correction(pos.pawn_key());
         correction = std::max(-100, std::min(100, correction));
         return Value(eval_cache[idx].value + correction);
     }
 
+    g_stats.eval_cache_misses_main++;
     Value eval = evaluate(pos);
     eval_cache[idx].key = key;
     eval_cache[idx].value = int32_t(eval);
@@ -280,6 +282,7 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
     }
 
     ++local_nodes;
+    g_stats.qs_nodes++;
 
     // Check for draw
     if (pos.is_draw()) {
@@ -299,8 +302,10 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
         uint32_t idx = uint32_t(key) & (EVAL_CACHE_SIZE - 1);
         if (eval_cache[idx].key == key) {
             eval = Value(eval_cache[idx].value);
+            g_stats.eval_cache_hits_qs++;
         } else {
             eval = evaluate(pos, true);
+            g_stats.eval_cache_misses_qs++;
         }
         // Apply correction history to eval (capped for safety)
         int correction = get_correction(pos.pawn_key());
@@ -319,6 +324,7 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
     if (!in_check) {
         Value delta = 200 + QUEEN_VALUE;  // Assume best case: can capture a queen
         if (eval + delta < alpha) {
+            g_stats.delta_prunes_qs++;
             return alpha;
         }
     }
@@ -445,6 +451,7 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
     }
 
     ++local_nodes;
+    g_stats.main_nodes++;
 
     // Check time every 1024 nodes for better time control
     // Use local_nodes for cheap counting, flush to atomic periodically
@@ -482,7 +489,9 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
     // Transposition table lookup
     TT.prefetch(pos.key());
     bool found;
+    g_stats.tt_probes++;
     TTEntry* tte = TT.probe(pos.key(), found);
+    if (found) g_stats.tt_hits++;
 
     // Validate TT move with FULL legal check before using it
     Move tt_move = MOVE_NONE;
@@ -503,6 +512,7 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
     // IIR naturally improves TT population without aggressive margins
     if (!pv_node && found && tt_depth >= depth &&
         (tt_value >= beta ? (tte->bound() & BOUND_LOWER) : (tte->bound() & BOUND_UPPER))) {
+        g_stats.tt_cutoffs++;
         // TT cutoff stat updates: reinforce heuristics even on TT hits
         if (tt_value >= beta && tt_move && ss->ply > 0) {
             Piece moved = pos.piece_on(tt_move.from());
@@ -560,17 +570,20 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
     // Only apply at non-PV nodes — PV nodes use IID instead (below)
     if (!pv_node && tt_move == MOVE_NONE && depth >= 4) {
         depth--;
+        g_stats.iir_reductions++;
     }
 
     // Futility pruning - use improving for better pruning decisions
     // Depth <= 6 for balance between pruning and tactical accuracy
     // More aggressive when opponent is worsening (wider margin)
     if (!pv_node && !pos.is_check() && depth <= 6 && eval - futility_margin(depth, ss->improving || opponent_worsening) >= beta) {
+        g_stats.futility_prunes++;
         return eval;
     }
 
     // Reverse futility pruning (static null move): if eval is far above beta, prune immediately
     if (!pv_node && !pos.is_check() && depth <= 8 && eval - 100 * depth - ((ss->improving || opponent_worsening) ? 0 : 30) >= beta) {
+        g_stats.rev_futility_prunes++;
         return eval;
     }
 
@@ -581,6 +594,7 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
             // Try quiescence search to confirm the position is really losing
             Value qsearch_value = qsearch(pos, ss, alpha - 1, alpha, 0);
             if (qsearch_value <= alpha) {
+                g_stats.razoring_prunes++;
                 return qsearch_value;  // Confirmed losing, prune
             }
         }
@@ -609,8 +623,12 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
             // Verification search at high depth
             if (piece_count < 4 && depth >= 6) {
                 Value verify = search_worker(pos, ss, beta - 1, beta, (depth - R) * 3 / 4, !cut_node);
-                if (verify >= beta) return null_value;
+                if (verify >= beta) {
+                    g_stats.null_move_prunes++;
+                    return null_value;
+                }
             } else {
+                g_stats.null_move_prunes++;
                 return null_value;
             }
         }
@@ -647,6 +665,7 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
 
             if (value >= rbeta) {
                 // Shallow search confirms this move is very good - prune
+                g_stats.probcut_prunes++;
                 return value;
             }
         }
@@ -864,6 +883,7 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
         if (!pv_node && ss->ply > 0 && m.is_capture() && !m.is_promotion() && depth <= 5) {
             int see_margin = depth * 80;
             if (!pos.see_ge(m, Value(-see_margin))) {
+                g_stats.see_prunes_capture++;
                 return false;
             }
         }
@@ -876,6 +896,7 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
                 int hist_score = combined_history(worker, ss, pc, m.to());
                 // Prune if history is very negative (move has historically been bad)
                 if (hist_score < 783 - 4872 * (depth - 1)) {
+                    g_stats.history_prunes++;
                     return false;
                 }
             }
@@ -884,6 +905,7 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
         // SEE-based quiet move pruning at shallow depth
         if (is_quiet && !pv_node && ss->ply > 0 && depth <= 3) {
             if (!pos.see_ge(m, Value(-20 * depth * depth))) {
+                g_stats.see_prunes_quiet++;
                 return false;
             }
         }
@@ -901,14 +923,17 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
             if (pc != NO_PIECE) {
                 has_good_history = combined_history(worker, ss, pc, m.to()) > 0;
             }
-            if (!has_good_history && m != worker->killers[ss->ply][0] && m != worker->killers[ss->ply][1])
+            if (!has_good_history && m != worker->killers[ss->ply][0] && m != worker->killers[ss->ply][1]) {
+                g_stats.lmp_prunes++;
                 return false;  // No good history and not killer: prune
+            }
         }
 
         // Futility pruning: skip quiet moves that can't improve alpha
         if (is_quiet && !pv_node && ss->ply > 0 && !pos.is_check() && depth <= 5) {
             int margin = depth * 150 + (ss->improving ? 30 : 100);
             if (eval + margin < alpha) {
+                g_stats.futility_prunes++;
                 return false;
             }
         }
@@ -922,6 +947,8 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
                                   !pos.see_ge(m, Value(-depth * 80));
         bool do_lmr = depth >= 3 && moves_played >= 3 &&
                       (is_quiet || is_losing_capture) && !gives_chk;
+
+        if (do_lmr) g_stats.lmr_total++;
 
         if (do_lmr) {
             int reduction;
@@ -941,15 +968,20 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
         int ext_count = 0;
         if (m == tt_move) {
             ext_count += singular_extension;
+            if (singular_extension > 0) g_stats.singular_extensions++;
         }
         if (gives_chk) {
             ext_count++;
+            g_stats.check_extensions++;
         }
         // Recapture extension: only for significant piece captures (not pawns)
         if (ss->ply >= 1 && (ss - 1)->current_move != MOVE_NONE && m.to() == (ss - 1)->current_move.to()) {
             if (m.is_capture()) {
                 PieceType captured = pos.piece_type_on(m.to());
-                if (captured >= KNIGHT) ext_count++;  // Only extend for minor/major recaptures
+                if (captured >= KNIGHT) {
+                    ext_count++;  // Only extend for minor/major recaptures
+                    g_stats.recapture_extensions++;
+                }
             }
         }
         new_depth += ext_count;
@@ -972,6 +1004,7 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
             }
             // Re-search with full window at standard depth if LMR found improvement
             if (value > alpha) {
+                g_stats.lmr_researches++;
                 value = -search_worker(pos, ss + 1, -beta, -alpha, depth - 1, !cut_node);
                 if (stop.load(std::memory_order_relaxed)) {
                     pos.undo_move(m);
@@ -1005,6 +1038,8 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
         pos.undo_move(m);
 
         moves_played++;
+        if (is_quiet) g_stats.quiets_searched++;
+        else g_stats.captures_searched++;
 
         // Track quiet moves for history gravity
         if (is_quiet && quiet_count < 64) {
@@ -1121,6 +1156,7 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
                 if (!stop.load(std::memory_order_relaxed)) {
                     tte->save(pos.key(), value_to_tt(value, ss->ply), pv_node, BOUND_LOWER, depth, m, eval, TT.generation());
                 }
+                if (moves_played == 0) g_stats.first_move_cutoffs++;
                 return true;  // beta cutoff
                 }
             }
@@ -1148,6 +1184,7 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
     {
         ExtMove captures[MAX_MOVES];
         ExtMove* cap_end = generate<GEN_CAPTURE>(pos, captures);
+        g_stats.captures_generated += (cap_end - captures);
 
         // Precompute enemy king check rays for capture check bonus
         Square cap_opp_ksq = pos.king_sq(Color(pos.side_to_move() ^ 1));
@@ -1221,6 +1258,7 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
         g_stats.pmg_quiet_generated++;
         ExtMove quiets[MAX_MOVES];
         ExtMove* quiet_end = generate<GEN_QUIET>(pos, quiets);
+        g_stats.quiets_generated += (quiet_end - quiets);
 
         // Score quiets: killers + counter-moves + history + escape-aware + danger-aware
         Bitboard enemy_pawn_attacks = pawn_attacks_bb(Color(pos.side_to_move() ^ 1), pos.pieces(Color(pos.side_to_move() ^ 1), PAWN));
@@ -1541,6 +1579,7 @@ Move search(Position& pos, Limits& lim) {
     nodes = 0;
     local_nodes = 0;
     last_reported_nodes = 0;
+    g_stats = SearchStats{};  // Reset stats for each search
 
     // Track search start time for time management
     search_start = std::chrono::steady_clock::now();
@@ -1950,8 +1989,87 @@ Move search(Position& pos, Limits& lim) {
     delete worker;
     worker = nullptr;
 
-    // Print PMG statistics
+    // Print comprehensive search statistics
     {
+        // Node distribution
+        int64_t total_nodes = g_stats.main_nodes + g_stats.qs_nodes;
+        std::ostringstream s;
+        s << "info string STATS nodes: main=" << g_stats.main_nodes
+          << " qs=" << g_stats.qs_nodes;
+        if (total_nodes > 0)
+            s << " qs_ratio=" << (g_stats.qs_nodes * 100 / total_nodes) << "%";
+        s << "\n";
+        uci_safe_output(s.str());
+
+        // TT stats
+        std::ostringstream tt;
+        tt << "info string STATS tt: probes=" << g_stats.tt_probes
+           << " hits=" << g_stats.tt_hits
+           << " cutoffs=" << g_stats.tt_cutoffs;
+        if (g_stats.tt_probes > 0)
+            tt << " hit_rate=" << (g_stats.tt_hits * 1000 / g_stats.tt_probes) << "‰";
+        tt << "\n";
+        uci_safe_output(tt.str());
+
+        // Eval cache stats
+        int64_t main_eval_total = g_stats.eval_cache_hits_main + g_stats.eval_cache_misses_main;
+        int64_t qs_eval_total = g_stats.eval_cache_hits_qs + g_stats.eval_cache_misses_qs;
+        std::ostringstream ec;
+        ec << "info string STATS eval_cache: main_hits=" << g_stats.eval_cache_hits_main
+           << " main_misses=" << g_stats.eval_cache_misses_main;
+        if (main_eval_total > 0)
+            ec << " main_rate=" << (g_stats.eval_cache_hits_main * 100 / main_eval_total) << "%";
+        ec << " qs_hits=" << g_stats.eval_cache_hits_qs
+           << " qs_misses=" << g_stats.eval_cache_misses_qs;
+        if (qs_eval_total > 0)
+            ec << " qs_rate=" << (g_stats.eval_cache_hits_qs * 100 / qs_eval_total) << "%";
+        ec << "\n";
+        uci_safe_output(ec.str());
+
+        // Pruning breakdown
+        std::ostringstream pr;
+        pr << "info string STATS pruning: null_move=" << g_stats.null_move_prunes
+           << " futility=" << g_stats.futility_prunes
+           << " rev_futility=" << g_stats.rev_futility_prunes
+           << " razoring=" << g_stats.razoring_prunes
+           << " probcut=" << g_stats.probcut_prunes
+           << " delta_qs=" << g_stats.delta_prunes_qs
+           << " see_cap=" << g_stats.see_prunes_capture
+           << " see_quiet=" << g_stats.see_prunes_quiet
+           << " lmp=" << g_stats.lmp_prunes
+           << " history=" << g_stats.history_prunes
+           << "\n";
+        uci_safe_output(pr.str());
+
+        // LMR stats
+        std::ostringstream lmr;
+        lmr << "info string STATS lmr: total=" << g_stats.lmr_total
+            << " researches=" << g_stats.lmr_researches;
+        if (g_stats.lmr_total > 0)
+            lmr << " research_rate=" << (g_stats.lmr_researches * 1000 / g_stats.lmr_total) << "‰";
+        lmr << "\n";
+        uci_safe_output(lmr.str());
+
+        // Move ordering
+        std::ostringstream mo;
+        mo << "info string STATS move_order: caps_gen=" << g_stats.captures_generated
+           << " caps_searched=" << g_stats.captures_searched
+           << " quiets_gen=" << g_stats.quiets_generated
+           << " quiets_searched=" << g_stats.quiets_searched
+           << " first_move_cutoffs=" << g_stats.first_move_cutoffs
+           << " iir_reductions=" << g_stats.iir_reductions
+           << "\n";
+        uci_safe_output(mo.str());
+
+        // Extensions
+        std::ostringstream ext;
+        ext << "info string STATS extensions: singular=" << g_stats.singular_extensions
+            << " check=" << g_stats.check_extensions
+            << " recapture=" << g_stats.recapture_extensions
+            << "\n";
+        uci_safe_output(ext.str());
+
+        // PMG phase statistics
         int64_t total = g_stats.pmg_tt_cutoffs + g_stats.pmg_capture_cutoffs
                       + g_stats.pmg_quiet_cutoffs + (g_stats.pmg_quiet_generated - g_stats.pmg_quiet_cutoffs);
         std::ostringstream pmg;
