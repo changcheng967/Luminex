@@ -53,6 +53,7 @@ struct SearchStats {
     int64_t tt_probes = 0;
     int64_t tt_hits = 0;
     int64_t tt_cutoffs = 0;
+    int64_t tt_hit_but_shallow = 0;  // TT hit but depth < current, no cutoff
 
     // Eval cache stats
     int64_t eval_cache_hits_main = 0;

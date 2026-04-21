@@ -557,6 +557,11 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
         return tt_value;
     }
 
+    // TT hit but not deep enough for cutoff
+    if (found && tt_depth < depth) {
+        g_stats.tt_hit_but_shallow++;
+    }
+
     // Static evaluation
     Value eval = VALUE_ZERO;
     if (!pos.is_check()) {
@@ -2013,7 +2018,8 @@ Move search(Position& pos, Limits& lim) {
         std::ostringstream tt;
         tt << "info string STATS tt: probes=" << g_stats.tt_probes
            << " hits=" << g_stats.tt_hits
-           << " cutoffs=" << g_stats.tt_cutoffs;
+           << " cutoffs=" << g_stats.tt_cutoffs
+           << " hit_shallow=" << g_stats.tt_hit_but_shallow;
         if (g_stats.tt_probes > 0)
             tt << " hit_rate=" << (g_stats.tt_hits * 1000 / g_stats.tt_probes) << "‰";
         tt << "\n";
