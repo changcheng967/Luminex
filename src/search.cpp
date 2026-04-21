@@ -1142,7 +1142,7 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
         // Precompute enemy king check rays for capture check bonus
         Square cap_opp_ksq = pos.king_sq(Color(pos.side_to_move() ^ 1));
 
-        // Score captures: MVV-LVA + SEE classification + check bonus
+        // Score captures: MVV-LVA + capture history + check bonus (no SEE for speed)
         static constexpr int piece_value[] = {100, 320, 330, 500, 900, 20000, 0};
         for (ExtMove* it = captures; it != cap_end; ++it) {
             Move m = it->move;
@@ -1157,11 +1157,7 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
                 PieceType attacker = pos.piece_type_on(m.from());
                 int mvv_lva = piece_value[captured] * 10 - piece_value[attacker];
                 int cap_hist = worker->capture_history[int(pos.piece_on(m.from()))][int(m.to())][int(captured)];
-                if (pos.see_ge(m, VALUE_ZERO)) {
-                    score = 1500000 + mvv_lva + cap_hist;
-                } else {
-                    score = 500000 + mvv_lva + cap_hist / 2;
-                }
+                score = 1500000 + mvv_lva + cap_hist;
                 // Check bonus: captures that give check are forcing, prioritize them
                 bool gives_chk = false;
                 if (attacker == PAWN) {
