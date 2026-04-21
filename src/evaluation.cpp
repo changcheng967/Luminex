@@ -1024,6 +1024,28 @@ Value evaluate(const Position& pos, bool tactical_only) {
                 mg_score += sign * 25 * popcount(hanging_pieces);
                 eg_score += sign * 15 * popcount(hanging_pieces);
             }
+            // Pinned enemy pieces: pieces between their king and our sliders
+            // Principle: a pinned piece can't move without exposing its king (Nimzowitsch)
+            {
+                Square their_ksq = ksq_arr[c_idx ^ 1];
+                Bitboard our_sliders = (pos.pieces(c, ROOK, QUEEN) | pos.pieces(c, BISHOP, QUEEN));
+                Bitboard enemy_pinned = BB_EMPTY;
+                while (our_sliders) {
+                    Square sniper = pop_lsb(our_sliders);
+                    Bitboard ray_sniper = (piece_type_of(pos.piece_on(sniper)) == BISHOP)
+                        ? bb_diag_attacks(their_ksq, Bitboard(0)) : rook_attacks_bb(their_ksq, Bitboard(0));
+                    if (!(ray_sniper & square_bb(sniper))) continue;
+                    Bitboard between = between_bb(their_ksq, sniper) & occupied;
+                    if (between && !more_than_one(between) && (between & pos.pieces(them))) {
+                        enemy_pinned |= between;
+                    }
+                }
+                if (enemy_pinned) {
+                    int pin_count = popcount(enemy_pinned);
+                    mg_score += sign * pin_count * 20;
+                    eg_score += sign * pin_count * 10;
+                }
+            }
         }
     }
 
