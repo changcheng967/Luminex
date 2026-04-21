@@ -12,13 +12,6 @@ Magic BishopMagics[64];
 Bitboard RookTable[262144];   // Large enough for all rook entries
 Bitboard BishopTable[65536];  // Large enough for all bishop entries
 
-#if defined(__BMI2__) && defined(__x86_64__)
-Bitboard PEXT_RookTable[262144];
-Bitboard PEXT_BishopTable[65536];
-int PEXT_RookOffset[64];
-int PEXT_BishopOffset[64];
-#endif
-
 namespace {
 
 // Compute attack mask for a rook (edges excluded)
@@ -201,36 +194,6 @@ void init_magics(Magic magics[], Bitboard table[], bool is_rook) {
 
 } // anonymous namespace
 
-#if defined(__BMI2__) && defined(__x86_64__)
-static void init_pext_tables() {
-    Bitboard* rptr = PEXT_RookTable;
-    for (int sq = 0; sq < 64; ++sq) {
-        PEXT_RookOffset[sq] = int(rptr - PEXT_RookTable);
-        Bitboard mask = RookMagics[sq].mask;
-        Bitboard occ = 0;
-        do {
-            unsigned idx = _pext_u64(occ, mask);
-            rptr[idx] = slow_rook_attacks(Square(sq), occ);
-            occ = (occ - mask) & mask;
-        } while (occ);
-        rptr += 1 << popcount(mask);
-    }
-
-    Bitboard* bptr = PEXT_BishopTable;
-    for (int sq = 0; sq < 64; ++sq) {
-        PEXT_BishopOffset[sq] = int(bptr - PEXT_BishopTable);
-        Bitboard mask = BishopMagics[sq].mask;
-        Bitboard occ = 0;
-        do {
-            unsigned idx = _pext_u64(occ, mask);
-            bptr[idx] = slow_bishop_attacks(Square(sq), occ);
-            occ = (occ - mask) & mask;
-        } while (occ);
-        bptr += 1 << popcount(mask);
-    }
-}
-#endif
-
 void init_magic_bitboards() {
     static bool initialized = false;
     if (initialized) return;
@@ -238,10 +201,6 @@ void init_magic_bitboards() {
 
     init_magics(RookMagics, RookTable, true);
     init_magics(BishopMagics, BishopTable, false);
-
-#if defined(__BMI2__) && defined(__x86_64__)
-    init_pext_tables();
-#endif
 }
 
 void init_line_tables() {
