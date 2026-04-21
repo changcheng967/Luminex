@@ -61,6 +61,12 @@ struct SearchStats {
     int64_t history_prunes = 0;
     int64_t qs_nodes = 0;
     int max_depth_reached = 0;
+
+    // PMG phase statistics
+    int64_t pmg_tt_cutoffs = 0;      // TT move caused cutoff
+    int64_t pmg_capture_cutoffs = 0; // Capture caused cutoff (quiets never generated)
+    int64_t pmg_quiet_generated = 0; // Had to generate quiet moves
+    int64_t pmg_quiet_cutoffs = 0;   // Quiet move caused cutoff
 };
 
 extern SearchStats g_stats;

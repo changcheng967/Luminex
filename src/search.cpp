@@ -18,6 +18,9 @@ extern void uci_debug_log(const char* format, ...);
 // This is set by the main thread when "stop" is received
 volatile bool g_stop_requested = false;
 
+// Global search statistics
+SearchStats g_stats;
+
 // Search globals
 Limits limits;
 SearchParams params;
@@ -141,6 +144,21 @@ static void init_reductions() {
         reductions[i] = int(LMR_SCALE * std::log(double(i)));
     reductions[0] = 0;
     reductions_initialized = true;
+}
+
+// Combined history: main + counter-move (1-ply) + continuation (2-ply)
+inline int combined_history(const SearchWorker* w, const Stack* ss, Piece pc, Square to) {
+    int score = w->history[int(pc)][int(to)];
+
+    if (ss->ply >= 1 && (ss - 1)->current_move != MOVE_NONE && (ss - 1)->moved_piece != NO_PIECE) {
+        score += counter_moves[int((ss - 1)->moved_piece)][int((ss - 1)->current_move.to())][int(pc)][int(to)];
+    }
+
+    if (ss->ply >= 2 && (ss - 2)->current_move != MOVE_NONE && (ss - 2)->moved_piece != NO_PIECE) {
+        score += continuation_history[int((ss - 2)->moved_piece)][int((ss - 2)->current_move.to())][int(pc)][int(to)];
+    }
+
+    return score;
 }
 
 inline Value eval_cached(const Position& pos) {
@@ -761,21 +779,7 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
         // History-based adjustment: combine plain + counter + continuation
         Piece pc = pos.piece_on(m.from());
         if (pc != NO_PIECE) {
-            int history_score = worker->history[int(pc)][int(m.to())];
-
-            // Counter-move history (1-ply)
-            if (ss->ply >= 1 && (ss - 1)->current_move != MOVE_NONE && (ss - 1)->moved_piece != NO_PIECE) {
-                Move prev_move = (ss - 1)->current_move;
-                Piece prev_pc = (ss - 1)->moved_piece;
-                history_score += counter_moves[int(prev_pc)][int(prev_move.to())][int(pc)][int(m.to())];
-            }
-
-            // Continuation history (2-ply)
-            if (ss->ply >= 2 && (ss - 2)->current_move != MOVE_NONE && (ss - 2)->moved_piece != NO_PIECE) {
-                Move prev2_move = (ss - 2)->current_move;
-                Piece prev2_pc = (ss - 2)->moved_piece;
-                history_score += continuation_history[int(prev2_pc)][int(prev2_move.to())][int(pc)][int(m.to())];
-            }
+            int history_score = combined_history(worker, ss, pc, m.to());
 
             // History influence on reduction
             reduction -= history_score / 4096;
@@ -901,17 +905,7 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
         if (is_quiet && !pv_node && depth <= 4 && moves_played > 0) {
             Piece pc = pos.piece_on(m.from());
             if (pc != NO_PIECE) {
-                int hist_score = worker->history[int(pc)][int(m.to())];
-                if (ss->ply >= 1 && (ss - 1)->current_move != MOVE_NONE && (ss - 1)->moved_piece != NO_PIECE) {
-                    Move prev_move = (ss - 1)->current_move;
-                    Piece prev_pc = (ss - 1)->moved_piece;
-                    hist_score += counter_moves[int(prev_pc)][int(prev_move.to())][int(pc)][int(m.to())];
-                }
-                if (ss->ply >= 2 && (ss - 2)->current_move != MOVE_NONE && (ss - 2)->moved_piece != NO_PIECE) {
-                    Move prev2_move = (ss - 2)->current_move;
-                    Piece prev2_pc = (ss - 2)->moved_piece;
-                    hist_score += continuation_history[int(prev2_pc)][int(prev2_move.to())][int(pc)][int(m.to())];
-                }
+                int hist_score = combined_history(worker, ss, pc, m.to());
                 // Prune if history is very negative (move has historically been bad)
                 if (hist_score < 783 - 4872 * (depth - 1)) {
                     return false;
@@ -937,18 +931,7 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
             Piece pc = pos.piece_on(m.from());
             bool has_good_history = false;
             if (pc != NO_PIECE) {
-                int hist = worker->history[int(pc)][int(m.to())];
-                if (ss->ply >= 1 && (ss - 1)->current_move != MOVE_NONE && (ss - 1)->moved_piece != NO_PIECE) {
-                    Move prev_move = (ss - 1)->current_move;
-                    Piece prev_pc = (ss - 1)->moved_piece;
-                    hist += counter_moves[int(prev_pc)][int(prev_move.to())][int(pc)][int(m.to())];
-                }
-                if (ss->ply >= 2 && (ss - 2)->current_move != MOVE_NONE && (ss - 2)->moved_piece != NO_PIECE) {
-                    Move prev2_move = (ss - 2)->current_move;
-                    Piece prev2_pc = (ss - 2)->moved_piece;
-                    hist += continuation_history[int(prev2_pc)][int(prev2_move.to())][int(pc)][int(m.to())];
-                }
-                has_good_history = hist > 0;
+                has_good_history = combined_history(worker, ss, pc, m.to()) > 0;
             }
             if (!has_good_history && m != worker->killers[ss->ply][0] && m != worker->killers[ss->ply][1])
                 return false;  // No good history and not killer: prune
@@ -1185,7 +1168,7 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
         if (search_move(tt_move, tt_is_quiet)) {
             // TT move caused cutoff - early return
             if (!stop.load(std::memory_order_relaxed)) {
-                // best_value already set inside search_move
+                g_stats.pmg_tt_cutoffs++;
                 return best_value;
             }
         }
@@ -1245,6 +1228,7 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
 
             if (search_move(it->move, false)) {
                 if (!stop.load(std::memory_order_relaxed)) {
+                    g_stats.pmg_capture_cutoffs++;
                     return best_value;
                 }
             }
@@ -1256,6 +1240,7 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
     // when a capture already caused beta cutoff.
     // ========================================
     {
+        g_stats.pmg_quiet_generated++;
         ExtMove quiets[MAX_MOVES];
         ExtMove* quiet_end = generate<GEN_QUIET>(pos, quiets);
 
@@ -1271,18 +1256,7 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
             } else {
                 Piece pc = pos.piece_on(m.from());
                 if (pc != NO_PIECE) {
-                    score = worker->history[int(pc)][int(m.to())];
-                    if (ss->ply >= 1 && (ss - 1)->current_move != MOVE_NONE && (ss - 1)->moved_piece != NO_PIECE) {
-                        Move prev_move = (ss - 1)->current_move;
-                        Piece prev_pc = (ss - 1)->moved_piece;
-                        score += counter_moves[int(prev_pc)][int(prev_move.to())][int(pc)][int(m.to())];
-                    }
-                    // Continuation history (2-ply)
-                    if (ss->ply >= 2 && (ss - 2)->current_move != MOVE_NONE && (ss - 2)->moved_piece != NO_PIECE) {
-                        Move prev2_move = (ss - 2)->current_move;
-                        Piece prev2_pc = (ss - 2)->moved_piece;
-                        score += continuation_history[int(prev2_pc)][int(prev2_move.to())][int(pc)][int(m.to())];
-                    }
+                    score = combined_history(worker, ss, pc, m.to());
                     // Low-ply history: extra history for plies 1-3 (better opening ordering)
                     if (ss->ply >= 1 && ss->ply <= 3) {
                         score += worker->low_ply_history[ss->ply][int(pc)][int(m.to())];
@@ -1383,6 +1357,7 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
 
             if (search_move(it->move, true)) {
                 if (!stop.load(std::memory_order_relaxed)) {
+                    g_stats.pmg_quiet_cutoffs++;
                     return best_value;
                 }
             }
@@ -1996,6 +1971,23 @@ Move search(Position& pos, Limits& lim) {
     // Clean up main thread search worker
     delete worker;
     worker = nullptr;
+
+    // Print PMG statistics
+    {
+        int64_t total = g_stats.pmg_tt_cutoffs + g_stats.pmg_capture_cutoffs
+                      + g_stats.pmg_quiet_cutoffs + (g_stats.pmg_quiet_generated - g_stats.pmg_quiet_cutoffs);
+        std::ostringstream pmg;
+        pmg << "info string PMG: tt_cutoffs=" << g_stats.pmg_tt_cutoffs
+            << " cap_cutoffs=" << g_stats.pmg_capture_cutoffs
+            << " quiet_gen=" << g_stats.pmg_quiet_generated
+            << " quiet_cutoffs=" << g_stats.pmg_quiet_cutoffs;
+        if (g_stats.pmg_quiet_generated > 0) {
+            int quiet_rate = g_stats.pmg_quiet_cutoffs * 1000 / g_stats.pmg_quiet_generated;
+            pmg << " quiet_cutoff_rate=" << quiet_rate / 10 << "." << quiet_rate % 10 << "%";
+        }
+        pmg << " total_nodes=" << total << "\n";
+        uci_safe_output(pmg.str());
+    }
 
     return best_move;
 }
