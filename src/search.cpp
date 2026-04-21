@@ -169,7 +169,7 @@ inline Value eval_cached(const Position& pos) {
         g_stats.eval_cache_hits_main++;
         // Apply correction history to cached eval (capped for safety)
         int correction = get_correction(pos.pawn_key());
-        correction = std::max(-100, std::min(100, correction));
+        correction = std::max(-200, std::min(200, correction));
         return Value(eval_cache[idx].value + correction);
     }
 
@@ -179,7 +179,7 @@ inline Value eval_cached(const Position& pos) {
     eval_cache[idx].value = int32_t(eval);
     // Apply correction to fresh eval too
     int correction = get_correction(pos.pawn_key());
-    correction = std::max(-100, std::min(100, correction));
+    correction = std::max(-200, std::min(200, correction));
     return Value(eval + correction);
 }
 
@@ -309,7 +309,7 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
         }
         // Apply correction history to eval (capped for safety)
         int correction = get_correction(pos.pawn_key());
-        correction = std::max(-100, std::min(100, correction));
+        correction = std::max(-200, std::min(200, correction));
         eval = Value(eval + correction);
 
         if (eval >= beta) {
