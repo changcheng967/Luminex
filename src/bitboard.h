@@ -182,6 +182,23 @@ extern Magic BishopMagics[64];
 extern Bitboard RookTable[262144];   // Large enough for all rook entries
 extern Bitboard BishopTable[65536];  // Large enough for all bishop entries
 
+#if defined(__BMI2__) && defined(__x86_64__)
+#include <immintrin.h>
+extern Bitboard PEXT_RookTable[262144];
+extern Bitboard PEXT_BishopTable[65536];
+extern int PEXT_RookOffset[64];
+extern int PEXT_BishopOffset[64];
+
+inline Bitboard rook_attacks_bb(Square s, Bitboard occupied) {
+    int sq = int(s);
+    return PEXT_RookTable[PEXT_RookOffset[sq] + _pext_u64(occupied, RookMagics[sq].mask)];
+}
+
+inline Bitboard bishop_attacks_bb(Square s, Bitboard occupied) {
+    int sq = int(s);
+    return PEXT_BishopTable[PEXT_BishopOffset[sq] + _pext_u64(occupied, BishopMagics[sq].mask)];
+}
+#else
 // Magic bitboard attack lookups - O(1) table lookup
 inline Bitboard rook_attacks_bb(Square s, Bitboard occupied) {
     const Magic& m = RookMagics[int(s)];
@@ -192,6 +209,7 @@ inline Bitboard bishop_attacks_bb(Square s, Bitboard occupied) {
     const Magic& m = BishopMagics[int(s)];
     return m.attacks[((occupied & m.mask) * m.magic) >> m.shift];
 }
+#endif
 
 inline Bitboard rook_attacks_bb(Square s) {
     return rank_bb(rank_of(s)) | file_bb(file_of(s));
