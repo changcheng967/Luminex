@@ -1253,9 +1253,48 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
         }
     }
 
-    // PHASE 3: Quiet moves (only if no cutoff from captures)
+    // ========================================
+    // PHASE 2.5: Killer and counter-moves (before full quiet generation)
+    // Try 2-3 high-probability quiet moves. If any causes cutoff,
+    // skip the expensive full quiet generation entirely.
+    // Uses full legal() check (not fast path) for safety.
+    // ========================================
+    {
+        Move killer_moves[3] = {
+            worker->killers[ss->ply][0],
+            worker->killers[ss->ply][1],
+            MOVE_NONE
+        };
+        // Add counter-move if available
+        if (ss->ply >= 1 && (ss - 1)->current_move != MOVE_NONE && (ss - 1)->moved_piece != NO_PIECE) {
+            Move prev_move = (ss - 1)->current_move;
+            Piece prev_pc = (ss - 1)->moved_piece;
+            killer_moves[2] = worker->counter_move_table[int(prev_pc)][int(prev_move.to())];
+        }
+
+        for (int k = 0; k < 3; ++k) {
+            Move km = killer_moves[k];
+            if (km == MOVE_NONE) continue;
+            if (km == tt_move) continue;  // Already searched in Phase 1
+            if (km.is_capture() || km.is_promotion()) continue;  // Already searched in Phase 2
+            if (km == ss->excluded_move) continue;
+
+            // Full legality check (NOT fast path) — killers aren't from the generator
+            if (!pos.legal(km)) continue;
+
+            any_legal_move = true;
+            if (search_move(km, true)) {
+                if (!stop.load(std::memory_order_relaxed)) {
+                    g_stats.pmg_quiet_cutoffs++;
+                    return best_value;
+                }
+            }
+        }
+    }
+
+    // PHASE 3: Quiet moves (only if no cutoff from Phase 2.5 or captures)
     // This is the key savings: we never generate quiet moves
-    // when a capture already caused beta cutoff.
+    // when a capture or killer caused beta cutoff.
     // ========================================
     {
         g_stats.pmg_quiet_generated++;
