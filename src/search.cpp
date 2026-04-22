@@ -1683,18 +1683,10 @@ Move search(Position& pos, Limits& lim) {
         }
     }
 
-    // Counter-move and continuation history: age gently to prevent stale entries
-    // from dominating in new positions. Right-shift is faster than divide.
-    {
-        int* cm = &counter_moves[0][0][0][0];
-        int* cm_end = cm + 12 * 64 * 12 * 64;
-        int* ch = &continuation_history[0][0][0][0];
-        while (cm < cm_end) {
-            *cm >>= 1;
-            *ch >>= 1;
-            ++cm; ++ch;
-        }
-    }
+    // Counter-move and continuation history: don't age at all.
+    // The gravity formula (bonus - h * abs(bonus) / 16384) already handles
+    // natural decay within each search. Aging 1M+ entries is too expensive
+    // and provides marginal benefit over gravity-based decay.
 
     // Iterative deepening
     // When depth=0, search until time runs out (tournament time control)
