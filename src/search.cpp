@@ -322,14 +322,8 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
     }
 
     // Delta pruning: if best possible capture can't raise alpha, skip captures
-    // Dynamic margin: use actual best targetable piece instead of always assuming queen
     if (!in_check) {
-        Color them = Color(pos.side_to_move() ^ 1);
-        Value best_target = pos.pieces(them, QUEEN)  ? QUEEN_VALUE
-                          : pos.pieces(them, ROOK)   ? ROOK_VALUE
-                          : pos.pieces(them, BISHOP) || pos.pieces(them, KNIGHT) ? BISHOP_VALUE
-                          : PAWN_VALUE;
-        Value delta = 200 + best_target;
+        Value delta = 200 + QUEEN_VALUE;  // Assume best case: can capture a queen
         if (eval + delta < alpha) {
             g_stats.delta_prunes_qs++;
             g_stats.qs_delta_prunes++;
