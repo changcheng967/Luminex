@@ -1253,9 +1253,38 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
         }
     }
 
-    // PHASE 3: Quiet moves (only if no cutoff from captures)
+    // ========================================
+    // PHASE 2.5: Killer moves (before full quiet generation)
+    // Killers have ~30-40% cutoff rate. If a killer causes cutoff,
+    // we skip the expensive Phase 3 quiet generation entirely.
+    // Must use full legality check since killers are not
+    // generator-validated.
+    // ========================================
+    Move killers_searched[2] = { MOVE_NONE, MOVE_NONE };
+    {
+        for (int k = 0; k < 2; ++k) {
+            Move killer = worker->killers[ss->ply][k];
+            if (killer == MOVE_NONE) continue;
+            if (killer == tt_move) continue;
+            if (killer.is_capture()) continue;
+            if (!pos.pseudo_legal(killer)) continue;
+            if (!pos.legal(killer, true)) continue;
+
+            killers_searched[k] = killer;
+
+            if (search_move(killer, true)) {
+                if (!stop.load(std::memory_order_relaxed)) {
+                    g_stats.pmg_capture_cutoffs++;
+                    return best_value;
+                }
+            }
+        }
+    }
+
+    // ========================================
+    // PHASE 3: Quiet moves (only if no cutoff from captures/killers)
     // This is the key savings: we never generate quiet moves
-    // when a capture already caused beta cutoff.
+    // when a capture or killer already caused beta cutoff.
     // ========================================
     {
         g_stats.pmg_quiet_generated++;
@@ -1270,7 +1299,7 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
             Move m = it->move;
             int score = 0;
 
-            if (m == tt_move) {
+            if (m == tt_move || m == killers_searched[0] || m == killers_searched[1]) {
                 score = -1;  // Already searched
             } else {
                 Piece pc = pos.piece_on(m.from());
