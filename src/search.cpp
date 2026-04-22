@@ -729,7 +729,7 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
 
     // Singular extension: check if TT move is significantly better than alternatives
     int singular_extension = 0;
-    if (tt_move != MOVE_NONE && !pv_node && found && tt_depth >= depth - 3 && depth >= 6 &&
+    if (tt_move != MOVE_NONE && !pv_node && found && tt_depth >= depth - 5 && depth >= 6 &&
         (tte->bound() & BOUND_LOWER) && abs(tt_value) < VALUE_KNOWN_WIN) {
         Value sBeta = Value(tt_value - depth * 2);
         ss->excluded_move = tt_move;
