@@ -702,11 +702,6 @@ Value evaluate(const Position& pos, bool tactical_only) {
                 eg_score -= sign * 5;
             }
 
-            // Far from own king: harder to defend
-            if (distance(sq, ksq_arr[c_idx]) > 3) {
-                mg_score -= sign * g_eval_params.far_knight_mg;
-                eg_score -= sign * g_eval_params.far_knight_eg;
-            }
             } // end !tactical_only knight
         }
 
@@ -763,11 +758,6 @@ Value evaluate(const Position& pos, bool tactical_only) {
                 }
             }
 
-            // Far bishop penalty
-            if (distance(sq, ksq_arr[c_idx]) > 3) {
-                mg_score -= sign * g_eval_params.far_bishop_mg;
-                eg_score -= sign * g_eval_params.far_bishop_eg;
-            }
             } // end !tactical_only bishop
         }
 
@@ -814,11 +804,6 @@ Value evaluate(const Position& pos, bool tactical_only) {
                 eg_score += sign * 5;
             }
 
-            // Far rook penalty
-            if (distance(sq, ksq_arr[c_idx]) > 3) {
-                mg_score -= sign * 8;
-                eg_score -= sign * 5;
-            }
 
             // Rook trapped/buried behind king
             if (rr <= RANK_2) {
@@ -884,11 +869,6 @@ Value evaluate(const Position& pos, bool tactical_only) {
             mg_score += sign * (QueenMobBaseMG + mob * QueenMobSlopeMG);
             eg_score += sign * (QueenMobBaseEG + mob * QueenMobSlopeEG);
 
-            // Far queen penalty
-            if (distance(sq, ksq_arr[c_idx]) > 3) {
-                mg_score -= sign * 8;
-                eg_score -= sign * 3;
-            }
             } // end !tactical_only queen
 
             // Weak queen: pinned to own king (forced passivity)
