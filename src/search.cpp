@@ -845,6 +845,15 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
             if (kdist <= 1) reduction -= 1;
         }
 
+        // Eval-adaptive: use eval-to-beta distance to adjust reductions
+        // Far above beta = position is clearly winning, reduce more
+        // Near alpha = critical position, reduce less
+        if (!pos.is_check()) {
+            int eval_margin = int(eval) - int(alpha);
+            if (eval_margin > 250) reduction += 1;
+            else if (eval_margin > -50 && eval_margin < 100) reduction -= 1;
+        }
+
         return std::max(1, std::min(reduction, depth - 2));
     };
 
