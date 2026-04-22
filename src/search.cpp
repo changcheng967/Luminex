@@ -729,7 +729,7 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
 
     // Singular extension: check if TT move is significantly better than alternatives
     int singular_extension = 0;
-    if (tt_move != MOVE_NONE && found && tt_depth >= depth - 3 && depth >= 6 &&
+    if (tt_move != MOVE_NONE && !pv_node && found && tt_depth >= depth - 3 && depth >= 6 &&
         (tte->bound() & BOUND_LOWER) && abs(tt_value) < VALUE_KNOWN_WIN) {
         Value sBeta = Value(tt_value - depth * 2);
         ss->excluded_move = tt_move;
@@ -742,15 +742,15 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
             if (singular_value < sBeta - depth) {
                 singular_extension = 2;
             }
-        } else if (!pv_node && singular_value >= beta) {
+        } else if (singular_value >= beta) {
             // Multi-cut: other moves are also good enough to beat beta
-            // Return immediately without searching further (non-PV only)
+            // Return immediately without searching further
             return singular_value;
-        } else if (!pv_node && tt_value >= beta) {
+        } else if (tt_value >= beta) {
             // TT move is NOT singular but expected to beat beta
             // Negative extension: reduce depth for non-singular expected cutoff
             singular_extension = -2;
-        } else if (!pv_node && cut_node) {
+        } else if (cut_node) {
             singular_extension = -1;
         }
     }
