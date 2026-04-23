@@ -1004,10 +1004,17 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
                 pos.undo_move(m);
                 return false;
             }
-            // Re-search with full window at standard depth if LMR found improvement
+            // Re-search if LMR found improvement
             if (value > alpha) {
                 g_stats.lmr_researches++;
-                value = -search_worker(pos, ss + 1, -beta, -alpha, depth - 1, !cut_node);
+                // Graduated re-search: if value barely exceeds alpha,
+                // use intermediate depth instead of full depth.
+                // This avoids wasting time on false-positive fail-highs.
+                Depth research_depth = depth - 1;
+                if (value < alpha + 30 && new_depth + 1 < depth - 1) {
+                    research_depth = new_depth + 1;
+                }
+                value = -search_worker(pos, ss + 1, -beta, -alpha, research_depth, false);
                 if (stop.load(std::memory_order_relaxed)) {
                     pos.undo_move(m);
                     return false;
