@@ -774,12 +774,15 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
         if (m == tt_move) reduction -= 1;
 
         // History-based adjustment: combine plain + counter + continuation
+        // Non-linear: use larger divisor for small scores, smaller for large
+        // This gives more reduction to very bad moves and less to very good ones
         Piece pc = pos.piece_on(m.from());
         if (pc != NO_PIECE) {
             int history_score = combined_history(worker, ss, pc, m.to());
-
-            // History influence on reduction
-            reduction -= history_score / 4096;
+            int sign = (history_score > 0) ? 1 : -1;
+            int abs_hist = std::abs(history_score);
+            // sqrt scaling: large scores dominate more than linear
+            reduction -= sign * (abs_hist / 64 + std::min(abs_hist / 256, 8));
         }
 
         // Reduce less for killer moves
