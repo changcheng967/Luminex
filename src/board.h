@@ -10,6 +10,7 @@ namespace luminex {
 struct StateInfo {
     Key key = 0;
     Key pawn_key = 0;
+    Key non_pawn_key[2] = {};  // Per-color hash of non-pawn pieces (N/B/R/Q)
     Bitboard checkers = 0;
     Bitboard pinned = 0;
     Bitboard block_checkers = 0;
@@ -87,6 +88,7 @@ public:
 
     Key key() const;
     Key pawn_key() const;
+    Key non_pawn_key(Color c) const;
 
     bool is_draw() const;
     bool is_check() const;
@@ -177,6 +179,7 @@ inline void Position::set_game_ply(int ply) { game_ply_ = ply; }
 
 inline Key Position::key() const { return st_->key; }
 inline Key Position::pawn_key() const { return st_->pawn_key; }
+inline Key Position::non_pawn_key(Color c) const { return st_->non_pawn_key[c]; }
 
 inline bool Position::is_check() const { return checkers() != 0; }
 
