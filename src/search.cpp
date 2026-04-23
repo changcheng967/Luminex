@@ -390,7 +390,11 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
         ss->current_move = it->move;
         ss->moved_piece = pos.piece_on(it->move.from());
 
-        pos.do_move(it->move);
+        if (!pos.do_move(it->move)) {
+            // CRITICAL: do_move failed - atomic failure, no state change
+            // Do NOT call undo_move - do_move already guarantees state is unchanged
+            continue;
+        }
 
         // This move passed do_move - count it as searched
         moves_searched++;
@@ -662,7 +666,7 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
             // This prevents analyzing positions where our king is in check
             if (!pos.legal(m)) continue;
 
-            pos.do_move(m);
+            if (!pos.do_move(m)) continue;
 
             // Shallow search with reduced beta
             Value value = -search_worker(pos, ss + 1, -rbeta, -rbeta + 1, rdepth, !cut_node);
@@ -988,7 +992,9 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
         ss->current_move = m;
         ss->moved_piece = pos.piece_on(m.from());
 
-        pos.do_move(m);
+        if (!pos.do_move(m)) {
+            return false;
+        }
 
         Value value;
         if (do_lmr && new_depth > 0) {
@@ -1498,7 +1504,7 @@ static void helper_thread_func(Position pos_copy, int thread_id) {
                 if (check_time()) break;
             }
 
-            pos_copy.do_move(it->move);
+            if (!pos_copy.do_move(it->move)) continue;
 
             Value value = -search_worker(pos_copy, w->stack + 1, -beta, -alpha, d - 1, false);
 
@@ -1530,7 +1536,7 @@ static void helper_thread_func(Position pos_copy, int thread_id) {
                 for (ExtMove* it = moves; it != end; ++it) {
                     if (stop.load(std::memory_order_relaxed) || g_stop_requested) break;
 
-                    pos_copy.do_move(it->move);
+                    if (!pos_copy.do_move(it->move)) continue;
                     Value value = -search_worker(pos_copy, w->stack + 1, -beta, -alpha, d - 1, false);
                     pos_copy.undo_move(it->move);
 
@@ -1811,7 +1817,7 @@ Move search(Position& pos, Limits& lim) {
                 if (g_stop_requested || stop.load(std::memory_order_relaxed)) break;
                 if (check_time()) break;
 
-                pos.do_move(it->move);
+                if (!pos.do_move(it->move)) continue;
 
                 // Check stop immediately after do_move
                 if (g_stop_requested || stop.load(std::memory_order_relaxed)) {
@@ -2149,7 +2155,7 @@ void uci_info([[maybe_unused]] const Position& pos, int depth, Value score, uint
         pv_keys[pv_count] = pv_pos.key();
         pv_moves[pv_count++] = m;
         oss << " " << m;
-        pv_pos.do_move(m);
+        if (!pv_pos.do_move(m)) break;
     }
 
     // Undo PV moves to restore position
