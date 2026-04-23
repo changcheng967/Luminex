@@ -854,6 +854,15 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
             else if (eval_margin > -50 && eval_margin < 100) reduction -= 1;
         }
 
+        // Correction complexity: when eval correction is large, eval is unreliable
+        // Reduce less to let search verify — inspired by the idea that position
+        // complexity should modulate search aggression
+        {
+            int corr = get_correction(pos.pawn_key());
+            int corr_mag = corr > 0 ? corr : -corr;
+            if (corr_mag > 75) reduction -= 1;
+        }
+
         return std::max(1, std::min(reduction, depth - 2));
     };
 
