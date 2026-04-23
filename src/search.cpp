@@ -100,11 +100,6 @@ struct CorrHistEntry {
 };
 CorrHistEntry corrhist_table[CORRHIST_SIZE];
 
-// Non-pawn correction history: corrects static eval based on non-pawn material configuration
-// Indexed by non_pawn_key[side_to_move] per color. Captures material-specific eval errors.
-constexpr int NP_CORRHIST_SIZE = 16384;
-CorrHistEntry np_corrhist_table[2][NP_CORRHIST_SIZE];
-
 inline int get_correction(uint64_t pawn_key) {
     uint32_t idx = uint32_t(pawn_key) & (CORRHIST_SIZE - 1);
     const CorrHistEntry& e = corrhist_table[idx];
@@ -126,31 +121,6 @@ inline void update_correction(uint64_t pawn_key, int error, int depth) {
     e.correction += error * w;
     e.weight += w;
     // Cap total weight to prevent stale entries from dominating
-    if (e.weight > 1024) {
-        e.correction /= 2;
-        e.weight /= 2;
-    }
-}
-
-inline int get_np_correction(Color c, uint64_t np_key) {
-    uint32_t idx = uint32_t(np_key) & (NP_CORRHIST_SIZE - 1);
-    const CorrHistEntry& e = np_corrhist_table[c][idx];
-    if (e.key == np_key && e.weight > 0)
-        return e.correction / e.weight;
-    return 0;
-}
-
-inline void update_np_correction(Color c, uint64_t np_key, int error, int depth) {
-    uint32_t idx = uint32_t(np_key) & (NP_CORRHIST_SIZE - 1);
-    CorrHistEntry& e = np_corrhist_table[c][idx];
-    if (e.key != np_key) {
-        e.key = np_key;
-        e.correction = 0;
-        e.weight = 0;
-    }
-    int w = depth * depth;
-    e.correction += error * w;
-    e.weight += w;
     if (e.weight > 1024) {
         e.correction /= 2;
         e.weight /= 2;
@@ -197,9 +167,8 @@ inline Value eval_cached(const Position& pos) {
 
     if (eval_cache[idx].key == key) {
         g_stats.eval_cache_hits_main++;
-        // Apply combined correction history (pawn + non-pawn material)
+        // Apply correction history to cached eval (capped for safety)
         int correction = get_correction(pos.pawn_key());
-        correction += get_np_correction(pos.side_to_move(), pos.non_pawn_key(pos.side_to_move()));
         correction = std::max(-100, std::min(100, correction));
         return Value(eval_cache[idx].value + correction);
     }
@@ -208,9 +177,8 @@ inline Value eval_cached(const Position& pos) {
     Value eval = evaluate(pos);
     eval_cache[idx].key = key;
     eval_cache[idx].value = int32_t(eval);
-    // Apply combined correction to fresh eval too
+    // Apply correction to fresh eval too
     int correction = get_correction(pos.pawn_key());
-    correction += get_np_correction(pos.side_to_move(), pos.non_pawn_key(pos.side_to_move()));
     correction = std::max(-100, std::min(100, correction));
     return Value(eval + correction);
 }
@@ -341,7 +309,6 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
         }
         // Apply correction history to eval (capped for safety)
         int correction = get_correction(pos.pawn_key());
-        correction += get_np_correction(pos.side_to_move(), pos.non_pawn_key(pos.side_to_move()));
         correction = std::max(-100, std::min(100, correction));
         eval = Value(eval + correction);
 
@@ -1447,7 +1414,6 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
         if (!pv_node && abs(best_value) < VALUE_KNOWN_WIN && abs(eval) < VALUE_KNOWN_WIN
             && moves_played > 0 && depth >= 2) {
             update_correction(pos.pawn_key(), best_value - eval, depth);
-            update_np_correction(pos.side_to_move(), pos.non_pawn_key(pos.side_to_move()), best_value - eval, depth);
         }
     }
 
@@ -2205,7 +2171,6 @@ void uci_info([[maybe_unused]] const Position& pos, int depth, Value score, uint
 
 void clear_correction_history() {
     std::memset(corrhist_table, 0, sizeof(corrhist_table));
-    std::memset(np_corrhist_table, 0, sizeof(np_corrhist_table));
 }
 
 } // namespace luminex

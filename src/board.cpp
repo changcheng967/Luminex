@@ -234,20 +234,6 @@ void Position::set(const std::string& fen) {
     }
     st_->pawn_key = pk;
 
-    // Compute non-pawn key per color (N/B/R/Q material configuration)
-    Key npk[2] = {0, 0};
-    for (Color c : {WHITE, BLACK}) {
-        for (PieceType pt = KNIGHT; pt <= QUEEN; pt = PieceType(pt + 1)) {
-            Bitboard b = pieces(c, pt);
-            while (b) {
-                Square s = pop_lsb(b);
-                npk[c] ^= Zobrist::psq[int(c)][int(pt)][int(s)];
-            }
-        }
-    }
-    st_->non_pawn_key[WHITE] = npk[WHITE];
-    st_->non_pawn_key[BLACK] = npk[BLACK];
-
     // CRITICAL: game_ply_ is already computed from FEN fullmove above (line 186)
     // Do NOT reset to 0 here, or fen() will output wrong fullmove number
 
@@ -545,8 +531,6 @@ bool Position::do_move(Move m) {
     // Save state for undo - copy current state to next slot in state_stack
     next_st.key = st_->key;
     next_st.pawn_key = st_->pawn_key;
-    next_st.non_pawn_key[WHITE] = st_->non_pawn_key[WHITE];
-    next_st.non_pawn_key[BLACK] = st_->non_pawn_key[BLACK];
     next_st.checkers = st_->checkers;
     next_st.pinned = st_->pinned;
     next_st.block_checkers = st_->block_checkers;
@@ -612,8 +596,6 @@ bool Position::do_move(Move m) {
             st_->key ^= Zobrist::psq[int(them)][int(captured)][int(to)];
             if (captured == PAWN) {
                 st_->pawn_key ^= Zobrist::psq[int(them)][int(PAWN)][int(to)];
-            } else {
-                st_->non_pawn_key[them] ^= Zobrist::psq[int(them)][int(captured)][int(to)];
             }
         }
     }
@@ -626,7 +608,6 @@ bool Position::do_move(Move m) {
         PieceType promoted = m.promotion_type();
         put_piece(us, promoted, to);
         st_->key ^= Zobrist::psq[int(us)][int(promoted)][int(to)];
-        st_->non_pawn_key[us] ^= Zobrist::psq[int(us)][int(promoted)][int(to)];
     } else {
         st_->key ^= Zobrist::psq[int(us)][int(pt)][int(from)];
         move_piece(from, to);
@@ -634,9 +615,6 @@ bool Position::do_move(Move m) {
         if (pt == PAWN) {
             st_->pawn_key ^= Zobrist::psq[int(us)][int(PAWN)][int(from)];
             st_->pawn_key ^= Zobrist::psq[int(us)][int(PAWN)][int(to)];
-        } else {
-            st_->non_pawn_key[us] ^= Zobrist::psq[int(us)][int(pt)][int(from)];
-            st_->non_pawn_key[us] ^= Zobrist::psq[int(us)][int(pt)][int(to)];
         }
     }
 
@@ -652,10 +630,8 @@ bool Position::do_move(Move m) {
         }
         // CRITICAL: Update Zobrist hash for rook position change
         st_->key ^= Zobrist::psq[int(us)][int(ROOK)][int(rfrom)];
-        st_->non_pawn_key[us] ^= Zobrist::psq[int(us)][int(ROOK)][int(rfrom)];
         move_piece(rfrom, rto);
         st_->key ^= Zobrist::psq[int(us)][int(ROOK)][int(rto)];
-        st_->non_pawn_key[us] ^= Zobrist::psq[int(us)][int(ROOK)][int(rto)];
     }
 
     // Handle en passant
@@ -870,8 +846,6 @@ void Position::do_null_move() {
     // Copy current state
     next_st.key = st_->key;
     next_st.pawn_key = st_->pawn_key;  // Preserve pawn key for eval cache
-    next_st.non_pawn_key[WHITE] = st_->non_pawn_key[WHITE];
-    next_st.non_pawn_key[BLACK] = st_->non_pawn_key[BLACK];
     next_st.checkers = st_->checkers;
     next_st.pinned = st_->pinned;
     next_st.block_checkers = st_->block_checkers;
