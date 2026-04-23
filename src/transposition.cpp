@@ -6,8 +6,8 @@ namespace luminex {
 void TTEntry::save(uint64_t k, Value v, bool pv, Bound b, Depth d, Move m, Value ev, uint8_t g) {
     key32 = uint32_t(k >> 32);
     move16 = uint16_t(m.raw());
-    value_ = int32_t(v);
-    eval_ = int32_t(ev);
+    value_ = int16_t(v);
+    eval_ = int16_t(ev);
     depth_ = uint8_t(d + 127);
     gen_bound = uint8_t((g << 2) | b);
     pv_flag = pv ? 1 : 0;
@@ -31,7 +31,7 @@ void TranspositionTable::resize(size_t mb) {
         // Minimum size of 1024 to avoid tiny tables
         if (new_size < 1024) new_size = 1024;
     }
-    entries = new_size * 3;
+    entries = new_size * 4;
 
     if (new_size > 0) {
         table.resize(new_size);
@@ -61,7 +61,7 @@ TTEntry* TranspositionTable::probe(uint64_t key, bool& found) {
     size_t idx = (size_t)key & (table.size() - 1);
     TTEntry* entry = &table[idx].entry[0];
 
-    for (int i = 0; i < 3; ++i, ++entry) {
+    for (int i = 0; i < 4; ++i, ++entry) {
         if (entry->key32 == uint32_t(key >> 32) || entry->depth_ == 127) {
             if (entry->depth_ == 127 || (entry->gen_bound & 0xFC) != generation8) {
                 entry->gen_bound = uint8_t(generation8 | (entry->gen_bound & 0x3));
@@ -73,7 +73,7 @@ TTEntry* TranspositionTable::probe(uint64_t key, bool& found) {
 
     // Find entry with lowest depth - use pre-computed idx
     TTEntry* replace = &table[idx].entry[0];
-    for (int i = 1; i < 3; ++i) {
+    for (int i = 1; i < 4; ++i) {
         TTEntry* e = &table[idx].entry[i];
         if (e->depth_ - ((e->gen_bound & 0xFC) == generation8 ? 127 : 0) <
             replace->depth_ - ((replace->gen_bound & 0xFC) == generation8 ? 127 : 0)) {
@@ -91,7 +91,7 @@ void TranspositionTable::write(uint64_t key, Value v, bool pv, Bound b, Depth d,
     size_t idx = (size_t)key & (table.size() - 1);
 
     // First pass: find exact key match - always update
-    for (int i = 0; i < 3; ++i) {
+    for (int i = 0; i < 4; ++i) {
         TTEntry* e = &table[idx].entry[i];
         if (e->key32 == uint32_t(key >> 32)) {
             e->save(key, v, pv, b, d, m, ev, generation8);
@@ -101,7 +101,7 @@ void TranspositionTable::write(uint64_t key, Value v, bool pv, Bound b, Depth d,
 
     // Second pass: find best replacement candidate (depth-preferred with aging)
     TTEntry* replace = &table[idx].entry[0];
-    for (int i = 1; i < 3; ++i) {
+    for (int i = 1; i < 4; ++i) {
         TTEntry* e = &table[idx].entry[i];
 
         // Prefer replacing entries from old searches (different generation)
@@ -128,14 +128,14 @@ size_t TranspositionTable::hashfull() const {
 
     int cnt = 0;
     for (size_t i = 0; i < std::min<size_t>(1000, table.size()); ++i) {
-        for (int j = 0; j < 3; ++j) {
+        for (int j = 0; j < 4; ++j) {
             if ((table[i].entry[j].gen_bound & 0xFC) == generation8) {
                 ++cnt;
             }
         }
     }
 
-    return cnt * 1000 / (std::min(size_t(1000), table.size()) * 3);
+    return cnt * 1000 / (std::min(size_t(1000), table.size()) * 4);
 }
 
 void TranspositionTable::prefetch(uint64_t key) const {

@@ -120,7 +120,8 @@ static void search_worker(Position pos_copy, Limits lim) {
     // Extract ponder move from TT (opponent's expected response)
     Move ponder_move = MOVE_NONE;
     if (best_move != MOVE_NONE) {
-        if (pos_copy.do_move(best_move)) {
+        pos_copy.do_move(best_move);
+        {
             bool found;
             TTEntry* tte = TT.probe(pos_copy.key(), found);
             if (found && tte->move() != MOVE_NONE) {
@@ -273,10 +274,7 @@ void handle_position(Position& pos, const std::string& cmd) {
                 pos.set("rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1");
                 return;
             }
-            if (!pos.do_move(matched)) {
-                pos.set("rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1");
-                return;
-            }
+            pos.do_move(matched);
         }
     }
 }

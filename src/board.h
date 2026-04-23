@@ -18,8 +18,7 @@ struct StateInfo {
     int ply = 0;
     Move move = MOVE_NONE;
     PieceType captured_piece = PT_NONE;
-    bool move_was_executed = true;  // Tracks if do_move actually executed the move (vs. returning early)
-    int halfmove_clock = 0;  // Half-moves since last pawn push or capture (for 50-move rule)
+    int halfmove_clock = 0;
 };
 
 class Position {
@@ -91,7 +90,7 @@ public:
     bool is_draw() const;
     bool is_check() const;
 
-    bool do_move(Move m);  // Returns true if move executed, false if failed
+    void do_move(Move m);
     void undo_move(Move m);
 
     void do_null_move();

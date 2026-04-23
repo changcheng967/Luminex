@@ -326,23 +326,27 @@ static constexpr int PassedEG[8] = { 0, 10, 20, 40, 70,120, 200, 0 };
 struct PawnEntry {
     uint64_t key;
     int32_t mg, eg;
+    Bitboard passed[2];
 };
 static constexpr int PAWN_HASH_SIZE = 16384;
 static PawnEntry pawn_table[PAWN_HASH_SIZE];
 
 // Evaluate pawn-only terms and cache in pawn_table
-static void evaluate_pawns(const Position& pos, int32_t& mg_out, int32_t& eg_out) {
+static void evaluate_pawns(const Position& pos, int32_t& mg_out, int32_t& eg_out, Bitboard passed_out[2]) {
     uint64_t pawn_key = pos.pawn_key();
     int idx = int(pawn_key & uint64_t(PAWN_HASH_SIZE - 1));
     PawnEntry& entry = pawn_table[idx];
     if (entry.key == pawn_key) {
         mg_out = entry.mg;
         eg_out = entry.eg;
+        passed_out[0] = entry.passed[0];
+        passed_out[1] = entry.passed[1];
         return;
     }
 
     int32_t mg = 0;
     int32_t eg = 0;
+    Bitboard passed_bb[2] = {};
 
     for (int c_idx = 0; c_idx < 2; ++c_idx) {
         Color c = Color(c_idx);
@@ -460,6 +464,7 @@ static void evaluate_pawns(const Position& pos, int32_t& mg_out, int32_t& eg_out
             if (!(ahead & their_pawns)) {
                 mg += sign * PassedMG[r];
                 eg += sign * PassedEG[r];
+                passed_bb[c_idx] |= square_bb(sq);
             }
         }
     }
@@ -467,8 +472,12 @@ static void evaluate_pawns(const Position& pos, int32_t& mg_out, int32_t& eg_out
     entry.key = pawn_key;
     entry.mg = mg;
     entry.eg = eg;
+    entry.passed[0] = passed_bb[0];
+    entry.passed[1] = passed_bb[1];
     mg_out = mg;
     eg_out = eg;
+    passed_out[0] = passed_bb[0];
+    passed_out[1] = passed_bb[1];
 }
 
 // ============================================================
@@ -550,9 +559,10 @@ Value evaluate(const Position& pos, bool tactical_only) {
     }
 
     // Pawn evaluation via pawn hash table
+    Bitboard cached_passed[2] = {};
     {
         int32_t pawn_mg = 0, pawn_eg = 0;
-        evaluate_pawns(pos, pawn_mg, pawn_eg);
+        evaluate_pawns(pos, pawn_mg, pawn_eg, cached_passed);
         mg_score += pawn_mg;
         eg_score += pawn_eg;
     }
@@ -571,26 +581,10 @@ Value evaluate(const Position& pos, bool tactical_only) {
         // Passed pawn extra bonuses (beyond base table)
         // -------------------------------------------------------
         if (!tactical_only) {
-        // First pass: collect passed pawns
-        Bitboard passed_pawns_bb = BB_EMPTY;
-        {
-            Bitboard pawns = our_pawns;
-            while (pawns) {
-                Square sq = pop_lsb(pawns);
-                File f = file_of(sq);
-                Rank r = relative_rank(c, sq);
-                Bitboard ahead = 0;
-                for (int rr = r + 1; rr <= RANK_7; ++rr) {
-                    Square rsq = relative_square(c, make_square(f, Rank(rr)));
-                    ahead |= square_bb(rsq);
-                    if (f > FILE_A) ahead |= square_bb(relative_square(c, make_square(File(f - 1), Rank(rr))));
-                    if (f < FILE_H) ahead |= square_bb(relative_square(c, make_square(File(f + 1), Rank(rr))));
-                }
-                if (!(ahead & their_pawns)) passed_pawns_bb |= square_bb(sq);
-            }
-        }
+        // Use cached passed pawn bitboards from pawn hash table
+        Bitboard passed_pawns_bb = cached_passed[c_idx];
 
-        // Second pass: evaluate passed pawn bonuses
+        // Evaluate passed pawn bonuses
         Bitboard pp = passed_pawns_bb;
         while (pp) {
             Square sq = pop_lsb(pp);

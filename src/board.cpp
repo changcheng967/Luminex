@@ -1,5 +1,6 @@
 #include "luminex.h"
 #include <algorithm>
+#include <cassert>
 #include <cctype>
 #include <cmath>
 #include <fstream>
@@ -488,43 +489,18 @@ void Position::set_check_info(StateInfo* si) {
     // King checks (adjacent kings not possible in legal chess)
 }
 
-bool Position::do_move(Move m) {
+void Position::do_move(Move m) {
     Square from = m.from();
     Square to = m.to();
     Piece pc = board[from];
 
-    // CRITICAL FIX: Check if st_ply is about to overflow state_stack
-    if (st_ply >= MAX_STATES - 2) {
-        return false;  // Abort the move to prevent crash
-    }
-
-    if (pc == NO_PIECE) {
-        // CRITICAL: Log this for debugging - trying to move from empty square
-#ifndef NDEBUG
-        std::cerr << "\n=== ILLEGAL MOVE: NO PIECE AT SOURCE ===\n";
-        std::cerr << "Move: " << m << " (" << from << " to " << to << ")\n";
-        std::cerr << "Side to move: " << (side_to_move_ == WHITE ? "WHITE" : "BLACK") << "\n";
-        std::cerr << "FEN: " << fen() << "\n";
-        std::cerr << "=======================================\n";
-#endif
-        return false;
-    }
+    assert(st_ply < MAX_STATES - 2);
+    assert(pc != NO_PIECE);
 
     Color us = Color(pc / 6);
-    Color them = Color(us ^ 1);  // Switch color by XORing with 1
-
-    // CRITICAL: Check that the piece belongs to the side to move
-    // Without this, opponent's pieces could move during our turn, corrupting the board
-    if (us != side_to_move_) {
-        return false;
-    }
+    Color them = Color(us ^ 1);
     PieceType pt = piece_type_of(pc);
 
-    if (int(us) > 1) {
-        return false;
-    }
-
-    // ALWAYS increment state stack index first (required for undo to work)
     st_ply++;
     StateInfo& next_st = state_stack[st_ply];
 
@@ -539,8 +515,6 @@ bool Position::do_move(Move m) {
     next_st.ply = st_->ply;
     next_st.move = m;
     next_st.captured_piece = piece_type_on(to);
-    next_st.move_was_executed = true;  // Assume valid until validation proves otherwise
-
     // Update halfmove clock for 50-move rule
     // Reset to 0 on pawn moves or captures, otherwise increment
     next_st.halfmove_clock = st_->halfmove_clock + 1;
@@ -551,38 +525,14 @@ bool Position::do_move(Move m) {
     st_ = &next_st;
     ++game_ply_;
 
-    // Debug-only validation: check move flags match board state
-    // In release builds, moves from generator + legal() guarantee correctness
+    // Debug-only validation
 #ifndef NDEBUG
     PieceType piece_at_to = piece_type_on(to);
     bool piece_at_to_is_enemy = (board[to] != NO_PIECE && color_of_piece(board[to]) == them);
     bool move_flag_says_capture = m.is_capture();
 
-    if (piece_at_to_is_enemy && !move_flag_says_capture && !m.is_promotion()) {
-        std::cerr << "\n=== MOVE FLAG ERROR in do_move ===\n";
-        std::cerr << "Move: " << m << " (" << from << " to " << to << ")\n";
-        std::cerr << "Enemy piece at destination but not flagged as capture!\n";
-        std::cerr << "Piece at " << to << ": " << int(board[to]) << "\n";
-        std::cerr << "Move flags: 0x" << std::hex << m.flags() << std::dec << "\n";
-        std::cerr << "Undoing state advance and aborting.\n";
-        std::cerr << "====================================\n";
-        st_ply--;
-        st_ = &state_stack[st_ply];
-        game_ply_--;
-        return false;
-    }
-
-    if (!piece_at_to_is_enemy && piece_at_to != PT_NONE && color_of_piece(board[to]) == us) {
-        std::cerr << "\n=== CAPTURING OWN PIECE in do_move ===\n";
-        std::cerr << "Move: " << m << " (" << from << " to " << to << ")\n";
-        std::cerr << "Friendly piece at destination!\n";
-        std::cerr << "Undoing state advance and aborting.\n";
-        std::cerr << "====================================\n";
-        st_ply--;
-        st_ = &state_stack[st_ply];
-        game_ply_--;
-        return false;
-    }
+    assert(!piece_at_to_is_enemy || move_flag_says_capture || m.is_promotion());
+    assert(piece_at_to_is_enemy || piece_at_to == PT_NONE || color_of_piece(board[to]) != us);
 #endif
 
     // Handle capture
@@ -731,23 +681,10 @@ bool Position::do_move(Move m) {
     if (history_size < MAX_HISTORY) {
         position_history[history_size++] = st_->key;
     }
-
-    return true;  // Move executed successfully
 }
 
 void Position::undo_move(Move m) {
-    if (st_ply <= 0) {
-        return;
-    }
-
-    // Check if the move was actually executed (vs. being invalid and returning early)
-    if (!st_->move_was_executed) {
-        // Move was not executed, just decrement st_ply and restore state
-        st_ply--;
-        st_ = &state_stack[st_ply];
-        --game_ply_;
-        return;
-    }
+    assert(st_ply > 0);
 
     Square from = m.from();
     Square to = m.to();

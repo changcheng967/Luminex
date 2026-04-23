@@ -7,15 +7,15 @@
 
 namespace luminex {
 
-// Transposition table entry
+// Transposition table entry (16 bytes — 4 per cache line)
 struct TTEntry {
     uint32_t key32;
     uint16_t move16;
-    int32_t value_;  // Changed from int16_t to prevent truncation (Value is int32_t)
-    int32_t eval_;   // Changed from int16_t to prevent truncation
+    int16_t value_;
+    int16_t eval_;
     uint8_t depth_;
     uint8_t gen_bound;
-    uint8_t pv_flag;  // 1 if this was a PV node, 0 otherwise
+    uint8_t pv_flag;
 
     Move move() const { return Move(move16); }
     Depth depth() const { return Depth(depth_ - 127); }
@@ -27,14 +27,13 @@ struct TTEntry {
     void save(uint64_t k, Value v, bool pv, Bound b, Depth d, Move m, Value ev, uint8_t g);
 };
 
-// Transposition table cluster (cache line size = 64 bytes)
-// Entry size is 20 bytes (3 * 20 = 60), padding = 4 bytes
+// 4 entries x 16 bytes = 64 bytes (exactly one cache line)
 struct TTCluster {
-    TTEntry entry[3];
-    char padding[4];
+    TTEntry entry[4];
 };
 
 static_assert(sizeof(TTCluster) == 64, "TTCluster size must be 64 bytes");
+static_assert(sizeof(TTEntry) == 16, "TTEntry size must be 16 bytes");
 
 // Transposition table
 class TranspositionTable {
