@@ -959,9 +959,8 @@ Value evaluate(const Position& pos, bool tactical_only) {
         } // end !tactical_only king
 
         // -------------------------------------------------------
-        // Threat evaluation (skip in qsearch for speed)
+        // Threat evaluation
         // -------------------------------------------------------
-        if (!tactical_only) {
         {
             Bitboard their_pieces = pos.pieces(them);
 
@@ -1048,7 +1047,6 @@ Value evaluate(const Position& pos, bool tactical_only) {
                 }
             }
         }
-        } // end !tactical_only threats
     }
 
     // -------------------------------------------------------
