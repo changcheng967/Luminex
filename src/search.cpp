@@ -592,9 +592,15 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
     }
 
     // Reverse futility pruning (static null move): if eval is far above beta, prune immediately
-    if (!pv_node && !pos.is_check() && depth <= 8 && eval - 100 * depth - ((ss->improving || opponent_worsening) ? 0 : 30) >= beta) {
-        g_stats.rev_futility_prunes++;
-        return eval;
+    // When correction history is large, static eval is less trustworthy — add margin
+    if (!pv_node && !pos.is_check() && depth <= 8) {
+        int rfp_margin = 100 * depth + ((ss->improving || opponent_worsening) ? 0 : 30);
+        int corr = get_correction(pos.pawn_key());
+        if (abs(corr) > 30) rfp_margin += 20;
+        if (eval - rfp_margin >= beta) {
+            g_stats.rev_futility_prunes++;
+            return eval;
+        }
     }
 
     // Razoring: at low depths, if eval is far below alpha, try qsearch to confirm
