@@ -763,11 +763,6 @@ Value evaluate(const Position& pos, bool tactical_only) {
                 }
             }
 
-            // Far bishop penalty
-            if (distance(sq, ksq_arr[c_idx]) > 3) {
-                mg_score -= sign * g_eval_params.far_bishop_mg;
-                eg_score -= sign * g_eval_params.far_bishop_eg;
-            }
             } // end !tactical_only bishop
         }
 
@@ -808,18 +803,6 @@ Value evaluate(const Position& pos, bool tactical_only) {
                 eg_score += sign * g_eval_params.rook_7th_eg;
             }
 
-            // Rook xray: same file as enemy queen
-            if (file_bb(f) & pos.pieces(them, QUEEN)) {
-                mg_score += sign * 15;
-                eg_score += sign * 5;
-            }
-
-            // Far rook penalty
-            if (distance(sq, ksq_arr[c_idx]) > 3) {
-                mg_score -= sign * 8;
-                eg_score -= sign * 5;
-            }
-
             // Rook trapped/buried behind king
             if (rr <= RANK_2) {
                 Square ksq = ksq_arr[c_idx];
@@ -841,25 +824,6 @@ Value evaluate(const Position& pos, bool tactical_only) {
                 }
             }
 
-            // Rook on blocked file: own pawns ahead restrict activity
-            {
-                Bitboard ahead_pawns;
-                if (c == WHITE) {
-                    Bitboard below_and_same = 0;
-                    for (int r = RANK_1; r <= rank_of(sq); ++r)
-                        below_and_same |= rank_bb(Rank(r));
-                    ahead_pawns = our_pawns & file_bb(f) & ~below_and_same;
-                } else {
-                    Bitboard above_and_same = 0;
-                    for (int r = rank_of(sq); r <= RANK_8; ++r)
-                        above_and_same |= rank_bb(Rank(r));
-                    ahead_pawns = our_pawns & file_bb(f) & ~above_and_same;
-                }
-                if (ahead_pawns) {
-                    mg_score += sign * (-8);
-                    eg_score += sign * (-8);
-                }
-            }
             } // end !tactical_only rook
         }
 
@@ -884,11 +848,6 @@ Value evaluate(const Position& pos, bool tactical_only) {
             mg_score += sign * (QueenMobBaseMG + mob * QueenMobSlopeMG);
             eg_score += sign * (QueenMobBaseEG + mob * QueenMobSlopeEG);
 
-            // Far queen penalty
-            if (distance(sq, ksq_arr[c_idx]) > 3) {
-                mg_score -= sign * 8;
-                eg_score -= sign * 3;
-            }
             } // end !tactical_only queen
 
             // Weak queen: pinned to own king (forced passivity)
