@@ -577,9 +577,8 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
     bool opponent_worsening = (ss->ply >= 1 && (ss - 1)->static_eval != VALUE_ZERO && eval > -(ss - 1)->static_eval);
 
     // Internal Iterative Reduction (IIR): reduce depth by 1 when no TT move available
-    // Skip if we have a killer move — it provides sufficient ordering information
-    if (!pv_node && tt_move == MOVE_NONE && depth >= 4 &&
-        worker->killers[ss->ply][0] == MOVE_NONE) {
+    // Only apply at non-PV nodes — PV nodes use IID instead (below)
+    if (!pv_node && tt_move == MOVE_NONE && depth >= 4) {
         depth--;
         g_stats.iir_reductions++;
     }
