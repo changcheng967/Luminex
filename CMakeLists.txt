@@ -50,7 +50,7 @@ else()
     if(CMAKE_BUILD_TYPE STREQUAL "Debug")
         add_compile_options(-O0 -g)
     else()
-        add_compile_options(-O2 -fno-exceptions -fno-rtti)
+        add_compile_options(-O3 -fno-exceptions -fno-rtti)
 
         # CPU-specific optimizations
         if(NOT CI)
