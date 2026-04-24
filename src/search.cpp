@@ -576,6 +576,20 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
     // Skip when parent was in check (static_eval is 0, not meaningful)
     bool opponent_worsening = (ss->ply >= 1 && (ss - 1)->static_eval != VALUE_ZERO && eval > -(ss - 1)->static_eval);
 
+    // Hindsight depth adjustment: if the previous ply was heavily reduced by LMR,
+    // compensate by adjusting current depth based on eval feedback.
+    // If parent was reduced >= 3 and position isn't worsening for us,
+    // the reduction was likely too aggressive — increase depth to compensate.
+    // If both plies have very positive eval sum, position is winning — save time.
+    if (!pv_node && ss->ply >= 2 && !pos.is_check()) {
+        int prior_reduction = (ss - 1)->reduction;
+        if (prior_reduction >= 3 && !opponent_worsening) {
+            depth++;
+        } else if (prior_reduction >= 2 && depth >= 2 && eval + (ss - 1)->static_eval > 195) {
+            depth--;
+        }
+    }
+
     // Internal Iterative Reduction (IIR): reduce depth by 1 when no TT move available
     // Only apply at non-PV nodes — PV nodes use IID instead (below)
     if (!pv_node && tt_move == MOVE_NONE && depth >= 4) {
@@ -991,6 +1005,7 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
         // Store current move and moved piece for counter-move history
         ss->current_move = m;
         ss->moved_piece = pos.piece_on(m.from());
+        ss->reduction = do_lmr ? (depth - 1 - new_depth) : 0;
 
         if (!pos.do_move(m)) {
             return false;
