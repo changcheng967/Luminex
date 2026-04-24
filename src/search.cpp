@@ -1606,8 +1606,14 @@ Move search(Position& pos, Limits& lim) {
     Value best_value = -VALUE_INFINITE;
     root_score = best_value;
     previous_root_best = MOVE_NONE;
-    int best_move_stability = 0;  // How many consecutive iterations best move stayed the same
-    bool score_dropped_sharply = false;  // Score drop extension flag
+
+    // Root score trend tracking (novel): track best and 2nd-best scores
+    // across depths to measure "dominance" — how clearly the best move is winning.
+    int best_move_stability = 0;
+    bool score_dropped_sharply = false;
+    Value best_score_history[64] = {};
+    Value second_best_history[64] = {};
+    int depths_completed = 0;
 
     // Check if we have any legal moves at all
     ExtMove initial_moves[MAX_MOVES];
@@ -1739,6 +1745,23 @@ Move search(Position& pos, Limits& lim) {
             if (score_dropped_sharply) {
                 stability_reduction = std::min(stability_reduction * 3 / 2, max_time);
             }
+            // Novel: dominance-based time management. If the best move's gap over
+            // the 2nd-best is GROWING across depths, the best move is clearly superior —
+            // we can stop even earlier. If the gap is shrinking, a challenger is rising
+            // and we should search deeper.
+            if (depths_completed >= 3 && best_move_stability >= 2) {
+                int gap_now = int(best_score_history[depths_completed - 1])
+                            - int(second_best_history[depths_completed - 1]);
+                int gap_prev = int(best_score_history[depths_completed - 2])
+                             - int(second_best_history[depths_completed - 2]);
+                if (gap_now > gap_prev && gap_now > 30) {
+                    // Dominance growing — reduce time further
+                    stability_reduction = stability_reduction * 4 / 5;
+                } else if (gap_now < gap_prev - 15) {
+                    // Challenger rising — extend time
+                    stability_reduction = std::min(stability_reduction * 5 / 4, max_time);
+                }
+            }
             if (elapsed > stability_reduction) {
                 break;
             }
@@ -1811,6 +1834,7 @@ Move search(Position& pos, Limits& lim) {
 
         // Clean aspiration loop with root PVS
         Value depth_best_value = -VALUE_INFINITE;
+        Value depth_second_best = -VALUE_INFINITE;
         Move depth_best_move = MOVE_NONE;
 
         int aspiration_attempts = 0;
@@ -1818,6 +1842,7 @@ Move search(Position& pos, Limits& lim) {
             aspiration_attempts++;
             // Reset on each aspiration iteration to avoid stale values
             depth_best_value = -VALUE_INFINITE;
+            depth_second_best = -VALUE_INFINITE;
             depth_best_move = MOVE_NONE;
             if (aspiration_attempts > 5) {
                 alpha = -VALUE_INFINITE;
@@ -1873,8 +1898,11 @@ Move search(Position& pos, Limits& lim) {
                 if (check_time()) break;
 
                 if (value > depth_best_value) {
+                    depth_second_best = depth_best_value;  // Previous best becomes 2nd
                     depth_best_value = value;
                     depth_best_move = it->move;
+                } else if (value > depth_second_best) {
+                    depth_second_best = value;
                 }
                 if (value > running_alpha) {
                     running_alpha = value;
@@ -1930,6 +1958,13 @@ Move search(Position& pos, Limits& lim) {
             best_value = depth_best_value;
             best_move = depth_best_move;
             previous_root_best = depth_best_move;
+
+            // Record score history for dominance tracking
+            if (depths_completed < 64) {
+                best_score_history[depths_completed] = depth_best_value;
+                second_best_history[depths_completed] = depth_second_best;
+                depths_completed++;
+            }
         }
 
         // Save root position to TT for PV extraction
