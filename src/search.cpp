@@ -878,6 +878,11 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
             else if (eval_margin > -50 && eval_margin < 100) reduction -= 1;
         }
 
+        // Novel: reduce less in forcing lines. When we're 2+ plies deep in
+        // consecutive checks, moves are forced — they don't deserve the same
+        // aggressive reductions as quiet late moves.
+        if (ss->forced_ply_count >= 2) reduction -= 1;
+
         return std::max(1, std::min(reduction, depth - 2));
     };
 
