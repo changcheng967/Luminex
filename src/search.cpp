@@ -884,49 +884,54 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
     // Helper lambda: compute check extension for a move
     // Check detection: direct check + discovered check (uncovered slider attack).
     // Discovered checks are among the strongest chess tactics: the opponent MUST respond
-    // to the check while the moved piece creates a separate threat. Missing them means
-    // the engine doesn't extend or protect these moves from LMR reduction.
+    // to the check while the moved piece creates a separate threat.
+    // Double check (direct + discovered simultaneously) is even more forcing:
+    // the opponent can ONLY move the king — extend deeper.
+    bool is_double_check = false;
     auto gives_check = [&](Move m) -> bool {
+        is_double_check = false;
         Square opp_ksq = pos.king_sq(Color(pos.side_to_move() ^ 1));
         PieceType pt = piece_type_of(pos.piece_on(m.from()));
         Color us = pos.side_to_move();
 
         // Direct check from the moved piece
+        bool direct_check = false;
         if (pt == PAWN) {
-            if ((pawn_attacks_bb(us, m.to()) & square_bb(opp_ksq)) != 0) return true;
+            direct_check = (pawn_attacks_bb(us, m.to()) & square_bb(opp_ksq)) != 0;
         } else if (pt == KNIGHT) {
-            if ((knight_attacks_bb(m.to()) & square_bb(opp_ksq)) != 0) return true;
+            direct_check = (knight_attacks_bb(m.to()) & square_bb(opp_ksq)) != 0;
         } else if (pt == BISHOP) {
-            if ((bishop_attacks_bb(m.to(), pos.pieces() ^ square_bb(m.from())) & square_bb(opp_ksq)) != 0) return true;
+            direct_check = (bishop_attacks_bb(m.to(), pos.pieces() ^ square_bb(m.from())) & square_bb(opp_ksq)) != 0;
         } else if (pt == ROOK) {
-            if ((rook_attacks_bb(m.to(), pos.pieces() ^ square_bb(m.from())) & square_bb(opp_ksq)) != 0) return true;
+            direct_check = (rook_attacks_bb(m.to(), pos.pieces() ^ square_bb(m.from())) & square_bb(opp_ksq)) != 0;
         } else if (pt == QUEEN) {
             Bitboard occ_no_from = pos.pieces() ^ square_bb(m.from());
-            if ((bishop_attacks_bb(m.to(), occ_no_from) & square_bb(opp_ksq)) != 0
-                || (rook_attacks_bb(m.to(), occ_no_from) & square_bb(opp_ksq)) != 0) return true;
+            direct_check = (bishop_attacks_bb(m.to(), occ_no_from) & square_bb(opp_ksq)) != 0
+                        || (rook_attacks_bb(m.to(), occ_no_from) & square_bb(opp_ksq)) != 0;
         }
 
         // Discovered check: does removing the piece from m.from() uncover a slider attack?
-        // Only check if from-square is aligned with the enemy king.
         int df = abs(int(m.from() % 8) - int(opp_ksq % 8));
         int dr = abs(int(m.from() / 8) - int(opp_ksq / 8));
-        if (df == 0 && dr == 0) return false;  // Same square (shouldn't happen)
+        if (df == 0 && dr == 0) return direct_check;
 
         Bitboard occ_no_from = pos.pieces() ^ square_bb(m.from());
+        bool discovered = false;
 
         // Bishop/Queen discovered check through vacated diagonal
         if (df == dr && df > 0) {
             Bitboard bq = pos.pieces(us, BISHOP, QUEEN) ^ square_bb(m.from());
-            if (bq && (bishop_attacks_bb(opp_ksq, occ_no_from) & bq)) return true;
+            if (bq && (bishop_attacks_bb(opp_ksq, occ_no_from) & bq)) discovered = true;
         }
-
         // Rook/Queen discovered check through vacated file or rank
-        if ((df == 0 || dr == 0) && (df + dr > 0)) {
+        if (!discovered && (df == 0 || dr == 0) && (df + dr > 0)) {
             Bitboard rq = pos.pieces(us, ROOK, QUEEN) ^ square_bb(m.from());
-            if (rq && (rook_attacks_bb(opp_ksq, occ_no_from) & rq)) return true;
+            if (rq && (rook_attacks_bb(opp_ksq, occ_no_from) & rq)) discovered = true;
         }
 
-        return false;
+        // Double check: both direct and discovered — opponent can only move king
+        is_double_check = direct_check && discovered;
+        return direct_check || discovered;
     };
 
     // Helper lambda: search a single move, return true if beta cutoff
@@ -1026,6 +1031,7 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
         if (gives_chk) {
             ext_count++;
             g_stats.check_extensions++;
+            if (is_double_check) ext_count++;
         }
         // Recapture extension: only for significant piece captures (not pawns)
         if (ss->ply >= 1 && (ss - 1)->current_move != MOVE_NONE && m.to() == (ss - 1)->current_move.to()) {
