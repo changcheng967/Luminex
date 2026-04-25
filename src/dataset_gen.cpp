@@ -39,9 +39,6 @@ double play_game(Position& pos, std::vector<std::string>& positions_out) {
     std::vector<std::string> game_positions;
 
     for (int move_num = 0; move_num < 200; ++move_num) {
-        // Check draw
-        if (pos.is_draw()) return 0.5;
-
         // Checkmate/stalemate
         ExtMove moves[MAX_MOVES];
         ExtMove* end = generate<GEN_LEGAL>(pos, moves);
@@ -49,57 +46,46 @@ double play_game(Position& pos, std::vector<std::string>& positions_out) {
             return pos.is_check() ? (pos.side_to_move() == WHITE ? 0.0 : 1.0) : 0.5;
         }
 
-        // Evaluate for random move selection (use eval as weight)
-        std::vector<int> scores;
+        // Simple eval-based move selection for variety
+        int best_idx = 0;
         int best_score = -999999;
         for (ExtMove* it = moves; it != end; ++it) {
+            if (!pos.do_move(it->move)) continue;
             int score = -((int)evaluate(pos, false));
-            scores.push_back(score);
-            if (score > best_score) best_score = score;
+            pos.undo_move(it->move);
+            if (score > best_score) { best_score = score; best_idx = (int)(it - moves); }
         }
 
-        // Softmax-like selection: pick from top moves with some randomness
-        // This produces varied games while keeping reasonable quality
-        std::vector<double> weights;
-        double total = 0;
-        for (int s : scores) {
-            double w = std::exp((s - best_score) / 50.0);
-            weights.push_back(w);
-            total += w;
+        // With 20% chance, pick a random move instead for variety
+        int chosen = best_idx;
+        if (std::uniform_int_distribution<int>(0, 4)(rng) == 0) {
+            chosen = std::uniform_int_distribution<int>(0, (int)(end - moves) - 1)(rng);
         }
 
-        double r = std::uniform_real_distribution<double>(0, total)(rng);
-        int chosen = 0;
-        double cumulative = 0;
-        for (size_t i = 0; i < weights.size(); ++i) {
-            cumulative += weights[i];
-            if (cumulative >= r) { chosen = (int)i; break; }
-        }
-
-        // Record position if: after move 5 (10 plies), not in check, enough material
+        // Record position if: after move 10 (10 plies), not in check, enough material
         if (move_num >= 10 && !pos.is_check()) {
             Bitboard all = pos.pieces();
-            int pawns = popcount(pos.pieces(PAWN));
-            int pieces = popcount(all) - pawns - 2; // minus 2 kings
-            if (pieces >= 4) { // Enough material for meaningful eval
+            int pieces = popcount(all) - 2;
+            if (pieces >= 4) {
                 game_positions.push_back(pos.fen());
             }
         }
 
         // Make the chosen move
-        pos.do_move(moves[chosen].move);
+        if (!pos.do_move(moves[chosen].move)) break;
     }
 
     // Game didn't end - evaluate and assign result
     int final_eval = (int)evaluate(pos, false);
-    if (final_eval > 200) return 1.0;
-    if (final_eval < -200) return 0.5;
+    double result = 0.5;
+    if (final_eval > 300) result = 1.0;
+    else if (final_eval < -300) result = 0.0;
 
-    // Save 1 in every 3 positions to avoid too similar positions
+    // Save 1 in every 3 positions
     for (size_t i = 0; i < game_positions.size(); i += 3) {
         positions_out.push_back(game_positions[i]);
     }
-    return 0.5;
+    return result;
 }
 
 int main(int argc, char** argv) {
