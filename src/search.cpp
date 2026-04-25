@@ -878,13 +878,6 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
             else if (eval_margin > -50 && eval_margin < 100) reduction -= 1;
         }
 
-        // Eval velocity: if static eval is swinging rapidly across plies,
-        // the position is tactically volatile. Search deeper to see the conclusion.
-        if (ss->ply >= 2 && (ss - 2)->static_eval != VALUE_ZERO) {
-            int eval_vel = abs(int(eval) - int((ss - 2)->static_eval));
-            if (eval_vel > 250) reduction -= 1;
-        }
-
         return std::max(1, std::min(reduction, depth - 2));
     };
 
