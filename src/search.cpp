@@ -644,6 +644,9 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
 
         int R = 3 + (depth > 5 ? 1 : 0) + (depth > 12 ? 1 : 0);
 
+        // TT-guided: if TT confirms position is good, reduce more aggressively
+        if (found && tt_value >= beta && tt_depth >= depth - 3) R += 1;
+
         if (piece_count < 4) R -= 1;
 
         R = std::max(2, std::min(R, depth - 1));
