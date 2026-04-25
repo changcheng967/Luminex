@@ -55,3 +55,4 @@ build-check/
 build_check/
 build_ninja/
 .claude/
+.git-rewrite/

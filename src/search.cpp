@@ -1015,7 +1015,7 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
         // Individual check extensions handle single checks, but long forcing sequences
         // need extra depth because LMR aggressively reduces them as "late moves".
         // Only apply when no other extension is active to avoid compounding.
-        if (ss->forced_ply_count >= 2 && ext_count == 0 && depth >= 3) {
+        if (ss->forced_ply_count >= 3 && ext_count == 0 && depth >= 4) {
             ext_count++;
         }
         new_depth += ext_count;
