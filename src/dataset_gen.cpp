@@ -7,6 +7,7 @@
 #include "board.h"
 #include "movegen.h"
 #include "evaluation.h"
+#include "bitboard.h"
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -92,6 +93,7 @@ int main(int argc, char** argv) {
     int num_games = argc >= 2 ? atoi(argv[1]) : 1000;
     const char* output = argc >= 3 ? argv[2] : "dataset.txt";
 
+    init_magic_bitboards();
     init_evaluation();
 
     FILE* f = fopen(output, "w");

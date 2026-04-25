@@ -10,6 +10,7 @@
 #include "tuner_params.h"
 #include "board.h"
 #include "evaluation.h"
+#include "bitboard.h"
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -186,6 +187,7 @@ int main_tuner(int argc, char** argv) {
     }
 
     // Initialize engine
+    init_magic_bitboards();
     init_evaluation();
     init_tuner_params();
     sync_eval_params();
