@@ -832,13 +832,6 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
                 if (relative_rank(us, to_rank) >= RANK_7) {
                     reduction -= 1;
                 }
-                // Pawn threatens higher-value piece: reduce less
-                Bitboard pawn_attacks = pawn_attacks_bb(us, m.to());
-                Bitboard their_pieces = pos.pieces(Color(us ^ 1));
-                Bitboard threats = pawn_attacks & their_pieces;
-                if (threats & (pos.pieces(KNIGHT) | pos.pieces(BISHOP) | pos.pieces(ROOK) | pos.pieces(QUEEN))) {
-                    reduction -= 1;
-                }
             }
         }
 
