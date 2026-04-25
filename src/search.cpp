@@ -586,18 +586,6 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
         ss->forced_ply_count = ((ss - 1)->forced_ply_count + 1);
     }
 
-    // Eval turbulence tracking: detect non-check forcing sequences.
-    // If static eval swings by a large amount between plies, the position
-    // is in a tactical phase (threats, sacrifices, defensive resources).
-    // Unlike forcing line extension (checks only), this catches "silent forcing".
-    ss->turbulence_count = 0;
-    if (ss->ply >= 1 && !pos.is_check() && (ss - 1)->static_eval != VALUE_ZERO) {
-        int eval_delta = std::abs(int(eval) + int((ss - 1)->static_eval));
-        if (eval_delta >= 120) {
-            ss->turbulence_count = (ss - 1)->turbulence_count + 1;
-        }
-    }
-
     // Hindsight depth adjustment: if the previous ply was heavily reduced by LMR,
     // compensate by adjusting current depth based on eval feedback.
     // If parent was reduced >= 3 and position isn't worsening for us,
@@ -1029,12 +1017,6 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
         // Only apply when no other extension is active to avoid compounding.
         if (ss->forced_ply_count >= 3 && ext_count == 0 && depth >= 4) {
             ext_count++;
-        }
-        // Eval turbulence extension: 3+ consecutive plies with large eval swings
-        // means a silent forcing sequence (threats/sacrifices, not checks).
-        if (ss->turbulence_count >= 3 && ext_count == 0 && depth >= 4) {
-            ext_count++;
-            g_stats.turbulence_extensions++;
         }
         new_depth += ext_count;
 
