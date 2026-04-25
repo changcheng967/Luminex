@@ -59,4 +59,6 @@ src/
 
 ## License
 
-[Luminex License](LICENSE) — non-commercial use
+Luminex is licensed under the [GNU General Public License v3.0](LICENSE).
+
+Some foundational code derives from [Stockfish](https://github.com/official-stockfish/Stockfish), which is also GPL-3.0 licensed. All original contributions to Luminex are released under the same license.
