@@ -1,0 +1,8 @@
+tree 22e5ad73577ac1a12da8b5f7b179a22a9f98a943
+parent b34fe350ff304c512811c1d9d8ccd61b3db24261
+author changcheng967 <changcheng967@users.noreply.github.com> 1776980734 -0400
+committer changcheng967 <changcheng967@users.noreply.github.com> 1776980734 -0400
+
+Revert "remove noisy eval penalties: far-rook, far-queen, far-bishop, rook blocked file, rook xray queen"
+
+This reverts commit b34fe350ff304c512811c1d9d8ccd61b3db24261.
