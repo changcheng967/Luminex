@@ -1,4 +1,5 @@
 #include "luminex.h"
+#include "tuner_params.h"
 #include <cstring>
 
 namespace luminex {
@@ -27,8 +28,8 @@ EvalParams g_eval_params;
 //   Bishop: 340 MG (diagonal range > L-shapes), 310 EG (long-range)
 //   Rook: 500 MG (5 pawns), 530 EG (stronger with open files)
 //   Queen: 960 MG (~10 pawns), 940 EG (king activity reduces power)
-static constexpr int PieceValueMG[8] = { 90, 320, 340, 500, 960, 0, 0, 0 };
-static constexpr int PieceValueEG[8] = { 100, 290, 310, 530, 940, 0, 0, 0 };
+static int PieceValueMG[8] = { 90, 320, 340, 500, 960, 0, 0, 0 };
+static int PieceValueEG[8] = { 100, 290, 310, 530, 940, 0, 0, 0 };
 
 // ============================================================
 // PIECE-SQUARE TABLES
@@ -235,34 +236,34 @@ using Score = Value;
 // Knight mobility: calibrated so average (mob=4) ≈ 0
 // base = -avg_mob * slope = -4 * 15 = -60
 // mob=0: -60 (trapped), mob=4: 0 (normal), mob=8: +60 (excellent)
-static constexpr int KnightMobBaseMG = -60;
-static constexpr int KnightMobSlopeMG = 15;
-static constexpr int KnightMobBaseEG = -75;
-static constexpr int KnightMobSlopeEG = 18;
+static int KnightMobBaseMG = -60;
+static int KnightMobSlopeMG = 15;
+static int KnightMobBaseEG = -75;
+static int KnightMobSlopeEG = 18;
 static constexpr int KnightMobMax = 8;
 
 // Bishop mobility: calibrated so average (mob=7) ≈ 0
 // base = -7 * 7 = -49. mob=0: -48, mob=7: +1, mob=13: +43
-static constexpr int BishopMobBaseMG = -48;
-static constexpr int BishopMobSlopeMG = 7;
-static constexpr int BishopMobBaseEG = -56;
-static constexpr int BishopMobSlopeEG = 9;
+static int BishopMobBaseMG = -48;
+static int BishopMobSlopeMG = 7;
+static int BishopMobBaseEG = -56;
+static int BishopMobSlopeEG = 9;
 static constexpr int BishopMobMax = 13;
 
 // Rook mobility: calibrated so average (mob=8) ≈ 0
 // base = -8 * 5 = -40. mob=0: -38, mob=8: +2, mob=14: +32
-static constexpr int RookMobBaseMG = -38;
-static constexpr int RookMobSlopeMG = 5;
-static constexpr int RookMobBaseEG = -48;
-static constexpr int RookMobSlopeEG = 7;
+static int RookMobBaseMG = -38;
+static int RookMobSlopeMG = 5;
+static int RookMobBaseEG = -48;
+static int RookMobSlopeEG = 7;
 static constexpr int RookMobMax = 14;
 
 // Queen mobility: calibrated so average (mob=15) ≈ 0
 // base = -15 * 2 = -30. mob=0: -28, mob=15: +2, mob=27: +26
-static constexpr int QueenMobBaseMG = -28;
-static constexpr int QueenMobSlopeMG = 2;
-static constexpr int QueenMobBaseEG = -38;
-static constexpr int QueenMobSlopeEG = 3;
+static int QueenMobBaseMG = -28;
+static int QueenMobSlopeMG = 2;
+static int QueenMobBaseEG = -38;
+static int QueenMobSlopeEG = 3;
 static constexpr int QueenMobMax = 27;
 
 // ============================================================
@@ -1335,6 +1336,51 @@ void init_evaluation() {
         }
     }
 
+    std::memset(pawn_table, 0, sizeof(pawn_table));
+}
+
+// Sync mutable arrays from g_params (called by tuner before each MSE computation)
+void sync_eval_params() {
+    PieceValueMG[PAWN]   = g_params[PAWN_VALUE_MG];
+    PieceValueEG[PAWN]   = g_params[PAWN_VALUE_EG];
+    PieceValueMG[KNIGHT] = g_params[KNIGHT_VALUE_MG];
+    PieceValueEG[KNIGHT] = g_params[KNIGHT_VALUE_EG];
+    PieceValueMG[BISHOP] = g_params[BISHOP_VALUE_MG];
+    PieceValueEG[BISHOP] = g_params[BISHOP_VALUE_EG];
+    PieceValueMG[ROOK]   = g_params[ROOK_VALUE_MG];
+    PieceValueEG[ROOK]   = g_params[ROOK_VALUE_EG];
+    PieceValueMG[QUEEN]  = g_params[QUEEN_VALUE_MG];
+    PieceValueEG[QUEEN]  = g_params[QUEEN_VALUE_EG];
+
+    g_eval_params.bishop_pair_mg    = g_params[BISHOP_PAIR_MG];
+    g_eval_params.bishop_pair_eg    = g_params[BISHOP_PAIR_EG];
+    g_eval_params.rook_open_mg      = g_params[ROOK_OPEN_FILE_MG];
+    g_eval_params.rook_open_eg      = g_params[ROOK_OPEN_FILE_EG];
+    g_eval_params.rook_semi_open_mg = g_params[ROOK_SEMI_OPEN_MG];
+    g_eval_params.rook_semi_open_eg = g_params[ROOK_SEMI_OPEN_EG];
+
+    KnightMobBaseMG  = g_params[KNIGHT_MOB_BASE_MG];
+    KnightMobSlopeMG = g_params[KNIGHT_MOB_SLOPE_MG];
+    KnightMobBaseEG  = g_params[KNIGHT_MOB_BASE_EG];
+    KnightMobSlopeEG = g_params[KNIGHT_MOB_SLOPE_EG];
+
+    BishopMobBaseMG  = g_params[BISHOP_MOB_BASE_MG];
+    BishopMobSlopeMG = g_params[BISHOP_MOB_SLOPE_MG];
+    BishopMobBaseEG  = g_params[BISHOP_MOB_BASE_EG];
+    BishopMobSlopeEG = g_params[BISHOP_MOB_SLOPE_EG];
+
+    RookMobBaseMG    = g_params[ROOK_MOB_BASE_MG];
+    RookMobSlopeMG   = g_params[ROOK_MOB_SLOPE_MG];
+    RookMobBaseEG    = g_params[ROOK_MOB_BASE_EG];
+    RookMobSlopeEG   = g_params[ROOK_MOB_SLOPE_EG];
+
+    QueenMobBaseMG   = g_params[QUEEN_MOB_BASE_MG];
+    QueenMobSlopeMG  = g_params[QUEEN_MOB_SLOPE_MG];
+    QueenMobBaseEG   = g_params[QUEEN_MOB_BASE_EG];
+    QueenMobSlopeEG  = g_params[QUEEN_MOB_SLOPE_EG];
+}
+
+void clear_pawn_table() {
     std::memset(pawn_table, 0, sizeof(pawn_table));
 }
 

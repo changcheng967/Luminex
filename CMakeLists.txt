@@ -80,6 +80,7 @@ set(SOURCES
     src/evaluation.cpp
     src/transposition.cpp
     src/magic.cpp
+    src/tuner_params.cpp
 )
 
 set(HEADERS
@@ -101,5 +102,25 @@ target_include_directories(luminex PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
 # Platform specific libraries
 if(WIN32)
     target_link_libraries(luminex PRIVATE)
+endif()
+
+# === Tuner target ===
+option(BUILD_TUNER "Build texel tuner" OFF)
+if(BUILD_TUNER)
+    find_package(OpenMP)
+    add_executable(luminex-tuner
+        src/tuner.cpp
+        src/tuner_params.cpp
+        src/board.cpp
+        src/movegen.cpp
+        src/evaluation.cpp
+        src/magic.cpp
+        src/transposition.cpp
+    )
+    target_include_directories(luminex-tuner PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
+    target_compile_definitions(luminex-tuner PRIVATE _CRT_SECURE_NO_WARNINGS)
+    if(OpenMP_CXX_FOUND)
+        target_link_libraries(luminex-tuner PRIVATE OpenMP::OpenMP_CXX)
+    endif()
 endif()
 

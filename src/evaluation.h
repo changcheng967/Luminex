@@ -50,4 +50,7 @@ int scale_factor(const Position& pos, Value eg);
 // Initialize evaluation tables
 void init_evaluation();
 
+// Sync mutable eval arrays from g_params (for tuner)
+void sync_eval_params();
+
 } // namespace luminex
