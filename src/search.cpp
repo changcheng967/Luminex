@@ -383,8 +383,7 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
 
         // Skip losing captures with negative SEE (but keep queen promotions)
         // Exception: when in check, try all evasions regardless of SEE
-        // Slightly more aggressive: prune captures losing >100cp in exchange
-        if (!in_check && !it->move.is_promotion() && !pos.see_ge(it->move, Value(-100))) {
+        if (!in_check && !it->move.is_promotion() && !pos.see_ge(it->move, VALUE_ZERO)) {
             continue;
         }
 
