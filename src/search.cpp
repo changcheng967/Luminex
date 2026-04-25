@@ -955,19 +955,6 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
             }
         }
 
-        // Extended history pruning: at depth 7-10, prune very bad-history quiet moves
-        // after searching enough moves. These moves are extremely unlikely to be best.
-        if (is_quiet && !pv_node && ss->ply > 0 && depth >= 7 && depth <= 10 && moves_played >= 8 + depth) {
-            Piece pc = pos.piece_on(m.from());
-            if (pc != NO_PIECE) {
-                int hist = combined_history(worker, ss, pc, m.to());
-                if (hist < -3000 && m != worker->killers[ss->ply][0] && m != worker->killers[ss->ply][1]) {
-                    g_stats.lmp_prunes++;
-                    return false;
-                }
-            }
-        }
-
         // Futility pruning: skip quiet moves that can't improve alpha
         if (is_quiet && !pv_node && ss->ply > 0 && !pos.is_check() && depth <= 5) {
             int margin = depth * 150 + (ss->improving ? 30 : 100);
