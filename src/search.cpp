@@ -586,6 +586,15 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
         ss->forced_ply_count = ((ss - 1)->forced_ply_count + 1);
     }
 
+    // Exchange sequence tracking: count consecutive capture plies.
+    // When 3+ plies are captures, we're in a tactical exchange that needs
+    // to be fully resolved. LMR prunes these aggressively as "late moves"
+    // but long exchanges can decide the game. Extends like forcing line.
+    ss->capture_ply_count = 0;
+    if (ss->ply >= 1 && (ss - 1)->current_move.is_capture()) {
+        ss->capture_ply_count = (ss - 1)->capture_ply_count + 1;
+    }
+
     // Hindsight depth adjustment: if the previous ply was heavily reduced by LMR,
     // compensate by adjusting current depth based on eval feedback.
     // If parent was reduced >= 3 and position isn't worsening for us,
@@ -1016,6 +1025,13 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
         // need extra depth because LMR aggressively reduces them as "late moves".
         // Only apply when no other extension is active to avoid compounding.
         if (ss->forced_ply_count >= 3 && ext_count == 0 && depth >= 4) {
+            ext_count++;
+        }
+        // Novel: exchange sequence extension. When 3+ consecutive plies are
+        // captures (trade after trade), we're in a tactical exchange that must
+        // resolve fully. LMR prunes these as "late moves" but the outcome of
+        // a long exchange chain decides the game.
+        if (ss->capture_ply_count >= 3 && ext_count == 0 && depth >= 4) {
             ext_count++;
         }
         new_depth += ext_count;
