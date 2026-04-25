@@ -1253,11 +1253,6 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
                     gives_chk = (knight_attacks_bb(m.to()) & square_bb(cap_opp_ksq)) != 0;
                 }
                 if (gives_chk) score += 200000;
-                // Recapture bonus: captures on the same square as the previous move
-                // tend to be strong (tactical exchanges). Nearly free check.
-                if (ss->ply >= 1 && (ss - 1)->current_move != MOVE_NONE && m.to() == (ss - 1)->current_move.to()) {
-                    score += 100000;
-                }
             }
             it->value = score;
         }
