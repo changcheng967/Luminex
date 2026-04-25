@@ -1156,17 +1156,7 @@ Value evaluate(const Position& pos, bool tactical_only) {
         // Fast pre-check: are there enemy minor/major pieces near king?
         Bitboard enemy_pieces_near = pos.pieces(them) & king_zone;
         enemy_pieces_near &= ~(pos.pieces(them, PAWN) | pos.pieces(them, KING));
-        if (!enemy_pieces_near) {
-            // Structural king vulnerability: a king with no safe escape
-            // squares is inherently vulnerable even without nearby attackers.
-            // At bullet TC, opponents WILL bring pieces to exploit this.
-            Bitboard km = king_attacks_bb(our_ksq);
-            Bitboard safe_sq = km & ~pos.pieces(c) & ~all_attacks[them];
-            int fl = popcount(safe_sq);
-            if (fl == 0) { mg_score -= sign * 40; eg_score -= sign * 20; }
-            else if (fl == 1) { mg_score -= sign * 20; eg_score -= sign * 10; }
-            continue;
-        }
+        if (!enemy_pieces_near) continue;
 
         int attack_units = 0;
         int attacker_count = 0;
