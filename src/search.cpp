@@ -669,7 +669,8 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
     }
 
     // ProbCut - if a capture is obviously good enough, verify with shallow search
-    if (!pv_node && depth >= 5 && !pos.is_check() && ss->ply >= 2) {
+    // Skip if eval is too far below rbeta — even capturing a queen can't reach rbeta
+    if (!pv_node && depth >= 5 && !pos.is_check() && ss->ply >= 2 && eval + 1000 >= beta + 175) {
         Value rbeta = std::min(beta + 175, VALUE_INFINITE - 200);
         int rdepth = depth - 3;
 
