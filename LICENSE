@@ -1,64 +1,32 @@
-Luminex Chess Engine License
-Version 1.1
+GNU GENERAL PUBLIC LICENSE
+Version 3, 29 June 2007
 
-Copyright (c) 2025-2026 Chang Cheng. All rights reserved.
+Copyright (C) 2025-2026 Chang Cheng (Luminex Chess Engine)
+Copyright (C) 2004-2024 the Stockfish developers (see AUTHORS file)
 
-By using this software you agree to all terms below.
+This program is free software: you can redistribute it and/or modify
+it under the terms of the GNU General Public License as published by
+the Free Software Foundation, either version 3 of the License, or
+(at your option) any later version.
 
-GRANT OF LICENSE
+This program is distributed in the hope that it will be useful,
+but WITHOUT ANY WARRANTY; without even the implied warranty of
+MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
+GNU General Public License for more details.
 
-You may use, study, and modify this software for personal, educational,
-and research purposes. You may redistribute exact unmodified copies
-provided this license and all copyright notices are included.
+You should have received a copy of the GNU General Public License
+along with this program. If not, see <https://www.gnu.org/licenses/>.
 
-You may enter the engine in non-commercial competitions, provided it is
-clearly identified as "Luminex" with attribution to the authors.
-
-COMMERCIAL USE PROHIBITED
-
-Commercial use of any kind is prohibited without written permission,
-including sale, licensing, incorporation into paid products or services,
-subscription/SaaS platforms, ad-supported sites, paid coaching services,
-and engine-as-a-service APIs.
-
-Commercial licenses may be available on request.
-
-CHEATING AND ILLEGAL USE PROHIBITED
-
-You may not use this software to cheat in any chess competition, bypass
-anti-cheat systems, or for any illegal, fraudulent, or harmful purpose.
-
-INTELLECTUAL PROPERTY
-
-Do not remove or alter copyright notices, license terms, or attribution.
-Do not claim authorship of software you did not write. Reverse engineering
-of binary distributions is prohibited except where required by law.
-
-MODIFICATIONS
-
-Modified versions may not be distributed without prior written consent
-from the author. If consent is granted, you must clearly identify it as
-a modified version, describe the changes, preserve original attribution,
-and include this license.
+---
 
 ATTRIBUTION
 
-Public use must credit the original authors. On websites, display
-"Powered by Luminex" visibly. In competitions, identify the engine as
-"Luminex" with a reference to the official repository.
+Luminex is a chess engine that originally derived from Stockfish
+(https://stockfishchess.org). While the search, evaluation, and
+higher-level architecture have been substantially rewritten with
+original techniques (Phased Move Generation, Forcing Line Extension,
+etc.), some foundational utilities remain based on Stockfish code.
 
-NO WARRANTY
-
-THE SOFTWARE IS PROVIDED "AS IS" WITHOUT WARRANTY OF ANY KIND. THE
-AUTHORS ARE NOT LIABLE FOR ANY DAMAGES ARISING FROM USE OF THE SOFTWARE.
-
-TERMINATION
-
-This license terminates automatically if you violate any term. Upon
-termination you must stop using the software and destroy all copies.
-
-The author may update this license at any time. Continued use after
-changes means you accept the updated terms.
-
-For questions or commercial licensing inquiries:
-changcheng6541@gmail.com
+Stockfish is licensed under the GNU General Public License v3 and is
+copyright (C) the Stockfish developers. The full text of the GPL v3
+is available at <https://www.gnu.org/licenses/gpl-3.0.txt>.
