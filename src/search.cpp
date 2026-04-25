@@ -595,7 +595,7 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
         int prior_reduction = (ss - 1)->reduction;
         if (prior_reduction >= 3 && !opponent_worsening) {
             depth++;
-        } else if (prior_reduction >= 2 && depth >= 2 && eval + (ss - 1)->static_eval > 195) {
+        } else if (prior_reduction >= 2 && depth >= 2 && eval + (ss - 1)->static_eval > 120) {
             depth--;
         }
     }
