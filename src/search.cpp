@@ -922,10 +922,6 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
         if (!pos.legal(m, true)) return false;  // Skip pseudo_legal check for generated moves
         any_legal_move = true;  // Legal move exists (even if later pruned)
 
-        // Check detection: needed before pruning decisions — check-giving
-        // moves are forcing and should never be pruned by LMP or futility.
-        bool gives_chk = gives_check(m);
-
         // Continuation pruning: skip quiet moves with very poor history at low depth
         // Worth ~10 ELO (from Ethereal). Uses combined counter+continuation history.
         if (is_quiet && !pv_node && depth <= 4 && moves_played > 0) {
@@ -942,7 +938,7 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
 
         // Late move pruning: prune quiet moves after examining a reasonable number
         // Improving positions can tolerate more pruning (more likely to recover)
-        // BUT: moves with strong history or giving check should never be pruned
+        // BUT: moves with strong history should never be pruned (they're likely good)
         int lmp_base = (ss->improving || opponent_worsening) ? 3 : 2;
         int lmp_threshold = lmp_base + depth * depth;
         if (is_quiet && !pv_node && ss->ply > 0 && depth <= 6 && moves_played >= lmp_threshold) {
@@ -953,15 +949,14 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
             if (pc != NO_PIECE) {
                 has_good_history = combined_history(worker, ss, pc, m.to()) > 0;
             }
-            if (!gives_chk && !has_good_history && m != worker->killers[ss->ply][0] && m != worker->killers[ss->ply][1]) {
+            if (!has_good_history && m != worker->killers[ss->ply][0] && m != worker->killers[ss->ply][1]) {
                 g_stats.lmp_prunes++;
-                return false;  // No good history and not killer or check: prune
+                return false;  // No good history and not killer: prune
             }
         }
 
         // Futility pruning: skip quiet moves that can't improve alpha
-        // Check-giving moves bypass futility — they're forcing
-        if (is_quiet && !pv_node && ss->ply > 0 && !pos.is_check() && !gives_chk && depth <= 5) {
+        if (is_quiet && !pv_node && ss->ply > 0 && !pos.is_check() && depth <= 5) {
             int margin = depth * 150 + (ss->improving ? 30 : 100);
             if (eval + margin < alpha) {
                 g_stats.futility_prunes++;
@@ -973,6 +968,7 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
         // Apply LMR to quiet moves and losing captures (SEE < 0)
         // But NEVER reduce moves that give check — they are forcing
         Depth new_depth = depth - 1;
+        bool gives_chk = gives_check(m);
         bool is_losing_capture = m.is_capture() && !m.is_promotion() && depth >= 1 &&
                                   !pos.see_ge(m, Value(-depth * 80));
         bool do_lmr = depth >= 3 && moves_played >= 3 &&
