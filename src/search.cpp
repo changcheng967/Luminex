@@ -518,40 +518,6 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
     if (!pv_node && found && tt_depth >= depth &&
         (tt_value >= beta ? (tte->bound() & BOUND_LOWER) : (tte->bound() & BOUND_UPPER))) {
         g_stats.tt_cutoffs++;
-        // TT cutoff stat updates: reinforce heuristics even on TT hits
-        if (tt_value >= beta && tt_move && ss->ply > 0) {
-            Piece moved = pos.piece_on(tt_move.from());
-            if (moved != NO_PIECE && !tt_move.is_capture()) {
-                int bonus = depth > 17 ? -8 : 19 * depth * depth + 155 * depth - 132;
-                int& h = worker->history[int(moved)][int(tt_move.to())];
-                h += bonus - h * std::abs(bonus) / 32768;
-
-                // Counter-move history (1-ply)
-                if (ss->ply >= 1 && (ss - 1)->current_move != MOVE_NONE && (ss - 1)->moved_piece != NO_PIECE) {
-                    Move prev_move = (ss - 1)->current_move;
-                    Piece prev_pc = (ss - 1)->moved_piece;
-                    int& cm = counter_moves[int(prev_pc)][int(prev_move.to())][int(moved)][int(tt_move.to())];
-                    cm += bonus - cm * std::abs(bonus) / 32768;
-                    worker->counter_move_table[int(prev_pc)][int(prev_move.to())] = tt_move;
-                }
-
-                // Continuation history (2-ply)
-                if (ss->ply >= 2 && (ss - 2)->current_move != MOVE_NONE && (ss - 2)->moved_piece != NO_PIECE) {
-                    Move prev2_move = (ss - 2)->current_move;
-                    Piece prev2_pc = (ss - 2)->moved_piece;
-                    int& ch = continuation_history[int(prev2_pc)][int(prev2_move.to())][int(moved)][int(tt_move.to())];
-                    ch += bonus - ch * std::abs(bonus) / 32768;
-                }
-            } else if (moved != NO_PIECE && tt_move.is_capture()) {
-                // Capture history bonus for TT cutoff captures
-                int bonus = depth > 17 ? -8 : 19 * depth * depth + 155 * depth - 132;
-                PieceType captured = pos.piece_type_on(tt_move.to());
-                if (captured != PT_NONE) {
-                    int& ch = worker->capture_history[int(moved)][int(tt_move.to())][int(captured)];
-                    ch += bonus - ch * std::abs(bonus) / 32768;
-                }
-            }
-        }
         return tt_value;
     }
 
