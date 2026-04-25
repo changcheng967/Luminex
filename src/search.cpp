@@ -673,22 +673,6 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
         Value rbeta = std::min(beta + 175, VALUE_INFINITE - 200);
         int rdepth = depth - 3;
 
-        // Novel: try TT move first as ProbCut candidate. If TT says position
-        // is >= rbeta and the TT move is a capture, try it before generating
-        // all captures — often skips move generation entirely.
-        if (found && tt_move != MOVE_NONE && tt_value >= rbeta &&
-            (tte->bound() & BOUND_LOWER) && tt_depth >= rdepth &&
-            tt_move.is_capture() && pos.legal(tt_move)) {
-            if (pos.do_move(tt_move)) {
-                Value value = -search_worker(pos, ss + 1, -rbeta, -rbeta + 1, rdepth, !cut_node);
-                pos.undo_move(tt_move);
-                if (value >= rbeta) {
-                    g_stats.probcut_prunes++;
-                    return value;
-                }
-            }
-        }
-
         // Try winning captures (SEE > 0)
         ExtMove probcut_moves[MAX_MOVES];
         ExtMove* probcut_end = generate<GEN_CAPTURE>(pos, probcut_moves);
