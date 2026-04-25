@@ -106,6 +106,21 @@ endif()
 
 # === Tuner target ===
 option(BUILD_TUNER "Build texel tuner" OFF)
+option(BUILD_DATASET_GEN "Build dataset generator" OFF)
+
+if(BUILD_DATASET_GEN)
+    add_executable(luminex-dataset-gen
+        src/dataset_gen.cpp
+        src/board.cpp
+        src/movegen.cpp
+        src/evaluation.cpp
+        src/magic.cpp
+        src/transposition.cpp
+    )
+    target_include_directories(luminex-dataset-gen PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
+    target_compile_definitions(luminex-dataset-gen PRIVATE _CRT_SECURE_NO_WARNINGS)
+endif()
+
 if(BUILD_TUNER)
     find_package(OpenMP)
     add_executable(luminex-tuner
