@@ -19,6 +19,7 @@ public:
     int move_count = 0;
     int reduction = 0;  // LMR reduction applied at this ply (for hindsight adjustment)
     int forced_ply_count = 0;  // Consecutive plies in forcing sequence (checks/low mobility)
+    int turbulence_count = 0;  // Consecutive plies with large eval swing
     bool improving = false;
     Stack* previous = nullptr;
 };
@@ -89,6 +90,7 @@ struct SearchStats {
     int64_t singular_extensions = 0;
     int64_t check_extensions = 0;
     int64_t recapture_extensions = 0;
+    int64_t turbulence_extensions = 0;
 
     // Move ordering stats
     int64_t captures_generated = 0;
