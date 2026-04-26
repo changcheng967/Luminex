@@ -794,6 +794,13 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
         if (cut_node) reduction += 1;
         if (ttPv) reduction -= 2; // PV positions from TT get less reduction
 
+        // TT-depth guided LMR: when TT entry is much deeper than current depth,
+        // non-TT moves have been searched before and failed to cause cutoff.
+        // They're proven suboptimal at deeper search — reduce more.
+        if (found && m != tt_move && tt_depth >= depth + 3) {
+            reduction += 1;
+        }
+
         // TT move gets less reduction
         if (m == tt_move) reduction -= 1;
 
@@ -1338,6 +1345,14 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
                         // Escape-aware: pieces under pawn attack should move first
                         if (enemy_pawn_attacks & square_bb(m.from())) {
                             score += 15000;
+                        }
+
+                        // Destination safety: penalize rooks/queens moving to
+                        // enemy-pawn-attacked squares (they'll be en prise to a pawn).
+                        // Knights/bishops are expected on central pawn-attacked squares.
+                        if ((pt == ROOK || pt == QUEEN) &&
+                            (enemy_pawn_attacks & square_bb(m.to()))) {
+                            score -= 2000;
                         }
 
                         // King-zone pressure ordering: pieces moving adjacent to
