@@ -19,7 +19,6 @@ public:
     int move_count = 0;
     int reduction = 0;  // LMR reduction applied at this ply (for hindsight adjustment)
     int forced_ply_count = 0;  // Consecutive plies in forcing sequence (checks/low mobility)
-    int capture_ply_count = 0;  // Consecutive plies of captures (exchange sequence)
     bool improving = false;
     Stack* previous = nullptr;
 };
