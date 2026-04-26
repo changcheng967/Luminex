@@ -296,21 +296,9 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
     Value eval = VALUE_ZERO;
 
     if (!in_check) {
-        // PMG philosophy: reuse cached full eval if available (free + more accurate)
-        // Falls back to tactical_only on cache miss (cheaper than full eval)
-        uint64_t key = pos.key();
-        uint32_t idx = uint32_t(key) & (EVAL_CACHE_SIZE - 1);
-        if (eval_cache[idx].key == key) {
-            eval = Value(eval_cache[idx].value);
-            g_stats.eval_cache_hits_qs++;
-        } else {
-            eval = evaluate(pos, true);
-            g_stats.eval_cache_misses_qs++;
-        }
-        // Apply correction history to eval (capped for safety)
-        int correction = get_correction(pos.pawn_key());
-        correction = std::max(-100, std::min(100, correction));
-        eval = Value(eval + correction);
+        // Qsearch: use cheap tactical-only eval directly.
+        // Eval cache has only 2% hit rate in qsearch — probe overhead costs more than it saves.
+        eval = evaluate(pos, true);
 
         if (eval >= beta) {
             g_stats.qs_stand_pat_cutoffs++;
