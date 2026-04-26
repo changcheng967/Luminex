@@ -86,7 +86,7 @@ struct EvalCacheEntry {
     uint64_t key;
     int32_t value;  // Changed from int16_t to match Value type
 };
-constexpr int EVAL_CACHE_SIZE = 32768;  // 32K entries — even less memory pressure
+constexpr int EVAL_CACHE_SIZE = 65536;  // 64K entries — sweet spot (32K too small, 512K too much)
 EvalCacheEntry eval_cache[EVAL_CACHE_SIZE];
 
 // Correction history: corrects static eval based on search errors
