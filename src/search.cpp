@@ -974,6 +974,23 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
         bool do_lmr = depth >= 3 && moves_played >= 3 &&
                       (is_quiet || is_losing_capture) && !gives_chk;
 
+        // Capture futility pruning: prune bad captures that can't raise alpha.
+        // A capture with SEE < 0 loses material; if even the optimistic gain
+        // (captured piece value) can't bring eval to alpha, prune it.
+        // Only at low depths where futility assumptions are reliable.
+        if (!is_quiet && !pv_node && !m.is_promotion() && !gives_chk &&
+            depth <= 4 && moves_played >= 1) {
+            PieceType captured = pos.piece_type_on(m.to());
+            if (captured < KING) {
+                static constexpr int cap_value[] = {0, 100, 320, 330, 500, 900, 0, 0};
+                if (eval + cap_value[captured] + depth * 80 < alpha &&
+                    !pos.see_ge(m, VALUE_ZERO)) {
+                    g_stats.cap_futility_prunes++;
+                    return false;
+                }
+            }
+        }
+
         if (do_lmr) g_stats.lmr_total++;
 
         if (do_lmr) {

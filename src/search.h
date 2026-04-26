@@ -79,6 +79,7 @@ struct SearchStats {
     int64_t delta_prunes_qs = 0;
     int64_t lmp_prunes = 0;
     int64_t history_prunes = 0;
+    int64_t cap_futility_prunes = 0;
 
     // LMR stats
     int64_t lmr_total = 0;
