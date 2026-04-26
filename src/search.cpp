@@ -867,6 +867,15 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
             }
         }
 
+        // King-zone pressure: reduce less for piece moves adjacent to enemy king
+        // These create threats and restrict king movement (Lasker)
+        // Only for non-check moves (check already gets -1)
+        if (!gives_chk) {
+            int kdist = std::max(abs(int(m.to() % 8) - int(enemy_ksq % 8)),
+                                 abs(int(m.to() / 8) - int(enemy_ksq / 8)));
+            if (kdist <= 1) reduction -= 1;
+        }
+
         // Eval-adaptive: use eval-to-beta distance to adjust reductions
         // Far above beta = position is clearly winning, reduce more
         // Near alpha = critical position, reduce less
