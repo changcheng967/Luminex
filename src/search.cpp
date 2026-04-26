@@ -794,13 +794,6 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
         if (cut_node) reduction += 1;
         if (ttPv) reduction -= 2; // PV positions from TT get less reduction
 
-        // TT-depth guided LMR: when TT entry is much deeper than current depth,
-        // non-TT moves have been searched before and failed to cause cutoff.
-        // They're proven suboptimal at deeper search — reduce more.
-        if (found && m != tt_move && tt_depth >= depth + 3) {
-            reduction += 1;
-        }
-
         // TT move gets less reduction
         if (m == tt_move) reduction -= 1;
 
