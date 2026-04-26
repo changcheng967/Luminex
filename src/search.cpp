@@ -826,6 +826,10 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
         // Check-giving moves: reduce less (use pre-computed value)
         if (gives_chk) reduction -= 1;
 
+        // Forcing sequence: when in a check sequence, reduce non-check moves less
+        // because the position is tactical and accuracy matters more
+        if (ss->forced_ply_count >= 2 && !gives_chk) reduction -= 1;
+
         // Promotion moves: reduce less
         if (m.is_promotion()) reduction -= 1;
 
