@@ -936,20 +936,6 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
             }
         }
 
-        // SEE pruning for quiet moves: moves that lose material are rarely best.
-        // At low depths, aggressive pruning is safe; at higher depths, LMR handles them.
-        // Skip for moves with strong history (they've been good in similar positions).
-        if (is_quiet && !pv_node && !pos.is_check() && depth <= 4 && moves_played >= 1) {
-            if (!pos.see_ge(m, Value(-depth * 100))) {
-                Piece pc = pos.piece_on(m.from());
-                bool has_good_history = pc != NO_PIECE &&
-                    combined_history(worker, ss, pc, m.to()) > 0;
-                if (!has_good_history) {
-                    return false;
-                }
-            }
-        }
-
         // Late move pruning: prune quiet moves after examining a reasonable number
         // Improving positions can tolerate more pruning (more likely to recover)
         // BUT: moves with strong history should never be pruned (they're likely good)
