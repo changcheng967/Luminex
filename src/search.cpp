@@ -673,6 +673,14 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
         Value rbeta = std::min(beta + 175, VALUE_INFINITE - 200);
         int rdepth = depth - 3;
 
+        // TT shortcut: if TT already proves position >= rbeta at sufficient depth,
+        // skip capture generation entirely
+        if (found && tt_depth >= rdepth && tt_value >= rbeta &&
+            (tte->bound() & BOUND_LOWER)) {
+            g_stats.probcut_prunes++;
+            return tt_value;
+        }
+
         // Try winning captures (SEE > 0)
         ExtMove probcut_moves[MAX_MOVES];
         ExtMove* probcut_end = generate<GEN_CAPTURE>(pos, probcut_moves);
