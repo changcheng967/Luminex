@@ -1225,6 +1225,36 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
         // Precompute enemy king check rays for capture check bonus
         Square cap_opp_ksq = pos.king_sq(Color(pos.side_to_move() ^ 1));
 
+        // Compute opponent's pinned pieces: pieces between their king and our sliders.
+        // Attacking pinned pieces is strong — they can't recapture or defend.
+        Bitboard opp_pinned = 0;
+        {
+            Color us = pos.side_to_move();
+            Color them = Color(us ^ 1);
+            Square their_ksq = cap_opp_ksq;
+            Bitboard occ = pos.pieces();
+            // Rook/Queen pins on rank/file
+            Bitboard rq = pos.pieces(us, ROOK, QUEEN);
+            Bitboard rook_rays = rook_attacks_bb(their_ksq, occ);
+            Bitboard rook_pinners = rook_rays & rq;
+            while (rook_pinners) {
+                Square pinner = pop_lsb(rook_pinners);
+                Bitboard between = rook_attacks_bb(their_ksq, occ ^ square_bb(pinner)) & rook_rays;
+                Bitboard candidates = between & pos.pieces(them);
+                if (popcount(candidates) == 1) opp_pinned |= candidates;
+            }
+            // Bishop/Queen pins on diagonals
+            Bitboard bq = pos.pieces(us, BISHOP, QUEEN);
+            Bitboard bishop_rays = bishop_attacks_bb(their_ksq, occ);
+            Bitboard bishop_pinners = bishop_rays & bq;
+            while (bishop_pinners) {
+                Square pinner = pop_lsb(bishop_pinners);
+                Bitboard between = bishop_attacks_bb(their_ksq, occ ^ square_bb(pinner)) & bishop_rays;
+                Bitboard candidates = between & pos.pieces(them);
+                if (popcount(candidates) == 1) opp_pinned |= candidates;
+            }
+        }
+
         // Score captures: MVV-LVA + SEE classification + check bonus
         static constexpr int piece_value[] = {100, 320, 330, 500, 900, 20000, 0};
         for (ExtMove* it = captures; it != cap_end; ++it) {
@@ -1245,6 +1275,9 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
                 } else {
                     score = 500000 + mvv_lva + cap_hist / 2;
                 }
+                // Pin bonus: capturing a pinned opponent piece is strong —
+                // the piece can't recapture or defend (chess principle: "pin is mightier than sword")
+                if (opp_pinned & square_bb(m.to())) score += 200000;
                 // Check bonus: captures that give check are forcing, prioritize them
                 bool gives_chk = false;
                 if (attacker == PAWN) {
@@ -1346,6 +1379,13 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
                         int kdist = std::max(abs(int(m.to() % 8) - int(enemy_ksq % 8)),
                                              abs(int(m.to() / 8) - int(enemy_ksq / 8)));
                         if (kdist <= 1) score += 3000;
+
+                        // Pin pressure: moves that attack a pinned opponent piece
+                        // Pinned pieces can't move — pressuring them is "free" attacks
+                        if (pt == KNIGHT || pt == BISHOP) {
+                            Bitboard att = (pt == KNIGHT) ? knight_attacks_bb(m.to()) : bishop_attacks_bb(m.to(), pos.pieces() ^ square_bb(m.from()));
+                            if (att & opp_pinned) score += 8000;
+                        }
 
                         // Centralization bonus: pieces moving to central squares searched earlier
                         // Principle: centralized pieces are disproportionately strong (Nimzowitsch)
