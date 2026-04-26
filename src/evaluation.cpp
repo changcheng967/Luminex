@@ -328,7 +328,7 @@ struct PawnEntry {
     uint64_t key;
     int32_t mg, eg;
 };
-static constexpr int PAWN_HASH_SIZE = 8192;
+static constexpr int PAWN_HASH_SIZE = 16384;
 static PawnEntry pawn_table[PAWN_HASH_SIZE];
 
 // Evaluate pawn-only terms and cache in pawn_table
