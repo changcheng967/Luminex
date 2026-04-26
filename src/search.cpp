@@ -418,48 +418,9 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
         }
     }
 
-    // Quiet checks: search check-giving quiet moves in qsearch.
-    // Only at depth >= -2 to prevent explosion at deepest levels.
-    // Checks are forcing — the opponent MUST respond, revealing positional info.
-    if (!in_check && depth >= -2) {
-        ExtMove checks[MAX_MOVES];
-        ExtMove* check_end = generate<GEN_QUIET_CHECK>(pos, checks);
-        int check_count = 0;
-
-        for (ExtMove* it = checks; it != check_end; ++it) {
-            if (stop.load(std::memory_order_relaxed)) break;
-            if (check_count >= 5) break;  // Limit to prevent search explosion
-
-            Move m = it->move;
-            if (!pos.legal(m, true)) continue;
-            // Skip quiet checks with very negative SEE (losing material)
-            if (!pos.see_ge(m, Value(-depth * 50))) continue;
-
-            ss->current_move = m;
-            ss->moved_piece = pos.piece_on(m.from());
-
-            if (!pos.do_move(m)) continue;
-            check_count++;
-            moves_searched++;
-
-            Value value = -qsearch(pos, ss + 1, -beta, -alpha, depth - 1);
-
-            if (stop.load(std::memory_order_relaxed)) {
-                pos.undo_move(m);
-                return VALUE_ZERO;
-            }
-
-            pos.undo_move(m);
-
-            if (value >= beta) {
-                g_stats.qs_cap_cutoffs++;
-                return value;
-            }
-            if (value > alpha) {
-                alpha = value;
-            }
-        }
-    }
+    // Quiet checks removed: generating all quiet moves to find ~2-3 checks
+    // is expensive. The speed gain from removal outweighs tactical accuracy
+    // at bullet time controls.
 
     if (moves_searched > 0) g_stats.qs_cap_searched++;
     else if (!in_check) g_stats.qs_no_moves++;
