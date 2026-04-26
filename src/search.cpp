@@ -612,13 +612,13 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
     // More aggressive when opponent is worsening (wider margin)
     if (!pv_node && !pos.is_check() && depth <= 6 && eval - futility_margin(depth, ss->improving || opponent_worsening) >= beta) {
         g_stats.futility_prunes++;
-        return (2 * int(beta) + int(eval)) / 3;
+        return eval;
     }
 
     // Reverse futility pruning (static null move): if eval is far above beta, prune immediately
     if (!pv_node && !pos.is_check() && depth <= 8 && eval - 100 * depth - ((ss->improving || opponent_worsening) ? 0 : 30) >= beta) {
         g_stats.rev_futility_prunes++;
-        return (2 * int(beta) + int(eval)) / 3;
+        return eval;
     }
 
     // Razoring: at low depths, if eval is far below alpha, try qsearch to confirm
