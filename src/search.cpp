@@ -1331,14 +1331,6 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
                             score += 15000;
                         }
 
-                        // Destination safety: penalize rooks/queens moving to
-                        // enemy-pawn-attacked squares (they'll be en prise to a pawn).
-                        // Knights/bishops are expected on central pawn-attacked squares.
-                        if ((pt == ROOK || pt == QUEEN) &&
-                            (enemy_pawn_attacks & square_bb(m.to()))) {
-                            score -= 2000;
-                        }
-
                         // King-zone pressure ordering: pieces moving adjacent to
                         // the enemy king create threats (Lasker) — same principle
                         // as king-zone LMR, applied to move ordering
