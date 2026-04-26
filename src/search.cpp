@@ -92,7 +92,7 @@ EvalCacheEntry eval_cache[EVAL_CACHE_SIZE];
 // Correction history: corrects static eval based on search errors
 // Indexed by pawn structure hash. Stores rolling average of (search_value - static_eval).
 // Kept conservative: small table, gentle update, capped corrections.
-constexpr int CORRHIST_SIZE = 16384;
+constexpr int CORRHIST_SIZE = 8192;
 struct CorrHistEntry {
     uint64_t key;
     int32_t correction;  // Raw sum, divided by weight on read
