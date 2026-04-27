@@ -879,8 +879,7 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
         // Near alpha = critical position, reduce less
         if (!pos.is_check()) {
             int eval_margin = int(eval) - int(alpha);
-            if (eval_margin > 500) reduction += 2;
-            else if (eval_margin > 250) reduction += 1;
+            if (eval_margin > 250) reduction += 1;
             else if (eval_margin > -50 && eval_margin < 100) reduction -= 1;
         }
 
