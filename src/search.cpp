@@ -660,8 +660,7 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
             if (null_value >= VALUE_MATE_IN_MAX_PLY) null_value = beta;
 
             // Verification search at high depth (zugzwang-prone endgames)
-            // Skip verification when clearly winning — zugzwang won't matter
-            if (piece_count < 4 && depth >= 6 && int(eval) - int(beta) <= 200) {
+            if (piece_count < 4 && depth >= 6) {
                 Value verify = search_worker(pos, ss, beta - 1, beta, (depth - R) * 3 / 4, !cut_node);
                 if (verify >= beta) {
                     g_stats.null_move_prunes++;
