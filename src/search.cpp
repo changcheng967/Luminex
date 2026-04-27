@@ -946,6 +946,8 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
         // BUT: moves with strong history should never be pruned (they're likely good)
         int lmp_base = (ss->improving || opponent_worsening) ? 3 : 2;
         int lmp_threshold = lmp_base + depth * depth;
+        // Eval-adaptive: when clearly winning, prune quiet moves earlier
+        if (int(eval) - int(alpha) > 200) lmp_threshold -= depth;
         if (is_quiet && !pv_node && ss->ply > 0 && depth <= 6 && moves_played >= lmp_threshold) {
             // History escape: if the move has strong positive combined history,
             // it has been good in similar positions — don't prune it
