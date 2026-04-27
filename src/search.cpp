@@ -730,8 +730,10 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
     // ================================================================
 
     Value best_value = -VALUE_INFINITE;
+    Value node_alpha = alpha;  // Original alpha for counterfactual depth allocation
     int moves_played = 0;
     bool any_legal_move = false;  // Track if any legal move exists (vs all pruned)
+    bool winning_margin = false;  // Set when best move beat alpha by large margin
 
     // Track quiet moves for history gravity (penalizing non-cutoff moves)
     Move quiets_searched[64];
@@ -989,6 +991,8 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
             } else {
                 reduction = compute_reduction(m, moves_played, gives_chk);
             }
+            // Counterfactual: previous move found clear winner → reduce more
+            if (winning_margin) reduction += 1;
             // Reduce less in PV nodes
             if (pv_node) reduction = std::max(1, reduction - 1);
             new_depth = depth - 1 - reduction;
@@ -1098,6 +1102,10 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
         if (value > best_value) {
             best_value = value;
             best_move_found = m;
+
+            // Counterfactual: found a clearly winning move → subsequent moves
+            // are less critical, can be reduced more aggressively
+            if (value > node_alpha + 200) winning_margin = true;
 
             if (value > alpha) {
                 alpha = value;
