@@ -582,6 +582,17 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
     // missing the conclusion. Individual check extensions don't catch this because
     // they treat each ply independently — the forcing LINE as a whole is what matters.
     ss->forced_ply_count = 0;
+
+    // Eval-complexity: when TT (from deeper search) disagrees significantly
+    // with static eval, the position is more complex than eval suggests.
+    // Use this to reduce LMR aggressiveness — don't aggressively reduce
+    // in positions where the eval can't be trusted.
+    int eval_complexity = 0;
+    if (found && !pv_node && !pos.is_check() && tt_depth >= depth - 2 &&
+        abs(tt_value) < VALUE_KNOWN_WIN && tt_value != eval) {
+        int gap = abs(int(tt_value) - int(eval));
+        if (gap >= 150) eval_complexity = -1;
+    }
     if (pos.is_check()) {
         ss->forced_ply_count = ((ss - 1)->forced_ply_count + 1);
     }
@@ -877,6 +888,10 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
             if (eval_margin > 250) reduction += 1;
             else if (eval_margin > -50 && eval_margin < 100) reduction -= 1;
         }
+
+        // Eval-complexity: TT disagrees with static eval → position is complex
+        // Don't reduce aggressively when the eval can't be trusted
+        reduction += eval_complexity;
 
         return std::max(1, std::min(reduction, depth - 2));
     };
