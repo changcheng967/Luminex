@@ -659,8 +659,9 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
             // Distrust mate scores from null move
             if (null_value >= VALUE_MATE_IN_MAX_PLY) null_value = beta;
 
-            // Verification search at high depth
-            if (piece_count < 4 && depth >= 6) {
+            // Verification search at high depth (zugzwang-prone endgames)
+            // Skip verification when clearly winning — zugzwang won't matter
+            if (piece_count < 4 && depth >= 6 && int(eval) - int(beta) <= 200) {
                 Value verify = search_worker(pos, ss, beta - 1, beta, (depth - R) * 3 / 4, !cut_node);
                 if (verify >= beta) {
                     g_stats.null_move_prunes++;
@@ -730,10 +731,8 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
     // ================================================================
 
     Value best_value = -VALUE_INFINITE;
-    Value node_alpha = alpha;  // Original alpha for counterfactual depth allocation
     int moves_played = 0;
     bool any_legal_move = false;  // Track if any legal move exists (vs all pruned)
-    bool winning_margin = false;  // Set when best move beat alpha by large margin
 
     // Track quiet moves for history gravity (penalizing non-cutoff moves)
     Move quiets_searched[64];
@@ -991,8 +990,6 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
             } else {
                 reduction = compute_reduction(m, moves_played, gives_chk);
             }
-            // Counterfactual: previous move found clear winner → reduce more
-            if (winning_margin) reduction += 1;
             // Reduce less in PV nodes
             if (pv_node) reduction = std::max(1, reduction - 1);
             new_depth = depth - 1 - reduction;
@@ -1102,10 +1099,6 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
         if (value > best_value) {
             best_value = value;
             best_move_found = m;
-
-            // Counterfactual: found a clearly winning move → subsequent moves
-            // are less critical, can be reduced more aggressively
-            if (value > node_alpha + 200) winning_margin = true;
 
             if (value > alpha) {
                 alpha = value;
