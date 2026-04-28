@@ -222,6 +222,9 @@ Score PST_EG_TABLE[2][8][64] = {
 
 using Score = Value;
 
+// Combined material+PST tables for incremental eval (white-positive)
+int PSQ_MG[2][8][64];
+int PSQ_EG[2][8][64];
 // ============================================================
 // Mobility system: linear formula instead of lookup tables
 // Each additional square of mobility adds a fixed bonus.
@@ -1333,6 +1336,18 @@ void init_evaluation() {
         for (int s = 0; s < 64; ++s) {
             PST_MG_TABLE[BLACK][pt][s] = PST_MG_TABLE[WHITE][pt][s ^ 56];
             PST_EG_TABLE[BLACK][pt][s] = PST_EG_TABLE[WHITE][pt][s ^ 56];
+        }
+    }
+
+    // Build combined material+PST tables for incremental eval
+    // PSQ[c][pt][sq] = material_value + pst[c][pt][sq], from white's perspective
+    for (int c = 0; c < 2; ++c) {
+        for (int pt = 0; pt < 8; ++pt) {
+            for (int s = 0; s < 64; ++s) {
+                int sign = (c == WHITE) ? 1 : -1;
+                PSQ_MG[c][pt][s] = sign * (PieceValueMG[pt] + PST_MG_TABLE[c][pt][s]);
+                PSQ_EG[c][pt][s] = sign * (PieceValueEG[pt] + PST_EG_TABLE[c][pt][s]);
+            }
         }
     }
 

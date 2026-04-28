@@ -11,6 +11,11 @@ class Position;
 extern Score PST_MG_TABLE[2][8][64];
 extern Score PST_EG_TABLE[2][8][64];
 
+// Combined piece-value + PST tables for incremental eval
+// PSQ_MG[c][pt][sq] = PieceValueMG[pt] + PST_MG_TABLE[c][pt][sq] (white-positive)
+extern int PSQ_MG[2][8][64];
+extern int PSQ_EG[2][8][64];
+
 // Evaluation parameters (self-engineered from chess first principles)
 struct EvalParams {
     int bishop_pair_mg = 40;

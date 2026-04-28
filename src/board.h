@@ -10,6 +10,8 @@ namespace luminex {
 struct StateInfo {
     Key key = 0;
     Key pawn_key = 0;
+    int psq_mg = 0;  // Incremental material+PST middlegame score (white-relative)
+    int psq_eg = 0;  // Incremental material+PST endgame score (white-relative)
     Bitboard checkers = 0;
     Bitboard pinned = 0;
     Bitboard block_checkers = 0;
@@ -87,6 +89,8 @@ public:
 
     Key key() const;
     Key pawn_key() const;
+    int psq_mg() const;
+    int psq_eg() const;
 
     bool is_draw() const;
     bool is_check() const;
@@ -177,6 +181,8 @@ inline void Position::set_game_ply(int ply) { game_ply_ = ply; }
 
 inline Key Position::key() const { return st_->key; }
 inline Key Position::pawn_key() const { return st_->pawn_key; }
+inline int Position::psq_mg() const { return st_->psq_mg; }
+inline int Position::psq_eg() const { return st_->psq_eg; }
 
 inline bool Position::is_check() const { return checkers() != 0; }
 

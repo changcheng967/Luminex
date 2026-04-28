@@ -1,4 +1,5 @@
 #include "luminex.h"
+#include "evaluation.h"
 #include <algorithm>
 #include <cctype>
 #include <cmath>
@@ -157,6 +158,8 @@ void Position::set(const std::string& fen) {
     st_ply = 0;
     st_ = &state_stack[0];  // CRITICAL FIX: Use state_stack[0], not dummy_state!
     st_->key = 0;
+    st_->psq_mg = 0;
+    st_->psq_eg = 0;
     st_->ply = 0;
     st_->ep_square = SQUARE_NONE;
     st_->castling_rights = 0;
@@ -203,6 +206,8 @@ void Position::set(const std::string& fen) {
         Color c = Color(pc / 6);
         PieceType pt = piece_type_of(pc);
         k ^= Zobrist::psq[int(c)][int(pt)][int(s)];
+        st_->psq_mg += PSQ_MG[int(c)][int(pt)][int(s)];
+        st_->psq_eg += PSQ_EG[int(c)][int(pt)][int(s)];
     }
 
     if (st_->ep_square != SQUARE_NONE) {
@@ -531,6 +536,8 @@ bool Position::do_move(Move m) {
     // Save state for undo - copy current state to next slot in state_stack
     next_st.key = st_->key;
     next_st.pawn_key = st_->pawn_key;
+    next_st.psq_mg = st_->psq_mg;
+    next_st.psq_eg = st_->psq_eg;
     next_st.checkers = st_->checkers;
     next_st.pinned = st_->pinned;
     next_st.block_checkers = st_->block_checkers;
@@ -594,6 +601,8 @@ bool Position::do_move(Move m) {
         } else {
             remove_piece(to);
             st_->key ^= Zobrist::psq[int(them)][int(captured)][int(to)];
+            st_->psq_mg -= PSQ_MG[int(them)][int(captured)][int(to)];
+            st_->psq_eg -= PSQ_EG[int(them)][int(captured)][int(to)];
             if (captured == PAWN) {
                 st_->pawn_key ^= Zobrist::psq[int(them)][int(PAWN)][int(to)];
             }
@@ -604,14 +613,20 @@ bool Position::do_move(Move m) {
     if (m.is_promotion()) {
         st_->key ^= Zobrist::psq[int(us)][int(PAWN)][int(from)];
         st_->pawn_key ^= Zobrist::psq[int(us)][int(PAWN)][int(from)];
+        st_->psq_mg -= PSQ_MG[int(us)][int(PAWN)][int(from)];
+        st_->psq_eg -= PSQ_EG[int(us)][int(PAWN)][int(from)];
         remove_piece(from);
         PieceType promoted = m.promotion_type();
         put_piece(us, promoted, to);
         st_->key ^= Zobrist::psq[int(us)][int(promoted)][int(to)];
+        st_->psq_mg += PSQ_MG[int(us)][int(promoted)][int(to)];
+        st_->psq_eg += PSQ_EG[int(us)][int(promoted)][int(to)];
     } else {
         st_->key ^= Zobrist::psq[int(us)][int(pt)][int(from)];
         move_piece(from, to);
         st_->key ^= Zobrist::psq[int(us)][int(pt)][int(to)];
+        st_->psq_mg += PSQ_MG[int(us)][int(pt)][int(to)] - PSQ_MG[int(us)][int(pt)][int(from)];
+        st_->psq_eg += PSQ_EG[int(us)][int(pt)][int(to)] - PSQ_EG[int(us)][int(pt)][int(from)];
         if (pt == PAWN) {
             st_->pawn_key ^= Zobrist::psq[int(us)][int(PAWN)][int(from)];
             st_->pawn_key ^= Zobrist::psq[int(us)][int(PAWN)][int(to)];
@@ -632,6 +647,8 @@ bool Position::do_move(Move m) {
         st_->key ^= Zobrist::psq[int(us)][int(ROOK)][int(rfrom)];
         move_piece(rfrom, rto);
         st_->key ^= Zobrist::psq[int(us)][int(ROOK)][int(rto)];
+        st_->psq_mg += PSQ_MG[int(us)][int(ROOK)][int(rto)] - PSQ_MG[int(us)][int(ROOK)][int(rfrom)];
+        st_->psq_eg += PSQ_EG[int(us)][int(ROOK)][int(rto)] - PSQ_EG[int(us)][int(ROOK)][int(rfrom)];
     }
 
     // Handle en passant
@@ -640,6 +657,8 @@ bool Position::do_move(Move m) {
         remove_piece(cap_sq);
         st_->key ^= Zobrist::psq[int(them)][int(PAWN)][int(cap_sq)];
         st_->pawn_key ^= Zobrist::psq[int(them)][int(PAWN)][int(cap_sq)];
+        st_->psq_mg -= PSQ_MG[int(them)][int(PAWN)][int(cap_sq)];
+        st_->psq_eg -= PSQ_EG[int(them)][int(PAWN)][int(cap_sq)];
     }
 
     // Update en passant square (check piece type before move)
@@ -846,6 +865,8 @@ void Position::do_null_move() {
     // Copy current state
     next_st.key = st_->key;
     next_st.pawn_key = st_->pawn_key;  // Preserve pawn key for eval cache
+    next_st.psq_mg = st_->psq_mg;
+    next_st.psq_eg = st_->psq_eg;
     next_st.checkers = st_->checkers;
     next_st.pinned = st_->pinned;
     next_st.block_checkers = st_->block_checkers;

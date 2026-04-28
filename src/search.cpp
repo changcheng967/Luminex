@@ -296,18 +296,15 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
     Value eval = VALUE_ZERO;
 
     if (!in_check) {
-        // PMG philosophy: reuse cached full eval if available (free + more accurate)
-        // Falls back to tactical_only on cache miss (cheaper than full eval)
-        uint64_t key = pos.key();
-        uint32_t idx = uint32_t(key) & (EVAL_CACHE_SIZE - 1);
-        if (eval_cache[idx].key == key) {
-            eval = Value(eval_cache[idx].value);
-            g_stats.eval_cache_hits_qs++;
-        } else {
-            eval = evaluate(pos, true);
-            g_stats.eval_cache_misses_qs++;
-        }
-        // Apply correction history to eval (capped for safety)
+        // Incremental PSQ eval: material+PST maintained by do_move, essentially free
+        // Phase interpolation: same formula as full eval
+        int np = popcount(pos.pieces(KNIGHT)) + popcount(pos.pieces(BISHOP))
+               + popcount(pos.pieces(ROOK)) * 2 + popcount(pos.pieces(QUEEN)) * 4;
+        int phase = std::min(24, np);
+        int psq = (pos.psq_mg() * phase + pos.psq_eg() * (24 - phase)) / 24;
+        eval = pos.side_to_move() == WHITE ? Value(psq) : Value(-psq);
+
+        // Apply correction history (capped for safety)
         int correction = get_correction(pos.pawn_key());
         correction = std::max(-100, std::min(100, correction));
         eval = Value(eval + correction);
