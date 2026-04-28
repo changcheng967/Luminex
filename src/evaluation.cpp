@@ -1281,6 +1281,57 @@ Value evaluate(const Position& pos, bool tactical_only) {
 }
 
 // ============================================================
+// Fast eval for qsearch: incremental PSQ + pawn hash only
+// Skips ALL magic bitboard lookups (no attack maps, threats, mobility)
+// ~50-100ns vs ~300ns tactical_only vs ~893ns full eval
+// ============================================================
+Value evaluate_fast(const Position& pos) {
+    // Use incremental material+PST (precomputed by do_move, free)
+    int mg_score = pos.psq_mg();
+    int eg_score = pos.psq_eg();
+
+    // Add pawn structure from pawn hash (cached, ~5ns on hit)
+    {
+        int32_t pawn_mg = 0, pawn_eg = 0;
+        evaluate_pawns(pos, pawn_mg, pawn_eg);
+        // Pawn hash includes pawn material+PST, which is ALSO in psq_mg/psq_eg
+        // So we only add the STRUCTURAL bonuses (doubled, isolated, etc.)
+        // by subtracting the pawn material+PST portion that evaluate_pawns added
+        for (int c = 0; c < 2; ++c) {
+            Bitboard pawns = pos.pieces(Color(c), PAWN);
+            while (pawns) {
+                Square sq = pop_lsb(pawns);
+                int sign = (c == WHITE) ? 1 : -1;
+                pawn_mg -= sign * (PieceValueMG[PAWN] + PST_MG_TABLE[c][PAWN][int(sq)]);
+                pawn_eg -= sign * (PieceValueEG[PAWN] + PST_EG_TABLE[c][PAWN][int(sq)]);
+            }
+        }
+        mg_score += pawn_mg;
+        eg_score += pawn_eg;
+    }
+
+    // Bishop pair
+    int wb = popcount(pos.pieces(WHITE, BISHOP));
+    int bb = popcount(pos.pieces(BLACK, BISHOP));
+    if (wb >= 2) { mg_score += g_eval_params.bishop_pair_mg; eg_score += g_eval_params.bishop_pair_eg; }
+    if (bb >= 2) { mg_score -= g_eval_params.bishop_pair_mg; eg_score -= g_eval_params.bishop_pair_eg; }
+
+    // Phase calculation
+    int phase = popcount(pos.pieces(KNIGHT)) + popcount(pos.pieces(BISHOP))
+              + popcount(pos.pieces(ROOK)) * 2 + popcount(pos.pieces(QUEEN)) * 4;
+    phase = std::min(24, phase);
+
+    int sf = scale_factor(pos, eg_score);
+    int eg_scaled = eg_score * sf / 32;
+    int score = (mg_score * phase + eg_scaled * (24 - phase)) / 24;
+
+    Score tempo = (15 * phase + 5 * (24 - phase)) / 24;
+    score += (pos.side_to_move() == WHITE) ? tempo : -tempo;
+
+    return pos.side_to_move() == WHITE ? score : -score;
+}
+
+// ============================================================
 // Endgame scaling
 // ============================================================
 int scale_factor(const Position& pos, [[maybe_unused]] Value eg) {
