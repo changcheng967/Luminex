@@ -369,6 +369,10 @@ static void evaluate_pawns(const Position& pos, int32_t& mg_out, int32_t& eg_out
             File f = file_of(sq);
             Rank r = relative_rank(c, sq);
 
+            // Material + PST
+            mg += sign * (PieceValueMG[PAWN] + PST_MG_TABLE[int(c)][int(PAWN)][int(sq)]);
+            eg += sign * (PieceValueEG[PAWN] + PST_EG_TABLE[int(c)][int(PAWN)][int(sq)]);
+
             // Doubled pawn: two pawns on same file block each other
             if (file_count[f] > 1) {
                 mg -= sign * 12;
@@ -530,9 +534,8 @@ Value evaluate(const Position& pos, bool tactical_only) {
         }
     }
 
-    // Start from incremental material+PST (maintained by do_move, zero-cost)
-    Score mg_score = pos.psq_mg();
-    Score eg_score = pos.psq_eg();
+    Score mg_score = 0;
+    Score eg_score = 0;
 
     Square ksq_arr[2] = {pos.king_sq(WHITE), pos.king_sq(BLACK)};
     int bishop_count[2] = {0, 0};
@@ -670,6 +673,8 @@ Value evaluate(const Position& pos, bool tactical_only) {
         Bitboard knights = pos.pieces(c, KNIGHT);
         while (knights) {
             Square sq = pop_lsb(knights);
+            mg_score += sign * (PieceValueMG[KNIGHT] + PST_MG_TABLE[int(c)][int(KNIGHT)][int(sq)]);
+            eg_score += sign * (PieceValueEG[KNIGHT] + PST_EG_TABLE[int(c)][int(KNIGHT)][int(sq)]);
 
             Bitboard attacks = knight_attacks_bb(sq);
             attacks_by[c][KNIGHT] |= attacks;
@@ -716,6 +721,8 @@ Value evaluate(const Position& pos, bool tactical_only) {
         bishop_count[c_idx] = popcount(bishops);
         while (bishops) {
             Square sq = pop_lsb(bishops);
+            mg_score += sign * (PieceValueMG[BISHOP] + PST_MG_TABLE[int(c)][int(BISHOP)][int(sq)]);
+            eg_score += sign * (PieceValueEG[BISHOP] + PST_EG_TABLE[int(c)][int(BISHOP)][int(sq)]);
 
             Bitboard attacks = bb_diag_attacks(sq, occupied);
             attacks_by[c][BISHOP] |= attacks;
@@ -774,6 +781,8 @@ Value evaluate(const Position& pos, bool tactical_only) {
         Bitboard rooks = pos.pieces(c, ROOK);
         while (rooks) {
             Square sq = pop_lsb(rooks);
+            mg_score += sign * (PieceValueMG[ROOK] + PST_MG_TABLE[int(c)][int(ROOK)][int(sq)]);
+            eg_score += sign * (PieceValueEG[ROOK] + PST_EG_TABLE[int(c)][int(ROOK)][int(sq)]);
 
             // Rook mobility: exclude own rooks/queens for x-ray effect
             Bitboard attacks = rook_attacks_bb(sq, occupied ^ pos.pieces(c, ROOK) ^ pos.pieces(c, QUEEN));
@@ -864,6 +873,8 @@ Value evaluate(const Position& pos, bool tactical_only) {
         Bitboard queens = pos.pieces(c, QUEEN);
         while (queens) {
             Square sq = pop_lsb(queens);
+            mg_score += sign * (PieceValueMG[QUEEN] + PST_MG_TABLE[int(c)][int(QUEEN)][int(sq)]);
+            eg_score += sign * (PieceValueEG[QUEEN] + PST_EG_TABLE[int(c)][int(QUEEN)][int(sq)]);
 
             // Queen mobility: x-ray through own bishops/rooks
             Bitboard attacks = bb_diag_attacks(sq, occupied ^ pos.pieces(c, BISHOP))
@@ -894,6 +905,8 @@ Value evaluate(const Position& pos, bool tactical_only) {
         // King
         // -------------------------------------------------------
         Square ksq = ksq_arr[c_idx];
+        mg_score += sign * (PieceValueMG[KING] + PST_MG_TABLE[int(c)][int(KING)][int(ksq)]);
+        eg_score += sign * (PieceValueEG[KING] + PST_EG_TABLE[int(c)][int(KING)][int(ksq)]);
 
         if (!tactical_only) {
         // King pawn shield (MG only: safety matters in middlegame)
