@@ -2030,10 +2030,61 @@ Move search(Position& pos, Limits& lim) {
     delete worker;
     worker = nullptr;
 
-    // Print comprehensive search statistics
+    // Print comprehensive search statistics + dump to file for analysis
     {
         // Node distribution
         int64_t total_nodes = g_stats.main_nodes + g_stats.qs_nodes;
+
+        // Compute key ratios for file dump
+        int64_t main_search_nodes = g_stats.main_nodes;
+        // First-move cutoff rate (best predictor of search efficiency)
+        int64_t total_search_nodes_with_moves = g_stats.first_move_cutoffs
+            + (main_search_nodes > g_stats.first_move_cutoffs ? main_search_nodes - g_stats.first_move_cutoffs : 0);
+        int first_move_pct = total_search_nodes_with_moves > 0
+            ? g_stats.first_move_cutoffs * 1000 / total_search_nodes_with_moves : 0;
+
+        // Quiet pruning efficiency: what fraction of generated quiets are actually searched?
+        int quiet_search_pct = g_stats.quiets_generated > 0
+            ? g_stats.quiets_searched * 1000 / g_stats.quiets_generated : 0;
+
+        // Write compact single-line stats to file for aggregation
+        FILE* sf = fopen("/tmp/luminex_game_stats.txt", "a");
+        if (sf) {
+            fprintf(sf, "game_ply=%d final_depth=%d nodes=%lld main=%lld qs=%lld "
+                "tt_hit_permille=%d tt_cutoff_permille=%d "
+                "eval_main_hit_pct=%d eval_qs_hit_pct=%d "
+                "null_move=%lld futility=%lld rev_futility=%lld razoring=%lld "
+                "probcut=%lld lmp=%lld history_prune=%lld "
+                "lmr_total=%lld lmr_research_permille=%d "
+                "check_ext=%lld singular_ext=%lld recapture_ext=%lld "
+                "first_move_cutoff_pct=%d.%d quiet_search_pct=%d.%d "
+                "quiets_gen=%lld quiets_searched=%lld caps_searched=%lld "
+                "pmg_tt_cutoffs=%lld pmg_cap_cutoffs=%lld pmg_quiet_cutoffs=%lld\n",
+                pos.game_ply(), root_depth,
+                (long long)total_nodes, (long long)main_search_nodes, (long long)g_stats.qs_nodes,
+                g_stats.tt_probes > 0 ? (int)(g_stats.tt_hits * 1000 / g_stats.tt_probes) : 0,
+                g_stats.tt_probes > 0 ? (int)(g_stats.tt_cutoffs * 1000 / g_stats.tt_probes) : 0,
+                (g_stats.eval_cache_hits_main + g_stats.eval_cache_misses_main) > 0
+                    ? (int)(g_stats.eval_cache_hits_main * 100 / (g_stats.eval_cache_hits_main + g_stats.eval_cache_misses_main)) : 0,
+                (g_stats.eval_cache_hits_qs + g_stats.eval_cache_misses_qs) > 0
+                    ? (int)(g_stats.eval_cache_hits_qs * 100 / (g_stats.eval_cache_hits_qs + g_stats.eval_cache_misses_qs)) : 0,
+                (long long)g_stats.null_move_prunes, (long long)g_stats.futility_prunes,
+                (long long)g_stats.rev_futility_prunes, (long long)g_stats.razoring_prunes,
+                (long long)g_stats.probcut_prunes, (long long)g_stats.lmp_prunes,
+                (long long)g_stats.history_prunes,
+                (long long)g_stats.lmr_total,
+                g_stats.lmr_total > 0 ? (int)(g_stats.lmr_researches * 1000 / g_stats.lmr_total) : 0,
+                (long long)g_stats.check_extensions, (long long)g_stats.singular_extensions,
+                (long long)g_stats.recapture_extensions,
+                first_move_pct / 10, first_move_pct % 10,
+                quiet_search_pct / 10, quiet_search_pct % 10,
+                (long long)g_stats.quiets_generated, (long long)g_stats.quiets_searched,
+                (long long)g_stats.captures_searched,
+                (long long)g_stats.pmg_tt_cutoffs, (long long)g_stats.pmg_capture_cutoffs,
+                (long long)g_stats.pmg_quiet_cutoffs);
+            fclose(sf);
+        }
+
         std::ostringstream s;
         s << "info string STATS nodes: main=" << g_stats.main_nodes
           << " qs=" << g_stats.qs_nodes;
