@@ -567,14 +567,6 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
     }
     ss->static_eval = eval;
 
-    // Correction confidence: small correction = eval was accurate for this pawn structure
-    // When the eval is trustworthy, LMR can safely be more aggressive
-    bool eval_confident = false;
-    if (!pos.is_check()) {
-        int corr = get_correction(pos.pawn_key());
-        eval_confident = (corr >= -20 && corr <= 20);
-    }
-
     // Compute improving flag: position is improving if eval is better than 2 plies ago
     // In-check positions are never considered improving (no reliable eval)
     ss->improving = (ss->ply >= 2 && !pos.is_check() && eval > (ss - 2)->static_eval);
@@ -890,10 +882,6 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
             if (eval_margin > 250) reduction += 1;
             else if (eval_margin > -50 && eval_margin < 100) reduction -= 1;
         }
-
-        // Correction-confidence: when eval correction was small, the position
-        // is well-understood by the eval — safe to reduce more aggressively
-        if (eval_confident) reduction += 1;
 
         return std::max(1, std::min(reduction, depth - 2));
     };
