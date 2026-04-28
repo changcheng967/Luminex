@@ -297,7 +297,7 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
 
     if (!in_check) {
         // Incremental PSQ eval: material+PST maintained by do_move, essentially free
-        // Phase interpolation: same formula as full eval
+        // Used as a fast filter: if clearly above/below decision boundary, skip full eval
         int np = popcount(pos.pieces(KNIGHT)) + popcount(pos.pieces(BISHOP))
                + popcount(pos.pieces(ROOK)) * 2 + popcount(pos.pieces(QUEEN)) * 4;
         int phase = std::min(24, np);
@@ -309,12 +309,35 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
         correction = std::max(-100, std::min(100, correction));
         eval = Value(eval + correction);
 
-        if (eval >= beta) {
+        // Fast path: if PSQ clearly above beta or below alpha, skip full eval
+        // The 200cp margin accounts for mobility/threats/king-safety not in PSQ
+        if (eval >= beta + 200) {
             g_stats.qs_stand_pat_cutoffs++;
             return beta;
         }
-        if (eval > alpha) {
-            alpha = eval;
+        if (eval <= alpha - 200) {
+            // Don't return alpha yet — captures might save us
+            // But skip the stand-pat cutoff check below
+        } else {
+            // PSQ is near the boundary — get accurate eval
+            uint64_t key = pos.key();
+            uint32_t idx = uint32_t(key) & (EVAL_CACHE_SIZE - 1);
+            if (eval_cache[idx].key == key) {
+                eval = Value(eval_cache[idx].value + correction);
+                g_stats.eval_cache_hits_qs++;
+            } else {
+                eval = evaluate(pos, true);
+                eval = Value(eval + correction);
+                g_stats.eval_cache_misses_qs++;
+            }
+
+            if (eval >= beta) {
+                g_stats.qs_stand_pat_cutoffs++;
+                return beta;
+            }
+            if (eval > alpha) {
+                alpha = eval;
+            }
         }
     }
 
