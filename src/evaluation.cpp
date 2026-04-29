@@ -546,13 +546,11 @@ Value evaluate(const Position& pos, bool tactical_only) {
     Bitboard attacks_by[2][7] = {};
     Bitboard all_attacks[2] = {};
 
-    // Initialize pawn and king attacks (always needed for threat eval)
-    if (!tactical_only) {
+    // Initialize pawn and king attacks
     for (int c = 0; c < 2; ++c) {
         attacks_by[c][PAWN] = pawn_attacks_bb(Color(c), pos.pieces(Color(c), PAWN));
         attacks_by[c][KING] = king_attacks_bb(ksq_arr[c]);
         all_attacks[c] = attacks_by[c][PAWN] | attacks_by[c][KING];
-    }
     }
 
     // Pawn evaluation via pawn hash table
@@ -726,7 +724,7 @@ Value evaluate(const Position& pos, bool tactical_only) {
             mg_score += sign * (PieceValueMG[BISHOP] + PST_MG_TABLE[int(c)][int(BISHOP)][int(sq)]);
             eg_score += sign * (PieceValueEG[BISHOP] + PST_EG_TABLE[int(c)][int(BISHOP)][int(sq)]);
 
-            Bitboard attacks = tactical_only ? Bitboard(0) : bb_diag_attacks(sq, occupied);
+            Bitboard attacks = bb_diag_attacks(sq, occupied);
             attacks_by[c][BISHOP] |= attacks;
             all_attacks[c] |= attacks;
 
@@ -787,7 +785,7 @@ Value evaluate(const Position& pos, bool tactical_only) {
             eg_score += sign * (PieceValueEG[ROOK] + PST_EG_TABLE[int(c)][int(ROOK)][int(sq)]);
 
             // Rook mobility: exclude own rooks/queens for x-ray effect
-            Bitboard attacks = tactical_only ? Bitboard(0) : rook_attacks_bb(sq, occupied ^ pos.pieces(c, ROOK) ^ pos.pieces(c, QUEEN));
+            Bitboard attacks = rook_attacks_bb(sq, occupied ^ pos.pieces(c, ROOK) ^ pos.pieces(c, QUEEN));
             attacks_by[c][ROOK] |= attacks;
             all_attacks[c] |= attacks;
 
@@ -879,9 +877,8 @@ Value evaluate(const Position& pos, bool tactical_only) {
             eg_score += sign * (PieceValueEG[QUEEN] + PST_EG_TABLE[int(c)][int(QUEEN)][int(sq)]);
 
             // Queen mobility: x-ray through own bishops/rooks
-            Bitboard attacks = tactical_only ? Bitboard(0)
-                : (bb_diag_attacks(sq, occupied ^ pos.pieces(c, BISHOP))
-                 | rook_attacks_bb(sq, occupied ^ pos.pieces(c, ROOK)));
+            Bitboard attacks = bb_diag_attacks(sq, occupied ^ pos.pieces(c, BISHOP))
+                             | rook_attacks_bb(sq, occupied ^ pos.pieces(c, ROOK));
             attacks_by[c][QUEEN] |= attacks;
             all_attacks[c] |= attacks;
 
@@ -966,9 +963,8 @@ Value evaluate(const Position& pos, bool tactical_only) {
         } // end !tactical_only king
 
         // -------------------------------------------------------
-        // Threat evaluation: skip in tactical_only (attack maps are empty)
+        // Threat evaluation
         // -------------------------------------------------------
-        if (!tactical_only) {
         {
             Bitboard their_pieces = pos.pieces(them);
 
@@ -1032,8 +1028,8 @@ Value evaluate(const Position& pos, bool tactical_only) {
                 mg_score += sign * 25 * popcount(hanging_pieces);
                 eg_score += sign * 15 * popcount(hanging_pieces);
             }
-            // Pinned enemy pieces: skip in tactical_only (expensive magic BB lookups)
-            if (!tactical_only) {
+            // Pinned enemy pieces: pieces between their king and our sliders
+            // Principle: a pinned piece can't move without exposing its king (Nimzowitsch)
             {
                 Square their_ksq = ksq_arr[c_idx ^ 1];
                 Bitboard our_sliders = (pos.pieces(c, ROOK, QUEEN) | pos.pieces(c, BISHOP, QUEEN));
@@ -1054,9 +1050,7 @@ Value evaluate(const Position& pos, bool tactical_only) {
                     eg_score += sign * pin_count * 10;
                 }
             }
-            } // end !tactical_only pinned pieces
         }
-        } // end !tactical_only threat evaluation
     }
 
     // -------------------------------------------------------
