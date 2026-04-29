@@ -127,6 +127,9 @@ inline void update_correction(uint64_t pawn_key, int error, int depth) {
     }
 }
 
+// Thread-local: PV from previous iteration (for PV-line tracking)
+static thread_local Move prev_iteration_pv[64];
+
 // Thread-local node counter to avoid atomic overhead on every node
 static thread_local uint64_t local_nodes = 0;
 static thread_local uint64_t last_reported_nodes = 0;
@@ -603,9 +606,13 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
 
     // Internal Iterative Reduction (IIR): reduce depth by 1 when no TT move available
     // Only apply at non-PV nodes — PV nodes use IID instead (below)
+    // PV-line exemption: skip IIR when on previous iteration's PV line
+    // (we have ordering information from the PV, no need to reduce)
     if (!pv_node && tt_move == MOVE_NONE && depth >= 4) {
-        depth--;
-        g_stats.iir_reductions++;
+        if (ss->pv_ply < 0 || ss->pv_ply >= 64 || prev_iteration_pv[ss->pv_ply] == MOVE_NONE) {
+            depth--;
+            g_stats.iir_reductions++;
+        }
     }
 
     // Futility pruning - use improving for better pruning decisions
@@ -1034,6 +1041,10 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
             return false;
         }
 
+        // PV-line tracking: propagate to child if this move follows the previous PV
+        (ss + 1)->pv_ply = (ss->pv_ply >= 0 && ss->pv_ply < 63 && m == prev_iteration_pv[ss->pv_ply])
+                            ? ss->pv_ply + 1 : -1;
+
         Value value;
         if (do_lmr && new_depth > 0) {
             // LMR: reduced zero-window search
@@ -1322,6 +1333,11 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
 
                 // Previous iteration's root best move bonus
                 if (m == previous_root_best) score += 70000;
+
+                // PV-line move bonus: moves from previous iteration's PV get highest quiet priority
+                if (ss->pv_ply >= 0 && ss->pv_ply < 64 && m == prev_iteration_pv[ss->pv_ply]) {
+                    score += 80000;
+                }
 
                 // Killer moves bonus ON TOP of history
                 if (m == worker->killers[ss->ply][0]) score += 60000;
@@ -1857,6 +1873,10 @@ Move search(Position& pos, Limits& lim) {
 
                 if (!pos.do_move(it->move)) continue;
 
+                // Set PV-line tracking for child: first root move on previous PV gets tracking
+                worker->stack[1].pv_ply = (root_moves_searched == 0
+                    && it->move == prev_iteration_pv[0]) ? 1 : -1;
+
                 // Check stop immediately after do_move
                 if (g_stop_requested || stop.load(std::memory_order_relaxed)) {
                     pos.undo_move(it->move);
@@ -1953,6 +1973,12 @@ Move search(Position& pos, Limits& lim) {
             best_value = depth_best_value;
             best_move = depth_best_move;
             previous_root_best = depth_best_move;
+
+            // Save PV from this iteration for PV-line tracking in next iteration
+            prev_iteration_pv[0] = depth_best_move;
+            for (int i = 0; i < 63 && worker->stack[1].pv[i] != MOVE_NONE; ++i) {
+                prev_iteration_pv[i + 1] = worker->stack[1].pv[i];
+            }
         }
 
         // Save root position to TT for PV extraction

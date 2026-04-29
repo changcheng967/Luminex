@@ -19,6 +19,7 @@ public:
     int move_count = 0;
     int reduction = 0;  // LMR reduction applied at this ply (for hindsight adjustment)
     int forced_ply_count = 0;  // Consecutive plies in forcing sequence (checks/low mobility)
+    int pv_ply = -1;           // Ply index into previous iteration's PV (-1 = not on PV line)
     bool improving = false;
     Stack* previous = nullptr;
 };
