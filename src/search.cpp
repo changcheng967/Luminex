@@ -674,38 +674,42 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
     }
 
     // ProbCut - if a capture is obviously good enough, verify with shallow search
-    if (!pv_node && depth >= 5 && !pos.is_check() && ss->ply >= 2) {
-        Value rbeta = std::min(beta + 175, VALUE_INFINITE - 200);
-        int rdepth = depth - 3;
+    if (!pv_node && depth >= 3 && !pos.is_check() && ss->ply >= 2) {
+        Value rbeta = std::min(beta + 224 - 61 * (ss->improving ? 1 : 0), VALUE_INFINITE - 200);
 
-        // Try winning captures (SEE > 0)
-        ExtMove probcut_moves[MAX_MOVES];
-        ExtMove* probcut_end = generate<GEN_CAPTURE>(pos, probcut_moves);
+        // TT guard: skip probcut if TT says position is not good enough
+        if (!(found && tt_value < rbeta)) {
+            int rdepth = depth - 4;
 
-        for (ExtMove* it = probcut_moves; it != probcut_end; ++it) {
-            // FIX: Check for stop at top of move loop for faster response
-            if (stop.load(std::memory_order_relaxed)) break;
+            // Try winning captures (SEE > 0)
+            ExtMove probcut_moves[MAX_MOVES];
+            ExtMove* probcut_end = generate<GEN_CAPTURE>(pos, probcut_moves);
 
-            Move m = it->move;
+            for (ExtMove* it = probcut_moves; it != probcut_end; ++it) {
+                if (stop.load(std::memory_order_relaxed)) break;
 
-            // Skip losing captures
-            if (!pos.see_ge(m, Value(1))) continue;
+                Move m = it->move;
 
-            // CRITICAL FIX: Check move is legal before do_move
-            // This prevents analyzing positions where our king is in check
-            if (!pos.legal(m)) continue;
+                // Skip losing captures
+                if (!pos.see_ge(m, Value(1))) continue;
 
-            if (!pos.do_move(m)) continue;
+                if (!pos.legal(m)) continue;
 
-            // Shallow search with reduced beta
-            Value value = -search_worker(pos, ss + 1, -rbeta, -rbeta + 1, rdepth, !cut_node);
+                if (!pos.do_move(m)) continue;
 
-            pos.undo_move(m);
+                // Qsearch-first verification: cheap check before deeper search
+                Value value = -qsearch(pos, ss + 1, -rbeta, -rbeta + 1, 0);
 
-            if (value >= rbeta) {
-                // Shallow search confirms this move is very good - prune
-                g_stats.probcut_prunes++;
-                return value;
+                // If qsearch confirms, verify with shallow search
+                if (value >= rbeta && rdepth > 0)
+                    value = -search_worker(pos, ss + 1, -rbeta, -rbeta + 1, rdepth, !cut_node);
+
+                pos.undo_move(m);
+
+                if (value >= rbeta) {
+                    g_stats.probcut_prunes++;
+                    return value - (rbeta - beta);
+                }
             }
         }
     }
@@ -1204,6 +1208,12 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
         }
         return false;  // no cutoff
     };
+
+    // TT mini-probcut: if TT says position is far above beta with good depth, trust it
+    if (!pv_node && found && (tte->bound() & BOUND_LOWER) && tt_depth >= depth - 4
+        && tt_value >= beta + 400 && abs(tt_value) < VALUE_KNOWN_WIN) {
+        return tt_value;
+    }
 
     // ========================================
     // PHASE 1: TT move (already known, free)
@@ -2055,11 +2065,11 @@ Move search(Position& pos, Limits& lim) {
                 "eval_main_hit_pct=%d eval_qs_hit_pct=%d "
                 "null_move=%lld futility=%lld rev_futility=%lld razoring=%lld "
                 "probcut=%lld lmp=%lld history_prune=%lld "
-                "lmr_total=%lld lmr_research_permille=%d "
+                "lmr_total=%lld lmr_research=%lld "
                 "check_ext=%lld singular_ext=%lld recapture_ext=%lld "
-                "first_move_cutoff_pct=%d.%d quiet_search_pct=%d.%d "
+                "fmc_pct=%d qs_pct=%d "
                 "quiets_gen=%lld quiets_searched=%lld caps_searched=%lld "
-                "pmg_tt_cutoffs=%lld pmg_cap_cutoffs=%lld pmg_quiet_cutoffs=%lld\n",
+                "pmg_tt=%lld pmg_cap=%lld pmg_quiet=%lld\n",
                 pos.game_ply(), root_depth,
                 (long long)total_nodes, (long long)main_search_nodes, (long long)g_stats.qs_nodes,
                 g_stats.tt_probes > 0 ? (int)(g_stats.tt_hits * 1000 / g_stats.tt_probes) : 0,
@@ -2072,12 +2082,10 @@ Move search(Position& pos, Limits& lim) {
                 (long long)g_stats.rev_futility_prunes, (long long)g_stats.razoring_prunes,
                 (long long)g_stats.probcut_prunes, (long long)g_stats.lmp_prunes,
                 (long long)g_stats.history_prunes,
-                (long long)g_stats.lmr_total,
-                g_stats.lmr_total > 0 ? (int)(g_stats.lmr_researches * 1000 / g_stats.lmr_total) : 0,
+                (long long)g_stats.lmr_total, (long long)g_stats.lmr_researches,
                 (long long)g_stats.check_extensions, (long long)g_stats.singular_extensions,
                 (long long)g_stats.recapture_extensions,
-                first_move_pct / 10, first_move_pct % 10,
-                quiet_search_pct / 10, quiet_search_pct % 10,
+                first_move_pct, quiet_search_pct,
                 (long long)g_stats.quiets_generated, (long long)g_stats.quiets_searched,
                 (long long)g_stats.captures_searched,
                 (long long)g_stats.pmg_tt_cutoffs, (long long)g_stats.pmg_capture_cutoffs,
