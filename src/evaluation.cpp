@@ -1248,6 +1248,14 @@ Value evaluate(const Position& pos, bool tactical_only) {
             // No queen and no rook: even less dangerous
             if (!enemy_qu && !enemy_ro) danger = danger / 4;
 
+            // Zone coverage: attack density amplification
+            // If enemy dominates >60% of king zone, danger is amplified (+20%)
+            // If coverage is sparse <30%, danger is attenuated (-20%)
+            int zone_size = popcount(king_zone);
+            int coverage = popcount(all_attacks[them] & king_zone);
+            if (coverage * 100 > zone_size * 60) danger = danger * 12 / 10;
+            else if (coverage * 100 < zone_size * 30) danger = danger * 8 / 10;
+
             // King flight: fewer safe escape squares = more dangerous
             // A trapped king (0-1 safe squares) is far more vulnerable to attack
             Bitboard king_moves = king_attacks_bb(our_ksq);
