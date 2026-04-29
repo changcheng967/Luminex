@@ -89,54 +89,6 @@ struct EvalCacheEntry {
 constexpr int EVAL_CACHE_SIZE = 65536;  // 64K entries — sweet spot (32K too small, 512K too much)
 EvalCacheEntry eval_cache[EVAL_CACHE_SIZE];
 
-// Opening exploration: UCB1-inspired variety for root move selection
-// Tracks which opening moves have been played across games.
-// Gives bonus to less-played moves to introduce variety.
-struct OpeningEntry {
-    uint64_t position_key;
-    uint16_t move_from;
-    uint16_t move_to;
-    int16_t count;
-};
-constexpr int OPENING_TABLE_SIZE = 1024;
-OpeningEntry opening_table[OPENING_TABLE_SIZE];
-int opening_entries = 0;
-
-int get_opening_bonus(uint64_t pos_key, Move m) {
-    int total = 0;
-    int move_count = 0;
-    for (int i = 0; i < opening_entries; i++) {
-        if (opening_table[i].position_key == pos_key) {
-            total += opening_table[i].count;
-            if (opening_table[i].move_from == m.from() && opening_table[i].move_to == m.to()) {
-                move_count = opening_table[i].count;
-            }
-        }
-    }
-    if (total == 0) return 0;  // No history yet, don't interfere
-    // Bonus for less-played moves (max 15 cp, ~0.15 pawn)
-    int bonus = 15 * (total - move_count) / total;
-    return bonus;
-}
-
-void record_opening_move(uint64_t pos_key, Move m) {
-    for (int i = 0; i < opening_entries; i++) {
-        if (opening_table[i].position_key == pos_key &&
-            opening_table[i].move_from == m.from() &&
-            opening_table[i].move_to == m.to()) {
-            opening_table[i].count++;
-            return;
-        }
-    }
-    if (opening_entries < OPENING_TABLE_SIZE) {
-        opening_table[opening_entries].position_key = pos_key;
-        opening_table[opening_entries].move_from = m.from();
-        opening_table[opening_entries].move_to = m.to();
-        opening_table[opening_entries].count = 1;
-        opening_entries++;
-    }
-}
-
 // Correction history: corrects static eval based on search errors
 // Indexed by pawn structure hash. Stores rolling average of (search_value - static_eval).
 // Kept conservative: small table, gentle update, capped corrections.
@@ -1870,10 +1822,6 @@ Move search(Position& pos, Limits& lim) {
                     if (m == worker->killers[0][0]) score += 500000;
                     else if (m == worker->killers[0][1]) score += 400000;
                 }
-                // Opening exploration: on first iteration, prefer less-played moves
-                if (root_depth == 1 && pos.game_ply() < 12) {
-                    score += get_opening_bonus(pos.key(), m) * 10000;  // Scale to ordering range
-                }
             }
 
             it->value = score;
@@ -2242,11 +2190,6 @@ Move search(Position& pos, Limits& lim) {
         }
         pmg << " total_nodes=" << total << "\n";
         uci_safe_output(pmg.str());
-    }
-
-    // Record opening move for exploration variety across games
-    if (best_move != MOVE_NONE && pos.game_ply() < 12) {
-        record_opening_move(pos.key(), best_move);
     }
 
     return best_move;
