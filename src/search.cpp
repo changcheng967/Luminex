@@ -1870,6 +1870,10 @@ Move search(Position& pos, Limits& lim) {
                     if (m == worker->killers[0][0]) score += 500000;
                     else if (m == worker->killers[0][1]) score += 400000;
                 }
+                // Opening exploration: on first iteration, prefer less-played moves
+                if (root_depth == 1 && pos.game_ply() < 12) {
+                    score += get_opening_bonus(pos.key(), m) * 10000;  // Scale to ordering range
+                }
             }
 
             it->value = score;
@@ -1942,12 +1946,6 @@ Move search(Position& pos, Limits& lim) {
                 root_moves_searched++;
 
                 if (check_time()) break;
-
-                // Apply opening exploration bonus to search score
-                // This directly affects which move is selected as best
-                if (pos.game_ply() < 12 && !it->move.is_capture()) {
-                    value += Value(get_opening_bonus(pos.key(), it->move));
-                }
 
                 if (value > depth_best_value) {
                     depth_best_value = value;
