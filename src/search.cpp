@@ -883,6 +883,12 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
             else if (eval_margin > -50 && eval_margin < 100) reduction -= 1;
         }
 
+        // Forced response: opponent was in check at the previous ply.
+        // Their response was forced (few legal evasions), so this position
+        // is the result of a narrow tree. Reduce less to evaluate the
+        // forcing sequence more accurately.
+        if (ss->ply >= 1 && (ss - 1)->forced_ply_count > 0) reduction -= 1;
+
         return std::max(1, std::min(reduction, depth - 2));
     };
 
