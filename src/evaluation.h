@@ -49,9 +49,6 @@ extern EvalParams g_eval_params;
 // Main evaluation function
 Value evaluate(const Position& pos, bool tactical_only = false);
 
-// Fast eval for qsearch: incremental PSQ + pawn hash only, no magic BB lookups
-Value evaluate_fast(const Position& pos);
-
 // Evaluation scaling
 int scale_factor(const Position& pos, Value eg);
 
