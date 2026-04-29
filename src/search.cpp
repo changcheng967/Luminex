@@ -1448,8 +1448,8 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
 
         // Update correction history: learn from the difference between
         // search result and static eval, indexed by pawn structure.
-        // Include PV nodes — they have the best search quality.
-        if (abs(best_value) < VALUE_KNOWN_WIN && abs(eval) < VALUE_KNOWN_WIN
+        // Only update at reasonable depth where search is meaningful.
+        if (!pv_node && abs(best_value) < VALUE_KNOWN_WIN && abs(eval) < VALUE_KNOWN_WIN
             && moves_played > 0 && depth >= 2) {
             update_correction(pos.pawn_key(), best_value - eval, depth);
         }
