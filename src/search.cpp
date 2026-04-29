@@ -582,16 +582,9 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
     // missing the conclusion. Individual check extensions don't catch this because
     // they treat each ply independently — the forcing LINE as a whole is what matters.
     ss->forced_ply_count = 0;
-    ss->pressure_count = 0;
 
     if (pos.is_check()) {
         ss->forced_ply_count = ((ss - 1)->forced_ply_count + 1);
-    }
-
-    // Track positional pressure: consecutive plies where opponent is worsening.
-    // Sustained pressure means we're building an advantage — extend to find the payoff.
-    if (opponent_worsening && ss->ply >= 2) {
-        ss->pressure_count = (ss - 2)->pressure_count + 1;
     }
 
     // Hindsight depth adjustment: if the previous ply was heavily reduced by LMR,
@@ -1028,11 +1021,6 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
         // need extra depth because LMR aggressively reduces them as "late moves".
         // Only apply when no other extension is active to avoid compounding.
         if (ss->forced_ply_count >= 3 && ext_count == 0 && depth >= 4) {
-            ext_count++;
-        }
-        // Positional pressure extension: sustained opponent worsening (3+ plies)
-        // means we're building an advantage — extend to find the winning continuation.
-        if (ss->pressure_count >= 3 && ext_count == 0 && depth >= 4) {
             ext_count++;
         }
         new_depth += ext_count;
