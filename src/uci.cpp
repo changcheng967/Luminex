@@ -192,7 +192,9 @@ void handle_isready() {
 void handle_ucinewgame() {
     TT.clear();
     TT.new_search();
-    clear_correction_history();
+    // Correction history persists across games — same pawn structures
+    // repeat (deterministic openings), so accumulated corrections help.
+    // clear_correction_history();
     pos.set("rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1");
 }
 
