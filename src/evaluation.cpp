@@ -1257,6 +1257,7 @@ Value evaluate(const Position& pos, bool tactical_only) {
             else if (flight == 2) danger += 30;
 
             mg_score -= sign * danger;
+            eg_score -= sign * danger / 2;
         }
     }
     } // end !tactical_only king safety
