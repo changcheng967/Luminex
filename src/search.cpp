@@ -1919,11 +1919,9 @@ Move search(Position& pos, Limits& lim) {
                                  Value(depth_best_value - aspiration_delta));
                 aspiration_delta += aspiration_delta / 2;
             } else if (depth_best_value >= beta) {
-                // Fail high - widen upward, also narrow from bottom (re-center)
-                // Tighter windows cause more cutoffs in the tree = more efficient search
+                // Fail high - widen upward (raise beta only, keep alpha)
                 beta = std::min(Value(VALUE_INFINITE),
                                 Value(depth_best_value + aspiration_delta));
-                alpha = std::max(alpha, Value(depth_best_value - aspiration_delta));
                 aspiration_delta += aspiration_delta / 2;
             } else {
                 // Score inside window - accept result
