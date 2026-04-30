@@ -1,10 +1,9 @@
 // Texel Tuner for Luminex
-// Optimizes eval parameters by minimizing sigmoid(eval/K) vs game outcome
-// Uses coordinate descent: try each parameter ±step, keep best MSE
+// Parametric model: score(mob) = a * sqrt(mob) + c
+// 16 parameters (a, c per piece per phase) with guaranteed monotonicity
 //
 // Build: cmake -DBUILD_TUNER=ON ...
-// Usage: luminex-tuner dataset.txt [options]
-// Dataset format: FEN|result (one per line, result = 1.0/0.0/0.5)
+// Usage: luminex-tuner dataset.txt [K_value] [max_iterations]
 
 #include "luminex.h"
 #include "tuner_params.h"
@@ -43,38 +42,59 @@ SearchStats g_stats;
 
 using namespace luminex;
 
-// Monotonicity constraint for mobility tables
-struct TableBound { size_t start; int size; };
-static const TableBound mob_tables[] = {
-    {KNIGHT_MOB_MG_0, 9},
-    {KNIGHT_MOB_EG_0, 9},
-    {BISHOP_MOB_MG_0, 14},
-    {BISHOP_MOB_EG_0, 14},
-    {ROOK_MOB_MG_0, 15},
-    {ROOK_MOB_EG_0, 15},
-    {QUEEN_MOB_MG_0, 28},
-    {QUEEN_MOB_EG_0, 28},
+// Table metadata: maps formula params to g_params entries
+struct TableInfo {
+    size_t param_start;
+    int max_mob;
 };
 
-bool breaks_monotonicity(size_t p, int val) {
-    for (const auto& t : mob_tables) {
-        if (p >= t.start && p < t.start + (size_t)t.size) {
-            int idx = (int)(p - t.start);
-            if (idx > 0 && val < g_params[t.start + idx - 1]) return true;
-            if (idx < t.size - 1 && val > g_params[t.start + idx + 1]) return true;
-            return false;
+static const TableInfo tables[] = {
+    {KNIGHT_MOB_MG_0, 8},
+    {KNIGHT_MOB_EG_0, 8},
+    {BISHOP_MOB_MG_0, 13},
+    {BISHOP_MOB_EG_0, 13},
+    {ROOK_MOB_MG_0, 14},
+    {ROOK_MOB_EG_0, 14},
+    {QUEEN_MOB_MG_0, 27},
+    {QUEEN_MOB_EG_0, 27},
+};
+static const int NUM_TABLES = 8;
+
+// Formula params: score(mob) = round(a * sqrt(mob) + c)
+// a > 0 guarantees monotonicity; sqrt guarantees diminishing returns
+static int formula_a[NUM_TABLES];
+static int formula_c[NUM_TABLES];
+
+// Initialize from linear formula fit (eval-equivalent starting point)
+void init_formula_params() {
+    // Fitted to match linear formula endpoints: a * sqrt(max_mob) + c ≈ linear_max
+    formula_a[0] = 42; formula_c[0] = -60; // Knight MG: -60+15*i
+    formula_a[1] = 51; formula_c[1] = -75; // Knight EG: -75+18*i
+    formula_a[2] = 25; formula_c[2] = -48; // Bishop MG: -48+7*i
+    formula_a[3] = 32; formula_c[3] = -56; // Bishop EG: -56+9*i
+    formula_a[4] = 19; formula_c[4] = -38; // Rook MG: -38+5*i
+    formula_a[5] = 26; formula_c[5] = -48; // Rook EG: -48+7*i
+    formula_a[6] = 10; formula_c[6] = -28; // Queen MG: -28+2*i
+    formula_a[7] = 16; formula_c[7] = -38; // Queen EG: -38+3*i
+}
+
+void generate_tables() {
+    for (int t = 0; t < NUM_TABLES; t++) {
+        for (int mob = 0; mob <= tables[t].max_mob; mob++) {
+            double val = formula_a[t] * std::sqrt((double)mob) + formula_c[t];
+            g_params[tables[t].param_start + mob] = (int)std::round(val);
         }
     }
-    return false;
+    sync_eval_params();
 }
 
 struct TunerEntry {
     std::string fen;
-    double result; // 1.0, 0.0, 0.5
+    double result;
 };
 
 static std::vector<TunerEntry> dataset;
-static double K = 1.13; // Default K factor
+static double K = 1.13;
 
 double sigmoid(int eval_cp, double k) {
     return 1.0 / (1.0 + std::exp(-eval_cp / (400.0 * k)));
@@ -117,7 +137,6 @@ double optimize_K() {
         }
     }
 
-    // Fine-tune around best
     for (double k = best_k - 0.05; k <= best_k + 0.05; k += 0.01) {
         if (k < 0.1) continue;
         double mse = compute_mse(k);
@@ -141,12 +160,10 @@ bool load_dataset(const char* filename) {
     char line[1024];
     int count = 0;
     while (fgets(line, sizeof(line), f)) {
-        // Strip newline
         int len = (int)strlen(line);
         while (len > 0 && (line[len-1] == '\n' || line[len-1] == '\r')) line[--len] = 0;
         if (len == 0) continue;
 
-        // Find last '|' separator
         char* sep = strrchr(line, '|');
         if (!sep) continue;
 
@@ -162,20 +179,26 @@ bool load_dataset(const char* filename) {
     return count > 0;
 }
 
-void print_params() {
-    printf("\n=== Tuned Parameters ===\n");
+void print_tables() {
+    printf("\n=== Tuned Tables (from a*sqrt(mob)+c) ===\n");
 
-    // Material values
-    printf("// Material values\n");
-    printf("static constexpr int PieceValueMG[8] = {%d, %d, %d, %d, %d, 0, 0, 0};\n",
-           g_params[PAWN_VALUE_MG], g_params[KNIGHT_VALUE_MG], g_params[BISHOP_VALUE_MG],
-           g_params[ROOK_VALUE_MG], g_params[QUEEN_VALUE_MG]);
-    printf("static constexpr int PieceValueEG[8] = {%d, %d, %d, %d, %d, 0, 0, 0};\n",
-           g_params[PAWN_VALUE_EG], g_params[KNIGHT_VALUE_EG], g_params[BISHOP_VALUE_EG],
-           g_params[ROOK_VALUE_EG], g_params[QUEEN_VALUE_EG]);
+    const char* names[] = {"Knight MG", "Knight EG", "Bishop MG", "Bishop EG",
+                           "Rook MG", "Rook EG", "Queen MG", "Queen EG"};
+    for (int t = 0; t < NUM_TABLES; t++) {
+        printf("\n// %s: a=%d, c=%d\n", names[t], formula_a[t], formula_c[t]);
+        int sz = tables[t].max_mob + 1;
+        printf("static int %s[%d] = {%d", names[t], sz,
+               g_params[tables[t].param_start]);
+        for (int i = 1; i < sz; i++) {
+            if (i % 14 == 0) printf(",\n    %d", g_params[tables[t].param_start + i]);
+            else printf(", %d", g_params[tables[t].param_start + i]);
+        }
+        printf("};\n");
+    }
 
-    // Knight mobility tables
-    printf("\n// Knight mobility (non-linear lookup table)\n");
+    // Also print as C arrays matching evaluation.cpp format
+    printf("\n=== evaluation.cpp format ===\n");
+
     printf("static int KnightMobilityMG[9] = {%d", g_params[KNIGHT_MOB_MG_0]);
     for (int i = 1; i < 9; i++) printf(", %d", g_params[KNIGHT_MOB_MG_0 + i]);
     printf("};\n");
@@ -183,27 +206,21 @@ void print_params() {
     for (int i = 1; i < 9; i++) printf(", %d", g_params[KNIGHT_MOB_EG_0 + i]);
     printf("};\n");
 
-    // Bishop mobility tables
-    printf("\n// Bishop mobility (non-linear lookup table)\n");
-    printf("static int BishopMobilityMG[14] = {%d", g_params[BISHOP_MOB_MG_0]);
+    printf("\nstatic int BishopMobilityMG[14] = {%d", g_params[BISHOP_MOB_MG_0]);
     for (int i = 1; i < 14; i++) printf(", %d", g_params[BISHOP_MOB_MG_0 + i]);
     printf("};\n");
     printf("static int BishopMobilityEG[14] = {%d", g_params[BISHOP_MOB_EG_0]);
     for (int i = 1; i < 14; i++) printf(", %d", g_params[BISHOP_MOB_EG_0 + i]);
     printf("};\n");
 
-    // Rook mobility tables
-    printf("\n// Rook mobility (non-linear lookup table)\n");
-    printf("static int RookMobilityMG[15] = {%d", g_params[ROOK_MOB_MG_0]);
+    printf("\nstatic int RookMobilityMG[15] = {%d", g_params[ROOK_MOB_MG_0]);
     for (int i = 1; i < 15; i++) printf(", %d", g_params[ROOK_MOB_MG_0 + i]);
     printf("};\n");
     printf("static int RookMobilityEG[15] = {%d", g_params[ROOK_MOB_EG_0]);
     for (int i = 1; i < 15; i++) printf(", %d", g_params[ROOK_MOB_EG_0 + i]);
     printf("};\n");
 
-    // Queen mobility tables
-    printf("\n// Queen mobility (non-linear lookup table)\n");
-    printf("static int QueenMobilityMG[28] = {\n    %d", g_params[QUEEN_MOB_MG_0]);
+    printf("\nstatic int QueenMobilityMG[28] = {\n    %d", g_params[QUEEN_MOB_MG_0]);
     for (int i = 1; i < 28; i++) {
         if (i % 14 == 0) printf(",\n    %d", g_params[QUEEN_MOB_MG_0 + i]);
         else printf(", %d", g_params[QUEEN_MOB_MG_0 + i]);
@@ -215,15 +232,6 @@ void print_params() {
         else printf(", %d", g_params[QUEEN_MOB_EG_0 + i]);
     }
     printf("};\n");
-
-    // Key EvalParams
-    printf("\n// Key EvalParams\n");
-    printf("bishop_pair_mg = %d;\n", g_params[BISHOP_PAIR_MG]);
-    printf("bishop_pair_eg = %d;\n", g_params[BISHOP_PAIR_EG]);
-    printf("rook_open_mg = %d;\n", g_params[ROOK_OPEN_FILE_MG]);
-    printf("rook_open_eg = %d;\n", g_params[ROOK_OPEN_FILE_EG]);
-    printf("rook_semi_open_mg = %d;\n", g_params[ROOK_SEMI_OPEN_MG]);
-    printf("rook_semi_open_eg = %d;\n", g_params[ROOK_SEMI_OPEN_EG]);
 }
 
 int main_tuner(int argc, char** argv) {
@@ -236,7 +244,8 @@ int main_tuner(int argc, char** argv) {
     init_magic_bitboards();
     init_evaluation();
     init_tuner_params();
-    sync_eval_params();
+    init_formula_params();
+    generate_tables();
 
     // Load dataset
     if (!load_dataset(argv[1])) return 1;
@@ -249,94 +258,117 @@ int main_tuner(int argc, char** argv) {
         K = optimize_K();
     }
 
-    int max_iterations = 200;
+    int max_iterations = 300;
     if (argc >= 4) max_iterations = atoi(argv[3]);
 
-    printf("Starting coordinate descent: %d parameters, %d positions, K=%.2f\n",
-           (int)PARAM_COUNT, (int)dataset.size(), K);
+    printf("Parametric tuner: score(mob) = a*sqrt(mob) + c\n");
+    printf("16 parameters, %d positions, K=%.2f\n", (int)dataset.size(), K);
     printf("Max iterations: %d\n\n", max_iterations);
 
     double best_mse = compute_mse_current();
     printf("Initial MSE: %.6f\n\n", best_mse);
 
-    int step = 4; // Start with larger step for faster initial convergence
+    // Bounds for formula params
+    // a: [1, 120] — must be positive for monotonicity
+    // c: [-120, 120]
+    struct { int lo, hi; } bounds_a[NUM_TABLES], bounds_c[NUM_TABLES];
+    for (int t = 0; t < NUM_TABLES; t++) {
+        bounds_a[t] = {1, 120};
+        bounds_c[t] = {-120, 120};
+    }
+
+    int step_a = 4;
+    int step_c = 4;
     int no_improve_count = 0;
-
-    // Parameter bounds
-    struct Bounds { int lo, hi; };
-    Bounds bounds[PARAM_COUNT];
-
-    // Material: LOCKED — chess-theory grounded, not data-driven
-    // Prevents tuner from trading material↔mobility (degenerate pattern)
-    for (size_t p = 0; p < 10; ++p) {
-        bounds[p] = {g_params[p], g_params[p]}; // No movement
-    }
-
-    // Mobility table bounds: ±60 from initial value (wider for non-linear exploration)
-    for (size_t p = KNIGHT_MOB_MG_0; p <= QUEEN_MOB_EG_27; ++p) {
-        int val = g_params[p];
-        bounds[p].lo = val - 60;
-        bounds[p].hi = val + 60;
-    }
-
-    // EvalParams: LOCKED — same reason as material
-    bounds[BISHOP_PAIR_MG]    = {g_params[BISHOP_PAIR_MG], g_params[BISHOP_PAIR_MG]};
-    bounds[BISHOP_PAIR_EG]    = {g_params[BISHOP_PAIR_EG], g_params[BISHOP_PAIR_EG]};
-    bounds[ROOK_OPEN_FILE_MG] = {g_params[ROOK_OPEN_FILE_MG], g_params[ROOK_OPEN_FILE_MG]};
-    bounds[ROOK_OPEN_FILE_EG] = {g_params[ROOK_OPEN_FILE_EG], g_params[ROOK_OPEN_FILE_EG]};
-    bounds[ROOK_SEMI_OPEN_MG] = {g_params[ROOK_SEMI_OPEN_MG], g_params[ROOK_SEMI_OPEN_MG]};
-    bounds[ROOK_SEMI_OPEN_EG] = {g_params[ROOK_SEMI_OPEN_EG], g_params[ROOK_SEMI_OPEN_EG]};
 
     for (int iter = 1; iter <= max_iterations; ++iter) {
         bool improved = false;
         auto iter_start = std::chrono::steady_clock::now();
 
-        for (size_t p = 0; p < PARAM_COUNT; ++p) {
-            int original = g_params[p];
-            int lo = bounds[p].lo, hi = bounds[p].hi;
+        // Tune all 'a' params
+        for (int t = 0; t < NUM_TABLES; t++) {
+            int original_a = formula_a[t];
+            int lo = bounds_a[t].lo, hi = bounds_a[t].hi;
 
-            int plus_val = std::min(original + step, hi);
-            int minus_val = std::max(original - step, lo);
-            if (plus_val == original && minus_val == original) continue;
+            int plus_a = std::min(original_a + step_a, hi);
+            int minus_a = std::max(original_a - step_a, lo);
 
             double mse_plus = 1e9, mse_minus = 1e9;
 
-            if (plus_val != original && !breaks_monotonicity(p, plus_val)) {
-                g_params[p] = plus_val;
-                sync_eval_params();
+            if (plus_a != original_a) {
+                formula_a[t] = plus_a;
+                generate_tables();
                 mse_plus = compute_mse_current();
             }
-
-            if (minus_val != original && !breaks_monotonicity(p, minus_val)) {
-                g_params[p] = minus_val;
-                sync_eval_params();
+            if (minus_a != original_a) {
+                formula_a[t] = minus_a;
+                generate_tables();
                 mse_minus = compute_mse_current();
             }
 
-            // Keep best
             if (mse_plus < best_mse && mse_plus <= mse_minus) {
-                g_params[p] = plus_val;
+                formula_a[t] = plus_a;
+                generate_tables();
                 best_mse = mse_plus;
                 improved = true;
             } else if (mse_minus < best_mse) {
-                g_params[p] = minus_val;
+                formula_a[t] = minus_a;
+                generate_tables();
                 best_mse = mse_minus;
                 improved = true;
             } else {
-                g_params[p] = original;
+                formula_a[t] = original_a;
+                generate_tables();
             }
-            sync_eval_params();
+        }
+
+        // Tune all 'c' params
+        for (int t = 0; t < NUM_TABLES; t++) {
+            int original_c = formula_c[t];
+            int lo = bounds_c[t].lo, hi = bounds_c[t].hi;
+
+            int plus_c = std::min(original_c + step_c, hi);
+            int minus_c = std::max(original_c - step_c, lo);
+
+            double mse_plus = 1e9, mse_minus = 1e9;
+
+            if (plus_c != original_c) {
+                formula_c[t] = plus_c;
+                generate_tables();
+                mse_plus = compute_mse_current();
+            }
+            if (minus_c != original_c) {
+                formula_c[t] = minus_c;
+                generate_tables();
+                mse_minus = compute_mse_current();
+            }
+
+            if (mse_plus < best_mse && mse_plus <= mse_minus) {
+                formula_c[t] = plus_c;
+                generate_tables();
+                best_mse = mse_plus;
+                improved = true;
+            } else if (mse_minus < best_mse) {
+                formula_c[t] = minus_c;
+                generate_tables();
+                best_mse = mse_minus;
+                improved = true;
+            } else {
+                formula_c[t] = original_c;
+                generate_tables();
+            }
         }
 
         auto iter_end = std::chrono::steady_clock::now();
         double elapsed = std::chrono::duration<double>(iter_end - iter_start).count();
 
-        printf("Iter %3d: MSE=%.6f  step=%d  time=%.1fs\n", iter, best_mse, step, elapsed);
+        printf("Iter %3d: MSE=%.6f  step=%d  time=%.1fs\n", iter, best_mse, step_a, elapsed);
 
         if (!improved) {
             no_improve_count++;
-            step = std::max(1, step / 2);
-            if (step == 1 && no_improve_count >= 3) {
+            step_a = std::max(1, step_a / 2);
+            step_c = std::max(1, step_c / 2);
+            if (step_a == 1 && no_improve_count >= 5) {
                 printf("Converged after %d iterations.\n", iter);
                 break;
             }
@@ -345,7 +377,7 @@ int main_tuner(int argc, char** argv) {
         }
     }
 
-    print_params();
+    print_tables();
     printf("\nFinal MSE: %.6f (K=%.2f)\n", best_mse, K);
     return 0;
 }
