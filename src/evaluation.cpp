@@ -29,7 +29,7 @@ EvalParams g_eval_params;
 //   Rook: 500 MG (5 pawns), 530 EG (stronger with open files)
 //   Queen: 960 MG (~10 pawns), 940 EG (king activity reduces power)
 static int PieceValueMG[8] = { 90, 320, 340, 500, 960, 0, 0, 0 };
-static int PieceValueEG[8] = { 100, 290, 310, 530, 940, 0, 0, 0 };
+static int PieceValueEG[8] = { 155, 480, 540, 850, 1500, 0, 0, 0 };
 
 // ============================================================
 // PIECE-SQUARE TABLES

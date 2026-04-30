@@ -8,15 +8,15 @@ std::array<int, PARAM_COUNT> g_params;
 void init_tuner_params() {
     // Material values
     g_params[PAWN_VALUE_MG]   = 90;
-    g_params[PAWN_VALUE_EG]   = 100;
+    g_params[PAWN_VALUE_EG]   = 155;
     g_params[KNIGHT_VALUE_MG] = 320;
-    g_params[KNIGHT_VALUE_EG] = 290;
+    g_params[KNIGHT_VALUE_EG] = 480;
     g_params[BISHOP_VALUE_MG] = 340;
-    g_params[BISHOP_VALUE_EG] = 310;
+    g_params[BISHOP_VALUE_EG] = 540;
     g_params[ROOK_VALUE_MG]   = 500;
-    g_params[ROOK_VALUE_EG]   = 530;
+    g_params[ROOK_VALUE_EG]   = 850;
     g_params[QUEEN_VALUE_MG]  = 960;
-    g_params[QUEEN_VALUE_EG]  = 940;
+    g_params[QUEEN_VALUE_EG]  = 1500;
 
     // Knight mobility tables: -60 + 15*i (MG), -75 + 18*i (EG)
     for (int i = 0; i < 9; i++) {
