@@ -216,30 +216,76 @@ int main_tuner(int argc, char** argv) {
     int step = 2;
     int no_improve_count = 0;
 
+    // Parameter bounds: {min, max} — prevent degenerate solutions
+    struct Bounds { int lo, hi; };
+    Bounds bounds[PARAM_COUNT] = {
+        {80,110},   // PAWN_VALUE_MG
+        {80,120},   // PAWN_VALUE_EG
+        {280,360},  // KNIGHT_VALUE_MG
+        {250,340},  // KNIGHT_VALUE_EG
+        {300,380},  // BISHOP_VALUE_MG
+        {270,350},  // BISHOP_VALUE_EG
+        {440,560},  // ROOK_VALUE_MG
+        {470,590},  // ROOK_VALUE_EG
+        {850,1100}, // QUEEN_VALUE_MG
+        {830,1050}, // QUEEN_VALUE_EG
+        {-130,-30}, // KNIGHT_MOB_BASE_MG
+        {5,30},     // KNIGHT_MOB_SLOPE_MG (must be positive)
+        {-130,-30}, // KNIGHT_MOB_BASE_EG
+        {5,35},     // KNIGHT_MOB_SLOPE_EG (must be positive)
+        {-100,-20}, // BISHOP_MOB_BASE_MG
+        {3,15},     // BISHOP_MOB_SLOPE_MG (must be positive)
+        {-100,-20}, // BISHOP_MOB_BASE_EG
+        {4,18},     // BISHOP_MOB_SLOPE_EG (must be positive)
+        {-80,-10},  // ROOK_MOB_BASE_MG
+        {2,12},     // ROOK_MOB_SLOPE_MG (must be positive)
+        {-80,-10},  // ROOK_MOB_BASE_EG
+        {3,14},     // ROOK_MOB_SLOPE_EG (must be positive)
+        {-60,-10},  // QUEEN_MOB_BASE_MG
+        {1,8},      // QUEEN_MOB_SLOPE_MG (must be positive)
+        {-80,-10},  // QUEEN_MOB_BASE_EG
+        {1,8},      // QUEEN_MOB_SLOPE_EG (must be positive)
+        {0,100},    // BISHOP_PAIR_MG
+        {40,200},   // BISHOP_PAIR_EG
+        {5,60},     // ROOK_OPEN_FILE_MG
+        {10,80},    // ROOK_OPEN_FILE_EG
+        {0,40},     // ROOK_SEMI_OPEN_MG
+        {0,50},     // ROOK_SEMI_OPEN_EG
+    };
+
     for (int iter = 1; iter <= max_iterations; ++iter) {
         bool improved = false;
         auto iter_start = std::chrono::steady_clock::now();
 
         for (size_t p = 0; p < PARAM_COUNT; ++p) {
             int original = g_params[p];
+            int lo = bounds[p].lo, hi = bounds[p].hi;
 
-            // Try +step
-            g_params[p] = original + step;
-            sync_eval_params();
-            double mse_plus = compute_mse_current();
+            int plus_val = std::min(original + step, hi);
+            int minus_val = std::max(original - step, lo);
+            if (plus_val == original && minus_val == original) continue;
 
-            // Try -step
-            g_params[p] = original - step;
-            sync_eval_params();
-            double mse_minus = compute_mse_current();
+            double mse_plus = 1e9, mse_minus = 1e9;
+
+            if (plus_val != original) {
+                g_params[p] = plus_val;
+                sync_eval_params();
+                mse_plus = compute_mse_current();
+            }
+
+            if (minus_val != original) {
+                g_params[p] = minus_val;
+                sync_eval_params();
+                mse_minus = compute_mse_current();
+            }
 
             // Keep best
             if (mse_plus < best_mse && mse_plus <= mse_minus) {
-                g_params[p] = original + step;
+                g_params[p] = plus_val;
                 best_mse = mse_plus;
                 improved = true;
             } else if (mse_minus < best_mse) {
-                g_params[p] = original - step;
+                g_params[p] = minus_val;
                 best_mse = mse_minus;
                 improved = true;
             } else {
