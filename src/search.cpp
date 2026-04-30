@@ -68,6 +68,9 @@ struct SearchWorker {
 // Thread-local pointer to current thread's search state
 static thread_local SearchWorker* worker = nullptr;
 
+// Persistent main worker — keeps history alive across searches within a game
+static SearchWorker* main_search_worker = nullptr;
+
 // Shared between threads (lazy SMP tolerates races in these heuristic tables)
 // Counter-move history: [prev_piece][prev_to][piece][to]
 int counter_moves[12][64][12][64];
@@ -1653,9 +1656,11 @@ Move search(Position& pos, Limits& lim) {
     // Initialize LMR reduction table (once)
     if (!reductions_initialized) init_reductions();
 
-    // Create main thread search worker
-    SearchWorker* main_worker = new SearchWorker();
-    worker = main_worker;
+    // Reuse or create persistent main worker (history persists across searches)
+    if (!main_search_worker) {
+        main_search_worker = new SearchWorker();
+    }
+    worker = main_search_worker;
 
     // Initialize search stack
     // CRITICAL: stack[0] is unused (ply -1), stack[1] is ply 0 for root search
@@ -1666,8 +1671,6 @@ Move search(Position& pos, Limits& lim) {
         worker->stack[i].previous = i > 0 ? &worker->stack[i - 1] : nullptr;
         worker->stack[i].pv[0] = MOVE_NONE;
     }
-
-    // No opening book - rely on search for best opening moves
 
     // Launch helper threads for lazy SMP
     helpers_running = true;
@@ -1718,6 +1721,15 @@ Move search(Position& pos, Limits& lim) {
     for (int i = 0; i < 12; ++i) {
         for (int j = 0; j < 64; ++j) {
             worker->history[i][j] /= 2;
+        }
+    }
+
+    // Age capture history
+    for (int p = 0; p < 12; ++p) {
+        for (int s = 0; s < 64; ++s) {
+            for (int c = 0; c < 7; ++c) {
+                worker->capture_history[p][s][c] /= 2;
+            }
         }
     }
 
@@ -2026,8 +2038,7 @@ Move search(Position& pos, Limits& lim) {
     helper_threads.clear();
     helpers_running = false;
 
-    // Clean up main thread search worker
-    delete worker;
+    // Keep main worker alive — history persists for next search in same game
     worker = nullptr;
 
     // Print comprehensive search statistics + dump to file for analysis
@@ -2260,6 +2271,18 @@ void uci_info([[maybe_unused]] const Position& pos, int depth, Value score, uint
 
 void clear_correction_history() {
     std::memset(corrhist_table, 0, sizeof(corrhist_table));
+}
+
+void clear_search_history() {
+    if (main_search_worker) {
+        std::memset(main_search_worker->history, 0, sizeof(main_search_worker->history));
+        std::memset(main_search_worker->capture_history, 0, sizeof(main_search_worker->capture_history));
+        std::memset(main_search_worker->counter_move_table, 0, sizeof(main_search_worker->counter_move_table));
+        std::memset(main_search_worker->low_ply_history, 0, sizeof(main_search_worker->low_ply_history));
+        std::memset(main_search_worker->killers, 0, sizeof(main_search_worker->killers));
+    }
+    std::memset(counter_moves, 0, sizeof(counter_moves));
+    std::memset(continuation_history, 0, sizeof(continuation_history));
 }
 
 } // namespace luminex

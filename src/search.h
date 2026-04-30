@@ -118,6 +118,9 @@ Move search(Position& pos, Limits& limits);
 // Correction history - clear on new game
 void clear_correction_history();
 
+// Search history - clear on new game
+void clear_search_history();
+
 // UCI info output
 void uci_info(const Position& pos, int depth, Value score, uint64_t nodes, int time);
 
