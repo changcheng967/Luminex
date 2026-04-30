@@ -43,6 +43,31 @@ SearchStats g_stats;
 
 using namespace luminex;
 
+// Monotonicity constraint for mobility tables
+struct TableBound { size_t start; int size; };
+static const TableBound mob_tables[] = {
+    {KNIGHT_MOB_MG_0, 9},
+    {KNIGHT_MOB_EG_0, 9},
+    {BISHOP_MOB_MG_0, 14},
+    {BISHOP_MOB_EG_0, 14},
+    {ROOK_MOB_MG_0, 15},
+    {ROOK_MOB_EG_0, 15},
+    {QUEEN_MOB_MG_0, 28},
+    {QUEEN_MOB_EG_0, 28},
+};
+
+bool breaks_monotonicity(size_t p, int val) {
+    for (const auto& t : mob_tables) {
+        if (p >= t.start && p < t.start + (size_t)t.size) {
+            int idx = (int)(p - t.start);
+            if (idx > 0 && val < g_params[t.start + idx - 1]) return true;
+            if (idx < t.size - 1 && val > g_params[t.start + idx + 1]) return true;
+            return false;
+        }
+    }
+    return false;
+}
+
 struct TunerEntry {
     std::string fen;
     double result; // 1.0, 0.0, 0.5
@@ -276,13 +301,13 @@ int main_tuner(int argc, char** argv) {
 
             double mse_plus = 1e9, mse_minus = 1e9;
 
-            if (plus_val != original) {
+            if (plus_val != original && !breaks_monotonicity(p, plus_val)) {
                 g_params[p] = plus_val;
                 sync_eval_params();
                 mse_plus = compute_mse_current();
             }
 
-            if (minus_val != original) {
+            if (minus_val != original && !breaks_monotonicity(p, minus_val)) {
                 g_params[p] = minus_val;
                 sync_eval_params();
                 mse_minus = compute_mse_current();
