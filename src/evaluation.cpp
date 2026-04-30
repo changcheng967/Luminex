@@ -226,48 +226,46 @@ using Score = Value;
 int PSQ_MG[2][8][64];
 int PSQ_EG[2][8][64];
 // ============================================================
-// Mobility system: linear formula instead of lookup tables
-// Each additional square of mobility adds a fixed bonus.
-// A piece with 0 mobility is penalized (trapped = useless).
+// Mobility system: non-linear lookup tables
 //
-// Principle: a piece that can't move is almost worthless.
-// Each freedom of movement adds incremental value.
-// Knights need mobility most (limited range).
-// Rooks/queens naturally have high mobility (lower per-square value).
+// First principle: the marginal value of each additional mobility
+// square DECREASES (diminishing returns). Going from 0→1 mobility
+// is ~50cp (piece was trapped). Going from 12→13 is ~1cp.
+//
+// A linear formula (base + slope * mob) assumes constant marginal
+// value — mathematically wrong for chess. Lookup tables allow each
+// mobility level to have an independently tuned value, capturing
+// the true concave relationship without assuming any functional form.
+//
+// Tables initialized from our previous linear formula (eval-equivalent
+// at start). The tuner discovers the true shape from data.
 // ============================================================
 
-// Knight mobility: calibrated so average (mob=4) ≈ 0
-// base = -avg_mob * slope = -4 * 15 = -60
-// mob=0: -60 (trapped), mob=4: 0 (normal), mob=8: +60 (excellent)
-static int KnightMobBaseMG = -60;
-static int KnightMobSlopeMG = 15;
-static int KnightMobBaseEG = -75;
-static int KnightMobSlopeEG = 18;
-static constexpr int KnightMobMax = 8;
+// Knight: max 8 mobility squares
+static int KnightMobilityMG[9] = { -60, -45, -30, -15, 0, 15, 30, 45, 60 };
+static int KnightMobilityEG[9] = { -75, -57, -39, -21, -3, 15, 33, 51, 69 };
+static constexpr int KNIGHT_MOB_MAX = 8;
 
-// Bishop mobility: calibrated so average (mob=7) ≈ 0
-// base = -7 * 7 = -49. mob=0: -48, mob=7: +1, mob=13: +43
-static int BishopMobBaseMG = -48;
-static int BishopMobSlopeMG = 7;
-static int BishopMobBaseEG = -56;
-static int BishopMobSlopeEG = 9;
-static constexpr int BishopMobMax = 13;
+// Bishop: max 13 mobility squares
+static int BishopMobilityMG[14] = { -48, -41, -34, -27, -20, -13, -6, 1, 8, 15, 22, 29, 36, 43 };
+static int BishopMobilityEG[14] = { -56, -47, -38, -29, -20, -11, -2, 7, 16, 25, 34, 43, 52, 61 };
+static constexpr int BISHOP_MOB_MAX = 13;
 
-// Rook mobility: calibrated so average (mob=8) ≈ 0
-// base = -8 * 5 = -40. mob=0: -38, mob=8: +2, mob=14: +32
-static int RookMobBaseMG = -38;
-static int RookMobSlopeMG = 5;
-static int RookMobBaseEG = -48;
-static int RookMobSlopeEG = 7;
-static constexpr int RookMobMax = 14;
+// Rook: max 14 mobility squares
+static int RookMobilityMG[15] = { -38, -33, -28, -23, -18, -13, -8, -3, 2, 7, 12, 17, 22, 27, 32 };
+static int RookMobilityEG[15] = { -48, -41, -34, -27, -20, -13, -6, 1, 8, 15, 22, 29, 36, 43, 50 };
+static constexpr int ROOK_MOB_MAX = 14;
 
-// Queen mobility: calibrated so average (mob=15) ≈ 0
-// base = -15 * 2 = -30. mob=0: -28, mob=15: +2, mob=27: +26
-static int QueenMobBaseMG = -28;
-static int QueenMobSlopeMG = 2;
-static int QueenMobBaseEG = -38;
-static int QueenMobSlopeEG = 3;
-static constexpr int QueenMobMax = 27;
+// Queen: max 27 mobility squares
+static int QueenMobilityMG[28] = {
+    -28, -26, -24, -22, -20, -18, -16, -14, -12, -10, -8, -6, -4, -2,
+     0,   2,   4,   6,   8,  10,  12,  14,  16,  18,  20, 22, 24, 26
+};
+static int QueenMobilityEG[28] = {
+    -38, -35, -32, -29, -26, -23, -20, -17, -14, -11, -8, -5, -2, 1,
+      4,   7,  10,  13,  16,  19,  22,  25,  28,  31,  34, 37, 40, 43
+};
+static constexpr int QUEEN_MOB_MAX = 27;
 
 // ============================================================
 // Threat evaluation: bonus proportional to value gap
@@ -681,11 +679,11 @@ Value evaluate(const Position& pos, bool tactical_only) {
             all_attacks[c] |= attacks;
 
             if (!tactical_only) {
-            // Mobility: linear formula (trapped knight = useless)
+            // Mobility: lookup table (diminishing returns captured per level)
             int mob = popcount(attacks & mob_area & ~pos.pieces(c));
-            mob = std::min(mob, KnightMobMax);
-            mg_score += sign * (KnightMobBaseMG + mob * KnightMobSlopeMG);
-            eg_score += sign * (KnightMobBaseEG + mob * KnightMobSlopeEG);
+            mob = std::min(mob, KNIGHT_MOB_MAX);
+            mg_score += sign * KnightMobilityMG[mob];
+            eg_score += sign * KnightMobilityEG[mob];
 
             // Outpost: knight on rank 4-6, protected by own pawn,
             // not attackable by enemy pawn (permanent advantage)
@@ -729,11 +727,11 @@ Value evaluate(const Position& pos, bool tactical_only) {
             all_attacks[c] |= attacks;
 
             if (!tactical_only) {
-            // Mobility: linear formula
+            // Mobility: lookup table (diminishing returns captured per level)
             int mob = popcount(attacks & mob_area & ~pos.pieces(c));
-            mob = std::min(mob, BishopMobMax);
-            mg_score += sign * (BishopMobBaseMG + mob * BishopMobSlopeMG);
-            eg_score += sign * (BishopMobBaseEG + mob * BishopMobSlopeEG);
+            mob = std::min(mob, BISHOP_MOB_MAX);
+            mg_score += sign * BishopMobilityMG[mob];
+            eg_score += sign * BishopMobilityEG[mob];
 
             // Bishop with many same-color pawns: bad bishop penalty
             {
@@ -791,9 +789,9 @@ Value evaluate(const Position& pos, bool tactical_only) {
 
             if (!tactical_only) {
             int mob = popcount(attacks & mob_area & ~pos.pieces(c));
-            mob = std::min(mob, RookMobMax);
-            mg_score += sign * (RookMobBaseMG + mob * RookMobSlopeMG);
-            eg_score += sign * (RookMobBaseEG + mob * RookMobSlopeEG);
+            mob = std::min(mob, ROOK_MOB_MAX);
+            mg_score += sign * RookMobilityMG[mob];
+            eg_score += sign * RookMobilityEG[mob];
 
             // Open / semi-open file
             File f = file_of(sq);
@@ -884,9 +882,9 @@ Value evaluate(const Position& pos, bool tactical_only) {
 
             if (!tactical_only) {
             int mob = popcount(attacks & mob_area & ~pos.pieces(c));
-            mob = std::min(mob, QueenMobMax);
-            mg_score += sign * (QueenMobBaseMG + mob * QueenMobSlopeMG);
-            eg_score += sign * (QueenMobBaseEG + mob * QueenMobSlopeEG);
+            mob = std::min(mob, QUEEN_MOB_MAX);
+            mg_score += sign * QueenMobilityMG[mob];
+            eg_score += sign * QueenMobilityEG[mob];
 
             // Far queen penalty
             if (distance(sq, ksq_arr[c_idx]) > 3) {
@@ -1374,25 +1372,23 @@ void sync_eval_params() {
     g_eval_params.rook_semi_open_mg = g_params[ROOK_SEMI_OPEN_MG];
     g_eval_params.rook_semi_open_eg = g_params[ROOK_SEMI_OPEN_EG];
 
-    KnightMobBaseMG  = g_params[KNIGHT_MOB_BASE_MG];
-    KnightMobSlopeMG = g_params[KNIGHT_MOB_SLOPE_MG];
-    KnightMobBaseEG  = g_params[KNIGHT_MOB_BASE_EG];
-    KnightMobSlopeEG = g_params[KNIGHT_MOB_SLOPE_EG];
-
-    BishopMobBaseMG  = g_params[BISHOP_MOB_BASE_MG];
-    BishopMobSlopeMG = g_params[BISHOP_MOB_SLOPE_MG];
-    BishopMobBaseEG  = g_params[BISHOP_MOB_BASE_EG];
-    BishopMobSlopeEG = g_params[BISHOP_MOB_SLOPE_EG];
-
-    RookMobBaseMG    = g_params[ROOK_MOB_BASE_MG];
-    RookMobSlopeMG   = g_params[ROOK_MOB_SLOPE_MG];
-    RookMobBaseEG    = g_params[ROOK_MOB_BASE_EG];
-    RookMobSlopeEG   = g_params[ROOK_MOB_SLOPE_EG];
-
-    QueenMobBaseMG   = g_params[QUEEN_MOB_BASE_MG];
-    QueenMobSlopeMG  = g_params[QUEEN_MOB_SLOPE_MG];
-    QueenMobBaseEG   = g_params[QUEEN_MOB_BASE_EG];
-    QueenMobSlopeEG  = g_params[QUEEN_MOB_SLOPE_EG];
+    // Mobility lookup tables
+    for (int i = 0; i < 9; i++) {
+        KnightMobilityMG[i] = g_params[KNIGHT_MOB_MG_0 + i];
+        KnightMobilityEG[i] = g_params[KNIGHT_MOB_EG_0 + i];
+    }
+    for (int i = 0; i < 14; i++) {
+        BishopMobilityMG[i] = g_params[BISHOP_MOB_MG_0 + i];
+        BishopMobilityEG[i] = g_params[BISHOP_MOB_EG_0 + i];
+    }
+    for (int i = 0; i < 15; i++) {
+        RookMobilityMG[i] = g_params[ROOK_MOB_MG_0 + i];
+        RookMobilityEG[i] = g_params[ROOK_MOB_EG_0 + i];
+    }
+    for (int i = 0; i < 28; i++) {
+        QueenMobilityMG[i] = g_params[QUEEN_MOB_MG_0 + i];
+        QueenMobilityEG[i] = g_params[QUEEN_MOB_EG_0 + i];
+    }
 }
 
 void clear_pawn_table() {

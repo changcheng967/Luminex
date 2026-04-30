@@ -18,29 +18,29 @@ void init_tuner_params() {
     g_params[QUEEN_VALUE_MG]  = 960;
     g_params[QUEEN_VALUE_EG]  = 940;
 
-    // Knight mobility
-    g_params[KNIGHT_MOB_BASE_MG]  = -60;
-    g_params[KNIGHT_MOB_SLOPE_MG] = 15;
-    g_params[KNIGHT_MOB_BASE_EG]  = -75;
-    g_params[KNIGHT_MOB_SLOPE_EG] = 18;
+    // Knight mobility tables: -60 + 15*i (MG), -75 + 18*i (EG)
+    for (int i = 0; i < 9; i++) {
+        g_params[KNIGHT_MOB_MG_0 + i] = -60 + 15 * i;
+        g_params[KNIGHT_MOB_EG_0 + i] = -75 + 18 * i;
+    }
 
-    // Bishop mobility
-    g_params[BISHOP_MOB_BASE_MG]  = -48;
-    g_params[BISHOP_MOB_SLOPE_MG] = 7;
-    g_params[BISHOP_MOB_BASE_EG]  = -56;
-    g_params[BISHOP_MOB_SLOPE_EG] = 9;
+    // Bishop mobility tables: -48 + 7*i (MG), -56 + 9*i (EG)
+    for (int i = 0; i < 14; i++) {
+        g_params[BISHOP_MOB_MG_0 + i] = -48 + 7 * i;
+        g_params[BISHOP_MOB_EG_0 + i] = -56 + 9 * i;
+    }
 
-    // Rook mobility
-    g_params[ROOK_MOB_BASE_MG]  = -38;
-    g_params[ROOK_MOB_SLOPE_MG] = 5;
-    g_params[ROOK_MOB_BASE_EG]  = -48;
-    g_params[ROOK_MOB_SLOPE_EG] = 7;
+    // Rook mobility tables: -38 + 5*i (MG), -48 + 7*i (EG)
+    for (int i = 0; i < 15; i++) {
+        g_params[ROOK_MOB_MG_0 + i] = -38 + 5 * i;
+        g_params[ROOK_MOB_EG_0 + i] = -48 + 7 * i;
+    }
 
-    // Queen mobility
-    g_params[QUEEN_MOB_BASE_MG]  = -28;
-    g_params[QUEEN_MOB_SLOPE_MG] = 2;
-    g_params[QUEEN_MOB_BASE_EG]  = -38;
-    g_params[QUEEN_MOB_SLOPE_EG] = 3;
+    // Queen mobility tables: -28 + 2*i (MG), -38 + 3*i (EG)
+    for (int i = 0; i < 28; i++) {
+        g_params[QUEEN_MOB_MG_0 + i] = -28 + 2 * i;
+        g_params[QUEEN_MOB_EG_0 + i] = -38 + 3 * i;
+    }
 
     // Key EvalParams
     g_params[BISHOP_PAIR_MG]    = 40;

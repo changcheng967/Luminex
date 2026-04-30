@@ -139,6 +139,8 @@ bool load_dataset(const char* filename) {
 
 void print_params() {
     printf("\n=== Tuned Parameters ===\n");
+
+    // Material values
     printf("// Material values\n");
     printf("static constexpr int PieceValueMG[8] = {%d, %d, %d, %d, %d, 0, 0, 0};\n",
            g_params[PAWN_VALUE_MG], g_params[KNIGHT_VALUE_MG], g_params[BISHOP_VALUE_MG],
@@ -147,30 +149,49 @@ void print_params() {
            g_params[PAWN_VALUE_EG], g_params[KNIGHT_VALUE_EG], g_params[BISHOP_VALUE_EG],
            g_params[ROOK_VALUE_EG], g_params[QUEEN_VALUE_EG]);
 
-    printf("\n// Knight mobility\n");
-    printf("static constexpr int KnightMobBaseMG = %d;\n", g_params[KNIGHT_MOB_BASE_MG]);
-    printf("static constexpr int KnightMobSlopeMG = %d;\n", g_params[KNIGHT_MOB_SLOPE_MG]);
-    printf("static constexpr int KnightMobBaseEG = %d;\n", g_params[KNIGHT_MOB_BASE_EG]);
-    printf("static constexpr int KnightMobSlopeEG = %d;\n", g_params[KNIGHT_MOB_SLOPE_EG]);
+    // Knight mobility tables
+    printf("\n// Knight mobility (non-linear lookup table)\n");
+    printf("static int KnightMobilityMG[9] = {%d", g_params[KNIGHT_MOB_MG_0]);
+    for (int i = 1; i < 9; i++) printf(", %d", g_params[KNIGHT_MOB_MG_0 + i]);
+    printf("};\n");
+    printf("static int KnightMobilityEG[9] = {%d", g_params[KNIGHT_MOB_EG_0]);
+    for (int i = 1; i < 9; i++) printf(", %d", g_params[KNIGHT_MOB_EG_0 + i]);
+    printf("};\n");
 
-    printf("\n// Bishop mobility\n");
-    printf("static constexpr int BishopMobBaseMG = %d;\n", g_params[BISHOP_MOB_BASE_MG]);
-    printf("static constexpr int BishopMobSlopeMG = %d;\n", g_params[BISHOP_MOB_SLOPE_MG]);
-    printf("static constexpr int BishopMobBaseEG = %d;\n", g_params[BISHOP_MOB_BASE_EG]);
-    printf("static constexpr int BishopMobSlopeEG = %d;\n", g_params[BISHOP_MOB_SLOPE_EG]);
+    // Bishop mobility tables
+    printf("\n// Bishop mobility (non-linear lookup table)\n");
+    printf("static int BishopMobilityMG[14] = {%d", g_params[BISHOP_MOB_MG_0]);
+    for (int i = 1; i < 14; i++) printf(", %d", g_params[BISHOP_MOB_MG_0 + i]);
+    printf("};\n");
+    printf("static int BishopMobilityEG[14] = {%d", g_params[BISHOP_MOB_EG_0]);
+    for (int i = 1; i < 14; i++) printf(", %d", g_params[BISHOP_MOB_EG_0 + i]);
+    printf("};\n");
 
-    printf("\n// Rook mobility\n");
-    printf("static constexpr int RookMobBaseMG = %d;\n", g_params[ROOK_MOB_BASE_MG]);
-    printf("static constexpr int RookMobSlopeMG = %d;\n", g_params[ROOK_MOB_SLOPE_MG]);
-    printf("static constexpr int RookMobBaseEG = %d;\n", g_params[ROOK_MOB_BASE_EG]);
-    printf("static constexpr int RookMobSlopeEG = %d;\n", g_params[ROOK_MOB_SLOPE_EG]);
+    // Rook mobility tables
+    printf("\n// Rook mobility (non-linear lookup table)\n");
+    printf("static int RookMobilityMG[15] = {%d", g_params[ROOK_MOB_MG_0]);
+    for (int i = 1; i < 15; i++) printf(", %d", g_params[ROOK_MOB_MG_0 + i]);
+    printf("};\n");
+    printf("static int RookMobilityEG[15] = {%d", g_params[ROOK_MOB_EG_0]);
+    for (int i = 1; i < 15; i++) printf(", %d", g_params[ROOK_MOB_EG_0 + i]);
+    printf("};\n");
 
-    printf("\n// Queen mobility\n");
-    printf("static constexpr int QueenMobBaseMG = %d;\n", g_params[QUEEN_MOB_BASE_MG]);
-    printf("static constexpr int QueenMobSlopeMG = %d;\n", g_params[QUEEN_MOB_SLOPE_MG]);
-    printf("static constexpr int QueenMobBaseEG = %d;\n", g_params[QUEEN_MOB_BASE_EG]);
-    printf("static constexpr int QueenMobSlopeEG = %d;\n", g_params[QUEEN_MOB_SLOPE_EG]);
+    // Queen mobility tables
+    printf("\n// Queen mobility (non-linear lookup table)\n");
+    printf("static int QueenMobilityMG[28] = {\n    %d", g_params[QUEEN_MOB_MG_0]);
+    for (int i = 1; i < 28; i++) {
+        if (i % 14 == 0) printf(",\n    %d", g_params[QUEEN_MOB_MG_0 + i]);
+        else printf(", %d", g_params[QUEEN_MOB_MG_0 + i]);
+    }
+    printf("};\n");
+    printf("static int QueenMobilityEG[28] = {\n    %d", g_params[QUEEN_MOB_EG_0]);
+    for (int i = 1; i < 28; i++) {
+        if (i % 14 == 0) printf(",\n    %d", g_params[QUEEN_MOB_EG_0 + i]);
+        else printf(", %d", g_params[QUEEN_MOB_EG_0 + i]);
+    }
+    printf("};\n");
 
+    // Key EvalParams
     printf("\n// Key EvalParams\n");
     printf("bishop_pair_mg = %d;\n", g_params[BISHOP_PAIR_MG]);
     printf("bishop_pair_eg = %d;\n", g_params[BISHOP_PAIR_EG]);
@@ -203,7 +224,7 @@ int main_tuner(int argc, char** argv) {
         K = optimize_K();
     }
 
-    int max_iterations = 100;
+    int max_iterations = 200;
     if (argc >= 4) max_iterations = atoi(argv[3]);
 
     printf("Starting coordinate descent: %d parameters, %d positions, K=%.2f\n",
@@ -213,45 +234,39 @@ int main_tuner(int argc, char** argv) {
     double best_mse = compute_mse_current();
     printf("Initial MSE: %.6f\n\n", best_mse);
 
-    int step = 2;
+    int step = 4; // Start with larger step for faster initial convergence
     int no_improve_count = 0;
 
-    // Parameter bounds: {min, max} — prevent degenerate solutions
+    // Parameter bounds
     struct Bounds { int lo, hi; };
-    Bounds bounds[PARAM_COUNT] = {
-        {80,110},   // PAWN_VALUE_MG
-        {80,120},   // PAWN_VALUE_EG
-        {280,360},  // KNIGHT_VALUE_MG
-        {250,340},  // KNIGHT_VALUE_EG
-        {300,380},  // BISHOP_VALUE_MG
-        {270,350},  // BISHOP_VALUE_EG
-        {440,560},  // ROOK_VALUE_MG
-        {470,590},  // ROOK_VALUE_EG
-        {850,1100}, // QUEEN_VALUE_MG
-        {830,1050}, // QUEEN_VALUE_EG
-        {-130,-30}, // KNIGHT_MOB_BASE_MG
-        {5,30},     // KNIGHT_MOB_SLOPE_MG (must be positive)
-        {-130,-30}, // KNIGHT_MOB_BASE_EG
-        {5,35},     // KNIGHT_MOB_SLOPE_EG (must be positive)
-        {-100,-20}, // BISHOP_MOB_BASE_MG
-        {3,15},     // BISHOP_MOB_SLOPE_MG (must be positive)
-        {-100,-20}, // BISHOP_MOB_BASE_EG
-        {4,18},     // BISHOP_MOB_SLOPE_EG (must be positive)
-        {-80,-10},  // ROOK_MOB_BASE_MG
-        {2,12},     // ROOK_MOB_SLOPE_MG (must be positive)
-        {-80,-10},  // ROOK_MOB_BASE_EG
-        {3,14},     // ROOK_MOB_SLOPE_EG (must be positive)
-        {-60,-10},  // QUEEN_MOB_BASE_MG
-        {1,8},      // QUEEN_MOB_SLOPE_MG (must be positive)
-        {-80,-10},  // QUEEN_MOB_BASE_EG
-        {1,8},      // QUEEN_MOB_SLOPE_EG (must be positive)
-        {0,100},    // BISHOP_PAIR_MG
-        {40,200},   // BISHOP_PAIR_EG
-        {5,60},     // ROOK_OPEN_FILE_MG
-        {10,80},    // ROOK_OPEN_FILE_EG
-        {0,40},     // ROOK_SEMI_OPEN_MG
-        {0,50},     // ROOK_SEMI_OPEN_EG
-    };
+    Bounds bounds[PARAM_COUNT];
+
+    // Material bounds
+    bounds[PAWN_VALUE_MG]   = {80, 110};
+    bounds[PAWN_VALUE_EG]   = {80, 120};
+    bounds[KNIGHT_VALUE_MG] = {280, 360};
+    bounds[KNIGHT_VALUE_EG] = {250, 340};
+    bounds[BISHOP_VALUE_MG] = {300, 380};
+    bounds[BISHOP_VALUE_EG] = {270, 350};
+    bounds[ROOK_VALUE_MG]   = {440, 560};
+    bounds[ROOK_VALUE_EG]   = {470, 590};
+    bounds[QUEEN_VALUE_MG]  = {850, 1100};
+    bounds[QUEEN_VALUE_EG]  = {830, 1050};
+
+    // Mobility table bounds: ±40 from initial value
+    for (size_t p = KNIGHT_MOB_MG_0; p <= QUEEN_MOB_EG_27; ++p) {
+        int val = g_params[p];
+        bounds[p].lo = val - 40;
+        bounds[p].hi = val + 40;
+    }
+
+    // EvalParams bounds
+    bounds[BISHOP_PAIR_MG]    = {0, 100};
+    bounds[BISHOP_PAIR_EG]    = {40, 200};
+    bounds[ROOK_OPEN_FILE_MG] = {5, 60};
+    bounds[ROOK_OPEN_FILE_EG] = {10, 80};
+    bounds[ROOK_SEMI_OPEN_MG] = {0, 40};
+    bounds[ROOK_SEMI_OPEN_EG] = {0, 50};
 
     for (int iter = 1; iter <= max_iterations; ++iter) {
         bool improved = false;
