@@ -241,32 +241,26 @@ int main_tuner(int argc, char** argv) {
     struct Bounds { int lo, hi; };
     Bounds bounds[PARAM_COUNT];
 
-    // Material bounds
-    bounds[PAWN_VALUE_MG]   = {80, 110};
-    bounds[PAWN_VALUE_EG]   = {80, 120};
-    bounds[KNIGHT_VALUE_MG] = {280, 360};
-    bounds[KNIGHT_VALUE_EG] = {250, 340};
-    bounds[BISHOP_VALUE_MG] = {300, 380};
-    bounds[BISHOP_VALUE_EG] = {270, 350};
-    bounds[ROOK_VALUE_MG]   = {440, 560};
-    bounds[ROOK_VALUE_EG]   = {470, 590};
-    bounds[QUEEN_VALUE_MG]  = {850, 1100};
-    bounds[QUEEN_VALUE_EG]  = {830, 1050};
-
-    // Mobility table bounds: ±40 from initial value
-    for (size_t p = KNIGHT_MOB_MG_0; p <= QUEEN_MOB_EG_27; ++p) {
-        int val = g_params[p];
-        bounds[p].lo = val - 40;
-        bounds[p].hi = val + 40;
+    // Material: LOCKED — chess-theory grounded, not data-driven
+    // Prevents tuner from trading material↔mobility (degenerate pattern)
+    for (size_t p = 0; p < 10; ++p) {
+        bounds[p] = {g_params[p], g_params[p]}; // No movement
     }
 
-    // EvalParams bounds
-    bounds[BISHOP_PAIR_MG]    = {0, 100};
-    bounds[BISHOP_PAIR_EG]    = {40, 200};
-    bounds[ROOK_OPEN_FILE_MG] = {5, 60};
-    bounds[ROOK_OPEN_FILE_EG] = {10, 80};
-    bounds[ROOK_SEMI_OPEN_MG] = {0, 40};
-    bounds[ROOK_SEMI_OPEN_EG] = {0, 50};
+    // Mobility table bounds: ±60 from initial value (wider for non-linear exploration)
+    for (size_t p = KNIGHT_MOB_MG_0; p <= QUEEN_MOB_EG_27; ++p) {
+        int val = g_params[p];
+        bounds[p].lo = val - 60;
+        bounds[p].hi = val + 60;
+    }
+
+    // EvalParams: LOCKED — same reason as material
+    bounds[BISHOP_PAIR_MG]    = {g_params[BISHOP_PAIR_MG], g_params[BISHOP_PAIR_MG]};
+    bounds[BISHOP_PAIR_EG]    = {g_params[BISHOP_PAIR_EG], g_params[BISHOP_PAIR_EG]};
+    bounds[ROOK_OPEN_FILE_MG] = {g_params[ROOK_OPEN_FILE_MG], g_params[ROOK_OPEN_FILE_MG]};
+    bounds[ROOK_OPEN_FILE_EG] = {g_params[ROOK_OPEN_FILE_EG], g_params[ROOK_OPEN_FILE_EG]};
+    bounds[ROOK_SEMI_OPEN_MG] = {g_params[ROOK_SEMI_OPEN_MG], g_params[ROOK_SEMI_OPEN_MG]};
+    bounds[ROOK_SEMI_OPEN_EG] = {g_params[ROOK_SEMI_OPEN_EG], g_params[ROOK_SEMI_OPEN_EG]};
 
     for (int iter = 1; iter <= max_iterations; ++iter) {
         bool improved = false;
