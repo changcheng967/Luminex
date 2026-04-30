@@ -81,6 +81,7 @@ set(SOURCES
     src/transposition.cpp
     src/magic.cpp
     src/tuner_params.cpp
+    src/book.cpp
 )
 
 set(HEADERS
@@ -93,6 +94,7 @@ set(HEADERS
     src/transposition.h
     src/bitboard.h
     src/types.h
+    src/book.h
 )
 
 add_executable(luminex ${SOURCES} ${HEADERS})

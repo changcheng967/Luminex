@@ -1,6 +1,7 @@
 #define _CRT_SECURE_NO_WARNINGS
 #pragma warning(disable: 4459) // variable shadowing - intentional for pos parameter
 #include "luminex.h"
+#include "book.h"
 #include "evaluation.h"
 #include <chrono>
 #include <cstdarg>
@@ -193,6 +194,7 @@ void handle_ucinewgame() {
     TT.clear();
     TT.new_search();
     clear_correction_history();
+    book_new_game();
     pos.set("rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1");
 }
 
@@ -313,6 +315,15 @@ void handle_go(Position& pos, const std::string& cmd) {
     // Set ponder mode if go ponder
     if (limits.ponder) {
         ponder_mode.store(true, std::memory_order_relaxed);
+    }
+
+    // Try opening book first
+    Move book_move = book_probe(pos);
+    if (book_move != MOVE_NONE) {
+        std::ostringstream oss;
+        oss << "bestmove " << book_move << "\n";
+        safe_output(oss.str());
+        return;
     }
 
     // Launch search thread with large stack to prevent stack overflow
