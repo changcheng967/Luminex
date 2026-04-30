@@ -242,28 +242,28 @@ int PSQ_EG[2][8][64];
 // ============================================================
 
 // Knight: max 8 mobility squares
-static int KnightMobilityMG[9] = { -65, -42, -46, -51, -52, -45, -30, -15, 0 };
-static int KnightMobilityEG[9] = { -77, -53, 5, -5, -23, -25, -26, -9, 9 };
+static int KnightMobilityMG[9] = { -60, -45, -30, -15, 0, 15, 30, 45, 60 };
+static int KnightMobilityEG[9] = { -75, -57, -39, -21, -3, 15, 33, 51, 69 };
 static constexpr int KNIGHT_MOB_MAX = 8;
 
 // Bishop: max 13 mobility squares
-static int BishopMobilityMG[14] = { -60, -73, -62, -71, -68, -73, -66, -59, -52, -45, -38, -31, -23, -17 };
-static int BishopMobilityEG[14] = { -40, -63, -66, -89, -68, -71, -62, -53, -44, -35, -26, -17, 101, 1 };
+static int BishopMobilityMG[14] = { -48, -41, -34, -27, -20, -13, -6, 1, 8, 15, 22, 29, 36, 43 };
+static int BishopMobilityEG[14] = { -56, -47, -38, -29, -20, -11, -2, 7, 16, 25, 34, 43, 52, 61 };
 static constexpr int BISHOP_MOB_MAX = 13;
 
 // Rook: max 14 mobility squares
-static int RookMobilityMG[15] = { 22, 3, -5, -23, -34, -54, -56, -63, -58, -53, -48, -43, -38, -33, -28 };
-static int RookMobilityEG[15] = { 12, -9, 1, -7, 12, -2, -13, -19, -44, -45, -38, -31, -24, -17, -10 };
+static int RookMobilityMG[15] = { -38, -33, -28, -23, -18, -13, -8, -3, 2, 7, 12, 17, 22, 27, 32 };
+static int RookMobilityEG[15] = { -48, -41, -34, -27, -20, -13, -6, 1, 8, 15, 22, 29, 36, 43, 50 };
 static constexpr int ROOK_MOB_MAX = 14;
 
 // Queen: max 27 mobility squares
 static int QueenMobilityMG[28] = {
-    -88, -19, -35, -31, -36, -43, -25, -28, -32, -30, -24, -40, -39, -53,
-    -60, -58, -8, -54, 0, -50, -44, -46, 73, 40, -40, 23, 16, 26
+    -28, -26, -24, -22, -20, -18, -16, -14, -12, -10, -8, -6, -4, -2,
+     0,   2,   4,   6,   8,  10,  12,  14,  16,  18,  20, 22, 24, 26
 };
 static int QueenMobilityEG[28] = {
-    -8, -35, -86, 18, 34, -67, -13, -10, -10, -11, -68, -65, -62, -31,
-    -42, -53, -50, -47, -24, -41, -38, -35, 88, -29, -26, 41, 44, 43
+    -38, -35, -32, -29, -26, -23, -20, -17, -14, -11, -8, -5, -2, 1,
+      4,   7,  10,  13,  16,  19,  22,  25,  28,  31,  34, 37, 40, 43
 };
 static constexpr int QUEEN_MOB_MAX = 27;
 
