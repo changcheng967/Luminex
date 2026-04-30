@@ -21,11 +21,15 @@ EvalParams g_eval_params;
 //   7. Passed pawns: exponential growth in endgame
 // ============================================================
 
-// Piece material values: EG ~1.5-2.1x MG
-// Material increases in value as pieces trade off. Rooks benefit most.
-// Ratios inspired by strong HCE engines (Stash, SF11).
+// Self-engineered piece material values
+// Logic: classical ratios with MG/EG adjustments
+//   Pawn: 90 MG (development cost), 100 EG (full value)
+//   Knight: 320 MG (3.2 pawns), 290 EG (slow piece, less valuable)
+//   Bishop: 340 MG (diagonal range > L-shapes), 310 EG (long-range)
+//   Rook: 500 MG (5 pawns), 530 EG (stronger with open files)
+//   Queen: 960 MG (~10 pawns), 940 EG (king activity reduces power)
 static int PieceValueMG[8] = { 90, 320, 340, 500, 960, 0, 0, 0 };
-static int PieceValueEG[8] = { 155, 520, 590, 1060, 1750, 0, 0, 0 };
+static int PieceValueEG[8] = { 100, 290, 310, 530, 940, 0, 0, 0 };
 
 // ============================================================
 // PIECE-SQUARE TABLES
@@ -46,77 +50,81 @@ Score PST_MG_TABLE[2][8][64] = {
     {
         // PAWN MG: Central pawns control more squares. Advanced = dangerous.
         // Wing pawns penalized (less space control, harder to push).
-        // Scaled 1.4x for wider positional awareness.
         {
-              0,    0,    0,    0,    0,    0,    0,    0,
-            -21,   -7,   -7,    0,    0,   -7,   -7,  -21,
-            -17,   -3,    0,    7,    7,    0,   -3,  -17,
-            -11,    0,    7,   21,   21,    7,    0,  -11,
-             -7,    7,   21,   35,   35,   21,    7,   -7,
-              7,   28,   49,   63,   63,   49,   28,    7,
-             70,   84,   91,   98,   98,   91,   84,   70,
-              0,    0,    0,    0,    0,    0,    0,    0
+              0,   0,   0,   0,   0,   0,   0,   0,
+            -15,  -5,  -5,   0,   0,  -5,  -5, -15,
+            -12,  -2,   0,   5,   5,   0,  -2, -12,
+             -8,   0,   5,  15,  15,   5,   0,  -8,
+             -5,   5,  15,  25,  25,  15,   5,  -5,
+              5,  20,  35,  45,  45,  35,  20,   5,
+             50,  60,  65,  70,  70,  65,  60,  50,
+              0,   0,   0,   0,   0,   0,   0,   0
         },
-        // KNIGHT MG: "A knight on the rim is dim." ~200cp swing center vs edge.
+        // KNIGHT MG: "A knight on the rim is dim."
         // d4/d5/e4/e5 are the dream squares (outposts in center).
-        // Scaled 1.8x for wider positional awareness.
+        // Edges and corners heavily penalized.
         {
-           -126,  -63,  -45,  -36,  -36,  -45,  -63, -126,
-            -45,  -18,    0,   18,   18,    0,  -18,  -45,
-            -27,    9,   27,   45,   45,   27,    9,  -27,
-            -18,   18,   45,   72,   72,   45,   18,  -18,
-            -18,   18,   45,   72,   72,   45,   18,  -18,
-            -27,    0,   27,   36,   36,   27,    0,  -27,
-            -54,  -18,    9,   18,   18,    9,  -18,  -54,
-           -126,  -54,  -45,  -36,  -36,  -45,  -54, -126
+            -70, -35, -25, -20, -20, -25, -35, -70,
+            -25, -10,   0,  10,  10,   0, -10, -25,
+            -15,   5,  15,  25,  25,  15,   5, -15,
+            -10,  10,  25,  40,  40,  25,  10, -10,
+            -10,  10,  25,  40,  40,  25,  10, -10,
+            -15,   0,  15,  20,  20,  15,   0, -15,
+            -30, -10,   5,  10,  10,   5, -10, -30,
+            -70, -30, -25, -20, -20, -25, -30, -70
         },
         // BISHOP MG: Long diagonals are key. Developed to c4/f4/d5/e5 = strong.
-        // Scaled 1.6x for wider positional awareness.
+        // Fianchetto squares (b2/g2) get moderate bonus.
+        // Corners and back rank penalized (undeveloped).
         {
-            -40,  -16,  -24,  -16,  -16,  -24,  -16,  -40,
-            -16,    8,   16,   16,   16,   16,    8,  -16,
-             -8,   16,   24,   24,   24,   24,   16,   -8,
-             -8,   16,   24,   40,   40,   24,   16,   -8,
-             -8,   16,   24,   40,   40,   24,   16,   -8,
-             -8,   16,   24,   24,   24,   24,   16,   -8,
-            -24,    8,    8,   16,   16,    8,    8,  -24,
-            -40,  -16,  -24,  -16,  -16,  -24,  -16,  -40
+            -25, -10, -15, -10, -10, -15, -10, -25,
+            -10,   5,  10,  10,  10,  10,   5, -10,
+             -5,  10,  15,  15,  15,  15,  10,  -5,
+             -5,  10,  15,  25,  25,  15,  10,  -5,
+             -5,  10,  15,  25,  25,  15,  10,  -5,
+             -5,  10,  15,  15,  15,  15,  10,  -5,
+            -15,   5,   5,  10,  10,   5,   5, -15,
+            -25, -10, -15, -10, -10, -15, -10, -25
         },
         // ROOK MG: Activity on open files, 7th rank is famous.
-        // Scaled 1.3x — rook position less decisive in MG (behind pawns).
+        // Central files (d/e) slightly better (control of center).
+        // Trapped on back rank = penalty (handled by trapped term).
         {
-            -20,   -7,   -7,    7,    7,   -7,   -7,  -20,
-            -26,  -13,    0,   13,   13,    0,  -13,  -26,
-            -20,   -7,    0,   13,   13,    0,   -7,  -20,
-            -20,   -7,    7,   20,   20,    7,   -7,  -20,
-            -20,   -7,    7,   20,   20,    7,   -7,  -20,
-            -13,    0,   13,   26,   26,   13,    0,  -13,
-              7,   26,   33,   46,   46,   33,   26,    7,
-             13,   20,   26,   33,   33,   26,   20,   13
+            -15,  -5,  -5,   5,   5,  -5,  -5, -15,
+            -20, -10,   0,  10,  10,   0, -10, -20,
+            -15,  -5,   0,  10,  10,   0,  -5, -15,
+            -15,  -5,   5,  15,  15,   5,  -5, -15,
+            -15,  -5,   5,  15,  15,   5,  -5, -15,
+            -10,   0,  10,  20,  20,  10,   0, -10,
+              5,  20,  25,  35,  35,  25,  20,   5,
+             10,  15,  20,  25,  25,  20,  15,  10
         },
         // QUEEN MG: Don't develop too early (risk of being attacked).
-        // Scaled 1.2x — queen position least decisive in MG.
+        // Central activity is strong WHEN SAFE (behind pieces).
+        // Back rank is acceptable (queen is flexible).
         {
-             -6,  -12,   -6,    6,    6,   -6,  -12,   -6,
-            -12,   -6,    0,   12,   12,    0,   -6,  -12,
-            -12,   -6,    6,   12,   12,    6,   -6,  -12,
-            -18,   -6,    0,   12,   12,    0,   -6,  -18,
-            -12,    0,    6,   18,   18,    6,    0,  -12,
-             -6,    6,   12,   24,   24,   12,    6,   -6,
-            -12,    0,    6,   18,   18,    6,    0,  -12,
-            -12,   -6,    0,    6,    6,    0,   -6,  -12
+             -5, -10,  -5,   5,   5,  -5, -10,  -5,
+            -10,  -5,   0,  10,  10,   0,  -5, -10,
+            -10,  -5,   5,  10,  10,   5,  -5, -10,
+            -15,  -5,   0,  10,  10,   0,  -5, -15,
+            -10,   0,   5,  15,  15,   5,   0, -10,
+             -5,   5,  10,  20,  20,  10,   5,  -5,
+            -10,   0,   5,  15,  15,   5,   0, -10,
+            -10,  -5,   0,   5,   5,   0,  -5, -10
         },
         // KING MG: Safety is paramount. Castled position = strong bonus.
-        // Scaled 1.8x — castled vs exposed should be ~200+ cp swing.
+        // g1/c1 are castled positions (highest bonus).
+        // Center = dangerous (exposed to attack).
+        // Higher ranks = increasingly dangerous (no shelter).
         {
-             27,   18,   -9,  -45,  -45,   -9,   36,   27,
-              9,    0,  -27,  -54,  -54,  -27,    0,    9,
-            -27,  -27,  -36,  -54,  -54,  -36,  -27,  -27,
-            -45,  -36,  -45,  -63,  -63,  -45,  -36,  -45,
-            -54,  -45,  -45,  -63,  -63,  -45,  -45,  -54,
-            -63,  -54,  -54,  -72,  -72,  -54,  -54,  -63,
-            -72,  -63,  -54,  -72,  -72,  -54,  -63,  -72,
-            -81,  -72,  -54,  -72,  -72,  -54,  -72,  -81
+             15,  10,  -5, -25, -25,  -5,  20,  15,
+              5,   0, -15, -30, -30, -15,   0,   5,
+            -15, -15, -20, -30, -30, -20, -15, -15,
+            -25, -20, -25, -35, -35, -25, -20, -25,
+            -30, -25, -25, -35, -35, -25, -25, -30,
+            -35, -30, -30, -40, -40, -30, -30, -35,
+            -40, -35, -30, -40, -40, -30, -35, -40,
+            -45, -40, -30, -40, -40, -30, -40, -45
         },
         // NONE / ALL
         {0}, {0}
@@ -131,76 +139,77 @@ Score PST_EG_TABLE[2][8][64] = {
     // WHITE
     {
         // PAWN EG: Advancement is critical. Passed pawns win games.
-        // Scaled 1.4x — advancement matters more with higher EG piece values.
+        // Rank 6-7 pawns are extremely valuable (promotion threat).
         {
-              0,    0,    0,    0,    0,    0,    0,    0,
-            -14,   -4,   -4,    0,    0,   -4,   -4,  -14,
-             -7,    0,    0,    7,    7,    0,    0,   -7,
-              0,    7,   11,   21,   21,   11,    7,    0,
-             14,   21,   28,   42,   42,   28,   21,   14,
-             42,   56,   70,   91,   91,   70,   56,   42,
-             98,  112,  126,  140,  140,  126,  112,   98,
-              0,    0,    0,    0,    0,    0,    0,    0
+              0,   0,   0,   0,   0,   0,   0,   0,
+            -10,  -3,  -3,   0,   0,  -3,  -3, -10,
+             -5,   0,   0,   5,   5,   0,   0,  -5,
+              0,   5,   8,  15,  15,   8,   5,   0,
+             10,  15,  20,  30,  30,  20,  15,  10,
+             30,  40,  50,  65,  65,  50,  40,  30,
+             70,  80,  90, 100, 100,  90,  80,  70,
+              0,   0,   0,   0,   0,   0,   0,   0
         },
         // KNIGHT EG: Centralization still matters but less extreme than MG.
-        // Scaled 1.8x matching MG scale.
+        // Slow piece, vulnerable to being outmaneuvered by king.
         {
-            -90,  -45,  -36,  -27,  -27,  -36,  -45,  -90,
-            -36,  -18,    0,    9,    9,    0,  -18,  -36,
-            -18,    0,   18,   27,   27,   18,    0,  -18,
-            -18,    9,   27,   45,   45,   27,    9,  -18,
-            -18,    9,   27,   45,   45,   27,    9,  -18,
-            -18,    0,   18,   27,   27,   18,    0,  -18,
-            -36,  -18,    0,    9,    9,    0,  -18,  -36,
-            -90,  -45,  -36,  -27,  -27,  -36,  -45,  -90
+            -50, -25, -20, -15, -15, -20, -25, -50,
+            -20, -10,   0,   5,   5,   0, -10, -20,
+            -10,   0,  10,  15,  15,  10,   0, -10,
+            -10,   5,  15,  25,  25,  15,   5, -10,
+            -10,   5,  15,  25,  25,  15,   5, -10,
+            -10,   0,  10,  15,  15,  10,   0, -10,
+            -20, -10,   0,   5,   5,   0, -10, -20,
+            -50, -25, -20, -15, -15, -20, -25, -50
         },
         // BISHOP EG: Active bishop is one of the strongest endgame pieces.
-        // Scaled 1.6x matching MG scale.
+        // Centralization for maximum board coverage.
         {
-            -32,  -16,  -16,  -16,  -16,  -16,  -16,  -32,
-            -16,    0,    8,    8,    8,    8,    0,  -16,
-             -8,    8,   16,   16,   16,   16,    8,   -8,
-             -8,    8,   16,   24,   24,   16,    8,   -8,
-             -8,    8,   16,   24,   24,   16,    8,   -8,
-             -8,    8,   16,   16,   16,   16,    8,   -8,
-            -16,    0,    8,    8,    8,    8,    0,  -16,
-            -32,  -16,  -16,  -16,  -16,  -16,  -16,  -32
+            -20, -10, -10, -10, -10, -10, -10, -20,
+            -10,   0,   5,   5,   5,   5,   0, -10,
+             -5,   5,  10,  10,  10,  10,   5,  -5,
+             -5,   5,  10,  15,  15,  10,   5,  -5,
+             -5,   5,  10,  15,  15,  10,   5,  -5,
+             -5,   5,  10,  10,  10,  10,   5,  -5,
+            -10,   0,   5,   5,   5,   5,   0, -10,
+            -20, -10, -10, -10, -10, -10, -10, -20
         },
         // ROOK EG: Activity is everything. 7th rank wins games.
-        // Scaled 1.3x matching MG scale.
+        // Central files provide best cutting-off opportunities.
         {
-            -13,   -7,    0,    7,    7,    0,   -7,  -13,
-            -13,   -7,    7,   13,   13,    7,   -7,  -13,
-             -7,    0,    7,   13,   13,    7,    0,   -7,
-             -7,    7,   13,   20,   20,   13,    7,   -7,
-              0,    7,   13,   20,   20,   13,    7,    0,
-              7,   13,   20,   26,   26,   20,   13,    7,
-             20,   33,   33,   39,   39,   33,   33,   20,
-             13,   20,   26,   33,   33,   26,   20,   13
+            -10,  -5,   0,   5,   5,   0,  -5, -10,
+            -10,  -5,   5,  10,  10,   5,  -5, -10,
+             -5,   0,   5,  10,  10,   5,   0,  -5,
+             -5,   5,  10,  15,  15,  10,   5,  -5,
+              0,   5,  10,  15,  15,  10,   5,   0,
+              5,  10,  15,  20,  20,  15,  10,   5,
+             15,  25,  25,  30,  30,  25,  25,  15,
+             10,  15,  20,  25,  25,  20,  15,  10
         },
-        // QUEEN EG: Powerful everywhere. Slight central preference.
-        // Scaled 1.2x matching MG scale.
+        // QUEEN EG: Powerful everywhere. Slight central preference for
+        // coordination with king and stopping passed pawns.
         {
-            -12,   -6,   -6,    0,    0,   -6,   -6,  -12,
-             -6,    0,    6,   12,   12,    6,    0,   -6,
-             -6,    6,   12,   18,   18,   12,    6,   -6,
-             -6,    6,   12,   24,   24,   12,    6,   -6,
-             -6,    6,   12,   24,   24,   12,    6,   -6,
-             -6,    6,   12,   18,   18,   12,    6,   -6,
-             -6,    0,    6,   12,   12,    6,    0,   -6,
-            -12,   -6,   -6,    0,    0,   -6,   -6,  -12
+            -10,  -5,  -5,   0,   0,  -5,  -5, -10,
+             -5,   0,   5,  10,  10,   5,   0,  -5,
+             -5,   5,  10,  15,  15,  10,   5,  -5,
+             -5,   5,  10,  20,  20,  10,   5,  -5,
+             -5,   5,  10,  20,  20,  10,   5,  -5,
+             -5,   5,  10,  15,  15,  10,   5,  -5,
+             -5,   0,   5,  10,  10,   5,   0,  -5,
+            -10,  -5,  -5,   0,   0,  -5,  -5, -10
         },
         // KING EG: Active king is critical. Must centralize.
-        // Scaled 1.3x — centralization matters with higher EG piece values.
+        // d4/d5/e4/e5 = maximum (king wants to be in the center).
+        // Edge/corner = penalty (passive, can't stop passed pawns).
         {
-            -52,  -33,  -20,   -7,   -7,  -20,  -33,  -52,
-            -26,  -13,    0,   13,   13,    0,  -13,  -26,
-            -13,    0,   13,   26,   26,   13,    0,  -13,
-             -7,    7,   20,   33,   33,   20,    7,   -7,
-             -7,    7,   20,   33,   33,   20,    7,   -7,
-            -13,    0,   13,   26,   26,   13,    0,  -13,
-            -26,  -13,    0,   13,   13,    0,  -13,  -26,
-            -52,  -33,  -20,   -7,   -7,  -20,  -33,  -52
+            -40, -25, -15,  -5,  -5, -15, -25, -40,
+            -20, -10,   0,  10,  10,   0, -10, -20,
+            -10,   0,  10,  20,  20,  10,   0, -10,
+             -5,   5,  15,  25,  25,  15,   5,  -5,
+             -5,   5,  15,  25,  25,  15,   5,  -5,
+            -10,   0,  10,  20,  20,  10,   0, -10,
+            -20, -10,   0,  10,  10,   0, -10, -20,
+            -40, -25, -15,  -5,  -5, -15, -25, -40
         },
         // NONE / ALL
         {0}, {0}
@@ -232,30 +241,29 @@ int PSQ_EG[2][8][64];
 // at start). The tuner discovers the true shape from data.
 // ============================================================
 
-// Knight: max 8 mobility squares. Concave: steep at low end, flattening.
-static int KnightMobilityMG[9] = { -55, -37, -20, -8, 0, 8, 14, 19, 22 };
-static int KnightMobilityEG[9] = { -65, -42, -22, -6, 5, 15, 25, 33, 38 };
+// Knight: max 8 mobility squares
+static int KnightMobilityMG[9] = { -60, -45, -30, -15, 0, 15, 30, 45, 60 };
+static int KnightMobilityEG[9] = { -75, -57, -39, -21, -3, 15, 33, 51, 69 };
 static constexpr int KNIGHT_MOB_MAX = 8;
 
-// Bishop: max 13 mobility squares. Concave: trapped bishop very bad.
-static int BishopMobilityMG[14] = { -45, -30, -18, -8, 0, 6, 12, 17, 21, 25, 28, 30, 32, 33 };
-static int BishopMobilityEG[14] = { -52, -35, -20, -8, 2, 12, 22, 30, 37, 43, 48, 52, 55, 57 };
+// Bishop: max 13 mobility squares
+static int BishopMobilityMG[14] = { -48, -41, -34, -27, -20, -13, -6, 1, 8, 15, 22, 29, 36, 43 };
+static int BishopMobilityEG[14] = { -56, -47, -38, -29, -20, -11, -2, 7, 16, 25, 34, 43, 52, 61 };
 static constexpr int BISHOP_MOB_MAX = 13;
 
-// Rook: max 14 mobility squares. EG steep ramp (inactive rook = catastrophic).
-static int RookMobilityMG[15] = { -35, -22, -12, -4, 2, 8, 14, 20, 25, 30, 34, 38, 41, 44, 46 };
-static int RookMobilityEG[15] = { -42, -28, -15, -4, 5, 14, 24, 35, 46, 55, 63, 70, 76, 80, 83 };
+// Rook: max 14 mobility squares
+static int RookMobilityMG[15] = { -38, -33, -28, -23, -18, -13, -8, -3, 2, 7, 12, 17, 22, 27, 32 };
+static int RookMobilityEG[15] = { -48, -41, -34, -27, -20, -13, -6, 1, 8, 15, 22, 29, 36, 43, 50 };
 static constexpr int ROOK_MOB_MAX = 14;
 
-// Queen: max 27 mobility squares. MG peaks then drops (overextended = exposed).
-// EG similar pattern but less extreme.
+// Queen: max 27 mobility squares
 static int QueenMobilityMG[28] = {
-    -25, -18, -13,  -9,  -5,  -2,   1,   3,   5,   7,   8,   9,  10,  10,
-     11,  11,  11,  10,  10,   9,   8,   7,   5,   3,   1,  -2,  -5, -10
+    -28, -26, -24, -22, -20, -18, -16, -14, -12, -10, -8, -6, -4, -2,
+     0,   2,   4,   6,   8,  10,  12,  14,  16,  18,  20, 22, 24, 26
 };
 static int QueenMobilityEG[28] = {
-    -32, -22, -14,  -6,   0,   6,  12,  18,  24,  30,  35,  39,  43,  46,
-     48,  50,  51,  52,  52,  51,  50,  48,  45,  42,  38,  33,  27,  20
+    -38, -35, -32, -29, -26, -23, -20, -17, -14, -11, -8, -5, -2, 1,
+      4,   7,  10,  13,  16,  19,  22,  25,  28,  31,  34, 37, 40, 43
 };
 static constexpr int QUEEN_MOB_MAX = 27;
 
@@ -269,23 +277,23 @@ static constexpr int QUEEN_MOB_MAX = 27;
 // [target piece type]: P=0, N=1, B=2, R=3, Q=4, K=5
 // Pawn threats: pawns attacking higher-value pieces is always strong
 static constexpr int PawnThreatMG[6] = {  0, 35, 40, 60, 90, 0 };
-static constexpr int PawnThreatEG[6] = {  0, 64, 72,112,160, 0 };
+static constexpr int PawnThreatEG[6] = {  0, 40, 45, 70,100, 0 };
 
 // Knight threats: minor piece attacking higher-value pieces
 static constexpr int KnightThreatMG[6] = { 15,  5, 20, 45, 60, 0 };
-static constexpr int KnightThreatEG[6] = { 32,  8, 40, 80,104, 0 };
+static constexpr int KnightThreatEG[6] = { 20,  5, 25, 50, 65, 0 };
 
 // Bishop threats: similar to knight (both are minors)
 static constexpr int BishopThreatMG[6] = { 15, 20,  5, 45, 60, 0 };
-static constexpr int BishopThreatEG[6] = { 32, 40,  8, 80,104, 0 };
+static constexpr int BishopThreatEG[6] = { 20, 25,  5, 50, 65, 0 };
 
 // Rook threats: rook threatening queen is strong
 static constexpr int RookThreatMG[6] = { 10, 25, 25,  5, 50, 0 };
-static constexpr int RookThreatEG[6] = { 19, 48, 48,  8, 88, 0 };
+static constexpr int RookThreatEG[6] = { 12, 30, 30,  5, 55, 0 };
 
 // Queen threats: queen is already powerful, threats are less "extra"
 static constexpr int QueenThreatMG[6] = {  5, 15, 15, 15,  5, 0 };
-static constexpr int QueenThreatEG[6] = {  8, 29, 29, 29,  8, 0 };
+static constexpr int QueenThreatEG[6] = {  5, 18, 18, 18,  5, 0 };
 
 // ============================================================
 // Pawn structure constants
@@ -296,7 +304,7 @@ static constexpr int QueenThreatEG[6] = {  8, 29, 29, 29,  8, 0 };
 // Rank 4-5: strong duo controlling center
 // Rank 6-7: extremely dangerous (both threatening promotion)
 static constexpr int PhalanxMG[8] = { 0, 5, 10, 20, 40, 80, 120, 0 };
-static constexpr int PhalanxEG[8] = { 0, 8, 24, 48, 96, 192, 288, 0 };
+static constexpr int PhalanxEG[8] = { 0, 5, 15, 30, 60, 120, 180, 0 };
 
 // Candidate passed pawn bonus (has enemy pawns ahead but can push through)
 // [supported by own pawn?][rank]
@@ -305,14 +313,14 @@ static constexpr int CandMG[2][8] = {
     { 0, -8,  -3,   2,   8,  25, 0, 0 }    // supported
 };
 static constexpr int CandEG[2][8] = {
-    { 0,  8,  15,  30,  60,  90, 0, 0 },
-    { 0, 15,  30,  60, 105, 165, 0, 0 }
+    { 0,  5,  10,  20,  40,  60, 0, 0 },
+    { 0, 10,  20,  40,  70, 110, 0, 0 }
 };
 
 // Base passed pawn bonus (no enemy pawns ahead at all)
 // MG: cautious (can be blockaded), EG: aggressive (wins games)
-static constexpr int PassedMG[8] = { 0, -8,  0,  8, 20, 45,  90, 0 };
-static constexpr int PassedEG[8] = { 0, 15, 30, 55, 95,160, 300, 0 };
+static constexpr int PassedMG[8] = { 0, -8,  0, 10, 25, 50, 100, 0 };
+static constexpr int PassedEG[8] = { 0, 10, 20, 40, 70,120, 200, 0 };
 
 // ============================================================
 // Pawn hash table
@@ -366,7 +374,7 @@ static void evaluate_pawns(const Position& pos, int32_t& mg_out, int32_t& eg_out
             // Doubled pawn: two pawns on same file block each other
             if (file_count[f] > 1) {
                 mg -= sign * 12;
-                eg -= sign * 35;
+                eg -= sign * 20;
             }
 
             // Isolated pawn: no friendly pawns on adjacent files
@@ -374,14 +382,14 @@ static void evaluate_pawns(const Position& pos, int32_t& mg_out, int32_t& eg_out
             bool right = (f < FILE_H && file_count[f + 1] > 0);
             if (!left && !right) {
                 mg -= sign * 15;
-                eg -= sign * 35;
+                eg -= sign * 20;
             }
 
             // Connected pawn: protected by another pawn (pawn chain)
             if (square_bb(sq) & supported_by_adj) {
                 int connected_bonus = 5 + r * 3;
                 mg += sign * connected_bonus;
-                eg += sign * (5 + r * 3);
+                eg += sign * (3 + r * 2);
             }
 
             // Pawn phalanx: side-by-side pawns on same rank
@@ -419,7 +427,7 @@ static void evaluate_pawns(const Position& pos, int32_t& mg_out, int32_t& eg_out
                         bool defended = (our_pawn_attacks & square_bb(push)) != 0;
                         if (!defended) {
                             mg -= sign * 12;
-                            eg -= sign * 25;
+                            eg -= sign * 15;
                         }
                     }
                 }
@@ -607,7 +615,7 @@ Value evaluate(const Position& pos, bool tactical_only) {
             if (connected) {
                 int n_connected = popcount(connected);
                 mg_passer += n_connected * 15;
-                eg_passer += n_connected * (15 + r * 12);  // stronger at higher ranks
+                eg_passer += n_connected * (10 + r * 8);  // stronger at higher ranks
             }
 
             // Rook behind passed pawn: supports advance
@@ -617,7 +625,7 @@ Value evaluate(const Position& pos, bool tactical_only) {
                 bool rook_behind = (c == WHITE) ? (rank_of(rsq2) < rank_of(sq)) : (rank_of(rsq2) > rank_of(sq));
                 if (rook_behind) {
                     mg_passer += 20;
-                    eg_passer += 50;
+                    eg_passer += 30;
                 }
             }
 
@@ -628,7 +636,7 @@ Value evaluate(const Position& pos, bool tactical_only) {
                 bool enemy_rook_behind = (c == WHITE) ? (rank_of(ersq) < rank_of(sq)) : (rank_of(ersq) > rank_of(sq));
                 if (enemy_rook_behind) {
                     mg_passer -= 10;
-                    eg_passer -= 25;
+                    eg_passer -= 15;
                 }
             }
 
@@ -638,18 +646,18 @@ Value evaluate(const Position& pos, bool tactical_only) {
             Square promo_sq = relative_square(c, make_square(f, RANK_8));
             int our_kdist = distance(our_ksq, promo_sq);
             int their_kdist = distance(their_ksq, promo_sq);
-            eg_passer += (their_kdist - our_kdist) * 12;
+            eg_passer += (their_kdist - our_kdist) * 8;
 
             // Free passed pawn: enemy king can't catch it
             if (their_kdist > our_kdist + (c == pos.side_to_move() ? 0 : 1)) {
                 int unreachable = their_kdist - our_kdist;
-                eg_passer += unreachable * (unreachable > 4 ? 25 : 25);
+                eg_passer += unreachable * (unreachable > 4 ? 25 : 15);
             }
 
             // Blocked by enemy pieces: harder to push
             if (ahead_file & pos.pieces(them)) {
                 mg_passer -= 15;
-                eg_passer -= 32;
+                eg_passer -= 20;
             }
 
             mg_score += sign * mg_passer;
@@ -693,7 +701,7 @@ Value evaluate(const Position& pos, bool tactical_only) {
             // Trapped knight: 0-mobility knight is severely limited
             if (mob == 0) {
                 mg_score -= sign * 10;
-                eg_score -= sign * 8;
+                eg_score -= sign * 5;
             }
 
             // Far from own king: harder to defend
@@ -734,7 +742,7 @@ Value evaluate(const Position& pos, bool tactical_only) {
                 int same_color_pawns = popcount(our_pawns & same_color_bb);
                 same_color_pawns = std::min(same_color_pawns, 6);
                 static constexpr int BscMG[7] = { 20, 15, 10, 5, 0, -8, -15 };
-                static constexpr int BscEG[7] = { 64, 48, 32, 16, 0, -16, -32 };
+                static constexpr int BscEG[7] = { 40, 30, 20, 10, 0, -10, -20 };
                 mg_score += sign * BscMG[same_color_pawns];
                 eg_score += sign * BscEG[same_color_pawns];
             }
@@ -742,7 +750,7 @@ Value evaluate(const Position& pos, bool tactical_only) {
             // Bishop on long diagonal (sees 2+ center squares)
             if (popcount(attacks & BB_CENTER) >= 2) {
                 mg_score += sign * 12;
-                eg_score += sign * 32;
+                eg_score += sign * 20;
             }
 
             // Bishop outpost
@@ -805,13 +813,13 @@ Value evaluate(const Position& pos, bool tactical_only) {
             // Rook xray: same file as enemy queen
             if (file_bb(f) & pos.pieces(them, QUEEN)) {
                 mg_score += sign * 15;
-                eg_score += sign * 8;
+                eg_score += sign * 5;
             }
 
             // Far rook penalty
             if (distance(sq, ksq_arr[c_idx]) > 3) {
                 mg_score -= sign * 8;
-                eg_score -= sign * 8;
+                eg_score -= sign * 5;
             }
 
             // Rook trapped/buried behind king
@@ -827,10 +835,10 @@ Value evaluate(const Position& pos, bool tactical_only) {
                     bool has_castling = pos.castling_allowed(c, ks_cr) || pos.castling_allowed(c, qs_cr);
                     if (has_castling) {
                         mg_score += sign * (-8);
-                        eg_score += sign * (-20);
+                        eg_score += sign * (-12);
                     } else {
                         mg_score += sign * (-55);
-                        eg_score += sign * (-42);
+                        eg_score += sign * (-25);
                     }
                 }
             }
@@ -851,7 +859,7 @@ Value evaluate(const Position& pos, bool tactical_only) {
                 }
                 if (ahead_pawns) {
                     mg_score += sign * (-8);
-                    eg_score += sign * (-13);
+                    eg_score += sign * (-8);
                 }
             }
             } // end !tactical_only rook
@@ -881,7 +889,7 @@ Value evaluate(const Position& pos, bool tactical_only) {
             // Far queen penalty
             if (distance(sq, ksq_arr[c_idx]) > 3) {
                 mg_score -= sign * 8;
-                eg_score -= sign * 5;
+                eg_score -= sign * 3;
             }
             } // end !tactical_only queen
 
@@ -942,13 +950,13 @@ Value evaluate(const Position& pos, bool tactical_only) {
         bool castled = false;
         if (c == WHITE && krank == RANK_1 && (kfile == FILE_G || kfile == FILE_C)) castled = true;
         if (c == BLACK && krank == RANK_8 && (kfile == FILE_G || kfile == FILE_C)) castled = true;
-        if (castled) { mg_score += sign * 30; eg_score += sign * 17; }
+        if (castled) { mg_score += sign * 30; eg_score += sign * 10; }
 
         CastlingRight ks_cr = c == WHITE ? WHITE_KINGSIDE : BLACK_KINGSIDE;
         CastlingRight qs_cr = c == WHITE ? WHITE_QUEENSIDE : BLACK_QUEENSIDE;
         if (!pos.castling_allowed(c, ks_cr) && !pos.castling_allowed(c, qs_cr) && !castled) {
             mg_score -= sign * 25;
-            eg_score -= sign * 17;
+            eg_score -= sign * 10;
         }
         } // end !tactical_only king
 
@@ -1016,7 +1024,7 @@ Value evaluate(const Position& pos, bool tactical_only) {
                                      & ~all_attacks[them] & all_attacks[c];
             if (hanging_pieces) {
                 mg_score += sign * 25 * popcount(hanging_pieces);
-                eg_score += sign * 25 * popcount(hanging_pieces);
+                eg_score += sign * 15 * popcount(hanging_pieces);
             }
             // Pinned enemy pieces: pieces between their king and our sliders
             // Principle: a pinned piece can't move without exposing its king (Nimzowitsch)
@@ -1037,7 +1045,7 @@ Value evaluate(const Position& pos, bool tactical_only) {
                 if (enemy_pinned) {
                     int pin_count = popcount(enemy_pinned);
                     mg_score += sign * pin_count * 20;
-                    eg_score += sign * pin_count * 17;
+                    eg_score += sign * pin_count * 10;
                 }
             }
         }
@@ -1059,7 +1067,7 @@ Value evaluate(const Position& pos, bool tactical_only) {
             int sf = scale_factor(pos, eg_score);
             Score eg_scaled = eg_score * sf / 32;
             Score score = (mg_score * quick_phase + eg_scaled * (24 - quick_phase)) / 24;
-            Score tempo = (15 * quick_phase + 9 * (24 - quick_phase)) / 24;
+            Score tempo = (15 * quick_phase + 5 * (24 - quick_phase)) / 24;
             score += (pos.side_to_move() == WHITE) ? tempo : -tempo;
             return pos.side_to_move() == WHITE ? score : -score;
         }
@@ -1100,7 +1108,7 @@ Value evaluate(const Position& pos, bool tactical_only) {
         int bishops = bishop_count[c_idx];
         if (bishops >= 1) {
             mg_score += sign * (25 - pawns * 2);
-            eg_score += sign * (70 - pawns * 5);
+            eg_score += sign * (45 - pawns * 3);
         }
     }
 
@@ -1169,7 +1177,7 @@ Value evaluate(const Position& pos, bool tactical_only) {
         while (ep) {
             Square psq = pop_lsb(ep);
             if (pawn_attacks_bb(them, square_bb(psq)) & king_zone) {
-                attack_units += 5;
+                attack_units += 2;
                 attacker_count++;
             }
         }
@@ -1180,11 +1188,11 @@ Value evaluate(const Position& pos, bool tactical_only) {
             Square ksq2 = pop_lsb(enemy_kn);
             Bitboard kn_attacks = knight_attacks_bb(ksq2);
             if (kn_attacks & king_zone) {
-                attack_units += 12;
+                attack_units += 4;
                 attacker_count++;
             }
             Bitboard kn_checks = kn_attacks & king_attacks_bb(our_ksq);
-            if (kn_checks & safe) attack_units += 18;
+            if (kn_checks & safe) attack_units += 5;
         }
 
         // Bishop attacks + safe check bonus
@@ -1193,11 +1201,11 @@ Value evaluate(const Position& pos, bool tactical_only) {
             Square bsq = pop_lsb(enemy_bi);
             Bitboard bi_attacks = bishop_attacks_bb(bsq, occupied);
             if (bi_attacks & king_zone) {
-                attack_units += 10;
+                attack_units += 3;
                 attacker_count++;
             }
             Bitboard bi_checks = bi_attacks & king_diag_rays;
-            if (bi_checks & safe) attack_units += 15;
+            if (bi_checks & safe) attack_units += 4;
         }
 
         // Rook attacks + safe check bonus
@@ -1206,11 +1214,11 @@ Value evaluate(const Position& pos, bool tactical_only) {
             Square rsq = pop_lsb(enemy_ro);
             Bitboard ro_attacks = rook_attacks_bb(rsq, occupied);
             if (ro_attacks & king_zone) {
-                attack_units += 15;
+                attack_units += 5;
                 attacker_count++;
             }
             Bitboard ro_checks = ro_attacks & king_orth_rays;
-            if (ro_checks & safe) attack_units += 25;
+            if (ro_checks & safe) attack_units += 6;
         }
 
         // Queen attacks + safe check bonus
@@ -1219,19 +1227,19 @@ Value evaluate(const Position& pos, bool tactical_only) {
             Square qsq = pop_lsb(enemy_qu);
             Bitboard qu_attacks = queen_attacks_bb(qsq, occupied);
             if (qu_attacks & king_zone) {
-                attack_units += 22;
+                attack_units += 7;
                 attacker_count++;
             }
             Bitboard qu_checks = qu_attacks & (king_diag_rays | king_orth_rays);
-            if (qu_checks & safe) attack_units += 30;
+            if (qu_checks & safe) attack_units += 8;
         }
 
         // Only evaluate king safety if 2+ attackers
         if (attacker_count >= 2) {
-            // Sigmoid danger: 800 * au^2 / (au^2 + 3000)
-            // Scaled for higher attack weights. Max ~800cp penalty.
+            // Sigmoid danger: 500 * au^2 / (au^2 + 200)
+            // Self-engineered S-curve derived from attack probability theory
             int au2 = attack_units * attack_units;
-            int danger = std::min(800, (800 * au2) / (au2 + 3000));
+            int danger = std::min(500, (500 * au2) / (au2 + 200));
 
             // No queen: much less dangerous
             if (!enemy_qu) danger = danger / 4;
@@ -1243,8 +1251,8 @@ Value evaluate(const Position& pos, bool tactical_only) {
             Bitboard king_moves = king_attacks_bb(our_ksq);
             Bitboard safe_king_squares = king_moves & ~pos.pieces(c) & ~all_attacks[them];
             int flight = popcount(safe_king_squares);
-            if (flight <= 1) danger += 100;
-            else if (flight == 2) danger += 40;
+            if (flight <= 1) danger += 80;
+            else if (flight == 2) danger += 30;
 
             mg_score -= sign * danger;
         }
@@ -1263,8 +1271,8 @@ Value evaluate(const Position& pos, bool tactical_only) {
     Score eg_scaled = eg_score * sf / 32;
     Score score = (mg_score * phase + eg_scaled * (24 - phase)) / 24;
 
-    // Tempo bonus: having the move is worth ~15cp in MG, ~9cp in EG
-    Score tempo = (15 * phase + 9 * (24 - phase)) / 24;
+    // Tempo bonus: having the move is worth ~15cp in MG, ~5cp in EG
+    Score tempo = (15 * phase + 5 * (24 - phase)) / 24;
     score += (pos.side_to_move() == WHITE) ? tempo : -tempo;
 
     return pos.side_to_move() == WHITE ? score : -score;
