@@ -241,29 +241,29 @@ int PSQ_EG[2][8][64];
 // at start). The tuner discovers the true shape from data.
 // ============================================================
 
-// Knight: max 8 mobility squares (sqrt-shaped: diminishing returns)
-static int KnightMobilityMG[9] = { -60, -18, -1, 13, 24, 34, 43, 51, 59 };
-static int KnightMobilityEG[9] = { -75, -24, -3, 13, 27, 39, 50, 60, 69 };
+// Knight: max 8 mobility squares
+static int KnightMobilityMG[9] = { -60, -45, -30, -15, 0, 15, 30, 45, 60 };
+static int KnightMobilityEG[9] = { -75, -57, -39, -21, -3, 15, 33, 51, 69 };
 static constexpr int KNIGHT_MOB_MAX = 8;
 
-// Bishop: max 13 mobility squares (sqrt-shaped: diminishing returns)
-static int BishopMobilityMG[14] = { -48, -23, -13, -5, 2, 8, 13, 18, 23, 27, 31, 35, 39, 42 };
-static int BishopMobilityEG[14] = { -56, -24, -11, -1, 8, 16, 22, 29, 35, 40, 45, 50, 55, 59 };
+// Bishop: max 13 mobility squares
+static int BishopMobilityMG[14] = { -48, -41, -34, -27, -20, -13, -6, 1, 8, 15, 22, 29, 36, 43 };
+static int BishopMobilityEG[14] = { -56, -47, -38, -29, -20, -11, -2, 7, 16, 25, 34, 43, 52, 61 };
 static constexpr int BISHOP_MOB_MAX = 13;
 
-// Rook: max 14 mobility squares (sqrt-shaped: diminishing returns)
-static int RookMobilityMG[15] = { -38, -19, -11, -5, 0, 4, 9, 12, 16, 19, 22, 25, 28, 31, 33 };
-static int RookMobilityEG[15] = { -48, -22, -11, -3, 4, 10, 16, 21, 26, 30, 34, 38, 42, 46, 49 };
+// Rook: max 14 mobility squares
+static int RookMobilityMG[15] = { -38, -33, -28, -23, -18, -13, -8, -3, 2, 7, 12, 17, 22, 27, 32 };
+static int RookMobilityEG[15] = { -48, -41, -34, -27, -20, -13, -6, 1, 8, 15, 22, 29, 36, 43, 50 };
 static constexpr int ROOK_MOB_MAX = 14;
 
-// Queen: max 27 mobility squares (sqrt-shaped: diminishing returns)
+// Queen: max 27 mobility squares
 static int QueenMobilityMG[28] = {
-    -28, -18, -14, -11, -8, -6, -4, -2, 0, 2, 4, 5, 7, 8,
-     9,  11,  12,  13, 14, 16, 17, 18, 19, 20, 21, 22, 23, 24
+    -28, -26, -24, -22, -20, -18, -16, -14, -12, -10, -8, -6, -4, -2,
+     0,   2,   4,   6,   8,  10,  12,  14,  16,  18,  20, 22, 24, 26
 };
 static int QueenMobilityEG[28] = {
-    -38, -22, -15, -10, -6, -2, 1, 4, 7, 10, 13, 15, 17, 20,
-     22,  24,  26,  28, 30, 32, 34, 35, 37, 39, 40, 42, 44, 45
+    -38, -35, -32, -29, -26, -23, -20, -17, -14, -11, -8, -5, -2, 1,
+      4,   7,  10,  13,  16,  19,  22,  25,  28,  31,  34, 37, 40, 43
 };
 static constexpr int QUEEN_MOB_MAX = 27;
 
