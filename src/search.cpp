@@ -1209,8 +1209,11 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
     }
 
     // ========================================
-    // PHASE 2: Captures + promotions
+    // PHASE 2: Good captures + promotions (SEE >= 0)
+    // Bad captures (SEE < 0) deferred to Phase 4 (after quiets)
     // ========================================
+    ExtMove bad_captures[64];
+    int bad_cap_count = 0;
     {
         ExtMove captures[MAX_MOVES];
         ExtMove* cap_end = generate<GEN_CAPTURE>(pos, captures);
@@ -1220,6 +1223,7 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
         Square cap_opp_ksq = pos.king_sq(Color(pos.side_to_move() ^ 1));
 
         // Score captures: MVV-LVA + SEE classification + check bonus
+        // Separate good (SEE >= 0) from bad (SEE < 0)
         static constexpr int piece_value[] = {100, 320, 330, 500, 900, 20000, 0};
         for (ExtMove* it = captures; it != cap_end; ++it) {
             Move m = it->move;
@@ -1237,21 +1241,29 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
                 if (pos.see_ge(m, VALUE_ZERO)) {
                     score = 1500000 + mvv_lva + cap_hist;
                 } else {
-                    score = 500000 + mvv_lva + cap_hist / 2;
+                    // Bad capture: defer to Phase 4 (after quiets)
+                    if (bad_cap_count < 64) {
+                        bad_captures[bad_cap_count].move = m;
+                        bad_captures[bad_cap_count].value = mvv_lva + cap_hist / 2;
+                        bad_cap_count++;
+                    }
+                    score = -2;  // Skip in this phase
                 }
                 // Check bonus: captures that give check are forcing, prioritize them
-                bool gives_chk = false;
-                if (attacker == PAWN) {
-                    gives_chk = (pawn_attacks_bb(pos.side_to_move(), m.to()) & square_bb(cap_opp_ksq)) != 0;
-                } else if (attacker == KNIGHT) {
-                    gives_chk = (knight_attacks_bb(m.to()) & square_bb(cap_opp_ksq)) != 0;
+                if (score != -2) {
+                    bool gives_chk = false;
+                    if (attacker == PAWN) {
+                        gives_chk = (pawn_attacks_bb(pos.side_to_move(), m.to()) & square_bb(cap_opp_ksq)) != 0;
+                    } else if (attacker == KNIGHT) {
+                        gives_chk = (knight_attacks_bb(m.to()) & square_bb(cap_opp_ksq)) != 0;
+                    }
+                    if (gives_chk) score += 200000;
                 }
-                if (gives_chk) score += 200000;
             }
             it->value = score;
         }
 
-        // Pick-best through captures
+        // Pick-best through good captures only
         for (ExtMove* it = captures; it != cap_end; ++it) {
             if (stop.load(std::memory_order_relaxed)) break;
 
@@ -1268,8 +1280,8 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
                 }
             }
 
-            // Skip TT move (already searched in Phase 1)
-            if (it->value == -1) continue;
+            // Skip TT move and deferred bad captures
+            if (it->value == -1 || it->value == -2) continue;
 
             if (search_move(it->move, false)) {
                 if (!stop.load(std::memory_order_relaxed)) {
@@ -1280,9 +1292,9 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
         }
     }
 
-    // PHASE 3: Quiet moves (only if no cutoff from captures)
-    // This is the key savings: we never generate quiet moves
-    // when a capture already caused beta cutoff.
+    // PHASE 3: Quiet moves (only if no cutoff from good captures)
+    // Key savings: we never generate quiet moves when a good capture
+    // already caused beta cutoff.
     // ========================================
     {
         g_stats.pmg_quiet_generated++;
@@ -1406,6 +1418,33 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
                     g_stats.pmg_quiet_cutoffs++;
                     return best_value;
                 }
+            }
+        }
+    }
+
+    // ========================================
+    // PHASE 4: Bad captures (SEE < 0), deferred from Phase 2
+    // Search after quiets: many will be pruned by cutoffs from earlier phases
+    // ========================================
+    for (int i = 0; i < bad_cap_count; ++i) {
+        if (stop.load(std::memory_order_relaxed)) break;
+
+        // Pick best remaining bad capture
+        {
+            int best_idx = i;
+            for (int j = i + 1; j < bad_cap_count; ++j) {
+                if (bad_captures[j].value > bad_captures[best_idx].value) best_idx = j;
+            }
+            if (best_idx != i) {
+                ExtMove tmp = bad_captures[i];
+                bad_captures[i] = bad_captures[best_idx];
+                bad_captures[best_idx] = tmp;
+            }
+        }
+
+        if (search_move(bad_captures[i].move, false)) {
+            if (!stop.load(std::memory_order_relaxed)) {
+                return best_value;
             }
         }
     }
