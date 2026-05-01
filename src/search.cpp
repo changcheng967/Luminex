@@ -1437,7 +1437,11 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
 
         // Update multi-table correction history: learn from the difference between
         // search result and static eval, indexed by multiple position aspects.
-        if (!pv_node && abs(best_value) < VALUE_KNOWN_WIN && abs(eval) < VALUE_KNOWN_WIN
+        // Skip when: in check, best move is capture (tactical, noisy),
+        // or when result is consistent with static eval (no learning signal).
+        bool best_is_capture = best_move_found.is_capture();
+        if (!pv_node && !pos.is_check() && !best_is_capture
+            && abs(best_value) < VALUE_KNOWN_WIN && abs(eval) < VALUE_KNOWN_WIN
             && moves_played > 0 && depth >= 2) {
             update_all_corrections(pos, depth, best_value - eval);
         }
