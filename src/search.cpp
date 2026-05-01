@@ -850,6 +850,10 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
         // Castling: king safety is paramount, never reduce aggressively
         if (m.is_castling()) reduction -= 1;
 
+        // TT-move-noisy LMR: if TT found a tactical (capture) solution,
+        // quiet moves are less likely to beat it — reduce more
+        if (!m.is_capture() && !m.is_promotion() && tt_move.is_capture()) reduction += 1;
+
         // Centralization removed from LMR: the move ordering centralization
         // bonus already handles prioritization. Reducing less for central
         // squares in LMR was saving ~0 computation but making LMR less
