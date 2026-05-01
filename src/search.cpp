@@ -817,12 +817,9 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
         // Reduce less for killer moves
         if (m == worker->killers[ss->ply][0]) reduction -= 1;
 
-        // Counter-move bonus
-        if (ss->ply >= 1 && (ss - 1)->current_move != MOVE_NONE && (ss - 1)->moved_piece != NO_PIECE) {
-            Move prev_move = (ss - 1)->current_move;
-            Piece prev_pc = (ss - 1)->moved_piece;
-            if (m == worker->counter_move_table[int(prev_pc)][int(prev_move.to())]) reduction -= 1;
-        }
+        // Counter-move LMR bonus removed: counter-moves already get +40000
+        // in move ordering, ensuring they're searched early. The LMR -1
+        // was making pruning less aggressive for counter-moves.
 
         // Check-giving moves: reduce less (use pre-computed value)
         if (gives_chk) reduction -= 1;
