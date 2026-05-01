@@ -143,18 +143,22 @@ inline void update_all_corrections(const Position& pos, int depth, int error) {
 static thread_local uint64_t local_nodes = 0;
 static thread_local uint64_t last_reported_nodes = 0;
 
-// Precomputed LMR reduction table
-// Product formula: reduction = log(depth) * log(moves) / divisor
-// Using integer math with SCALE factor for precision
-static int reductions[64];
-static constexpr int LMR_SCALE = 32;
-static constexpr int LMR_DENOM = LMR_SCALE * LMR_SCALE;
+// Precomputed LMR reduction tables
+// Separate tables for noisy (captures) and quiet moves (from Stash)
+// Quiet moves get ~1.6x the base reduction of noisy moves
+static int reductions_noisy[64];
+static int reductions_quiet[64];
+static constexpr int LMR_SCALE_NOISY = 24;
+static constexpr int LMR_SCALE_QUIET = 40;
+static constexpr int LMR_DENOM = 1024;  // Common denominator
 static bool reductions_initialized = false;
 
 static void init_reductions() {
-    for (int i = 1; i < 64; ++i)
-        reductions[i] = int(LMR_SCALE * std::log(double(i)));
-    reductions[0] = 0;
+    for (int i = 1; i < 64; ++i) {
+        reductions_noisy[i] = int(LMR_SCALE_NOISY * std::log(double(i)));
+        reductions_quiet[i] = int(LMR_SCALE_QUIET * std::log(double(i)));
+    }
+    reductions_noisy[0] = reductions_quiet[0] = 0;
     reductions_initialized = true;
 }
 
@@ -801,12 +805,14 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
 
     // Helper lambda: compute LMR reduction for a move (takes gives_chk to avoid recomputation)
     auto compute_reduction = [&](Move m, int mp, bool gives_chk) -> int {
-        // Log-depth * log-move-count product formula
+        // Separate reduction tables for noisy vs quiet (from Stash)
+        bool is_capture = m.is_capture();
+        int* red_table = is_capture ? reductions_noisy : reductions_quiet;
         int d_idx = std::max(depth - 1, 1);
         int m_idx = std::max(mp, 1);
         if (d_idx >= 64) d_idx = 63;
         if (m_idx >= 64) m_idx = 63;
-        int reduction = (reductions[d_idx] * reductions[m_idx] + LMR_DENOM / 2) / LMR_DENOM;
+        int reduction = (red_table[d_idx] * red_table[m_idx] + LMR_DENOM / 2) / LMR_DENOM;
         if (!ss->improving && !opponent_worsening) reduction += 1;
         // Deep worsening: position declining over 4 plies, search less aggressively
         if (!ss->improving && !ss->improving_deep && !opponent_worsening) reduction += 1;
