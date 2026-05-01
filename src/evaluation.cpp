@@ -1192,7 +1192,7 @@ Value evaluate(const Position& pos, bool tactical_only) {
                 attacker_count++;
             }
             Bitboard kn_checks = kn_attacks & king_attacks_bb(our_ksq);
-            if (kn_checks & safe) attack_units += 10;
+            if (kn_checks & safe) attack_units += 5;
         }
 
         // Bishop attacks + safe check bonus
@@ -1205,7 +1205,7 @@ Value evaluate(const Position& pos, bool tactical_only) {
                 attacker_count++;
             }
             Bitboard bi_checks = bi_attacks & king_diag_rays;
-            if (bi_checks & safe) attack_units += 8;
+            if (bi_checks & safe) attack_units += 4;
         }
 
         // Rook attacks + safe check bonus
@@ -1218,7 +1218,7 @@ Value evaluate(const Position& pos, bool tactical_only) {
                 attacker_count++;
             }
             Bitboard ro_checks = ro_attacks & king_orth_rays;
-            if (ro_checks & safe) attack_units += 12;
+            if (ro_checks & safe) attack_units += 6;
         }
 
         // Queen attacks + safe check bonus
@@ -1231,7 +1231,7 @@ Value evaluate(const Position& pos, bool tactical_only) {
                 attacker_count++;
             }
             Bitboard qu_checks = qu_attacks & (king_diag_rays | king_orth_rays);
-            if (qu_checks & safe) attack_units += 16;
+            if (qu_checks & safe) attack_units += 8;
         }
 
         // Only evaluate king safety if 2+ attackers
