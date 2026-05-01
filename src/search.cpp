@@ -688,18 +688,19 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
         Value rbeta = std::min(beta + 175, VALUE_INFINITE - 200);
         int rdepth = depth - 3;
 
-        // Try winning captures (SEE > 0)
+        // Dynamic SEE threshold: capture must win enough to reach rbeta from current eval
+        Value see_threshold = Value(std::max(int(rbeta - eval), 0));
+
         ExtMove probcut_moves[MAX_MOVES];
         ExtMove* probcut_end = generate<GEN_CAPTURE>(pos, probcut_moves);
 
         for (ExtMove* it = probcut_moves; it != probcut_end; ++it) {
-            // FIX: Check for stop at top of move loop for faster response
             if (stop.load(std::memory_order_relaxed)) break;
 
             Move m = it->move;
 
-            // Skip losing captures
-            if (!pos.see_ge(m, Value(1))) continue;
+            // Skip captures that can't reach rbeta from current eval
+            if (!pos.see_ge(m, see_threshold)) continue;
 
             // CRITICAL FIX: Check move is legal before do_move
             // This prevents analyzing positions where our king is in check
