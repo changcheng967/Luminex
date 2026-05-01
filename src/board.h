@@ -10,6 +10,9 @@ namespace luminex {
 struct StateInfo {
     Key key = 0;
     Key pawn_key = 0;
+    Key nonpawn_key[2] = {0, 0};  // Non-pawn hash per color [WHITE, BLACK]
+    Key minor_key = 0;            // Minor piece hash (knights + bishops)
+    Key major_key = 0;            // Major piece hash (rooks + queens)
     int psq_mg = 0;  // Incremental material+PST middlegame score (white-relative)
     int psq_eg = 0;  // Incremental material+PST endgame score (white-relative)
     Bitboard checkers = 0;
@@ -89,6 +92,9 @@ public:
 
     Key key() const;
     Key pawn_key() const;
+    Key nonpawn_key(Color c) const;
+    Key minor_key() const;
+    Key major_key() const;
     int psq_mg() const;
     int psq_eg() const;
 
@@ -181,6 +187,9 @@ inline void Position::set_game_ply(int ply) { game_ply_ = ply; }
 
 inline Key Position::key() const { return st_->key; }
 inline Key Position::pawn_key() const { return st_->pawn_key; }
+inline Key Position::nonpawn_key(Color c) const { return st_->nonpawn_key[int(c)]; }
+inline Key Position::minor_key() const { return st_->minor_key; }
+inline Key Position::major_key() const { return st_->major_key; }
 inline int Position::psq_mg() const { return st_->psq_mg; }
 inline int Position::psq_eg() const { return st_->psq_eg; }
 

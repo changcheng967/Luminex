@@ -92,42 +92,51 @@ struct EvalCacheEntry {
 constexpr int EVAL_CACHE_SIZE = 65536;  // 64K entries — sweet spot (32K too small, 512K too much)
 EvalCacheEntry eval_cache[EVAL_CACHE_SIZE];
 
-// Correction history: corrects static eval based on search errors
-// Indexed by pawn structure hash. Stores rolling average of (search_value - static_eval).
-// Kept conservative: small table, gentle update, capped corrections.
+// Correction history: multiple tables for more precise eval correction (from Stash).
+// Each table captures eval errors correlated with a different aspect of the position.
 constexpr int CORRHIST_SIZE = 16384;
-struct CorrHistEntry {
-    uint64_t key;
-    int32_t correction;  // Raw sum, divided by weight on read
-    int32_t weight;
-};
-CorrHistEntry corrhist_table[CORRHIST_SIZE];
+constexpr int CORRHIST_GRAIN = 256;       // Internal scaling: stored = actual * GRAIN
+constexpr int CORRHIST_MAX = 256 * 32;    // ±32 cp per table after dividing by GRAIN
+constexpr int CORRHIST_WEIGHT_SCALE = 256;
 
-inline int get_correction(uint64_t pawn_key) {
-    uint32_t idx = uint32_t(pawn_key) & (CORRHIST_SIZE - 1);
-    const CorrHistEntry& e = corrhist_table[idx];
-    if (e.key == pawn_key && e.weight > 0)
-        return e.correction / e.weight;
-    return 0;
+struct CorrHistTable {
+    int16_t data[CORRHIST_SIZE];
+};
+
+CorrHistTable corrhist_pawn;
+CorrHistTable corrhist_nonpawn[2];  // Per color
+CorrHistTable corrhist_minor;
+CorrHistTable corrhist_major;
+
+inline int16_t corrhist_score(const CorrHistTable& table, uint64_t key) {
+    return table.data[uint32_t(key) & (CORRHIST_SIZE - 1)] / CORRHIST_GRAIN;
 }
 
-inline void update_correction(uint64_t pawn_key, int error, int depth) {
-    uint32_t idx = uint32_t(pawn_key) & (CORRHIST_SIZE - 1);
-    CorrHistEntry& e = corrhist_table[idx];
-    if (e.key != pawn_key) {
-        e.key = pawn_key;
-        e.correction = 0;
-        e.weight = 0;
-    }
-    // Weight by depth squared for more reliable corrections at deeper searches
-    int w = depth * depth;
-    e.correction += error * w;
-    e.weight += w;
-    // Cap total weight to prevent stale entries from dominating
-    if (e.weight > 1024) {
-        e.correction /= 2;
-        e.weight /= 2;
-    }
+inline int get_total_correction(const Position& pos) {
+    return corrhist_score(corrhist_pawn, pos.pawn_key())
+         + corrhist_score(corrhist_nonpawn[0], pos.nonpawn_key(WHITE))
+         + corrhist_score(corrhist_nonpawn[1], pos.nonpawn_key(BLACK))
+         + corrhist_score(corrhist_minor, pos.minor_key())
+         + corrhist_score(corrhist_major, pos.major_key());
+}
+
+inline void corrhist_update(CorrHistTable& table, uint64_t key, int16_t weight, int32_t error) {
+    int16_t& entry = table.data[uint32_t(key) & (CORRHIST_SIZE - 1)];
+    int32_t scaled_diff = error * CORRHIST_GRAIN;
+    int32_t update = (int32_t)entry * (CORRHIST_WEIGHT_SCALE - weight)
+                   + scaled_diff * (int32_t)weight;
+    int32_t new_val = update / CORRHIST_WEIGHT_SCALE;
+    new_val = std::max(-CORRHIST_MAX, std::min(CORRHIST_MAX, new_val));
+    entry = (int16_t)new_val;
+}
+
+inline void update_all_corrections(const Position& pos, int depth, int error) {
+    int16_t weight = (int16_t)std::min(16, depth + 1);
+    corrhist_update(corrhist_pawn, pos.pawn_key(), weight, error);
+    corrhist_update(corrhist_nonpawn[0], pos.nonpawn_key(WHITE), weight, error);
+    corrhist_update(corrhist_nonpawn[1], pos.nonpawn_key(BLACK), weight, error);
+    corrhist_update(corrhist_minor, pos.minor_key(), weight, error);
+    corrhist_update(corrhist_major, pos.major_key(), weight, error);
 }
 
 // Thread-local node counter to avoid atomic overhead on every node
@@ -170,8 +179,7 @@ inline Value eval_cached(const Position& pos) {
 
     if (eval_cache[idx].key == key) {
         g_stats.eval_cache_hits_main++;
-        // Apply correction history to cached eval (capped for safety)
-        int correction = get_correction(pos.pawn_key());
+        int correction = get_total_correction(pos);
         correction = std::max(-200, std::min(200, correction));
         return Value(eval_cache[idx].value + correction);
     }
@@ -180,8 +188,7 @@ inline Value eval_cached(const Position& pos) {
     Value eval = evaluate(pos);
     eval_cache[idx].key = key;
     eval_cache[idx].value = int32_t(eval);
-    // Apply correction to fresh eval too
-    int correction = get_correction(pos.pawn_key());
+    int correction = get_total_correction(pos);
     correction = std::max(-200, std::min(200, correction));
     return Value(eval + correction);
 }
@@ -310,8 +317,8 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
             eval = evaluate(pos, true);
             g_stats.eval_cache_misses_qs++;
         }
-        // Apply correction history to eval (capped for safety)
-        int correction = get_correction(pos.pawn_key());
+        // Apply multi-table correction history to eval
+        int correction = get_total_correction(pos);
         correction = std::max(-200, std::min(200, correction));
         eval = Value(eval + correction);
 
@@ -789,9 +796,6 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
 
     // Precompute enemy king zone for LMR (nearly free: one king lookup per node)
     Square enemy_ksq = pos.king_sq(Color(pos.side_to_move() ^ 1));
-    // Precompute enemy pawn attacks for escape-aware LMR (nearly free: one pawn scan per node)
-    Bitboard node_enemy_pawn_attacks = pawn_attacks_bb(Color(pos.side_to_move() ^ 1),
-        pos.pieces(Color(pos.side_to_move() ^ 1), PAWN));
 
     // Helper lambda: compute LMR reduction for a move (takes gives_chk to avoid recomputation)
     auto compute_reduction = [&](Move m, int mp, bool gives_chk) -> int {
@@ -845,16 +849,6 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
 
         // Castling: king safety is paramount, never reduce aggressively
         if (m.is_castling()) reduction -= 1;
-
-        // Escape-aware LMR: if piece is under enemy pawn attack and moves away,
-        // reduce less — the piece is escaping danger (from Stash)
-        bool move_is_quiet = !m.is_capture() && !m.is_promotion();
-        if (move_is_quiet && (node_enemy_pawn_attacks & square_bb(m.from())) && !(node_enemy_pawn_attacks & square_bb(m.to())))
-            reduction -= 1;
-
-        // TT-move-noisy LMR: if TT found a tactical (capture) solution,
-        // other quiet moves are less likely to beat it — reduce more
-        if (move_is_quiet && tt_move.is_capture()) reduction += 1;
 
         // Centralization removed from LMR: the move ordering centralization
         // bonus already handles prioritization. Reducing less for central
@@ -1437,12 +1431,11 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
         // Use best_move_found instead of ss->pv[ss->ply] to avoid stale PV corruption
         tte->save(pos.key(), value_to_tt(best_value, ss->ply), pv_node, bound, depth, best_move_found, eval, TT.generation());
 
-        // Update correction history: learn from the difference between
-        // search result and static eval, indexed by pawn structure.
-        // Only update at reasonable depth where search is meaningful.
+        // Update multi-table correction history: learn from the difference between
+        // search result and static eval, indexed by multiple position aspects.
         if (!pv_node && abs(best_value) < VALUE_KNOWN_WIN && abs(eval) < VALUE_KNOWN_WIN
             && moves_played > 0 && depth >= 2) {
-            update_correction(pos.pawn_key(), best_value - eval, depth);
+            update_all_corrections(pos, depth, best_value - eval);
         }
     }
 
@@ -2258,7 +2251,10 @@ void uci_info([[maybe_unused]] const Position& pos, int depth, Value score, uint
 }
 
 void clear_correction_history() {
-    std::memset(corrhist_table, 0, sizeof(corrhist_table));
+    std::memset(&corrhist_pawn, 0, sizeof(corrhist_pawn));
+    std::memset(corrhist_nonpawn, 0, sizeof(corrhist_nonpawn));
+    std::memset(&corrhist_minor, 0, sizeof(corrhist_minor));
+    std::memset(&corrhist_major, 0, sizeof(corrhist_major));
 }
 
 void clear_search_history() {

@@ -230,14 +230,45 @@ void Position::set(const std::string& fen) {
 
     // Compute pawn key for pawn hash table
     Key pk = 0;
+    Key npk[2] = {0, 0};
+    Key mk = 0;
+    Key majk = 0;
     for (Color c : {WHITE, BLACK}) {
         Bitboard pb = pieces(c, PAWN);
         while (pb) {
             Square s = pop_lsb(pb);
             pk ^= Zobrist::psq[int(c)][int(PAWN)][int(s)];
         }
+        // Non-pawn key per color: all pieces except pawns
+        for (PieceType pt : {KNIGHT, BISHOP, ROOK, QUEEN, KING}) {
+            Bitboard bb = pieces(c, pt);
+            while (bb) {
+                Square s = pop_lsb(bb);
+                npk[int(c)] ^= Zobrist::psq[int(c)][int(pt)][int(s)];
+            }
+        }
+        // Minor key: knights + bishops
+        for (PieceType pt : {KNIGHT, BISHOP}) {
+            Bitboard bb = pieces(c, pt);
+            while (bb) {
+                Square s = pop_lsb(bb);
+                mk ^= Zobrist::psq[int(c)][int(pt)][int(s)];
+            }
+        }
+        // Major key: rooks + queens
+        for (PieceType pt : {ROOK, QUEEN}) {
+            Bitboard bb = pieces(c, pt);
+            while (bb) {
+                Square s = pop_lsb(bb);
+                majk ^= Zobrist::psq[int(c)][int(pt)][int(s)];
+            }
+        }
     }
     st_->pawn_key = pk;
+    st_->nonpawn_key[0] = npk[0];
+    st_->nonpawn_key[1] = npk[1];
+    st_->minor_key = mk;
+    st_->major_key = majk;
 
     // CRITICAL: game_ply_ is already computed from FEN fullmove above (line 186)
     // Do NOT reset to 0 here, or fen() will output wrong fullmove number
@@ -536,6 +567,10 @@ bool Position::do_move(Move m) {
     // Save state for undo - copy current state to next slot in state_stack
     next_st.key = st_->key;
     next_st.pawn_key = st_->pawn_key;
+    next_st.nonpawn_key[0] = st_->nonpawn_key[0];
+    next_st.nonpawn_key[1] = st_->nonpawn_key[1];
+    next_st.minor_key = st_->minor_key;
+    next_st.major_key = st_->major_key;
     next_st.psq_mg = st_->psq_mg;
     next_st.psq_eg = st_->psq_eg;
     next_st.checkers = st_->checkers;
@@ -598,6 +633,7 @@ bool Position::do_move(Move m) {
         if (captured == KING) {
             remove_piece(to);
             st_->key ^= Zobrist::psq[int(them)][int(KING)][int(to)];
+            st_->nonpawn_key[int(them)] ^= Zobrist::psq[int(them)][int(KING)][int(to)];
         } else {
             remove_piece(to);
             st_->key ^= Zobrist::psq[int(them)][int(captured)][int(to)];
@@ -605,6 +641,12 @@ bool Position::do_move(Move m) {
             st_->psq_eg -= PSQ_EG[int(them)][int(captured)][int(to)];
             if (captured == PAWN) {
                 st_->pawn_key ^= Zobrist::psq[int(them)][int(PAWN)][int(to)];
+            } else {
+                st_->nonpawn_key[int(them)] ^= Zobrist::psq[int(them)][int(captured)][int(to)];
+                if (captured == KNIGHT || captured == BISHOP)
+                    st_->minor_key ^= Zobrist::psq[int(them)][int(captured)][int(to)];
+                if (captured == ROOK || captured == QUEEN)
+                    st_->major_key ^= Zobrist::psq[int(them)][int(captured)][int(to)];
             }
         }
     }
@@ -621,6 +663,11 @@ bool Position::do_move(Move m) {
         st_->key ^= Zobrist::psq[int(us)][int(promoted)][int(to)];
         st_->psq_mg += PSQ_MG[int(us)][int(promoted)][int(to)];
         st_->psq_eg += PSQ_EG[int(us)][int(promoted)][int(to)];
+        st_->nonpawn_key[int(us)] ^= Zobrist::psq[int(us)][int(promoted)][int(to)];
+        if (promoted == KNIGHT || promoted == BISHOP)
+            st_->minor_key ^= Zobrist::psq[int(us)][int(promoted)][int(to)];
+        if (promoted == ROOK || promoted == QUEEN)
+            st_->major_key ^= Zobrist::psq[int(us)][int(promoted)][int(to)];
     } else {
         st_->key ^= Zobrist::psq[int(us)][int(pt)][int(from)];
         move_piece(from, to);
@@ -630,6 +677,17 @@ bool Position::do_move(Move m) {
         if (pt == PAWN) {
             st_->pawn_key ^= Zobrist::psq[int(us)][int(PAWN)][int(from)];
             st_->pawn_key ^= Zobrist::psq[int(us)][int(PAWN)][int(to)];
+        } else {
+            st_->nonpawn_key[int(us)] ^= Zobrist::psq[int(us)][int(pt)][int(from)];
+            st_->nonpawn_key[int(us)] ^= Zobrist::psq[int(us)][int(pt)][int(to)];
+            if (pt == KNIGHT || pt == BISHOP) {
+                st_->minor_key ^= Zobrist::psq[int(us)][int(pt)][int(from)];
+                st_->minor_key ^= Zobrist::psq[int(us)][int(pt)][int(to)];
+            }
+            if (pt == ROOK || pt == QUEEN) {
+                st_->major_key ^= Zobrist::psq[int(us)][int(pt)][int(from)];
+                st_->major_key ^= Zobrist::psq[int(us)][int(pt)][int(to)];
+            }
         }
     }
 
@@ -647,6 +705,10 @@ bool Position::do_move(Move m) {
         st_->key ^= Zobrist::psq[int(us)][int(ROOK)][int(rfrom)];
         move_piece(rfrom, rto);
         st_->key ^= Zobrist::psq[int(us)][int(ROOK)][int(rto)];
+        st_->nonpawn_key[int(us)] ^= Zobrist::psq[int(us)][int(ROOK)][int(rfrom)];
+        st_->nonpawn_key[int(us)] ^= Zobrist::psq[int(us)][int(ROOK)][int(rto)];
+        st_->major_key ^= Zobrist::psq[int(us)][int(ROOK)][int(rfrom)];
+        st_->major_key ^= Zobrist::psq[int(us)][int(ROOK)][int(rto)];
         st_->psq_mg += PSQ_MG[int(us)][int(ROOK)][int(rto)] - PSQ_MG[int(us)][int(ROOK)][int(rfrom)];
         st_->psq_eg += PSQ_EG[int(us)][int(ROOK)][int(rto)] - PSQ_EG[int(us)][int(ROOK)][int(rfrom)];
     }
@@ -864,7 +926,11 @@ void Position::do_null_move() {
 
     // Copy current state
     next_st.key = st_->key;
-    next_st.pawn_key = st_->pawn_key;  // Preserve pawn key for eval cache
+    next_st.pawn_key = st_->pawn_key;
+    next_st.nonpawn_key[0] = st_->nonpawn_key[0];
+    next_st.nonpawn_key[1] = st_->nonpawn_key[1];
+    next_st.minor_key = st_->minor_key;
+    next_st.major_key = st_->major_key;
     next_st.psq_mg = st_->psq_mg;
     next_st.psq_eg = st_->psq_eg;
     next_st.checkers = st_->checkers;
