@@ -851,14 +851,9 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
         // squares in LMR was saving ~0 computation but making LMR less
         // aggressive for common knight/bishop center moves.
 
-        // King-zone pressure: reduce less for piece moves adjacent to enemy king
-        // These create threats and restrict king movement (Lasker)
-        // Only for non-check moves (check already gets -1)
-        if (!gives_chk) {
-            int kdist = std::max(abs(int(m.to() % 8) - int(enemy_ksq % 8)),
-                                 abs(int(m.to() / 8) - int(enemy_ksq / 8)));
-            if (kdist <= 1) reduction -= 1;
-        }
+        // King-zone LMR bonus removed: move ordering already prioritizes
+        // king-zone moves via the 3000 bonus. The LMR reduction was
+        // making LMR less aggressive for king-adjacent moves.
 
         // Eval-adaptive: use eval-to-beta distance to adjust reductions
         // Far above beta = position is clearly winning, reduce more
