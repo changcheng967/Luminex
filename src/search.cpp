@@ -846,27 +846,10 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
         // Castling: king safety is paramount, never reduce aggressively
         if (m.is_castling()) reduction -= 1;
 
-        // Centralization: reduce less for moves to central squares
-        // Central pieces are positionally stronger (Nimzowitsch)
-        // Piece-type dependent: knights benefit most, queens least
-        {
-            static constexpr int center_order[64] = {
-                0, 0, 0, 0, 0, 0, 0, 0,
-                0, 0, 0, 0, 0, 0, 0, 0,
-                0, 0, 2, 3, 3, 2, 0, 0,
-                0, 2, 4, 5, 5, 4, 2, 0,
-                0, 2, 4, 5, 5, 4, 2, 0,
-                0, 0, 2, 3, 3, 2, 0, 0,
-                0, 0, 0, 0, 0, 0, 0, 0,
-                0, 0, 0, 0, 0, 0, 0, 0
-            };
-            int cbo = center_order[m.to()];
-            if (cbo >= 4) {
-                PieceType pt = piece_type_of(pos.piece_on(m.from()));
-                // Only apply for pieces that benefit from centralization
-                if (pt == KNIGHT || pt == BISHOP) reduction -= 1;
-            }
-        }
+        // Centralization removed from LMR: the move ordering centralization
+        // bonus already handles prioritization. Reducing less for central
+        // squares in LMR was saving ~0 computation but making LMR less
+        // aggressive for common knight/bishop center moves.
 
         // King-zone pressure: reduce less for piece moves adjacent to enemy king
         // These create threats and restrict king movement (Lasker)
