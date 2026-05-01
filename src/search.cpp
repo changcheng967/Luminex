@@ -580,6 +580,7 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
     // Compute improving flag: position is improving if eval is better than 2 plies ago
     // In-check positions are never considered improving (no reliable eval)
     ss->improving = (ss->ply >= 2 && !pos.is_check() && eval > (ss - 2)->static_eval);
+    ss->improving_deep = (ss->ply >= 4 && !pos.is_check() && eval > (ss - 4)->static_eval);
 
     // Opponent worsening: our eval is better than opponent's eval from 1 ply ago
     // This means the opponent's last move didn't help them
@@ -688,9 +689,7 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
         Value rbeta = std::min(beta + 175, VALUE_INFINITE - 200);
         int rdepth = depth - 3;
 
-        // Dynamic SEE threshold: capture must win enough to reach rbeta from current eval
-        Value see_threshold = Value(std::max(int(rbeta - eval), 0));
-
+        // Try winning captures (SEE > 0)
         ExtMove probcut_moves[MAX_MOVES];
         ExtMove* probcut_end = generate<GEN_CAPTURE>(pos, probcut_moves);
 
@@ -699,8 +698,8 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
 
             Move m = it->move;
 
-            // Skip captures that can't reach rbeta from current eval
-            if (!pos.see_ge(m, see_threshold)) continue;
+            // Skip losing captures
+            if (!pos.see_ge(m, Value(1))) continue;
 
             // CRITICAL FIX: Check move is legal before do_move
             // This prevents analyzing positions where our king is in check
@@ -807,6 +806,8 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
         if (m_idx >= 64) m_idx = 63;
         int reduction = (reductions[d_idx] * reductions[m_idx] + LMR_DENOM / 2) / LMR_DENOM;
         if (!ss->improving && !opponent_worsening) reduction += 1;
+        // Deep worsening: position declining over 4 plies, search less aggressively
+        if (!ss->improving && !ss->improving_deep && !opponent_worsening) reduction += 1;
         if (cut_node) reduction += 1;
         if (ttPv) reduction -= 2; // PV positions from TT get less reduction
 
@@ -818,8 +819,8 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
         if (pc != NO_PIECE) {
             int history_score = combined_history(worker, ss, pc, m.to());
 
-            // History influence on reduction
-            reduction -= history_score / 4096;
+            // History influence on reduction, clamped to prevent extreme adjustments
+            reduction -= std::max(-3, std::min(3, history_score / 4096));
         }
 
         // Reduce less for killer moves

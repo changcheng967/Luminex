@@ -20,6 +20,7 @@ public:
     int reduction = 0;  // LMR reduction applied at this ply (for hindsight adjustment)
     int forced_ply_count = 0;  // Consecutive plies in forcing sequence (checks/low mobility)
     bool improving = false;
+    bool improving_deep = false;  // 4-ply eval trajectory (sustained improvement)
     Stack* previous = nullptr;
 };
 
