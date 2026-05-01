@@ -796,8 +796,6 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
 
     // Precompute enemy king zone for LMR (nearly free: one king lookup per node)
     Square enemy_ksq = pos.king_sq(Color(pos.side_to_move() ^ 1));
-    Bitboard enemy_pawn_att = pawn_attacks_bb(Color(pos.side_to_move() ^ 1),
-        pos.pieces(Color(pos.side_to_move() ^ 1), PAWN));
 
     // Helper lambda: compute LMR reduction for a move (takes gives_chk to avoid recomputation)
     auto compute_reduction = [&](Move m, int mp, bool gives_chk) -> int {
@@ -855,11 +853,6 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
         // TT-move-noisy LMR: if TT found a tactical (capture) solution,
         // quiet moves are less likely to beat it — reduce more
         if (!m.is_capture() && !m.is_promotion() && tt_move.is_capture()) reduction += 1;
-
-        // Escape-aware LMR: if piece escapes pawn attack, reduce less (from Stash)
-        if (!m.is_capture() && !m.is_promotion() &&
-            (enemy_pawn_att & square_bb(m.from())) && !(enemy_pawn_att & square_bb(m.to())))
-            reduction -= 1;
 
         // Centralization removed from LMR: the move ordering centralization
         // bonus already handles prioritization. Reducing less for central
