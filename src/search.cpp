@@ -879,6 +879,15 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
         // quiet moves are less likely to beat it — reduce more
         if (!m.is_capture() && !m.is_promotion() && tt_move.is_capture()) reduction += 1;
 
+        // TT-eval divergence: when TT value (deeper search) strongly disagrees
+        // with static eval, the TT found something eval missed. Non-TT quiets
+        // based on eval ordering are unreliable — reduce more.
+        if (!m.is_capture() && !m.is_promotion() && m != tt_move
+            && found && tt_depth >= depth - 2 && !pos.is_check()) {
+            int tt_eval_gap = std::abs(int(tt_value) - int(eval));
+            if (tt_eval_gap > 200) reduction += 1;
+        }
+
         // Centralization removed from LMR: the move ordering centralization
         // bonus already handles prioritization. Reducing less for central
         // squares in LMR was saving ~0 computation but making LMR less
