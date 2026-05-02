@@ -592,14 +592,19 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
     bool opponent_worsening = (ss->ply >= 1 && (ss - 1)->static_eval != VALUE_ZERO && eval > -(ss - 1)->static_eval);
 
     // Novel: forcing line tracking. Count consecutive plies that are "forced"
-    // (in-check positions have 0 or 1 legal responses). When the forcing count
-    // reaches 3+, we're in a tactical sequence and should extend depth to avoid
-    // missing the conclusion. Individual check extensions don't catch this because
-    // they treat each ply independently — the forcing LINE as a whole is what matters.
+    // (in-check positions have 0 or 1 legal responses, or the previous move was
+    // a minor/major capture — the opponent is compelled to recapture).
+    // When the forcing count reaches 3+, we're in a tactical sequence and should
+    // extend depth to avoid missing the conclusion.
     ss->forced_ply_count = 0;
 
     if (pos.is_check()) {
         ss->forced_ply_count = ((ss - 1)->forced_ply_count + 1);
+    } else if (ss->ply >= 1 && (ss - 1)->current_move != MOVE_NONE && (ss - 1)->current_move.is_capture()) {
+        Piece prev_pc = (ss - 1)->moved_piece;
+        if (prev_pc != NO_PIECE && piece_type_of(prev_pc) != PAWN) {
+            ss->forced_ply_count = ((ss - 1)->forced_ply_count + 1);
+        }
     }
 
     // Hindsight depth adjustment: if the previous ply was heavily reduced by LMR,
@@ -1015,12 +1020,14 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
             }
         }
         // Novel: forcing line extension. If we're 3+ plies deep in a sequence
-        // of checks, this is a forcing tactical line — extend to see the conclusion.
-        // Individual check extensions handle single checks, but long forcing sequences
-        // need extra depth because LMR aggressively reduces them as "late moves".
+        // of checks or minor/major captures, this is a forcing tactical line —
+        // extend to see the conclusion. Individual check/capture extensions handle
+        // single instances, but long forcing sequences need extra depth because
+        // LMR aggressively reduces them as "late moves".
         // Only apply when no other extension is active to avoid compounding.
         if (ss->forced_ply_count >= 3 && ext_count == 0 && depth >= 4) {
             ext_count++;
+            g_stats.forcing_line_extensions++;
         }
         new_depth += ext_count;
 
@@ -2105,7 +2112,7 @@ Move search(Position& pos, Limits& lim) {
                 "null_move=%lld futility=%lld rev_futility=%lld razoring=%lld "
                 "probcut=%lld lmp=%lld history_prune=%lld "
                 "lmr_total=%lld lmr_research_permille=%d "
-                "check_ext=%lld singular_ext=%lld recapture_ext=%lld "
+                "check_ext=%lld singular_ext=%lld recapture_ext=%lld forcing_ext=%lld "
                 "first_move_cutoff_pct=%d.%d quiet_search_pct=%d.%d "
                 "quiets_gen=%lld quiets_searched=%lld caps_searched=%lld "
                 "pmg_tt_cutoffs=%lld pmg_cap_cutoffs=%lld pmg_quiet_cutoffs=%lld\n",
@@ -2124,7 +2131,7 @@ Move search(Position& pos, Limits& lim) {
                 (long long)g_stats.lmr_total,
                 g_stats.lmr_total > 0 ? (int)(g_stats.lmr_researches * 1000 / g_stats.lmr_total) : 0,
                 (long long)g_stats.check_extensions, (long long)g_stats.singular_extensions,
-                (long long)g_stats.recapture_extensions,
+                (long long)g_stats.recapture_extensions, (long long)g_stats.forcing_line_extensions,
                 first_move_pct / 10, first_move_pct % 10,
                 quiet_search_pct / 10, quiet_search_pct % 10,
                 (long long)g_stats.quiets_generated, (long long)g_stats.quiets_searched,
@@ -2222,6 +2229,7 @@ Move search(Position& pos, Limits& lim) {
         ext << "info string STATS extensions: singular=" << g_stats.singular_extensions
             << " check=" << g_stats.check_extensions
             << " recapture=" << g_stats.recapture_extensions
+            << " forcing_line=" << g_stats.forcing_line_extensions
             << "\n";
         uci_safe_output(ext.str());
 

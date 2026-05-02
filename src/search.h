@@ -90,6 +90,7 @@ struct SearchStats {
     int64_t singular_extensions = 0;
     int64_t check_extensions = 0;
     int64_t recapture_extensions = 0;
+    int64_t forcing_line_extensions = 0;
 
     // Move ordering stats
     int64_t captures_generated = 0;
