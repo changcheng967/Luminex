@@ -681,10 +681,6 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
         // winning — a shallower null move verification is sufficient
         if (int(eval) - int(beta) > 200) R += 1;
 
-        // Stable improvement: when position is reliably improving over 4 plies
-        // with low correction uncertainty, null move is safer — reduce more
-        if (ss->improving && ss->improving_deep && eval_uncertainty < 30) R += 1;
-
         R = std::max(2, std::min(R, depth - 1));
         Value null_value = -search_worker(pos, ss + 1, -beta, -beta + 1, depth - R, !cut_node);
         pos.undo_null_move();
