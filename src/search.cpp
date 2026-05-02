@@ -879,13 +879,11 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
         // quiet moves are less likely to beat it — reduce more
         if (!m.is_capture() && !m.is_promotion() && tt_move.is_capture()) reduction += 1;
 
-        // TT-eval divergence: when TT value (deeper search) strongly disagrees
-        // with static eval, the TT found something eval missed. Non-TT quiets
-        // based on eval ordering are unreliable — reduce more.
-        if (!m.is_capture() && !m.is_promotion() && m != tt_move
-            && found && tt_depth >= depth - 2 && !pos.is_check()) {
-            int tt_eval_gap = std::abs(int(tt_value) - int(eval));
-            if (tt_eval_gap > 200) reduction += 1;
+        // Capture-response LMR: after opponent's capture, quiets are less
+        // likely to be best — recapture is usually the critical response.
+        if (!m.is_capture() && !m.is_promotion() && depth >= 4 && ss->ply >= 1
+            && (ss - 1)->current_move.is_capture()) {
+            reduction += 1;
         }
 
         // Centralization removed from LMR: the move ordering centralization
