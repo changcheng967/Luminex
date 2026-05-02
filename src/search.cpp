@@ -576,8 +576,13 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
 
     // Static evaluation
     Value eval = VALUE_ZERO;
+    int eval_uncertainty = 0;  // Magnitude of correction history (measures eval unreliability)
     if (!pos.is_check()) {
         eval = eval_cached(pos);
+        // Correction history magnitude = how wrong the eval has been in similar positions.
+        // High uncertainty → eval is unreliable → search should be less aggressive.
+        // Low uncertainty → eval is reliable → search can be more aggressive.
+        eval_uncertainty = std::abs(get_total_correction(pos));
     }
     ss->static_eval = eval;
 
@@ -626,15 +631,25 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
     // Futility pruning - use improving for better pruning decisions
     // Depth <= 6 for balance between pruning and tactical accuracy
     // More aggressive when opponent is worsening (wider margin)
-    if (!pv_node && !pos.is_check() && depth <= 6 && eval - futility_margin(depth, ss->improving || opponent_worsening) >= beta) {
-        g_stats.futility_prunes++;
-        return eval;
+    // LESS aggressive when eval_uncertainty is high (eval unreliable, don't trust it for pruning)
+    {
+        int fut_margin = futility_margin(depth, ss->improving || opponent_worsening);
+        fut_margin += std::min(eval_uncertainty / 2, 100);  // Up to 100cp extra margin when uncertain
+        if (!pv_node && !pos.is_check() && depth <= 6 && eval - fut_margin >= beta) {
+            g_stats.futility_prunes++;
+            return eval;
+        }
     }
 
     // Reverse futility pruning (static null move): if eval is far above beta, prune immediately
-    if (!pv_node && !pos.is_check() && depth <= 8 && eval - 100 * depth - ((ss->improving || opponent_worsening) ? 0 : 30) >= beta) {
-        g_stats.rev_futility_prunes++;
-        return eval;
+    // Also less aggressive when eval is uncertain
+    {
+        int rev_margin = 100 * depth + ((ss->improving || opponent_worsening) ? 0 : 30);
+        rev_margin += std::min(eval_uncertainty / 2, 80);  // Up to 80cp extra margin when uncertain
+        if (!pv_node && !pos.is_check() && depth <= 8 && eval - rev_margin >= beta) {
+            g_stats.rev_futility_prunes++;
+            return eval;
+        }
     }
 
     // Razoring: at low depths, if eval is far below alpha, try qsearch to confirm
@@ -962,6 +977,7 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
         // Futility pruning: skip quiet moves that can't improve alpha
         if (is_quiet && !pv_node && ss->ply > 0 && !pos.is_check() && depth <= 5) {
             int margin = depth * 150 + (ss->improving ? 30 : 100);
+            margin += std::min(eval_uncertainty / 3, 50);  // Less pruning when eval uncertain
             if (eval + margin < alpha) {
                 g_stats.futility_prunes++;
                 return false;
