@@ -886,13 +886,6 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
             reduction += 1;
         }
 
-        // TT-deep LMR: when TT has a near-depth entry, TT move is reliable
-        // and non-TT quiets are less likely to beat it
-        if (!m.is_capture() && !m.is_promotion() && m != tt_move
-            && found && tt_depth >= depth - 1) {
-            reduction += 1;
-        }
-
         // Centralization removed from LMR: the move ordering centralization
         // bonus already handles prioritization. Reducing less for central
         // squares in LMR was saving ~0 computation but making LMR less
