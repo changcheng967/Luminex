@@ -963,10 +963,12 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
         if (is_quiet && !pv_node && ss->ply > 0 && depth <= 6 && moves_played >= lmp_threshold) {
             // History escape: if the move has strong positive combined history,
             // it has been good in similar positions — don't prune it
+            // When eval is uncertain, relax the escape threshold (more moves survive)
             Piece pc = pos.piece_on(m.from());
             bool has_good_history = false;
             if (pc != NO_PIECE) {
-                has_good_history = combined_history(worker, ss, pc, m.to()) > 0;
+                int hist_threshold = eval_uncertainty > 80 ? -3000 : 0;
+                has_good_history = combined_history(worker, ss, pc, m.to()) > hist_threshold;
             }
             if (!has_good_history && m != worker->killers[ss->ply][0] && m != worker->killers[ss->ply][1]) {
                 g_stats.lmp_prunes++;
