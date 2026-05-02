@@ -655,14 +655,6 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
     bool null_move_ok = !pv_node && !pos.is_check() && depth >= 2 && piece_count >= 1 &&
                           eval >= beta && ss->ply >= 1 && !ss->excluded_move;
 
-    // Threat detection: extract opponent's best response from null move PV.
-    // When we skip our turn and the opponent plays their best move, that move
-    // IS the opponent's threat. We use this to prioritize prophylactic moves
-    // (moves that defend against the threat) in quiet move ordering.
-    // Principle: a human sees the opponent's plan and plays to prevent it.
-    // The null move search already computes this — we just extract it for free.
-    Move null_threat = MOVE_NONE;
-
     if (null_move_ok) {
         pos.do_null_move();
 
@@ -692,16 +684,6 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
             } else {
                 g_stats.null_move_prunes++;
                 return null_value;
-            }
-        } else {
-            // Null move didn't prune — opponent has a real response.
-            // Extract their best move from the PV as a "threat" signal.
-            // ss+1 was the null move ply; its PV[0] is the opponent's best move.
-            if (ss[1].ply < 64) {
-                Move nm_response = ss[1].pv[ss[1].ply];
-                if (nm_response && nm_response.from() < SQUARE_NONE && nm_response.to() < SQUARE_NONE) {
-                    null_threat = nm_response;
-                }
             }
         }
     }
@@ -1416,23 +1398,6 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
                     // Check-giving knight: cheap lookup, forcing move
                     if (pt == KNIGHT && (knight_attacks_bb(m.to()) & square_bb(opp_ksq)))
                         score += 5000;
-
-                    // Threat-aware ordering: if null move revealed the opponent's threat,
-                    // prioritize moves that defend against it. "Prophylaxis" (Nimzowitsch).
-                    // At bullet TC, prophylactic moves are often reduced by LMR (quiet,
-                    // not forcing) or pruned by futility. Surfacing them earlier helps.
-                    if (null_threat != MOVE_NONE) {
-                        Square threat_to = null_threat.to();
-                        if (m.to() == threat_to) {
-                            score += 7000;
-                        } else if (pt != PAWN) {
-                            Bitboard to_attacks = BB_EMPTY;
-                            if (pt == KNIGHT) to_attacks = knight_attacks_bb(m.to());
-                            else if (pt == BISHOP) to_attacks = bishop_attacks_bb(m.to(), pos.pieces() ^ square_bb(m.from()));
-                            else if (pt == ROOK) to_attacks = rook_attacks_bb(m.to(), pos.pieces() ^ square_bb(m.from()));
-                            if (to_attacks & square_bb(threat_to)) score += 4000;
-                        }
-                    }
                 }
             }
             it->value = score;
