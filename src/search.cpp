@@ -831,15 +831,6 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
         if (!ss->improving && !opponent_worsening) reduction += 1;
         // Deep worsening: position declining over 4 plies, search less aggressively
         if (!ss->improving && !ss->improving_deep && !opponent_worsening) reduction += 1;
-
-        // Steep-decline LMR: when eval dropped significantly over 4 plies,
-        // position is collapsing — quiets are unlikely to stem it
-        if (!m.is_capture() && !m.is_promotion() && !ss->improving && !opponent_worsening
-            && ss->ply >= 4 && !pos.is_check()
-            && (ss - 4)->static_eval != VALUE_ZERO
-            && (ss - 4)->static_eval - eval > 150) {
-            reduction += 1;
-        }
         if (cut_node) reduction += 1;
         if (ttPv) reduction -= 2; // PV positions from TT get less reduction
 
