@@ -1823,6 +1823,10 @@ Move search(Position& pos, Limits& lim) {
             break;
         }
 
+        // Node-effort tracking for time management
+        uint64_t nodes_at_depth_start = nodes.load(std::memory_order_relaxed);
+        uint64_t nodes_spent_on_best = 0;
+
         // Handle ponderhit: switch from ponder to normal mode
         if (ponderhit_received.load(std::memory_order_relaxed)) {
             ponderhit_received.store(false);
@@ -1842,6 +1846,11 @@ Move search(Position& pos, Limits& lim) {
             int stability_reduction = (best_move_stability >= 4) ? ideal_time * 3 / 5
                                     : (best_move_stability >= 3) ? ideal_time * 3 / 4
                                     : ideal_time;
+            // Node-effort: if best move dominates effort (>80%), reduce time
+            uint64_t total_depth_nodes = nodes.load(std::memory_order_relaxed) - nodes_at_depth_start;
+            if (total_depth_nodes > 0 && nodes_spent_on_best * 100 / total_depth_nodes > 80) {
+                stability_reduction = stability_reduction * 3 / 4;
+            }
             // Score-drop extension: when eval drops sharply, spend more time investigating
             if (score_dropped_sharply) {
                 stability_reduction = std::min(stability_reduction * 3 / 2, max_time);
@@ -1940,6 +1949,7 @@ Move search(Position& pos, Limits& lim) {
                 if (check_time()) break;
 
                 if (!pos.do_move(it->move)) continue;
+                uint64_t nodes_before_move = nodes.load(std::memory_order_relaxed);
 
                 // Check stop immediately after do_move
                 if (g_stop_requested || stop.load(std::memory_order_relaxed)) {
@@ -1979,9 +1989,13 @@ Move search(Position& pos, Limits& lim) {
 
                 if (check_time()) break;
 
+                // Track node effort per root move
+                uint64_t nodes_spent_on_move = nodes.load(std::memory_order_relaxed) - nodes_before_move;
+
                 if (value > depth_best_value) {
                     depth_best_value = value;
                     depth_best_move = it->move;
+                    nodes_spent_on_best = nodes_spent_on_move;
                 }
                 if (value > running_alpha) {
                     running_alpha = value;
