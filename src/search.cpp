@@ -592,6 +592,15 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
     ss->improving = (ss->ply >= 2 && !pos.is_check() && eval > (ss - 2)->static_eval);
     ss->improving_deep = (ss->ply >= 4 && !pos.is_check() && eval > (ss - 4)->static_eval);
 
+    // Eval-diff ordering bonus (from Stockfish): reward parent move if it improved position
+    if (ss->ply >= 1 && !pos.is_check() && (ss - 1)->static_eval != VALUE_ZERO &&
+        (ss - 1)->current_move != MOVE_NONE && (ss - 1)->moved_piece != NO_PIECE &&
+        !(ss - 1)->current_move.is_capture()) {
+        int evalDiff = std::clamp(-int((ss - 1)->static_eval + ss->static_eval), -214, 171) + 60;
+        int& h = worker->history[int((ss - 1)->moved_piece)][int((ss - 1)->current_move.to())];
+        h += evalDiff - h * std::abs(evalDiff) / 16368;
+    }
+
     // Opponent worsening: our eval is better than opponent's eval from 1 ply ago
     // This means the opponent's last move didn't help them
     // Skip when parent was in check (static_eval is 0, not meaningful)
