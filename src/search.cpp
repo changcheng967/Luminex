@@ -108,14 +108,6 @@ CorrHistTable corrhist_nonpawn[2];  // Per color
 CorrHistTable corrhist_minor;
 CorrHistTable corrhist_major;
 
-// Continuation correction history: indexed by (piece, to) of previous moves (from SF18/Motor)
-// Captures move-context-dependent eval errors ("after Nf3, eval tends to overestimate by X")
-struct ContCorrHistTable {
-    int16_t data[12][64]; // [piece][to_square]
-};
-ContCorrHistTable corrhist_cont[2]; // [0]=ply-2, [1]=ply-4
-constexpr int CONT_CORRHIST_MAX = 256 * 16; // ±16 cp per table (smaller than structure tables)
-
 inline int16_t corrhist_score(const CorrHistTable& table, uint64_t key) {
     return table.data[uint32_t(key) & (CORRHIST_SIZE - 1)] / CORRHIST_GRAIN;
 }
@@ -128,31 +120,6 @@ inline int get_total_correction(const Position& pos) {
          + corrhist_score(corrhist_major, pos.major_key());
 }
 
-inline int16_t cont_corrhist_score(int table_idx, Piece pc, Square to) {
-    return corrhist_cont[table_idx].data[int(pc)][int(to)] / CORRHIST_GRAIN;
-}
-
-inline int get_cont_correction(const Stack* ss) {
-    int correction = 0;
-    if (ss->ply >= 2 && (ss - 2)->moved_piece != NO_PIECE && (ss - 2)->current_move != MOVE_NONE) {
-        correction += cont_corrhist_score(0, (ss - 2)->moved_piece, (ss - 2)->current_move.to());
-    }
-    if (ss->ply >= 4 && (ss - 4)->moved_piece != NO_PIECE && (ss - 4)->current_move != MOVE_NONE) {
-        correction += cont_corrhist_score(1, (ss - 4)->moved_piece, (ss - 4)->current_move.to());
-    }
-    return correction;
-}
-
-inline void cont_corrhist_update(int table_idx, Piece pc, Square to, int16_t weight, int32_t error) {
-    int16_t& entry = corrhist_cont[table_idx].data[int(pc)][int(to)];
-    int32_t scaled_diff = error * CORRHIST_GRAIN;
-    int32_t update = (int32_t)entry * (CORRHIST_WEIGHT_SCALE - weight)
-                   + scaled_diff * (int32_t)weight;
-    int32_t new_val = update / CORRHIST_WEIGHT_SCALE;
-    new_val = std::max(-CONT_CORRHIST_MAX, std::min(CONT_CORRHIST_MAX, new_val));
-    entry = (int16_t)new_val;
-}
-
 inline void corrhist_update(CorrHistTable& table, uint64_t key, int16_t weight, int32_t error) {
     int16_t& entry = table.data[uint32_t(key) & (CORRHIST_SIZE - 1)];
     int32_t scaled_diff = error * CORRHIST_GRAIN;
@@ -163,20 +130,13 @@ inline void corrhist_update(CorrHistTable& table, uint64_t key, int16_t weight, 
     entry = (int16_t)new_val;
 }
 
-inline void update_all_corrections(const Position& pos, int depth, int error, const Stack* ss) {
+inline void update_all_corrections(const Position& pos, int depth, int error) {
     int16_t weight = (int16_t)std::min(16, depth + 1);
     corrhist_update(corrhist_pawn, pos.pawn_key(), weight, error);
     corrhist_update(corrhist_nonpawn[0], pos.nonpawn_key(WHITE), weight, error);
     corrhist_update(corrhist_nonpawn[1], pos.nonpawn_key(BLACK), weight, error);
     corrhist_update(corrhist_minor, pos.minor_key(), weight, error);
     corrhist_update(corrhist_major, pos.major_key(), weight, error);
-    // Continuation correction: move-context-dependent eval errors
-    if (ss->ply >= 2 && (ss - 2)->moved_piece != NO_PIECE && (ss - 2)->current_move != MOVE_NONE) {
-        cont_corrhist_update(0, (ss - 2)->moved_piece, (ss - 2)->current_move.to(), weight, error);
-    }
-    if (ss->ply >= 4 && (ss - 4)->moved_piece != NO_PIECE && (ss - 4)->current_move != MOVE_NONE) {
-        cont_corrhist_update(1, (ss - 4)->moved_piece, (ss - 4)->current_move.to(), weight, error);
-    }
 }
 
 // Thread-local node counter to avoid atomic overhead on every node
@@ -620,14 +580,10 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
     int eval_uncertainty = 0;  // Magnitude of correction history (measures eval unreliability)
     if (!pos.is_check()) {
         eval = eval_cached(pos);
-        // Apply continuation correction: move-context-dependent eval adjustment
-        int cont_corr = get_cont_correction(ss);
-        cont_corr = std::max(-32, std::min(32, cont_corr));
-        eval = Value(int(eval) + cont_corr);
         // Correction history magnitude = how wrong the eval has been in similar positions.
         // High uncertainty → eval is unreliable → search should be less aggressive.
         // Low uncertainty → eval is reliable → search can be more aggressive.
-        eval_uncertainty = std::abs(get_total_correction(pos)) + std::abs(cont_corr);
+        eval_uncertainty = std::abs(get_total_correction(pos));
     }
     ss->static_eval = eval;
 
@@ -1570,7 +1526,7 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
         if (!pv_node && !pos.is_check() && !best_is_capture
             && abs(best_value) < VALUE_KNOWN_WIN && abs(eval) < VALUE_KNOWN_WIN
             && moves_played > 0 && depth >= 2) {
-            update_all_corrections(pos, depth, best_value - eval, ss);
+            update_all_corrections(pos, depth, best_value - eval);
         }
     }
 
@@ -2390,7 +2346,6 @@ void clear_correction_history() {
     std::memset(corrhist_nonpawn, 0, sizeof(corrhist_nonpawn));
     std::memset(&corrhist_minor, 0, sizeof(corrhist_minor));
     std::memset(&corrhist_major, 0, sizeof(corrhist_major));
-    std::memset(corrhist_cont, 0, sizeof(corrhist_cont));
 }
 
 void clear_search_history() {
