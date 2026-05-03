@@ -886,6 +886,15 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
             reduction += 1;
         }
 
+        // Retreating-move LMR: quiet non-pawn moves going backward
+        // (toward own side) are typically repositioning, less critical
+        if (!m.is_capture() && !m.is_promotion() && depth >= 4
+            && pc != NO_PIECE && piece_type_of(pc) != PAWN) {
+            Color us = pos.side_to_move();
+            if (relative_rank(us, rank_of(m.to())) < relative_rank(us, rank_of(m.from())))
+                reduction += 1;
+        }
+
         // Centralization removed from LMR: the move ordering centralization
         // bonus already handles prioritization. Reducing less for central
         // squares in LMR was saving ~0 computation but making LMR less
