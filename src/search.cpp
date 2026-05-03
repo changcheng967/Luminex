@@ -886,17 +886,6 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
             reduction += 1;
         }
 
-        // Pawn-response LMR: after opponent's pawn move, non-pawn quiets
-        // are less urgent — pawn structure changes make piece repositioning
-        // less likely to be the critical response.
-        if (!m.is_capture() && !m.is_promotion() && depth >= 4 && ss->ply >= 1
-            && (ss - 1)->moved_piece != NO_PIECE
-            && piece_type_of((ss - 1)->moved_piece) == PAWN
-            && pc != NO_PIECE
-            && piece_type_of(pc) != PAWN) {
-            reduction += 1;
-        }
-
         // Centralization removed from LMR: the move ordering centralization
         // bonus already handles prioritization. Reducing less for central
         // squares in LMR was saving ~0 computation but making LMR less
