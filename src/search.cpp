@@ -541,22 +541,22 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
                 int& h = worker->history[int(moved)][int(tt_move.to())];
                 h += bonus - h * std::abs(bonus) / 16368;
 
-                // Conthist update with averaged gravity base (from Stash)
-                int* cm_ptr = nullptr;
-                int* ch_ptr = nullptr;
+                // Counter-move history (1-ply)
                 if (ss->ply >= 1 && (ss - 1)->current_move != MOVE_NONE && (ss - 1)->moved_piece != NO_PIECE) {
-                    cm_ptr = &counter_moves[int((ss - 1)->moved_piece)][int((ss - 1)->current_move.to())][int(moved)][int(tt_move.to())];
-                    worker->counter_move_table[int((ss - 1)->moved_piece)][int((ss - 1)->current_move.to())] = tt_move;
+                    Move prev_move = (ss - 1)->current_move;
+                    Piece prev_pc = (ss - 1)->moved_piece;
+                    int& cm = counter_moves[int(prev_pc)][int(prev_move.to())][int(moved)][int(tt_move.to())];
+                    cm += bonus - cm * std::abs(bonus) / 16368;
+                    worker->counter_move_table[int(prev_pc)][int(prev_move.to())] = tt_move;
                 }
+
+                // Continuation history (2-ply)
                 if (ss->ply >= 2 && (ss - 2)->current_move != MOVE_NONE && (ss - 2)->moved_piece != NO_PIECE) {
-                    ch_ptr = &continuation_history[int((ss - 2)->moved_piece)][int((ss - 2)->current_move.to())][int(moved)][int(tt_move.to())];
+                    Move prev2_move = (ss - 2)->current_move;
+                    Piece prev2_pc = (ss - 2)->moved_piece;
+                    int& ch = continuation_history[int(prev2_pc)][int(prev2_move.to())][int(moved)][int(tt_move.to())];
+                    ch += bonus - ch * std::abs(bonus) / 16368;
                 }
-                int conthist_avg = 0, conthist_n = 0;
-                if (cm_ptr) { conthist_avg += *cm_ptr; conthist_n++; }
-                if (ch_ptr) { conthist_avg += *ch_ptr; conthist_n++; }
-                if (conthist_n > 1) conthist_avg /= conthist_n;
-                if (cm_ptr) *cm_ptr += bonus - conthist_avg * std::abs(bonus) / 16368;
-                if (ch_ptr) *ch_ptr += bonus - conthist_avg * std::abs(bonus) / 16368;
             } else if (moved != NO_PIECE && tt_move.is_capture()) {
                 // Capture history bonus for TT cutoff captures
                 int bonus = depth > 17 ? -8 : 19 * depth * depth + 155 * depth - 132;
@@ -1153,22 +1153,22 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
                         int& h = worker->history[int(pc)][int(m.to())];
                         h += bonus - h * abs(bonus) / 16368;
 
-                        // Conthist update with averaged gravity base (from Stash)
-                        int* cm_ptr2 = nullptr;
-                        int* ch_ptr2 = nullptr;
+                        // Counter-move history (1-ply: opponent's last move)
                         if (ss->ply >= 1 && (ss - 1)->current_move != MOVE_NONE && (ss - 1)->moved_piece != NO_PIECE) {
-                            cm_ptr2 = &counter_moves[int((ss - 1)->moved_piece)][int((ss - 1)->current_move.to())][int(pc)][int(m.to())];
-                            worker->counter_move_table[int((ss - 1)->moved_piece)][int((ss - 1)->current_move.to())] = m;
+                            Move prev_move = (ss - 1)->current_move;
+                            Piece prev_pc = (ss - 1)->moved_piece;
+                            int& cm = counter_moves[int(prev_pc)][int(prev_move.to())][int(pc)][int(m.to())];
+                            cm += bonus - cm * abs(bonus) / 16368;
+                            worker->counter_move_table[int(prev_pc)][int(prev_move.to())] = m;
                         }
+
+                        // Continuation history (2-ply: our own previous move)
                         if (ss->ply >= 2 && (ss - 2)->current_move != MOVE_NONE && (ss - 2)->moved_piece != NO_PIECE) {
-                            ch_ptr2 = &continuation_history[int((ss - 2)->moved_piece)][int((ss - 2)->current_move.to())][int(pc)][int(m.to())];
+                            Move prev2_move = (ss - 2)->current_move;
+                            Piece prev2_pc = (ss - 2)->moved_piece;
+                            int& ch = continuation_history[int(prev2_pc)][int(prev2_move.to())][int(pc)][int(m.to())];
+                            ch += bonus - ch * abs(bonus) / 16368;
                         }
-                        int conthist_avg2 = 0, conthist_n2 = 0;
-                        if (cm_ptr2) { conthist_avg2 += *cm_ptr2; conthist_n2++; }
-                        if (ch_ptr2) { conthist_avg2 += *ch_ptr2; conthist_n2++; }
-                        if (conthist_n2 > 1) conthist_avg2 /= conthist_n2;
-                        if (cm_ptr2) *cm_ptr2 += bonus - conthist_avg2 * abs(bonus) / 16368;
-                        if (ch_ptr2) *ch_ptr2 += bonus - conthist_avg2 * abs(bonus) / 16368;
 
                         // Low-ply history bonus (plies 1-3)
                         if (ss->ply >= 1 && ss->ply <= 3) {
@@ -1200,21 +1200,18 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
                         if (qpc != NO_PIECE) {
                             int& h = worker->history[int(qpc)][int(qm.to())];
                             h += malus - h * abs(malus) / 16368;
-                            // Conthist malus with averaged gravity base (from Stash)
-                            int* cm_ptr3 = nullptr;
-                            int* ch_ptr3 = nullptr;
                             if (ss->ply >= 1 && (ss - 1)->current_move != MOVE_NONE && (ss - 1)->moved_piece != NO_PIECE) {
-                                cm_ptr3 = &counter_moves[int((ss - 1)->moved_piece)][int((ss - 1)->current_move.to())][int(qpc)][int(qm.to())];
+                                Move prev_move = (ss - 1)->current_move;
+                                Piece prev_pc = (ss - 1)->moved_piece;
+                                int& cm = counter_moves[int(prev_pc)][int(prev_move.to())][int(qpc)][int(qm.to())];
+                                cm += malus - cm * abs(malus) / 16368;
                             }
                             if (ss->ply >= 2 && (ss - 2)->current_move != MOVE_NONE && (ss - 2)->moved_piece != NO_PIECE) {
-                                ch_ptr3 = &continuation_history[int((ss - 2)->moved_piece)][int((ss - 2)->current_move.to())][int(qpc)][int(qm.to())];
+                                Move prev2_move = (ss - 2)->current_move;
+                                Piece prev2_pc = (ss - 2)->moved_piece;
+                                int& ch = continuation_history[int(prev2_pc)][int(prev2_move.to())][int(qpc)][int(qm.to())];
+                                ch += malus - ch * abs(malus) / 16368;
                             }
-                            int conthist_avg3 = 0, conthist_n3 = 0;
-                            if (cm_ptr3) { conthist_avg3 += *cm_ptr3; conthist_n3++; }
-                            if (ch_ptr3) { conthist_avg3 += *ch_ptr3; conthist_n3++; }
-                            if (conthist_n3 > 1) conthist_avg3 /= conthist_n3;
-                            if (cm_ptr3) *cm_ptr3 += malus - conthist_avg3 * abs(malus) / 16368;
-                            if (ch_ptr3) *ch_ptr3 += malus - conthist_avg3 * abs(malus) / 16368;
                             // Low-ply history malus (plies 1-3)
                             if (ss->ply >= 1 && ss->ply <= 3) {
                                 int& lh = worker->low_ply_history[ss->ply][int(qpc)][int(qm.to())];
