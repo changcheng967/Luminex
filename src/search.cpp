@@ -58,7 +58,7 @@ constexpr int MAX_PLY_PLUS_6 = MAX_PLY + 6;
 
 struct SearchWorker {
     Stack stack[MAX_PLY_PLUS_6];
-    Move killers[MAX_PLY][1] = {};
+    Move killers[MAX_PLY][2] = {};
     int history[12][64] = {};
     int capture_history[12][64][7] = {};
     Move counter_move_table[12][64] = {};
@@ -848,7 +848,6 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
         }
 
         // Reduce less for killer moves
-        // Reduce less for killer moves
         if (m == worker->killers[ss->ply][0]) reduction -= 1;
 
         // Counter-move LMR bonus removed: counter-moves already get +40000
@@ -979,7 +978,7 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
                 int hist_threshold = eval_uncertainty > 80 ? -3000 : 0;
                 has_good_history = combined_history(worker, ss, pc, m.to()) > hist_threshold;
             }
-            if (!has_good_history && m != worker->killers[ss->ply][0]) {
+            if (!has_good_history && m != worker->killers[ss->ply][0] && m != worker->killers[ss->ply][1]) {
                 g_stats.lmp_prunes++;
                 return false;  // No good history and not killer: prune
             }
@@ -1141,7 +1140,10 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
                 if (value >= beta) {
                 // Beta cutoff - update killers, history and counter-move history
                 if (is_quiet && ss->ply < MAX_PLY) {
-                    worker->killers[ss->ply][0] = m;
+                    if (m != worker->killers[ss->ply][0]) {
+                        worker->killers[ss->ply][1] = worker->killers[ss->ply][0];
+                        worker->killers[ss->ply][0] = m;
+                    }
                     Piece pc = ss->moved_piece;
                     if (pc != NO_PIECE) {
                         // Stockfish 11 stat_bonus: conservative quadratic scaling
@@ -1360,6 +1362,7 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
 
                 // Killer moves bonus ON TOP of history
                 if (m == worker->killers[ss->ply][0]) score += 60000;
+                else if (m == worker->killers[ss->ply][1]) score += 50000;
                 else if (ss->ply >= 1 && (ss - 1)->current_move != MOVE_NONE && (ss - 1)->moved_piece != NO_PIECE) {
                     Move prev_move = (ss - 1)->current_move;
                     Piece prev_pc = (ss - 1)->moved_piece;
@@ -1774,6 +1777,7 @@ Move search(Position& pos, Limits& lim) {
     // Initialize killers (clear for new search)
     for (int i = 0; i < MAX_PLY; ++i) {
         worker->killers[i][0] = MOVE_NONE;
+        worker->killers[i][1] = MOVE_NONE;
     }
 
     // Age history tables (gravity formula handles intra-search decay,
@@ -1892,6 +1896,7 @@ Move search(Position& pos, Limits& lim) {
                 if (pc != NO_PIECE) {
                     score = worker->history[int(pc)][int(m.to())];
                     if (m == worker->killers[0][0]) score += 500000;
+                    else if (m == worker->killers[0][1]) score += 400000;
                 }
             }
 
