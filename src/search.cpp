@@ -791,8 +791,15 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
 
     // Singular extension: check if TT move is significantly better than alternatives
     int singular_extension = 0;
+    // Shuffling detection (from Stockfish): don't extend moves that shuffle back and forth
+    bool is_shuffling = false;
+    if (ss->ply >= 4 && !tt_move.is_capture() &&
+        (ss - 2)->current_move != MOVE_NONE && (ss - 4)->current_move != MOVE_NONE) {
+        is_shuffling = tt_move.from() == (ss - 2)->current_move.to() &&
+                       (ss - 2)->current_move.from() == (ss - 4)->current_move.to();
+    }
     if (tt_move != MOVE_NONE && !pv_node && found && tt_depth >= depth - 3 && depth >= 6 &&
-        (tte->bound() & BOUND_LOWER) && abs(tt_value) < VALUE_KNOWN_WIN) {
+        (tte->bound() & BOUND_LOWER) && abs(tt_value) < VALUE_KNOWN_WIN && !is_shuffling) {
         Value sBeta = Value(tt_value - depth * 10 / 16);
         ss->excluded_move = tt_move;
         Value singular_value = search_worker(pos, ss, sBeta - 1, sBeta, (depth - 1) / 2, !cut_node);
