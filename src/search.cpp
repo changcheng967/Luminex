@@ -803,6 +803,11 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
             // extend even more - inspired by Stockfish's double extension
             if (singular_value < sBeta - depth) {
                 singular_extension = 2;
+                // Triple extension for quiet TT moves that are overwhelmingly
+                // singular — a positional move with no alternatives (from Stash)
+                if (!tt_move.is_capture() && sBeta - singular_value > 120) {
+                    singular_extension = 3;
+                }
             }
         } else if (singular_value >= beta) {
             // Multi-cut: other moves are also good enough to beat beta
