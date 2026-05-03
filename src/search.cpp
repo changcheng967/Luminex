@@ -396,8 +396,9 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
         }
 
         // Skip losing captures with negative SEE (but keep queen promotions)
+        // Allow slightly losing captures at deeper qsearch depths (from Stash)
         // Exception: when in check, try all evasions regardless of SEE
-        if (!in_check && !it->move.is_promotion() && !pos.see_ge(it->move, VALUE_ZERO)) {
+        if (!in_check && !it->move.is_promotion() && !pos.see_ge(it->move, Value(-60 * depth))) {
             continue;
         }
 
