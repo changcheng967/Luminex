@@ -623,8 +623,8 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
     }
 
     // Internal Iterative Reduction (IIR): reduce depth by 1 when no TT move available
-    // Broader threshold from Stash (depth >= 3 instead of 4)
-    if (!pv_node && tt_move == MOVE_NONE && depth >= 3) {
+    // Applied to all nodes (PV and non-PV) — no TT guidance means expensive search
+    if (tt_move == MOVE_NONE && depth >= 3) {
         depth--;
         g_stats.iir_reductions++;
     }
