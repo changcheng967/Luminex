@@ -171,7 +171,7 @@ static void init_reductions() {
     reductions_initialized = true;
 }
 
-// Combined history: main + counter-move (1-ply) + continuation (2-ply)
+// Combined history: main + counter-move (1-ply) + continuation (2-ply, 4-ply)
 inline int combined_history(const SearchWorker* w, const Stack* ss, Piece pc, Square to) {
     int score = w->history[int(pc)][int(to)];
 
@@ -181,6 +181,10 @@ inline int combined_history(const SearchWorker* w, const Stack* ss, Piece pc, Sq
 
     if (ss->ply >= 2 && (ss - 2)->current_move != MOVE_NONE && (ss - 2)->moved_piece != NO_PIECE) {
         score += continuation_history[int((ss - 2)->moved_piece)][int((ss - 2)->current_move.to())][int(pc)][int(to)];
+    }
+
+    if (ss->ply >= 4 && (ss - 4)->current_move != MOVE_NONE && (ss - 4)->moved_piece != NO_PIECE) {
+        score += continuation_history[int((ss - 4)->moved_piece)][int((ss - 4)->current_move.to())][int(pc)][int(to)];
     }
 
     return score;
@@ -565,6 +569,14 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
                     Piece prev2_pc = (ss - 2)->moved_piece;
                     int& ch = continuation_history[int(prev2_pc)][int(prev2_move.to())][int(moved)][int(tt_move.to())];
                     ch += bonus - ch * std::abs(bonus) / 16368;
+                }
+
+                // Continuation history (4-ply)
+                if (ss->ply >= 4 && (ss - 4)->current_move != MOVE_NONE && (ss - 4)->moved_piece != NO_PIECE) {
+                    Move prev4_move = (ss - 4)->current_move;
+                    Piece prev4_pc = (ss - 4)->moved_piece;
+                    int& ch4 = continuation_history[int(prev4_pc)][int(prev4_move.to())][int(moved)][int(tt_move.to())];
+                    ch4 += bonus - ch4 * std::abs(bonus) / 16368;
                 }
             } else if (moved != NO_PIECE && tt_move.is_capture()) {
                 // Capture history bonus for TT cutoff captures
@@ -1186,6 +1198,14 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
                             ch += bonus - ch * abs(bonus) / 16368;
                         }
 
+                        // Continuation history (4-ply)
+                        if (ss->ply >= 4 && (ss - 4)->current_move != MOVE_NONE && (ss - 4)->moved_piece != NO_PIECE) {
+                            Move prev4_move = (ss - 4)->current_move;
+                            Piece prev4_pc = (ss - 4)->moved_piece;
+                            int& ch4 = continuation_history[int(prev4_pc)][int(prev4_move.to())][int(pc)][int(m.to())];
+                            ch4 += bonus - ch4 * abs(bonus) / 16368;
+                        }
+
                         // Low-ply history bonus (plies 1-3)
                         if (ss->ply >= 1 && ss->ply <= 3) {
                             int& lh = worker->low_ply_history[ss->ply][int(pc)][int(m.to())];
@@ -1227,6 +1247,12 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
                                 Piece prev2_pc = (ss - 2)->moved_piece;
                                 int& ch = continuation_history[int(prev2_pc)][int(prev2_move.to())][int(qpc)][int(qm.to())];
                                 ch += malus - ch * abs(malus) / 16368;
+                            }
+                            if (ss->ply >= 4 && (ss - 4)->current_move != MOVE_NONE && (ss - 4)->moved_piece != NO_PIECE) {
+                                Move prev4_move = (ss - 4)->current_move;
+                                Piece prev4_pc = (ss - 4)->moved_piece;
+                                int& ch4 = continuation_history[int(prev4_pc)][int(prev4_move.to())][int(qpc)][int(qm.to())];
+                                ch4 += malus - ch4 * abs(malus) / 16368;
                             }
                             // Low-ply history malus (plies 1-3)
                             if (ss->ply >= 1 && ss->ply <= 3) {
