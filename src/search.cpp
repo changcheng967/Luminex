@@ -539,8 +539,7 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
     bool ttPv = found && tte->is_pv();
 
     // TT cutoff: require exact or greater depth for safety
-    // Rule-50 guard: skip TT cutoffs near 50-move draw (TT doesn't encode draw risk)
-    if (!pv_node && found && tt_depth >= depth && pos.halfmove_clock() < 96 &&
+    if (!pv_node && found && tt_depth >= depth &&
         (tt_value >= beta ? (tte->bound() & BOUND_LOWER) : (tte->bound() & BOUND_UPPER))) {
         g_stats.tt_cutoffs++;
         // TT cutoff stat updates: reinforce heuristics even on TT hits
@@ -1533,8 +1532,7 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
         // Skip when: in check, best move is capture (tactical, noisy),
         // or when result is consistent with static eval (no learning signal).
         bool best_is_capture = best_move_found.is_capture();
-        bool best_is_bad_capture = best_is_capture && !pos.see_ge(best_move_found, VALUE_ZERO);
-        if (!pv_node && !pos.is_check() && (!best_is_capture || best_is_bad_capture)
+        if (!pv_node && !pos.is_check() && !best_is_capture
             && abs(best_value) < VALUE_KNOWN_WIN && abs(eval) < VALUE_KNOWN_WIN
             && moves_played > 0 && depth >= 2) {
             update_all_corrections(pos, depth, best_value - eval);
