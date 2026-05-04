@@ -19,6 +19,7 @@ public:
     int move_count = 0;
     int reduction = 0;  // LMR reduction applied at this ply (for hindsight adjustment)
     int forced_ply_count = 0;  // Consecutive plies in forcing sequence (checks/low mobility)
+    int double_extensions = 0;  // Budget tracker for double/triple singular extensions
     bool improving = false;
     bool improving_deep = false;  // 4-ply eval trajectory (sustained improvement)
     Stack* previous = nullptr;

@@ -612,8 +612,7 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
     // missing the conclusion. Individual check extensions don't catch this because
     // they treat each ply independently — the forcing LINE as a whole is what matters.
     ss->forced_ply_count = 0;
-
-    if (pos.is_check()) {
+    ss->double_extensions = (ss - 1)->double_extensions;    if (pos.is_check()) {
         ss->forced_ply_count = ((ss - 1)->forced_ply_count + 1);
     }
 
@@ -815,10 +814,15 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
         ss->excluded_move = MOVE_NONE;
         if (singular_value < sBeta) {
             singular_extension = 1;
-            // Double extension: if move is EXTREMELY singular (fails by a lot),
-            // extend even more - inspired by Stockfish's double extension
-            if (singular_value < sBeta - depth) {
-                singular_extension = 2;
+            // Double/triple extension for very singular moves (from Stash)
+            // Budget: prevent too many stacked double extensions
+            if (singular_value < sBeta - depth
+                && ss->double_extensions <= 6
+                && 2 * ss->double_extensions < root_depth) {
+                // Triple extension for very singular QUIET moves (>120cp margin)
+                bool is_quiet_tt = !tt_move.is_capture() && !tt_move.is_promotion();
+                singular_extension = is_quiet_tt && (sBeta - singular_value > 120) ? 3 : 2;
+                ++ss->double_extensions;
             }
         } else if (singular_value >= beta) {
             // Multi-cut: other moves are also good enough to beat beta
