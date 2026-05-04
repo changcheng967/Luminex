@@ -594,6 +594,13 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
         // Low uncertainty → eval is reliable → search can be more aggressive.
         eval_uncertainty = std::abs(get_total_correction(pos));
     }
+    // TT-eval upgrade: when TT was searched at least as deep, its score
+    // is more reliable than static eval. Use it for pruning decisions.
+    if (found && tt_depth >= depth
+        && (tte->bound() & (tt_value > eval ? BOUND_LOWER : BOUND_UPPER))) {
+        eval = tt_value;
+        eval_uncertainty = 0;
+    }
     ss->static_eval = eval;
 
     // Compute improving flag: position is improving if eval is better than 2 plies ago
