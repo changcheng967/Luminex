@@ -186,7 +186,15 @@ inline int combined_history(const SearchWorker* w, const Stack* ss, Piece pc, Sq
     return score;
 }
 
-inline Value eval_cached(const Position& pos) {
+inline Value eval_cached(const Position& pos, bool tactical_only = false) {
+    // Forcing-line fast eval: skip expensive positional terms in tactical sequences
+    if (tactical_only) {
+        Value eval = evaluate(pos, true);
+        int correction = get_total_correction(pos);
+        correction = std::max(-200, std::min(200, correction));
+        return Value(eval + correction);
+    }
+
     uint64_t key = pos.key();
     uint32_t idx = uint32_t(key) & (EVAL_CACHE_SIZE - 1);
 
@@ -588,7 +596,10 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
     Value eval = VALUE_ZERO;
     int eval_uncertainty = 0;  // Magnitude of correction history (measures eval unreliability)
     if (!pos.is_check()) {
-        eval = eval_cached(pos);
+        // Forcing-line fast eval: when parent was in a long forcing line (3+ check plies),
+        // skip expensive positional terms — position is tactical, not positional
+        bool forcing_line = (ss->ply >= 1 && (ss - 1)->forced_ply_count >= 3);
+        eval = eval_cached(pos, forcing_line);
         // Correction history magnitude = how wrong the eval has been in similar positions.
         // High uncertainty → eval is unreliable → search should be less aggressive.
         // Low uncertainty → eval is reliable → search can be more aggressive.
