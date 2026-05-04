@@ -58,4 +58,8 @@ void init_evaluation();
 // Sync mutable eval arrays from g_params (for tuner)
 void sync_eval_params();
 
+// Eval profiling
+void eval_profile_reset();
+void eval_profile_print();
+
 } // namespace luminex

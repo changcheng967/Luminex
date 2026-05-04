@@ -1705,6 +1705,7 @@ Move search(Position& pos, Limits& lim) {
     local_nodes = 0;
     last_reported_nodes = 0;
     g_stats = SearchStats{};  // Reset stats for each search
+    eval_profile_reset();
 
     // Track search start time for time management
     search_start = std::chrono::steady_clock::now();
@@ -2298,6 +2299,7 @@ Move search(Position& pos, Limits& lim) {
         uci_safe_output(pmg.str());
     }
 
+    eval_profile_print();
     return best_move;
 }
 
