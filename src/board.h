@@ -97,6 +97,7 @@ public:
     Key major_key() const;
     int psq_mg() const;
     int psq_eg() const;
+    int halfmove_clock() const { return st_->halfmove_clock; }
 
     bool is_draw() const;
     bool is_check() const;

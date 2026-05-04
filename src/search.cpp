@@ -539,7 +539,8 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
     bool ttPv = found && tte->is_pv();
 
     // TT cutoff: require exact or greater depth for safety
-    if (!pv_node && found && tt_depth >= depth &&
+    // Rule-50 guard: skip TT cutoffs near 50-move draw (TT doesn't encode draw risk)
+    if (!pv_node && found && tt_depth >= depth && pos.halfmove_clock() < 96 &&
         (tt_value >= beta ? (tte->bound() & BOUND_LOWER) : (tte->bound() & BOUND_UPPER))) {
         g_stats.tt_cutoffs++;
         // TT cutoff stat updates: reinforce heuristics even on TT hits
