@@ -1759,15 +1759,16 @@ Move search(Position& pos, Limits& lim) {
         if (time_left < 0) time_left = 0;
         if (time_inc < 0) time_inc = 0;
 
-        int overhead = 30;
+        // Dynamic overhead: scale with total time (at 1+0.01, 30ms is 3% of game)
+        int overhead = std::max(10, std::min(30, time_left / 50));
 
         if (limits.movestogo > 0) {
             int mtg = std::max(1, limits.movestogo);
             ideal_time = time_left / mtg + time_inc - overhead;
             max_time = time_left / std::max(1, mtg / 2) + time_inc - overhead;
         } else {
-            // Sudden death: simple fraction + increment
-            int mtg = 25;
+            // Sudden death: plan for 40 moves (typical ultra-bullet game length)
+            int mtg = 40;
             int opt_time = (time_left + time_inc * mtg * 3 / 4) / mtg;
             ideal_time = std::min(opt_time, time_left / 2);
             max_time = std::min(time_left - overhead, std::max(ideal_time * 3, time_inc + 50));
