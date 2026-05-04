@@ -1181,7 +1181,7 @@ Value evaluate(const Position& pos, bool tactical_only) {
         while (ep) {
             Square psq = pop_lsb(ep);
             if (pawn_attacks_bb(them, square_bb(psq)) & king_zone) {
-                attack_units += 2;
+                attack_units += 20;
                 attacker_count++;
             }
         }
@@ -1192,11 +1192,11 @@ Value evaluate(const Position& pos, bool tactical_only) {
             Square ksq2 = pop_lsb(enemy_kn);
             Bitboard kn_attacks = knight_attacks_bb(ksq2);
             if (kn_attacks & king_zone) {
-                attack_units += 4;
+                attack_units += 46;
                 attacker_count++;
             }
             Bitboard kn_checks = kn_attacks & king_attacks_bb(our_ksq);
-            if (kn_checks & safe) attack_units += 10;
+            if (kn_checks & safe) attack_units += 74;
         }
 
         // Bishop attacks + safe check bonus
@@ -1205,11 +1205,11 @@ Value evaluate(const Position& pos, bool tactical_only) {
             Square bsq = pop_lsb(enemy_bi);
             Bitboard bi_attacks = bishop_attacks_bb(bsq, occupied);
             if (bi_attacks & king_zone) {
-                attack_units += 3;
+                attack_units += 31;
                 attacker_count++;
             }
             Bitboard bi_checks = bi_attacks & king_diag_rays;
-            if (bi_checks & safe) attack_units += 8;
+            if (bi_checks & safe) attack_units += 36;
         }
 
         // Rook attacks + safe check bonus
@@ -1218,11 +1218,11 @@ Value evaluate(const Position& pos, bool tactical_only) {
             Square rsq = pop_lsb(enemy_ro);
             Bitboard ro_attacks = rook_attacks_bb(rsq, occupied);
             if (ro_attacks & king_zone) {
-                attack_units += 5;
+                attack_units += 33;
                 attacker_count++;
             }
             Bitboard ro_checks = ro_attacks & king_orth_rays;
-            if (ro_checks & safe) attack_units += 12;
+            if (ro_checks & safe) attack_units += 89;
         }
 
         // Queen attacks + safe check bonus
@@ -1231,34 +1231,38 @@ Value evaluate(const Position& pos, bool tactical_only) {
             Square qsq = pop_lsb(enemy_qu);
             Bitboard qu_attacks = queen_attacks_bb(qsq, occupied);
             if (qu_attacks & king_zone) {
-                attack_units += 7;
+                attack_units += 10;
                 attacker_count++;
             }
             Bitboard qu_checks = qu_attacks & (king_diag_rays | king_orth_rays);
-            if (qu_checks & safe) attack_units += 16;
+            if (qu_checks & safe) attack_units += 45;
         }
 
         // Only evaluate king safety if 2+ attackers
         if (attacker_count >= 2) {
-            // Sigmoid danger: 500 * au^2 / (au^2 + 200)
-            // Self-engineered S-curve derived from attack probability theory
-            int au2 = attack_units * attack_units;
-            int danger = std::min(500, (500 * au2) / (au2 + 200));
+            // Quadratic danger (Stash-style): au^2 / 256 for MG, au / 16 for EG
+            int au_pos = std::max(0, attack_units);
+            int danger_mg = (au_pos * au_pos) / 256;
+            int danger_eg = au_pos / 16;
 
-            // No queen: much less dangerous
-            if (!enemy_qu) danger = danger / 4;
-            // No queen and no rook: even less dangerous
-            if (!enemy_qu && !enemy_ro) danger = danger / 4;
+            // Queenless attack penalty (Stash: -88/-81)
+            if (!enemy_qu) {
+                danger_mg -= 88;
+                danger_eg -= 81;
+            }
 
             // King flight: fewer safe escape squares = more dangerous
-            // A trapped king (0-1 safe squares) is far more vulnerable to attack
             Bitboard king_moves = king_attacks_bb(our_ksq);
             Bitboard safe_king_squares = king_moves & ~pos.pieces(c) & ~all_attacks[them];
             int flight = popcount(safe_king_squares);
-            if (flight <= 1) danger += 80;
-            else if (flight == 2) danger += 30;
+            if (flight <= 1) { danger_mg += 80; danger_eg += 40; }
+            else if (flight == 2) { danger_mg += 30; danger_eg += 15; }
 
-            mg_score -= sign * danger;
+            danger_mg = std::max(0, danger_mg);
+            danger_eg = std::max(0, danger_eg);
+
+            mg_score -= sign * danger_mg;
+            eg_score -= sign * danger_eg;
         }
     }
     } // end !tactical_only king safety
