@@ -715,14 +715,9 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
     }
 
     // ProbCut - if a capture is obviously good enough, verify with shallow search
-    // Skip entirely if TT already proves position is below probcut beta (from Stash)
     if (!pv_node && depth >= 5 && !pos.is_check() && ss->ply >= 2) {
         Value rbeta = std::min(beta + 175, VALUE_INFINITE - 200);
         int rdepth = depth - 3;
-
-        if (found && tt_depth >= depth - 4 && tt_value < rbeta) {
-            // TT says position is worse than probcut beta — skip probcut
-        } else {
 
         // Dynamic SEE threshold: capture must gain enough to reach rbeta from eval
         Value see_threshold = Value(std::max(int(rbeta - eval), 0));
@@ -755,7 +750,6 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
                 return value;
             }
         }
-        } // TT skip guard
     }
 
     // ================================================================
@@ -908,28 +902,6 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
         if (!m.is_capture() && !m.is_promotion() && depth >= 4 && ss->ply >= 1
             && (ss - 1)->current_move.is_capture()) {
             reduction += 1;
-        }
-
-        // Escape-from-capture LMR: if opponent's last move attacks our piece's
-        // source square, moving it away is a natural escape — reduce less (from Stash)
-        if (!is_capture && !m.is_promotion() && ss->ply >= 1
-            && (ss - 1)->current_move != MOVE_NONE && (ss - 1)->moved_piece != NO_PIECE) {
-            Square prev_to = (ss - 1)->current_move.to();
-            PieceType prev_pt = piece_type_of((ss - 1)->moved_piece);
-            bool attacks_source = false;
-            Bitboard occ = pos.pieces();
-            if (prev_pt == PAWN) {
-                attacks_source = (pawn_attacks_bb(Color(pos.side_to_move() ^ 1), prev_to) & square_bb(m.from())) != 0;
-            } else if (prev_pt == KNIGHT) {
-                attacks_source = (knight_attacks_bb(prev_to) & square_bb(m.from())) != 0;
-            } else if (prev_pt == BISHOP) {
-                attacks_source = (bishop_attacks_bb(prev_to, occ) & square_bb(m.from())) != 0;
-            } else if (prev_pt == ROOK) {
-                attacks_source = (rook_attacks_bb(prev_to, occ) & square_bb(m.from())) != 0;
-            } else if (prev_pt == QUEEN) {
-                attacks_source = ((bishop_attacks_bb(prev_to, occ) | rook_attacks_bb(prev_to, occ)) & square_bb(m.from())) != 0;
-            }
-            if (attacks_source) reduction -= 1;
         }
 
         // Centralization removed from LMR: the move ordering centralization
