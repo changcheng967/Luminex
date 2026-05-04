@@ -107,9 +107,16 @@ CorrHistTable corrhist_pawn;
 CorrHistTable corrhist_nonpawn[2];  // Per color
 CorrHistTable corrhist_minor;
 CorrHistTable corrhist_major;
+CorrHistTable corrhist_kingpawns;   // King safety context: pawn structure + king positions
 
 inline int16_t corrhist_score(const CorrHistTable& table, uint64_t key) {
     return table.data[uint32_t(key) & (CORRHIST_SIZE - 1)] / CORRHIST_GRAIN;
+}
+
+inline uint64_t kingpawns_key(const Position& pos) {
+    return pos.pawn_key()
+         ^ (uint64_t(pos.king_sq(WHITE)) * 0x9E3779B97F4A7C15ULL)
+         ^ (uint64_t(pos.king_sq(BLACK)) * 0x58DEDDC021B79D2AULL);
 }
 
 inline int get_total_correction(const Position& pos) {
@@ -117,7 +124,8 @@ inline int get_total_correction(const Position& pos) {
          + corrhist_score(corrhist_nonpawn[0], pos.nonpawn_key(WHITE))
          + corrhist_score(corrhist_nonpawn[1], pos.nonpawn_key(BLACK))
          + corrhist_score(corrhist_minor, pos.minor_key())
-         + corrhist_score(corrhist_major, pos.major_key());
+         + corrhist_score(corrhist_major, pos.major_key())
+         + corrhist_score(corrhist_kingpawns, kingpawns_key(pos));
 }
 
 inline void corrhist_update(CorrHistTable& table, uint64_t key, int16_t weight, int32_t error) {
@@ -137,6 +145,7 @@ inline void update_all_corrections(const Position& pos, int depth, int error) {
     corrhist_update(corrhist_nonpawn[1], pos.nonpawn_key(BLACK), weight, error);
     corrhist_update(corrhist_minor, pos.minor_key(), weight, error);
     corrhist_update(corrhist_major, pos.major_key(), weight, error);
+    corrhist_update(corrhist_kingpawns, kingpawns_key(pos), weight, error);
 }
 
 // Thread-local node counter to avoid atomic overhead on every node
@@ -2360,6 +2369,7 @@ void clear_correction_history() {
     std::memset(corrhist_nonpawn, 0, sizeof(corrhist_nonpawn));
     std::memset(&corrhist_minor, 0, sizeof(corrhist_minor));
     std::memset(&corrhist_major, 0, sizeof(corrhist_major));
+    std::memset(&corrhist_kingpawns, 0, sizeof(corrhist_kingpawns));
 }
 
 void clear_search_history() {
