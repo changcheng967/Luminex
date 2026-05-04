@@ -719,9 +719,6 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
         Value rbeta = std::min(beta + 175, VALUE_INFINITE - 200);
         int rdepth = depth - 3;
 
-        // Skip probcut if TT already proves position is below probcut beta (from Stash)
-        if (!(found && tt_depth >= depth - 4 && tt_value < rbeta)) {
-
         // Dynamic SEE threshold: capture must gain enough to reach rbeta from eval
         Value see_threshold = Value(std::max(int(rbeta - eval), 0));
 
@@ -742,11 +739,8 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
 
             if (!pos.do_move(m)) continue;
 
-            // Two-stage probcut: qsearch first (cheap), then full search if needed (from Stash)
-            Value value = -qsearch(pos, ss + 1, -rbeta, -rbeta + 1, 0);
-
-            if (value >= rbeta)
-                value = -search_worker(pos, ss + 1, -rbeta, -rbeta + 1, rdepth, !cut_node);
+            // Shallow search with reduced beta
+            Value value = -search_worker(pos, ss + 1, -rbeta, -rbeta + 1, rdepth, !cut_node);
 
             pos.undo_move(m);
 
@@ -756,7 +750,6 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
                 return value;
             }
         }
-        } // TT skip guard
     }
 
     // ================================================================
@@ -909,13 +902,6 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
         if (!m.is_capture() && !m.is_promotion() && depth >= 4 && ss->ply >= 1
             && (ss - 1)->current_move.is_capture()) {
             reduction += 1;
-        }
-
-        // Escape-from-capture: if piece is under attack on its source square,
-        // moving it away is a natural response — reduce less (from Stash)
-        if (!is_capture && !m.is_promotion() && m.from() < SQUARE_NONE) {
-            Bitboard enemy_attackers = pos.attackers_to(m.from()) & pos.pieces(Color(pos.side_to_move() ^ 1));
-            if (enemy_attackers) reduction -= 1;
         }
 
         // Centralization removed from LMR: the move ordering centralization
