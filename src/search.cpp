@@ -140,9 +140,6 @@ inline void corrhist_update(CorrHistTable& table, uint64_t key, int16_t weight, 
 
 inline void update_all_corrections(const Position& pos, int depth, int error) {
     int16_t weight = (int16_t)std::min(16, depth + 1);
-    // Asymmetric correction: correct optimistic errors faster (eval was too high,
-    // missed threats). Optimistic eval → losses. Pessimistic eval → careful play.
-    if (error < 0) weight = std::min(16, weight + 2);
     corrhist_update(corrhist_pawn, pos.pawn_key(), weight, error);
     corrhist_update(corrhist_nonpawn[0], pos.nonpawn_key(WHITE), weight, error);
     corrhist_update(corrhist_nonpawn[1], pos.nonpawn_key(BLACK), weight, error);
