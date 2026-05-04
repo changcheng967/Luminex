@@ -684,13 +684,14 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
     if (null_move_ok) {
         pos.do_null_move();
 
-        int R = 3 + (depth > 5 ? 1 : 0) + (depth > 12 ? 1 : 0);
+        // Linear null move R from Stash: grows smoothly with depth instead of step function
+        // R = (855 + 61*depth)/256 + min((eval-beta)/111, 5)
+        int R = (855 + 61 * depth) / 256;
 
         if (piece_count < 4) R -= 1;
 
-        // Eval-adaptive: when eval is far above beta, the position is clearly
-        // winning — a shallower null move verification is sufficient
-        if (int(eval) - int(beta) > 200) R += 1;
+        // Eval-adaptive: when eval is far above beta, reduce more aggressively
+        R += std::min((int(eval) - int(beta)) / 111, 5);
 
         R = std::max(2, std::min(R, depth - 1));
         Value null_value = -search_worker(pos, ss + 1, -beta, -beta + 1, depth - R, !cut_node);
