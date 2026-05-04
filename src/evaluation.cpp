@@ -1,10 +1,74 @@
 #include "luminex.h"
 #include "tuner_params.h"
 #include <cstring>
+#include <chrono>
 
 namespace luminex {
 
 EvalParams g_eval_params;
+
+// ============================================================
+// Eval profiling: measure time spent in each eval section
+// ============================================================
+struct EvalProfile {
+    const char* name;
+    int64_t ns;
+    int64_t count;
+};
+static EvalProfile eval_profile[] = {
+    {"pawns", 0, 0},        // evaluate_pawns
+    {"attack_gen", 0, 0},   // all attack map generation (*_attacks_bb calls)
+    {"mobility", 0, 0},     // popcount for mobility + lookup
+    {"threats", 0, 0},      // threat evaluation section
+    {"king_safety", 0, 0},  // king safety sigmoid
+    {"king_shield", 0, 0},  // pawn shield + castling + storm
+    {"passed_pp", 0, 0},    // passed pawn extra bonuses
+    {"space", 0, 0},        // space evaluation
+    {"imbalance", 0, 0},    // material imbalance + bishop pair + knight adj
+    {"kxk", 0, 0},          // KXK endgame detection
+    {"other", 0, 0},        // phase calc, interpolation, tempo, early exit
+};
+static constexpr int NUM_PROFILE_SECTIONS = sizeof(eval_profile) / sizeof(eval_profile[0]);
+
+enum EvalSection {
+    SEC_PAWNS = 0, SEC_ATTACK, SEC_MOBILITY, SEC_THREATS,
+    SEC_KS, SEC_KSHIELD, SEC_PASSED, SEC_SPACE,
+    SEC_IMBALANCE, SEC_KXK, SEC_OTHER
+};
+
+static std::chrono::steady_clock::time_point _prof_t0;
+
+#define PROF_START() _prof_t0 = std::chrono::steady_clock::now()
+#define PROF_STOP(sec) do { \
+    auto _prof_t1 = std::chrono::steady_clock::now(); \
+    eval_profile[sec].ns += std::chrono::duration_cast<std::chrono::nanoseconds>(_prof_t1 - _prof_t0).count(); \
+    eval_profile[sec].count++; \
+} while(0)
+
+void eval_profile_reset() {
+    for (int i = 0; i < NUM_PROFILE_SECTIONS; i++) {
+        eval_profile[i].ns = 0;
+        eval_profile[i].count = 0;
+    }
+}
+
+void eval_profile_print() {
+    int64_t total = 0;
+    for (int i = 0; i < NUM_PROFILE_SECTIONS; i++) total += eval_profile[i].ns;
+    if (total == 0) return;
+
+    fprintf(stderr, "\nEVAL_PROFILE total=%.1fms eval_calls=%lld",
+        total / 1e6, (long long)eval_profile[0].count);
+    for (int i = 0; i < NUM_PROFILE_SECTIONS; i++) {
+        double pct = 100.0 * eval_profile[i].ns / total;
+        double avg_us = eval_profile[i].count > 0
+            ? (eval_profile[i].ns / 1e3) / eval_profile[i].count : 0;
+        fprintf(stderr, "\n  %-14s %6.1f%%  avg=%.1fus  n=%lld",
+            eval_profile[i].name, pct, avg_us, (long long)eval_profile[i].count);
+    }
+    fprintf(stderr, "\n\n");
+    fflush(stderr);
+}
 
 // ============================================================
 // SELF-ENGINEERED EVALUATION
@@ -478,6 +542,7 @@ static void evaluate_pawns(const Position& pos, int32_t& mg_out, int32_t& eg_out
 // ============================================================
 Value evaluate(const Position& pos, bool tactical_only) {
     // KXK endgame: one side has only a king
+    PROF_START();
     for (int strong = 0; strong < 2; ++strong) {
         Color c = Color(strong);
         Color weak = Color(strong ^ 1);
@@ -532,6 +597,7 @@ Value evaluate(const Position& pos, bool tactical_only) {
         }
     }
 
+    PROF_STOP(SEC_KXK);
 
     Score mg_score = 0;
     Score eg_score = 0;
@@ -546,19 +612,23 @@ Value evaluate(const Position& pos, bool tactical_only) {
     Bitboard all_attacks[2] = {};
 
     // Initialize pawn and king attacks
+    PROF_START();
     for (int c = 0; c < 2; ++c) {
         attacks_by[c][PAWN] = pawn_attacks_bb(Color(c), pos.pieces(Color(c), PAWN));
         attacks_by[c][KING] = king_attacks_bb(ksq_arr[c]);
         all_attacks[c] = attacks_by[c][PAWN] | attacks_by[c][KING];
     }
+    PROF_STOP(SEC_ATTACK);
 
     // Pawn evaluation via pawn hash table
+    PROF_START();
     {
         int32_t pawn_mg = 0, pawn_eg = 0;
         evaluate_pawns(pos, pawn_mg, pawn_eg);
         mg_score += pawn_mg;
         eg_score += pawn_eg;
     }
+    PROF_STOP(SEC_PAWNS);
 
     for (int c_idx = 0; c_idx < 2; ++c_idx) {
         Color c = Color(c_idx);
@@ -573,6 +643,7 @@ Value evaluate(const Position& pos, bool tactical_only) {
         // -------------------------------------------------------
         // Passed pawn extra bonuses (beyond base table)
         // -------------------------------------------------------
+        PROF_START();
         if (!tactical_only) {
         // First pass: collect passed pawns
         Bitboard passed_pawns_bb = BB_EMPTY;
@@ -665,11 +736,13 @@ Value evaluate(const Position& pos, bool tactical_only) {
             eg_score += sign * eg_passer;
         }
         } // end !tactical_only passed pawns
+        PROF_STOP(SEC_PASSED);
 
         // -------------------------------------------------------
         // Per-piece: attack generation + mobility + bonuses
         // (knights, bishops, rooks, queens — attack gen dominates)
         // -------------------------------------------------------
+        PROF_START();
         // -------------------------------------------------------
         Bitboard knights = pos.pieces(c, KNIGHT);
         while (knights) {
@@ -902,10 +975,12 @@ Value evaluate(const Position& pos, bool tactical_only) {
             // Removing explicit penalty as block_checkers has Color issues in eval loop.
         }
 
+        PROF_STOP(SEC_ATTACK);  // per-piece attack gen + mobility + bonuses
 
         // -------------------------------------------------------
         // King
         // -------------------------------------------------------
+        PROF_START();
         Square ksq = ksq_arr[c_idx];
         mg_score += sign * (PieceValueMG[KING] + PST_MG_TABLE[int(c)][int(KING)][int(ksq)]);
         eg_score += sign * (PieceValueEG[KING] + PST_EG_TABLE[int(c)][int(KING)][int(ksq)]);
@@ -963,10 +1038,12 @@ Value evaluate(const Position& pos, bool tactical_only) {
             eg_score -= sign * 10;
         }
         } // end !tactical_only king
+        PROF_STOP(SEC_KSHIELD);
 
         // -------------------------------------------------------
         // Threat evaluation
         // -------------------------------------------------------
+        PROF_START();
         {
             Bitboard their_pieces = pos.pieces(them);
 
@@ -1054,6 +1131,7 @@ Value evaluate(const Position& pos, bool tactical_only) {
             }
         }
     }
+    PROF_STOP(SEC_THREATS);
 
     // -------------------------------------------------------
     // Early eval exit: if score is clearly decisive after
@@ -1080,6 +1158,7 @@ Value evaluate(const Position& pos, bool tactical_only) {
     // -------------------------------------------------------
     // Space: control of central squares behind our pawns
     // -------------------------------------------------------
+    PROF_START();
     if (!tactical_only) {
     {
         int space[2] = {0, 0};
@@ -1100,11 +1179,13 @@ Value evaluate(const Position& pos, bool tactical_only) {
         }
     }
     } // end !tactical_only space
+    PROF_STOP(SEC_SPACE);
 
     // -------------------------------------------------------
     // Material imbalance: bishop value increases with fewer pawns
     // Principle: in open positions (few pawns), bishops shine
     // -------------------------------------------------------
+    PROF_START();
     for (int c_idx = 0; c_idx < 2; ++c_idx) {
         Color c = Color(c_idx);
         Sign sign = (c_idx == 0) ? 1 : -1;
@@ -1138,12 +1219,14 @@ Value evaluate(const Position& pos, bool tactical_only) {
             eg_score -= b_knights * knight_adj;
         }
     }
+    PROF_STOP(SEC_IMBALANCE);
 
     // -------------------------------------------------------
     // King safety: sigmoid danger model (Hill equation)
     // Selective: skip if no enemy minor/major pieces near king zone
     // -------------------------------------------------------
     if (!tactical_only) {
+    PROF_START();
     for (int c_idx = 0; c_idx < 2; ++c_idx) {
         Color c = Color(c_idx);
         Color them = Color(c_idx ^ 1);
@@ -1262,10 +1345,12 @@ Value evaluate(const Position& pos, bool tactical_only) {
         }
     }
     } // end !tactical_only king safety
+    PROF_STOP(SEC_KS);
 
     // -------------------------------------------------------
     // Phase calculation and score interpolation
     // -------------------------------------------------------
+    PROF_START();
     int phase = popcount(pos.pieces(KNIGHT)) + popcount(pos.pieces(BISHOP))
               + popcount(pos.pieces(ROOK)) * 2 + popcount(pos.pieces(QUEEN)) * 4;
     phase = std::min(24, phase);
@@ -1279,6 +1364,7 @@ Value evaluate(const Position& pos, bool tactical_only) {
     Score tempo = (15 * phase + 5 * (24 - phase)) / 24;
     score += (pos.side_to_move() == WHITE) ? tempo : -tempo;
 
+    PROF_STOP(SEC_OTHER);
     return pos.side_to_move() == WHITE ? score : -score;
 }
 

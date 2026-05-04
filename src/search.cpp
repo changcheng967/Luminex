@@ -605,14 +605,6 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
         // High uncertainty → eval is unreliable → search should be less aggressive.
         // Low uncertainty → eval is reliable → search can be more aggressive.
         eval_uncertainty = std::abs(get_total_correction(pos));
-
-        // TT-eval upgrade: use TT score over static eval when TT is deeper (from Stash)
-        // TT has search-proven information, more accurate than static eval
-        if (found && tt_depth >= depth
-            && (tte->bound() & (tt_value > eval ? BOUND_LOWER : BOUND_UPPER))) {
-            eval = tt_value;
-            eval_uncertainty = 0;  // TT score is search-verified, low uncertainty
-        }
     }
     ss->static_eval = eval;
 
@@ -1739,6 +1731,7 @@ Move search(Position& pos, Limits& lim) {
     local_nodes = 0;
     last_reported_nodes = 0;
     g_stats = SearchStats{};  // Reset stats for each search
+    eval_profile_reset();
 
     // Track search start time for time management
     search_start = std::chrono::steady_clock::now();
@@ -2332,6 +2325,7 @@ Move search(Position& pos, Limits& lim) {
         uci_safe_output(pmg.str());
     }
 
+    eval_profile_print();
     return best_move;
 }
 
