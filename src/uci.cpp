@@ -2,6 +2,7 @@
 #pragma warning(disable: 4459) // variable shadowing - intentional for pos parameter
 #include "luminex.h"
 #include "evaluation.h"
+#include "book.h"
 #include <chrono>
 #include <cstdarg>
 #include <iostream>
@@ -113,7 +114,43 @@ static void search_worker(Position pos_copy, Limits lim) {
     if (dbglog) { fprintf(dbglog, "SEARCH_START: depth=%d time[W]=%d time[B]=%d movetime=%d ponder=%d\n",
         lim.depth, lim.time[0], lim.time[1], lim.movetime, lim.ponder); fflush(dbglog); }
 
-    Move best_move = search(pos_copy, lim);
+    // Probe opening book first
+    std::string book_move_str = g_book.probe(pos_copy);
+    Move best_move = MOVE_NONE;
+
+    if (!book_move_str.empty()) {
+        // Convert UCI string to Move
+        Square from = Square((book_move_str[1] - '1') * 8 + (book_move_str[0] - 'a'));
+        Square to = Square((book_move_str[3] - '1') * 8 + (book_move_str[2] - 'a'));
+        PieceType promo_pt = PT_NONE;
+        if (book_move_str.length() > 4) {
+            switch (book_move_str[4]) {
+                case 'q': promo_pt = QUEEN; break;
+                case 'r': promo_pt = ROOK; break;
+                case 'b': promo_pt = BISHOP; break;
+                case 'n': promo_pt = KNIGHT; break;
+            }
+        }
+        ExtMove legal_moves[MAX_MOVES];
+        ExtMove* legal_end = generate<GEN_LEGAL>(pos_copy, legal_moves);
+        for (ExtMove* it = legal_moves; it != legal_end; ++it) {
+            if (it->move.from() == from && it->move.to() == to) {
+                if (promo_pt != PT_NONE) {
+                    if (it->move.is_promotion() && it->move.promotion_type() == promo_pt) {
+                        best_move = it->move;
+                        break;
+                    }
+                } else if (!it->move.is_promotion()) {
+                    best_move = it->move;
+                    break;
+                }
+            }
+        }
+    }
+
+    if (best_move == MOVE_NONE) {
+        best_move = search(pos_copy, lim);
+    }
 
     if (dbglog) { fprintf(dbglog, "SEARCH_DONE: about to send bestmove\n"); fflush(dbglog); }
 
@@ -157,6 +194,7 @@ void handle_uci() {
     safe_output("option name Ponder type check default false\n");
     safe_output("option name Contempt type spin default 0 min -1000 max 1000\n");
     safe_output("option name Clear Hash type button\n");
+    safe_output("option name BookFile type string default <empty>\n");
     // Eval parameters (self-engineered defaults)
     safe_output("option name BishopPairMG type spin default 40 min -100 max 200\n");
     safe_output("option name BishopPairEG type spin default 100 min -100 max 300\n");
@@ -374,6 +412,15 @@ void handle_setoption(const std::string& cmd) {
         num_threads = t;
     } else if (name == "Clear Hash") {
         TT.clear();
+    } else if (name == "BookFile") {
+        g_book_path = value;
+        if (!value.empty() && value != "<empty>") {
+            if (!g_book.open(value.c_str())) {
+                g_book.close();
+            }
+        } else {
+            g_book.close();
+        }
     } else if (name == "Hash") {
         if (!value.empty()) {
             size_t hash_size = std::stoi(value);
