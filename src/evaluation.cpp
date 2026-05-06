@@ -1062,9 +1062,11 @@ Value evaluate(const Position& pos, bool tactical_only) {
     // Remaining terms typically add ±150cp max.
     // -------------------------------------------------------
     if (!tactical_only) {
-        int quick_phase = popcount(pos.pieces(KNIGHT)) + popcount(pos.pieces(BISHOP))
-                        + popcount(pos.pieces(ROOK)) * 2 + popcount(pos.pieces(QUEEN)) * 4;
-        quick_phase = std::min(24, quick_phase);
+        int mat_qp = popcount(pos.pieces(KNIGHT)) + popcount(pos.pieces(BISHOP))
+                   + popcount(pos.pieces(ROOK)) * 2 + popcount(pos.pieces(QUEEN)) * 4;
+        mat_qp = std::min(24, mat_qp);
+        int pawn_qp = std::min(16, popcount(pos.pieces(PAWN)));
+        int quick_phase = std::min(24, (mat_qp * 16 + pawn_qp * 8) / 21);
         int quick_score = (mg_score * quick_phase + eg_score * (24 - quick_phase)) / 24;
         if (quick_score > 500 || quick_score < -500) {
             // Skip space, imbalance calc, king safety — position is decisive
@@ -1264,11 +1266,24 @@ Value evaluate(const Position& pos, bool tactical_only) {
     } // end !tactical_only king safety
 
     // -------------------------------------------------------
-    // Phase calculation and score interpolation
+    // 2D Phase interpolation: material × pawn structure
     // -------------------------------------------------------
-    int phase = popcount(pos.pieces(KNIGHT)) + popcount(pos.pieces(BISHOP))
-              + popcount(pos.pieces(ROOK)) * 2 + popcount(pos.pieces(QUEEN)) * 4;
-    phase = std::min(24, phase);
+    // Material phase: how many pieces are on the board
+    int mat_phase = popcount(pos.pieces(KNIGHT)) + popcount(pos.pieces(BISHOP))
+                  + popcount(pos.pieces(ROOK)) * 2 + popcount(pos.pieces(QUEEN)) * 4;
+    mat_phase = std::min(24, mat_phase);
+
+    // Pawn phase: pawn structure defines middlegame character
+    // 16 pawns = full middlegame, 0 pawns = pure endgame
+    int pawn_phase = popcount(pos.pieces(PAWN));
+    pawn_phase = std::min(16, pawn_phase);
+
+    // Combined phase: material contributes 2/3, pawns 1/3
+    // Total range: 0-64, divided by (64*3/3) = normalize to 24 scale
+    // (mat_phase * 16 + pawn_phase * 8) gives range [0, 512]
+    // Scaled to 0-24: (mat_phase * 16 + pawn_phase * 8) / 21 ≈ 24 when full
+    int combined = mat_phase * 16 + pawn_phase * 8;
+    int phase = std::min(24, combined / 21);
 
     // Interpolate MG/EG with endgame scaling
     int sf = scale_factor(pos, eg_score);
