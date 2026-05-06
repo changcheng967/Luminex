@@ -232,6 +232,9 @@ int main_tuner(int argc, char** argv) {
     sync_eval_params();
     init_param_configs();
 
+    // Unbuffer stdout for redirected output
+    setvbuf(stdout, nullptr, _IONBF, 0);
+
     // Load dataset
     if (!load_dataset(argv[1])) return 1;
 
