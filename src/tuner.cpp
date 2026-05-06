@@ -54,17 +54,24 @@ struct ParamConfig {
 static ParamConfig param_cfg[PARAM_COUNT];
 
 static void init_param_configs() {
-    // Material values: wider range, larger steps
-    for (int i = 0; i < 10; i++) {
-        param_cfg[i] = {8, 50, 1500};
-    }
+    // Material values: constrained to ±30% of defaults
+    param_cfg[PAWN_VALUE_MG]   = {4, 70, 120};
+    param_cfg[PAWN_VALUE_EG]   = {4, 70, 130};
+    param_cfg[KNIGHT_VALUE_MG] = {6, 220, 420};
+    param_cfg[KNIGHT_VALUE_EG] = {6, 200, 380};
+    param_cfg[BISHOP_VALUE_MG] = {6, 240, 440};
+    param_cfg[BISHOP_VALUE_EG] = {6, 220, 400};
+    param_cfg[ROOK_VALUE_MG]   = {6, 350, 650};
+    param_cfg[ROOK_VALUE_EG]   = {6, 370, 690};
+    param_cfg[QUEEN_VALUE_MG]  = {8, 670, 1250};
+    param_cfg[QUEEN_VALUE_EG]  = {8, 650, 1230};
     // Mobility tables: moderate range
     for (int i = 10; i < 142; i++) {
-        param_cfg[i] = {4, -150, 150};
+        param_cfg[i] = {3, -150, 150};
     }
     // Eval bonuses: moderate range
     for (int i = 142; i < 148; i++) {
-        param_cfg[i] = {4, -100, 300};
+        param_cfg[i] = {3, -20, 200};
     }
 }
 
