@@ -1,6 +1,7 @@
 // Texel Tuner for Luminex
-// Parametric model: score(mob) = a * sqrt(mob) + c
-// 16 parameters (a, c per piece per phase) with guaranteed monotonicity
+// Direct parameter optimization: tunes ALL 148 eval parameters
+// (material values, individual mobility entries, eval bonuses)
+// using coordinate descent with step-halving.
 //
 // Build: cmake -DBUILD_TUNER=ON ...
 // Usage: luminex-tuner dataset.txt [K_value] [max_iterations]
@@ -8,6 +9,7 @@
 #include "luminex.h"
 #include "tuner_params.h"
 #include "board.h"
+#include "movegen.h"
 #include "evaluation.h"
 #include "bitboard.h"
 #include <cstdio>
@@ -42,50 +44,28 @@ SearchStats g_stats;
 
 using namespace luminex;
 
-// Table metadata: maps formula params to g_params entries
-struct TableInfo {
-    size_t param_start;
-    int max_mob;
+// Per-parameter tuning configuration
+struct ParamConfig {
+    int init_step;
+    int min_val;
+    int max_val;
 };
 
-static const TableInfo tables[] = {
-    {KNIGHT_MOB_MG_0, 8},
-    {KNIGHT_MOB_EG_0, 8},
-    {BISHOP_MOB_MG_0, 13},
-    {BISHOP_MOB_EG_0, 13},
-    {ROOK_MOB_MG_0, 14},
-    {ROOK_MOB_EG_0, 14},
-    {QUEEN_MOB_MG_0, 27},
-    {QUEEN_MOB_EG_0, 27},
-};
-static const int NUM_TABLES = 8;
+static ParamConfig param_cfg[PARAM_COUNT];
 
-// Formula params: score(mob) = round(a * sqrt(mob) + c)
-// a > 0 guarantees monotonicity; sqrt guarantees diminishing returns
-static int formula_a[NUM_TABLES];
-static int formula_c[NUM_TABLES];
-
-// Initialize from linear formula fit (eval-equivalent starting point)
-void init_formula_params() {
-    // Fitted to match linear formula endpoints: a * sqrt(max_mob) + c ≈ linear_max
-    formula_a[0] = 42; formula_c[0] = -60; // Knight MG: -60+15*i
-    formula_a[1] = 51; formula_c[1] = -75; // Knight EG: -75+18*i
-    formula_a[2] = 25; formula_c[2] = -48; // Bishop MG: -48+7*i
-    formula_a[3] = 32; formula_c[3] = -56; // Bishop EG: -56+9*i
-    formula_a[4] = 19; formula_c[4] = -38; // Rook MG: -38+5*i
-    formula_a[5] = 26; formula_c[5] = -48; // Rook EG: -48+7*i
-    formula_a[6] = 10; formula_c[6] = -28; // Queen MG: -28+2*i
-    formula_a[7] = 16; formula_c[7] = -38; // Queen EG: -38+3*i
-}
-
-void generate_tables() {
-    for (int t = 0; t < NUM_TABLES; t++) {
-        for (int mob = 0; mob <= tables[t].max_mob; mob++) {
-            double val = formula_a[t] * std::sqrt((double)mob) + formula_c[t];
-            g_params[tables[t].param_start + mob] = (int)std::round(val);
-        }
+static void init_param_configs() {
+    // Material values: wider range, larger steps
+    for (int i = 0; i < 10; i++) {
+        param_cfg[i] = {8, 50, 1500};
     }
-    sync_eval_params();
+    // Mobility tables: moderate range
+    for (int i = 10; i < 142; i++) {
+        param_cfg[i] = {4, -150, 150};
+    }
+    // Eval bonuses: moderate range
+    for (int i = 142; i < 148; i++) {
+        param_cfg[i] = {4, -100, 300};
+    }
 }
 
 struct TunerEntry {
@@ -105,7 +85,7 @@ double compute_mse(double k) {
     int n = (int)dataset.size();
 
 #ifdef _OPENMP
-    #pragma omp parallel for reduction(+:total_error)
+    #pragma omp parallel for reduction(+:total_error) schedule(dynamic, 256)
 #endif
     for (int i = 0; i < n; ++i) {
         Position pos;
@@ -117,10 +97,6 @@ double compute_mse(double k) {
     }
 
     return total_error / n;
-}
-
-double compute_mse_current() {
-    return compute_mse(K);
 }
 
 double optimize_K() {
@@ -179,33 +155,31 @@ bool load_dataset(const char* filename) {
     return count > 0;
 }
 
-void print_tables() {
-    printf("\n=== Tuned Tables (from a*sqrt(mob)+c) ===\n");
+void print_params() {
+    printf("\n=== Tuned Parameters ===\n");
 
-    const char* names[] = {"Knight MG", "Knight EG", "Bishop MG", "Bishop EG",
-                           "Rook MG", "Rook EG", "Queen MG", "Queen EG"};
-    for (int t = 0; t < NUM_TABLES; t++) {
-        printf("\n// %s: a=%d, c=%d\n", names[t], formula_a[t], formula_c[t]);
-        int sz = tables[t].max_mob + 1;
-        printf("static int %s[%d] = {%d", names[t], sz,
-               g_params[tables[t].param_start]);
-        for (int i = 1; i < sz; i++) {
-            if (i % 14 == 0) printf(",\n    %d", g_params[tables[t].param_start + i]);
-            else printf(", %d", g_params[tables[t].param_start + i]);
-        }
-        printf("};\n");
-    }
+    // Material values
+    printf("\n// Material values\n");
+    printf("PAWN_VALUE_MG   = %d\n", g_params[PAWN_VALUE_MG]);
+    printf("PAWN_VALUE_EG   = %d\n", g_params[PAWN_VALUE_EG]);
+    printf("KNIGHT_VALUE_MG = %d\n", g_params[KNIGHT_VALUE_MG]);
+    printf("KNIGHT_VALUE_EG = %d\n", g_params[KNIGHT_VALUE_EG]);
+    printf("BISHOP_VALUE_MG = %d\n", g_params[BISHOP_VALUE_MG]);
+    printf("BISHOP_VALUE_EG = %d\n", g_params[BISHOP_VALUE_EG]);
+    printf("ROOK_VALUE_MG   = %d\n", g_params[ROOK_VALUE_MG]);
+    printf("ROOK_VALUE_EG   = %d\n", g_params[ROOK_VALUE_EG]);
+    printf("QUEEN_VALUE_MG  = %d\n", g_params[QUEEN_VALUE_MG]);
+    printf("QUEEN_VALUE_EG  = %d\n", g_params[QUEEN_VALUE_EG]);
 
-    // Also print as C arrays matching evaluation.cpp format
-    printf("\n=== evaluation.cpp format ===\n");
-
-    printf("static int KnightMobilityMG[9] = {%d", g_params[KNIGHT_MOB_MG_0]);
+    // Knight mobility
+    printf("\nstatic int KnightMobilityMG[9] = {%d", g_params[KNIGHT_MOB_MG_0]);
     for (int i = 1; i < 9; i++) printf(", %d", g_params[KNIGHT_MOB_MG_0 + i]);
     printf("};\n");
     printf("static int KnightMobilityEG[9] = {%d", g_params[KNIGHT_MOB_EG_0]);
     for (int i = 1; i < 9; i++) printf(", %d", g_params[KNIGHT_MOB_EG_0 + i]);
     printf("};\n");
 
+    // Bishop mobility
     printf("\nstatic int BishopMobilityMG[14] = {%d", g_params[BISHOP_MOB_MG_0]);
     for (int i = 1; i < 14; i++) printf(", %d", g_params[BISHOP_MOB_MG_0 + i]);
     printf("};\n");
@@ -213,6 +187,7 @@ void print_tables() {
     for (int i = 1; i < 14; i++) printf(", %d", g_params[BISHOP_MOB_EG_0 + i]);
     printf("};\n");
 
+    // Rook mobility
     printf("\nstatic int RookMobilityMG[15] = {%d", g_params[ROOK_MOB_MG_0]);
     for (int i = 1; i < 15; i++) printf(", %d", g_params[ROOK_MOB_MG_0 + i]);
     printf("};\n");
@@ -220,6 +195,7 @@ void print_tables() {
     for (int i = 1; i < 15; i++) printf(", %d", g_params[ROOK_MOB_EG_0 + i]);
     printf("};\n");
 
+    // Queen mobility
     printf("\nstatic int QueenMobilityMG[28] = {\n    %d", g_params[QUEEN_MOB_MG_0]);
     for (int i = 1; i < 28; i++) {
         if (i % 14 == 0) printf(",\n    %d", g_params[QUEEN_MOB_MG_0 + i]);
@@ -232,6 +208,15 @@ void print_tables() {
         else printf(", %d", g_params[QUEEN_MOB_EG_0 + i]);
     }
     printf("};\n");
+
+    // Eval bonuses
+    printf("\n// Eval bonuses\n");
+    printf("BISHOP_PAIR_MG    = %d\n", g_params[BISHOP_PAIR_MG]);
+    printf("BISHOP_PAIR_EG    = %d\n", g_params[BISHOP_PAIR_EG]);
+    printf("ROOK_OPEN_FILE_MG = %d\n", g_params[ROOK_OPEN_FILE_MG]);
+    printf("ROOK_OPEN_FILE_EG = %d\n", g_params[ROOK_OPEN_FILE_EG]);
+    printf("ROOK_SEMI_OPEN_MG = %d\n", g_params[ROOK_SEMI_OPEN_MG]);
+    printf("ROOK_SEMI_OPEN_EG = %d\n", g_params[ROOK_SEMI_OPEN_EG]);
 }
 
 int main_tuner(int argc, char** argv) {
@@ -244,8 +229,8 @@ int main_tuner(int argc, char** argv) {
     init_magic_bitboards();
     init_evaluation();
     init_tuner_params();
-    init_formula_params();
-    generate_tables();
+    sync_eval_params();
+    init_param_configs();
 
     // Load dataset
     if (!load_dataset(argv[1])) return 1;
@@ -258,126 +243,94 @@ int main_tuner(int argc, char** argv) {
         K = optimize_K();
     }
 
-    int max_iterations = 300;
+    int max_iterations = 500;
     if (argc >= 4) max_iterations = atoi(argv[3]);
 
-    printf("Parametric tuner: score(mob) = a*sqrt(mob) + c\n");
-    printf("16 parameters, %d positions, K=%.2f\n", (int)dataset.size(), K);
+    printf("Direct parameter tuner: %d parameters, %d positions, K=%.2f\n",
+           PARAM_COUNT, (int)dataset.size(), K);
     printf("Max iterations: %d\n\n", max_iterations);
 
-    double best_mse = compute_mse_current();
-    printf("Initial MSE: %.6f\n\n", best_mse);
-
-    // Bounds for formula params
-    // a: [1, 120] — must be positive for monotonicity
-    // c: [-120, 120]
-    struct { int lo, hi; } bounds_a[NUM_TABLES], bounds_c[NUM_TABLES];
-    for (int t = 0; t < NUM_TABLES; t++) {
-        bounds_a[t] = {1, 120};
-        bounds_c[t] = {-120, 120};
+    // Per-parameter step sizes (independent halving)
+    int steps[PARAM_COUNT];
+    for (int i = 0; i < PARAM_COUNT; i++) {
+        steps[i] = param_cfg[i].init_step;
     }
 
-    int step_a = 4;
-    int step_c = 4;
-    int no_improve_count = 0;
+    double best_mse = compute_mse(K);
+    printf("Initial MSE: %.6f\n\n", best_mse);
+
+    int no_improve_global = 0;
 
     for (int iter = 1; iter <= max_iterations; ++iter) {
-        bool improved = false;
+        bool any_improved = false;
         auto iter_start = std::chrono::steady_clock::now();
 
-        // Tune all 'a' params
-        for (int t = 0; t < NUM_TABLES; t++) {
-            int original_a = formula_a[t];
-            int lo = bounds_a[t].lo, hi = bounds_a[t].hi;
+        // Coordinate descent: try +step and -step for each parameter
+        for (int p = 0; p < PARAM_COUNT; p++) {
+            if (steps[p] == 0) continue;
 
-            int plus_a = std::min(original_a + step_a, hi);
-            int minus_a = std::max(original_a - step_a, lo);
+            int original = g_params[p];
+            int lo = param_cfg[p].min_val;
+            int hi = param_cfg[p].max_val;
 
-            double mse_plus = 1e9, mse_minus = 1e9;
+            int plus_val  = std::min(original + steps[p], hi);
+            int minus_val = std::max(original - steps[p], lo);
 
-            if (plus_a != original_a) {
-                formula_a[t] = plus_a;
-                generate_tables();
-                mse_plus = compute_mse_current();
+            double mse_plus = 1e18, mse_minus = 1e18;
+
+            // Try +
+            if (plus_val != original) {
+                g_params[p] = plus_val;
+                sync_eval_params();
+                mse_plus = compute_mse(K);
             }
-            if (minus_a != original_a) {
-                formula_a[t] = minus_a;
-                generate_tables();
-                mse_minus = compute_mse_current();
+            // Try -
+            if (minus_val != original) {
+                g_params[p] = minus_val;
+                sync_eval_params();
+                mse_minus = compute_mse(K);
             }
 
+            // Accept best
             if (mse_plus < best_mse && mse_plus <= mse_minus) {
-                formula_a[t] = plus_a;
-                generate_tables();
+                g_params[p] = plus_val;
+                sync_eval_params();
                 best_mse = mse_plus;
-                improved = true;
+                any_improved = true;
             } else if (mse_minus < best_mse) {
-                formula_a[t] = minus_a;
-                generate_tables();
+                g_params[p] = minus_val;
+                sync_eval_params();
                 best_mse = mse_minus;
-                improved = true;
+                any_improved = true;
             } else {
-                formula_a[t] = original_a;
-                generate_tables();
-            }
-        }
-
-        // Tune all 'c' params
-        for (int t = 0; t < NUM_TABLES; t++) {
-            int original_c = formula_c[t];
-            int lo = bounds_c[t].lo, hi = bounds_c[t].hi;
-
-            int plus_c = std::min(original_c + step_c, hi);
-            int minus_c = std::max(original_c - step_c, lo);
-
-            double mse_plus = 1e9, mse_minus = 1e9;
-
-            if (plus_c != original_c) {
-                formula_c[t] = plus_c;
-                generate_tables();
-                mse_plus = compute_mse_current();
-            }
-            if (minus_c != original_c) {
-                formula_c[t] = minus_c;
-                generate_tables();
-                mse_minus = compute_mse_current();
-            }
-
-            if (mse_plus < best_mse && mse_plus <= mse_minus) {
-                formula_c[t] = plus_c;
-                generate_tables();
-                best_mse = mse_plus;
-                improved = true;
-            } else if (mse_minus < best_mse) {
-                formula_c[t] = minus_c;
-                generate_tables();
-                best_mse = mse_minus;
-                improved = true;
-            } else {
-                formula_c[t] = original_c;
-                generate_tables();
+                g_params[p] = original;
+                sync_eval_params();
+                // Halve this parameter's step since it didn't help
+                steps[p] = std::max(1, steps[p] / 2);
             }
         }
 
         auto iter_end = std::chrono::steady_clock::now();
         double elapsed = std::chrono::duration<double>(iter_end - iter_start).count();
 
-        printf("Iter %3d: MSE=%.6f  step=%d  time=%.1fs\n", iter, best_mse, step_a, elapsed);
+        int active_params = 0;
+        for (int i = 0; i < PARAM_COUNT; i++) if (steps[i] > 1) active_params++;
 
-        if (!improved) {
-            no_improve_count++;
-            step_a = std::max(1, step_a / 2);
-            step_c = std::max(1, step_c / 2);
-            if (step_a == 1 && no_improve_count >= 5) {
+        printf("Iter %3d: MSE=%.6f  active=%d  time=%.1fs\n",
+               iter, best_mse, active_params, elapsed);
+
+        if (!any_improved) {
+            no_improve_global++;
+            if (no_improve_global >= 5) {
                 printf("Converged after %d iterations.\n", iter);
                 break;
             }
         } else {
-            no_improve_count = 0;
+            no_improve_global = 0;
         }
     }
 
-    print_tables();
+    print_params();
     printf("\nFinal MSE: %.6f (K=%.2f)\n", best_mse, K);
     return 0;
 }

@@ -113,6 +113,7 @@ option(BUILD_DATASET_GEN "Build dataset generator" OFF)
 if(BUILD_DATASET_GEN)
     add_executable(luminex-dataset-gen
         src/dataset_gen.cpp
+        src/tuner_params.cpp
         src/board.cpp
         src/movegen.cpp
         src/evaluation.cpp
