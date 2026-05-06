@@ -65,9 +65,9 @@ static void init_param_configs() {
     param_cfg[ROOK_VALUE_EG]   = {6, 370, 690};
     param_cfg[QUEEN_VALUE_MG]  = {8, 670, 1250};
     param_cfg[QUEEN_VALUE_EG]  = {8, 650, 1230};
-    // Mobility tables: moderate range
+    // Mobility tables: wider range to match 2x scaled values
     for (int i = 10; i < 142; i++) {
-        param_cfg[i] = {3, -150, 150};
+        param_cfg[i] = {4, -200, 200};
     }
     // Eval bonuses: moderate range
     for (int i = 142; i < 148; i++) {

@@ -18,28 +18,28 @@ void init_tuner_params() {
     g_params[QUEEN_VALUE_MG]  = 960;
     g_params[QUEEN_VALUE_EG]  = 940;
 
-    // Knight mobility tables: -60 + 15*i (MG), -75 + 18*i (EG)
+    // Knight mobility tables: scaled 2x from original linear formula
     for (int i = 0; i < 9; i++) {
-        g_params[KNIGHT_MOB_MG_0 + i] = -60 + 15 * i;
-        g_params[KNIGHT_MOB_EG_0 + i] = -75 + 18 * i;
+        g_params[KNIGHT_MOB_MG_0 + i] = (-60 + 15 * i) * 2;
+        g_params[KNIGHT_MOB_EG_0 + i] = (-75 + 18 * i) * 2;
     }
 
-    // Bishop mobility tables: -48 + 7*i (MG), -56 + 9*i (EG)
+    // Bishop mobility tables: scaled 2x
     for (int i = 0; i < 14; i++) {
-        g_params[BISHOP_MOB_MG_0 + i] = -48 + 7 * i;
-        g_params[BISHOP_MOB_EG_0 + i] = -56 + 9 * i;
+        g_params[BISHOP_MOB_MG_0 + i] = (-48 + 7 * i) * 2;
+        g_params[BISHOP_MOB_EG_0 + i] = (-56 + 9 * i) * 2;
     }
 
-    // Rook mobility tables: -38 + 5*i (MG), -48 + 7*i (EG)
+    // Rook mobility tables: scaled 2x
     for (int i = 0; i < 15; i++) {
-        g_params[ROOK_MOB_MG_0 + i] = -38 + 5 * i;
-        g_params[ROOK_MOB_EG_0 + i] = -48 + 7 * i;
+        g_params[ROOK_MOB_MG_0 + i] = (-38 + 5 * i) * 2;
+        g_params[ROOK_MOB_EG_0 + i] = (-48 + 7 * i) * 2;
     }
 
-    // Queen mobility tables: -28 + 2*i (MG), -38 + 3*i (EG)
+    // Queen mobility tables: scaled 2x
     for (int i = 0; i < 28; i++) {
-        g_params[QUEEN_MOB_MG_0 + i] = -28 + 2 * i;
-        g_params[QUEEN_MOB_EG_0 + i] = -38 + 3 * i;
+        g_params[QUEEN_MOB_MG_0 + i] = (-28 + 2 * i) * 2;
+        g_params[QUEEN_MOB_EG_0 + i] = (-38 + 3 * i) * 2;
     }
 
     // Key EvalParams
