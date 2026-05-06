@@ -322,9 +322,15 @@ int main_tuner(int argc, char** argv) {
         printf("Iter %3d: MSE=%.6f  active=%d  time=%.1fs\n",
                iter, best_mse, active_params, elapsed);
 
+        // Print params periodically so we don't lose results
+        if (iter % 50 == 0) {
+            print_params();
+            printf("=== End Iter %d ===\n", iter);
+        }
+
         if (!any_improved) {
             no_improve_global++;
-            if (no_improve_global >= 5) {
+            if (no_improve_global >= 10) {
                 printf("Converged after %d iterations.\n", iter);
                 break;
             }
