@@ -242,28 +242,28 @@ int PSQ_EG[2][8][64];
 // ============================================================
 
 // Knight: max 8 mobility squares
-static int KnightMobilityMG[9] = { -120, -90, -60, -30, 0, 30, 60, 90, 120 };
-static int KnightMobilityEG[9] = { -150, -114, -78, -42, -6, 30, 66, 102, 138 };
+static int KnightMobilityMG[9] = { -60, -45, -30, -15, 0, 15, 30, 45, 60 };
+static int KnightMobilityEG[9] = { -75, -57, -39, -21, -3, 15, 33, 51, 69 };
 static constexpr int KNIGHT_MOB_MAX = 8;
 
 // Bishop: max 13 mobility squares
-static int BishopMobilityMG[14] = { -96, -82, -68, -54, -40, -26, -12, 2, 16, 30, 44, 58, 72, 86 };
-static int BishopMobilityEG[14] = { -112, -94, -76, -58, -40, -22, -4, 14, 32, 50, 68, 86, 104, 122 };
+static int BishopMobilityMG[14] = { -48, -41, -34, -27, -20, -13, -6, 1, 8, 15, 22, 29, 36, 43 };
+static int BishopMobilityEG[14] = { -56, -47, -38, -29, -20, -11, -2, 7, 16, 25, 34, 43, 52, 61 };
 static constexpr int BISHOP_MOB_MAX = 13;
 
 // Rook: max 14 mobility squares
-static int RookMobilityMG[15] = { -76, -66, -56, -46, -36, -26, -16, -6, 4, 14, 24, 34, 44, 54, 64 };
-static int RookMobilityEG[15] = { -96, -82, -68, -54, -40, -26, -12, 2, 16, 30, 44, 58, 72, 86, 100 };
+static int RookMobilityMG[15] = { -38, -33, -28, -23, -18, -13, -8, -3, 2, 7, 12, 17, 22, 27, 32 };
+static int RookMobilityEG[15] = { -48, -41, -34, -27, -20, -13, -6, 1, 8, 15, 22, 29, 36, 43, 50 };
 static constexpr int ROOK_MOB_MAX = 14;
 
 // Queen: max 27 mobility squares
 static int QueenMobilityMG[28] = {
-    -56, -52, -48, -44, -40, -36, -32, -28, -24, -20, -16, -12, -8, -4,
-     0,   4,   8,  12,  16,  20,  24,  28,  32,  36,  40, 44, 48, 52
+    -28, -26, -24, -22, -20, -18, -16, -14, -12, -10, -8, -6, -4, -2,
+     0,   2,   4,   6,   8,  10,  12,  14,  16,  18,  20, 22, 24, 26
 };
 static int QueenMobilityEG[28] = {
-    -76, -70, -64, -58, -52, -46, -40, -34, -28, -22, -16, -10, -4, 2,
-      8,  14,  20,  26,  32,  38,  44,  50,  56,  62,  68, 74, 80, 86
+    -38, -35, -32, -29, -26, -23, -20, -17, -14, -11, -8, -5, -2, 1,
+      4,   7,  10,  13,  16,  19,  22,  25,  28,  31,  34, 37, 40, 43
 };
 static constexpr int QUEEN_MOB_MAX = 27;
 
@@ -1062,11 +1062,9 @@ Value evaluate(const Position& pos, bool tactical_only) {
     // Remaining terms typically add ±150cp max.
     // -------------------------------------------------------
     if (!tactical_only) {
-        int mat_qp = popcount(pos.pieces(KNIGHT)) + popcount(pos.pieces(BISHOP))
-                   + popcount(pos.pieces(ROOK)) * 2 + popcount(pos.pieces(QUEEN)) * 4;
-        mat_qp = std::min(24, mat_qp);
-        int pawn_qp = std::min(16, popcount(pos.pieces(PAWN)));
-        int quick_phase = std::min(24, (mat_qp * 16 + pawn_qp * 8) / 21);
+        int quick_phase = popcount(pos.pieces(KNIGHT)) + popcount(pos.pieces(BISHOP))
+                        + popcount(pos.pieces(ROOK)) * 2 + popcount(pos.pieces(QUEEN)) * 4;
+        quick_phase = std::min(24, quick_phase);
         int quick_score = (mg_score * quick_phase + eg_score * (24 - quick_phase)) / 24;
         if (quick_score > 500 || quick_score < -500) {
             // Skip space, imbalance calc, king safety — position is decisive
@@ -1266,24 +1264,11 @@ Value evaluate(const Position& pos, bool tactical_only) {
     } // end !tactical_only king safety
 
     // -------------------------------------------------------
-    // 2D Phase interpolation: material × pawn structure
+    // Phase calculation and score interpolation
     // -------------------------------------------------------
-    // Material phase: how many pieces are on the board
-    int mat_phase = popcount(pos.pieces(KNIGHT)) + popcount(pos.pieces(BISHOP))
-                  + popcount(pos.pieces(ROOK)) * 2 + popcount(pos.pieces(QUEEN)) * 4;
-    mat_phase = std::min(24, mat_phase);
-
-    // Pawn phase: pawn structure defines middlegame character
-    // 16 pawns = full middlegame, 0 pawns = pure endgame
-    int pawn_phase = popcount(pos.pieces(PAWN));
-    pawn_phase = std::min(16, pawn_phase);
-
-    // Combined phase: material contributes 2/3, pawns 1/3
-    // Total range: 0-64, divided by (64*3/3) = normalize to 24 scale
-    // (mat_phase * 16 + pawn_phase * 8) gives range [0, 512]
-    // Scaled to 0-24: (mat_phase * 16 + pawn_phase * 8) / 21 ≈ 24 when full
-    int combined = mat_phase * 16 + pawn_phase * 8;
-    int phase = std::min(24, combined / 21);
+    int phase = popcount(pos.pieces(KNIGHT)) + popcount(pos.pieces(BISHOP))
+              + popcount(pos.pieces(ROOK)) * 2 + popcount(pos.pieces(QUEEN)) * 4;
+    phase = std::min(24, phase);
 
     // Interpolate MG/EG with endgame scaling
     int sf = scale_factor(pos, eg_score);
