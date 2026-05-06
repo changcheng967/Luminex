@@ -30,6 +30,7 @@ go movetime 1000
 | `Hash` | 128 | TT size in MB |
 | `Threads` | 1 | Search threads (lazy SMP) |
 | `Contempt` | 0 | Draw avoidance (centipawns) |
+| `BookFile` | `<empty>` | Polyglot opening book path |
 
 ## Build
 
