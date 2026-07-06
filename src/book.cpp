@@ -1,6 +1,9 @@
 #define _CRT_SECURE_NO_WARNINGS
 #include "book.h"
 #include "board.h"
+#include <bit>       // std::byteswap, std::endian (C++23)
+#include <cstdio>    // std::fread
+#include <cstddef>   // std::size_t
 #include <cstdlib>
 
 namespace luminex {
@@ -249,23 +252,26 @@ uint64_t compute_polyglot_key(const Position& pos) {
     return key;
 }
 
-uint64_t Book::read_int(int bytes) {
-    uint64_t n = 0;
-    for (int i = 0; i < bytes; i++) {
-        int b = fgetc(file_);
-        if (b == EOF) return 0;
-        n = (n << 8) | uint64_t(b);
-    }
-    return n;
-}
-
 Book::Entry Book::read_entry(int index) {
     fseek(file_, index * 16, SEEK_SET);
-    Entry e;
-    e.key    = read_int(8);
-    e.move   = uint16_t(read_int(2));
-    e.weight = uint16_t(read_int(2));
-    e.learn  = uint32_t(read_int(4));
+    Entry e{};  // zero-initialised (key=0 signals "not found" on truncated read)
+    // Polyglot book entries are stored big-endian. Read raw and byte-swap on
+    // little-endian hosts (all current CI/cloud targets); pass through on big-endian.
+    uint64_t k = 0; uint16_t mv = 0, wt = 0; uint32_t ln = 0;
+    std::size_t got = 0;
+    got += std::fread(&k,  8, 1, file_);
+    got += std::fread(&mv, 2, 1, file_);
+    got += std::fread(&wt, 2, 1, file_);
+    got += std::fread(&ln, 4, 1, file_);
+    if (got != 4) return e;  // truncated record / EOF
+    if constexpr (std::endian::native == std::endian::little) {
+        e.key    = std::byteswap(k);
+        e.move   = std::byteswap(mv);
+        e.weight = std::byteswap(wt);
+        e.learn  = std::byteswap(ln);
+    } else {
+        e.key = k; e.move = mv; e.weight = wt; e.learn = ln;
+    }
     return e;
 }
 

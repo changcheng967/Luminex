@@ -28,7 +28,6 @@ private:
         uint32_t learn;
     };
 
-    uint64_t read_int(int bytes);
     Entry read_entry(int index);
     int find_pos(uint64_t key);
 

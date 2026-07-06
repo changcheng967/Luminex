@@ -4,7 +4,10 @@
 #include <chrono>
 #include <cmath>
 #include <cstring>
+#include <format>
+#include <iterator>
 #include <sstream>
+#include <string>
 #include <thread>
 #include <vector>
 
@@ -2302,31 +2305,27 @@ Move search(Position& pos, Limits& lim) {
 }
 
 void uci_info([[maybe_unused]] const Position& pos, int depth, Value score, uint64_t node_count, int time_ms) {
-    std::ostringstream oss;
-    oss << "info depth " << depth << " score ";
+    std::string line;
+    uint64_t nps = time_ms > 0 ? node_count * 1000 / uint64_t(time_ms) : 0;
 
     // Handle mate scores
     // Note: -VALUE_INFINITE is not a mate score, it means no valid search result
     if (score >= VALUE_MATE_IN_MAX_PLY && score < VALUE_INFINITE) {
-        // Mate in N moves (convert plies to moves)
-        int mate_in = (VALUE_MATE - score + 1) / 2;
-        oss << "mate " << mate_in;
+        int mate_in = (VALUE_MATE - score + 1) / 2;                       // Mate in N moves
+        std::format_to(std::back_inserter(line),
+            "info depth {} score mate {} nodes {} nps {} pv", depth, mate_in, node_count, nps);
     } else if (score <= -VALUE_MATE_IN_MAX_PLY && score > -VALUE_INFINITE) {
-        // Being mated in N moves
-        int mate_in = -(VALUE_MATE + score + 1) / 2;
-        oss << "mate " << mate_in;
+        int mate_in = -(VALUE_MATE + score + 1) / 2;                      // Being mated in N moves
+        std::format_to(std::back_inserter(line),
+            "info depth {} score mate {} nodes {} nps {} pv", depth, mate_in, node_count, nps);
     } else {
-        // Normal score in centipawns
-        // Score is already from side-to-move's perspective (evaluate() returns side-to-move relative)
+        // Normal score in centipawns (score is side-to-move relative, like evaluate())
         int score_cp = score * 100 / PAWN_VALUE;
-        oss << "cp " << score_cp;
+        std::format_to(std::back_inserter(line),
+            "info depth {} score cp {} nodes {} nps {} pv", depth, score_cp, node_count, nps);
     }
 
-    oss << " nodes " << node_count
-        << " nps " << (time_ms > 0 ? node_count * 1000 / time_ms : 0);
-
-    // Extract PV from TT
-    oss << " pv";
+    // Extract PV from TT (uses std::formatter<luminex::Move> for each move)
     Position pv_pos = pos;
     Move pv_moves[64];
     int pv_count = 0;
@@ -2349,7 +2348,7 @@ void uci_info([[maybe_unused]] const Position& pos, int depth, Value score, uint
 
         pv_keys[pv_count] = pv_pos.key();
         pv_moves[pv_count++] = m;
-        oss << " " << m;
+        std::format_to(std::back_inserter(line), " {}", m);
         if (!pv_pos.do_move(m)) break;
     }
 
@@ -2358,10 +2357,10 @@ void uci_info([[maybe_unused]] const Position& pos, int depth, Value score, uint
         pv_pos.undo_move(pv_moves[i]);
     }
 
-    oss << "\n";
+    line += "\n";
 
     // Thread-safe output
-    uci_safe_output(oss.str());
+    uci_safe_output(line);
 }
 
 void clear_correction_history() {

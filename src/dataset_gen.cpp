@@ -122,8 +122,7 @@ int main(int argc, char** argv) {
             // Flip result for black-to-move positions
             double pos_result = result;
             // FEN tells us whose turn it is
-            size_t turn_pos = fen.find(" b ");
-            if (turn_pos != std::string::npos) {
+            if (fen.contains(" b ")) {
                 pos_result = 1.0 - pos_result;
             }
             fprintf(f, "%s|%.1f\n", fen.c_str(), pos_result);

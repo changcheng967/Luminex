@@ -5,6 +5,8 @@
 #include "book.h"
 #include <chrono>
 #include <cstdarg>
+#include <format>
+#include <iterator>
 #include <iostream>
 #include <sstream>
 #include <string>
@@ -170,17 +172,17 @@ static void search_worker(Position pos_copy, Limits lim) {
     }
 
     // Output best move directly from search thread (thread-safe)
-    std::ostringstream oss;
+    std::string line;
     if (best_move != MOVE_NONE) {
-        oss << "bestmove " << best_move;
+        line = std::format("bestmove {}", best_move);  // uses std::formatter<luminex::Move>
         if (ponder_move != MOVE_NONE) {
-            oss << " ponder " << ponder_move;
+            std::format_to(std::back_inserter(line), " ponder {}", ponder_move);
         }
-        oss << "\n";
+        line += "\n";
     } else {
-        oss << "bestmove 0000\n";
+        line = "bestmove 0000\n";
     }
-    safe_output(oss.str());
+    safe_output(line);
 
     ponder_mode.store(false, std::memory_order_relaxed);
 }

@@ -4,6 +4,8 @@
 #include <iostream>
 #include <cstdlib>
 #include <utility>  // std::to_underlying, std::unreachable (C++23)
+#include <format>   // std::format, std::formatter (C++20/23)
+#include <string>   // std::string (to_uci_string + std::formatter<Move>)
 
 namespace luminex {
 
@@ -254,24 +256,39 @@ inline std::ostream& operator<<(std::ostream& os, Square s) {
     return os;
 }
 
-inline std::ostream& operator<<(std::ostream& os, Move m) {
-    if (m) {
-        Square from_sq = m.from();
-        Square to_sq = m.to();
-        os << from_sq << to_sq;
-        // Append promotion piece for promotions
-        if (m.is_promotion()) {
-            constexpr char promo_chars[] = {'n', 'b', 'r', 'q'};
-            int idx = (m.flags() & 0x3000) >> 12;  // Extract bits 12-13
-            os << promo_chars[idx];
-        }
-    } else {
-        os << "0000";
+// UCI move string (e.g. "e2e4", "e7e8q", "0000" for none). Shared by operator<<
+// and the std::formatter<luminex::Move> specialization defined below.
+inline std::string to_uci_string(Move m) {
+    if (!m) return "0000";
+    std::string s;
+    s += file_char(file_of(m.from()));
+    s += rank_char(rank_of(m.from()));
+    s += file_char(file_of(m.to()));
+    s += rank_char(rank_of(m.to()));
+    if (m.is_promotion()) {
+        constexpr char promo_chars[] = {'n', 'b', 'r', 'q'};
+        s += promo_chars[(m.flags() & 0x3000) >> 12];
     }
-    return os;
+    return s;
+}
+
+inline std::ostream& operator<<(std::ostream& os, Move m) {
+    return os << to_uci_string(m);
 }
 
 using Score = Value;
 using Sign = int;
 
 } // namespace luminex
+
+// C++20/23: enable std::format / std::print with luminex::Move (formats as the UCI string).
+// Must live in namespace std and be visible before any std::format use of Move.
+namespace std {
+template <>
+struct formatter<luminex::Move> {
+    constexpr auto parse(format_parse_context& ctx) { return ctx.begin(); }
+    auto format(const luminex::Move& m, format_context& ctx) const {
+        return std::format_to(ctx.out(), "{}", luminex::to_uci_string(m));
+    }
+};
+} // namespace std
