@@ -1172,6 +1172,29 @@ Value evaluate(const Position& pos, bool tactical_only) {
     }
 
     // -------------------------------------------------------
+    // Trade-down bonus (Kaufman): the side ahead in non-pawn material benefits
+    // as pieces come off the board (simplifying toward a winning endgame).
+    // Aids conversion — the documented late-game weakness. EG-only, symmetric.
+    // -------------------------------------------------------
+    {
+        int w_np_mat = popcount(pos.pieces(WHITE, KNIGHT)) * PieceValueEG[KNIGHT]
+                     + popcount(pos.pieces(WHITE, BISHOP)) * PieceValueEG[BISHOP]
+                     + popcount(pos.pieces(WHITE, ROOK))   * PieceValueEG[ROOK]
+                     + popcount(pos.pieces(WHITE, QUEEN))  * PieceValueEG[QUEEN];
+        int b_np_mat = popcount(pos.pieces(BLACK, KNIGHT)) * PieceValueEG[KNIGHT]
+                     + popcount(pos.pieces(BLACK, BISHOP)) * PieceValueEG[BISHOP]
+                     + popcount(pos.pieces(BLACK, ROOK))   * PieceValueEG[ROOK]
+                     + popcount(pos.pieces(BLACK, QUEEN))  * PieceValueEG[QUEEN];
+        int nonpawn_pieces = popcount(pos.pieces(KNIGHT)) + popcount(pos.pieces(BISHOP))
+                           + popcount(pos.pieces(ROOK))   + popcount(pos.pieces(QUEEN));
+        int simplification = 14 - nonpawn_pieces;  // 0 at start position, grows as pieces trade
+        if (simplification > 0) {
+            int diff = w_np_mat - b_np_mat;  // white-relative non-pawn material
+            eg_score += diff * simplification / 256;
+        }
+    }
+
+    // -------------------------------------------------------
     // King safety: sigmoid danger model (Hill equation)
     // Selective: skip if no enemy minor/major pieces near king zone
     // -------------------------------------------------------
