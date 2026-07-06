@@ -655,10 +655,42 @@ Value evaluate(const Position& pos, bool tactical_only) {
                 eg_passer += unreachable * (unreachable > 4 ? 25 : 15);
             }
 
-            // Blocked by enemy pieces: harder to push
-            if (ahead_file & pos.pieces(them)) {
-                mg_passer -= 15;
-                eg_passer -= 20;
+            // Passed-pawn path decomposition (dominant endgame passer term in
+            // strong HCE engines). Decomposes the flat rank bonus by advancement
+            // potential. A rank-7 passer ranges from ~worthless (enemy blockaded)
+            // to winning (clear, safe path); previously Luminex scored both the same.
+            {
+                Square stop_sq = relative_square(c, make_square(f, Rank(r + 1)));
+                bool stop_enemy = (pos.pieces(them) & square_bb(stop_sq)) != 0;
+                bool stop_own   = (pos.pieces(c)    & square_bb(stop_sq)) != 0;
+                bool stop_attacked_by_enemy = (pos.attackers_to(stop_sq) & pos.pieces(them)) != 0;
+                bool enemy_on_path = (ahead_file & pos.pieces(them)) != 0;
+
+                if (stop_enemy) {
+                    // Enemy piece blockading the stop square. Penalty grows sharply
+                    // with rank (a blockaded rank-7 passer is nearly worthless).
+                    int blk = r * r;            // rank 7 -> 49, rank 4 -> 16
+                    mg_passer -= blk / 3;
+                    eg_passer -= blk * 2;       // rank 7 -> -98, rank 4 -> -32
+                } else if (stop_own) {
+                    // Own piece in front: the pawn cannot advance (mild blockade).
+                    mg_passer -= 6;
+                    eg_passer -= 10;
+                } else if (stop_attacked_by_enemy) {
+                    // Stop square empty but enemy-controlled: advancing loses the
+                    // pawn or walks into a blockade.
+                    mg_passer -= 4;
+                    eg_passer -= 8;
+                } else {
+                    // Safe, mobile passer: reward advancement potential.
+                    mg_passer += 2 + r;
+                    eg_passer += 4 + r * 2;     // rank 7 -> +18, rank 4 -> +12
+                    // Clear path to promotion (no enemy piece barring the file):
+                    // extra endgame bonus, scales with rank.
+                    if (!enemy_on_path) {
+                        eg_passer += 8 + r * 3; // rank 7 -> +29, rank 4 -> +20
+                    }
+                }
             }
 
             mg_score += sign * mg_passer;
