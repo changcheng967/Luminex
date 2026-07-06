@@ -15,7 +15,7 @@ bool board_debug_initialized = false;
 
 void init_board_debug() {
     if (!board_debug_initialized) {
-        board_debug_log.open("C:\\Users\\chang\\Downloads\\Luminex\\board_corruption.txt", std::ios::out | std::ios::trunc);
+        board_debug_log.open("board_corruption.txt", std::ios::out | std::ios::trunc);
         board_debug_initialized = true;
     }
 }
@@ -1044,7 +1044,7 @@ void Position::assert_consistency([[maybe_unused]] const char* location) {
             PieceType pt = piece_type_of(p);
             Bitboard expected_bb = pieces_by_color[c] & pieces_by_type[pt];
             if ((expected_bb & (1ULL << sq)) == 0) {
-                std::ofstream err_log("C:\\Users\\chang\\Downloads\\Luminex\\board_corruption.txt", std::ios::app);
+                std::ofstream err_log("board_corruption.txt", std::ios::app);
                 err_log << "\n=== PIECE TYPE MISMATCH ===\n";
                 err_log << "Location: " << location << "\n";
                 err_log << "Square: " << sq << " (" << char('a' + (sq % 8)) << char('1' + (sq / 8)) << ")\n";
