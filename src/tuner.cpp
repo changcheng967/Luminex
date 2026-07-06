@@ -54,24 +54,28 @@ struct ParamConfig {
 static ParamConfig param_cfg[PARAM_COUNT];
 
 static void init_param_configs() {
-    // Material values: constrained to ±30% of defaults
-    param_cfg[PAWN_VALUE_MG]   = {4, 70, 120};
-    param_cfg[PAWN_VALUE_EG]   = {4, 70, 130};
-    param_cfg[KNIGHT_VALUE_MG] = {6, 220, 420};
-    param_cfg[KNIGHT_VALUE_EG] = {6, 200, 380};
-    param_cfg[BISHOP_VALUE_MG] = {6, 240, 440};
-    param_cfg[BISHOP_VALUE_EG] = {6, 220, 400};
-    param_cfg[ROOK_VALUE_MG]   = {6, 350, 650};
-    param_cfg[ROOK_VALUE_EG]   = {6, 370, 690};
-    param_cfg[QUEEN_VALUE_MG]  = {8, 670, 1250};
-    param_cfg[QUEEN_VALUE_EG]  = {8, 650, 1230};
-    // Mobility tables: moderate range
+    // Material values: ANCHORED (step 0 = not tuned). Fixing the eval unit at the
+    // proven values lets tuning rebalance POSITIONAL terms relative to material,
+    // avoiding the "material collapses / search-scale breaks" failure seen on the
+    // prior self-play dataset.
+    param_cfg[PAWN_VALUE_MG]   = {0, 90, 90};
+    param_cfg[PAWN_VALUE_EG]   = {0, 100, 100};
+    param_cfg[KNIGHT_VALUE_MG] = {0, 320, 320};
+    param_cfg[KNIGHT_VALUE_EG] = {0, 290, 290};
+    param_cfg[BISHOP_VALUE_MG] = {0, 340, 340};
+    param_cfg[BISHOP_VALUE_EG] = {0, 310, 310};
+    param_cfg[ROOK_VALUE_MG]   = {0, 500, 500};
+    param_cfg[ROOK_VALUE_EG]   = {0, 530, 530};
+    param_cfg[QUEEN_VALUE_MG]  = {0, 960, 960};
+    param_cfg[QUEEN_VALUE_EG]  = {0, 940, 940};
+    // Mobility tables: WIDE range. Luminex's mobility is ~2-4x too small vs strong
+    // engines (a component of the K=22 compression). Give the optimizer room to grow.
     for (int i = 10; i < 142; i++) {
-        param_cfg[i] = {3, -150, 150};
+        param_cfg[i] = {4, -300, 300};
     }
-    // Eval bonuses: moderate range
+    // Eval bonuses: wider range
     for (int i = 142; i < 148; i++) {
-        param_cfg[i] = {3, -20, 200};
+        param_cfg[i] = {4, -50, 400};
     }
 }
 
@@ -85,6 +89,31 @@ static double K = 1.13;
 
 double sigmoid(int eval_cp, double k) {
     return 1.0 / (1.0 + std::exp(-eval_cp / (400.0 * k)));
+}
+
+// Regularization (v2): penalize JAGGED mobility tables via the second difference.
+// A smooth/linear table has ~0 penalty; an erratic overfit table (the v1 failure
+// mode — e.g. {-97,-64,-37,-18,-42,2,-25,...}) incurs a large penalty. This does
+// NOT flatten legitimate slopes (first diff) — only curvature (second diff).
+static double REG_LAMBDA = 0.0;  // set via CLI arg 4
+
+double mobility_smoothness_penalty() {
+    static const struct { int start; int len; } ranges[8] = {
+        {KNIGHT_MOB_MG_0, 9}, {KNIGHT_MOB_EG_0, 9},
+        {BISHOP_MOB_MG_0, 14}, {BISHOP_MOB_EG_0, 14},
+        {ROOK_MOB_MG_0, 15},   {ROOK_MOB_EG_0, 15},
+        {QUEEN_MOB_MG_0, 28},  {QUEEN_MOB_EG_0, 28},
+    };
+    double pen = 0.0;
+    for (const auto& r : ranges) {
+        for (int i = 0; i + 2 < r.len; ++i) {
+            double d2 = (double)g_params[r.start + i + 2]
+                      - 2.0 * (double)g_params[r.start + i + 1]
+                      + (double)g_params[r.start + i];
+            pen += d2 * d2;
+        }
+    }
+    return pen;
 }
 
 double compute_mse(double k) {
@@ -103,7 +132,7 @@ double compute_mse(double k) {
         total_error += err * err;
     }
 
-    return total_error / n;
+    return total_error / n + REG_LAMBDA * mobility_smoothness_penalty();
 }
 
 double optimize_K() {
@@ -226,6 +255,32 @@ void print_params() {
     printf("ROOK_SEMI_OPEN_EG = %d\n", g_params[ROOK_SEMI_OPEN_EG]);
 }
 
+// ---- Checkpoint / resume (survives 12h machine restarts) ----
+static const char* CKPT_PATH = "/hyperai/home/texel_v2_checkpoint.txt";
+
+bool save_checkpoint(int iter, double best_mse, double k, const int* steps) {
+    FILE* f = std::fopen(CKPT_PATH, "w");
+    if (!f) return false;
+    std::fprintf(f, "iter=%d mse=%.6f k=%.4f\n", iter, best_mse, k);
+    for (int i = 0; i < PARAM_COUNT; ++i) std::fprintf(f, "%d ", g_params[i]);
+    std::fprintf(f, "\n");
+    for (int i = 0; i < PARAM_COUNT; ++i) std::fprintf(f, "%d ", steps[i]);
+    std::fprintf(f, "\n");
+    std::fclose(f);
+    return true;
+}
+
+bool load_checkpoint(int& iter, double& best_mse, double& k, int* steps) {
+    FILE* f = std::fopen(CKPT_PATH, "r");
+    if (!f) return false;
+    int got = std::fscanf(f, " iter=%d mse=%lf k=%lf", &iter, &best_mse, &k);
+    if (got != 3) { std::fclose(f); return false; }
+    for (int i = 0; i < PARAM_COUNT; ++i) std::fscanf(f, "%d", &g_params[i]);
+    for (int i = 0; i < PARAM_COUNT; ++i) std::fscanf(f, "%d", &steps[i]);
+    std::fclose(f);
+    return true;
+}
+
 int main_tuner(int argc, char** argv) {
     if (argc < 2) {
         fprintf(stderr, "Usage: %s dataset.txt [K_value] [max_iterations]\n", argv[0]);
@@ -255,9 +310,10 @@ int main_tuner(int argc, char** argv) {
 
     int max_iterations = 500;
     if (argc >= 4) max_iterations = atoi(argv[3]);
+    if (argc >= 5) REG_LAMBDA = atof(argv[4]);  // smoothness regularization weight (v2)
 
-    printf("Direct parameter tuner: %d parameters, %d positions, K=%.2f\n",
-           PARAM_COUNT, (int)dataset.size(), K);
+    printf("Direct parameter tuner: %d parameters, %d positions, K=%.2f reg_lambda=%g\n",
+           PARAM_COUNT, (int)dataset.size(), K, REG_LAMBDA);
     printf("Max iterations: %d\n\n", max_iterations);
 
     // Per-parameter step sizes (independent halving)
@@ -269,9 +325,20 @@ int main_tuner(int argc, char** argv) {
     double best_mse = compute_mse(K);
     printf("Initial MSE: %.6f\n\n", best_mse);
 
+    // Resume from checkpoint if present (survives 12h machine restarts)
+    int start_iter = 1;
+    {
+        int ri; double rm, rk;
+        if (load_checkpoint(ri, rm, rk, steps)) {
+            K = rk; best_mse = rm; start_iter = ri + 1;
+            sync_eval_params();
+            printf(">> RESUMED from checkpoint: iter=%d mse=%.6f K=%.4f (continuing at iter %d)\n", ri, rm, K, start_iter);
+        }
+    }
+
     int no_improve_global = 0;
 
-    for (int iter = 1; iter <= max_iterations; ++iter) {
+    for (int iter = start_iter; iter <= max_iterations; ++iter) {
         bool any_improved = false;
         auto iter_start = std::chrono::steady_clock::now();
 
@@ -328,6 +395,7 @@ int main_tuner(int argc, char** argv) {
 
         printf("Iter %3d: MSE=%.6f  active=%d  time=%.1fs\n",
                iter, best_mse, active_params, elapsed);
+        save_checkpoint(iter, best_mse, K, steps);  // resume point for next startup
 
         // Print params periodically so we don't lose results
         if (iter % 50 == 0) {
