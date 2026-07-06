@@ -3,6 +3,7 @@
 #include <cstdint>
 #include <iostream>
 #include <cstdlib>
+#include <utility>  // std::to_underlying, std::unreachable (C++23)
 
 namespace luminex {
 
@@ -89,9 +90,9 @@ enum Piece : uint8_t {
     NO_PIECE = 12
 };
 
-inline Piece make_piece(Color c, PieceType pt) { return static_cast<Piece>((c * 6) + pt); }
-inline PieceType piece_type_of(Piece p) { return p == NO_PIECE ? PT_NONE : static_cast<PieceType>(p % 6); }
-inline Color color_of_piece(Piece p) { return p == NO_PIECE ? NO_COLOR : static_cast<Color>(p / 6); }
+inline Piece make_piece(Color c, PieceType pt) { return static_cast<Piece>(std::to_underlying(c) * 6 + std::to_underlying(pt)); }
+inline PieceType piece_type_of(Piece p) { return p == NO_PIECE ? PT_NONE : static_cast<PieceType>(std::to_underlying(p) % 6); }
+inline Color color_of_piece(Piece p) { return p == NO_PIECE ? NO_COLOR : static_cast<Color>(std::to_underlying(p) / 6); }
 
 // Move flags (16-bit move encoding: from(6) to(6) flags(4))
 // Bits 0-5: destination square
@@ -173,11 +174,10 @@ public:
             case 0x2000: return ROOK;
             case 0x3000: return QUEEN;
         }
-        return PT_NONE;
+        std::unreachable();  // low_bits is masked to 2 bits → the four cases above are exhaustive
     }
 
-    constexpr bool operator==(const Move& other) const { return data_ == other.data_; }
-    constexpr bool operator!=(const Move& other) const { return data_ != other.data_; }
+    friend constexpr bool operator==(const Move&, const Move&) = default;
     constexpr explicit operator bool() const { return data_ != 0; }
 };
 

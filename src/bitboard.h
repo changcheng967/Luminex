@@ -3,6 +3,7 @@
 #include "types.h"
 #include <algorithm>
 #include <cstdint>
+#include <utility>  // std::to_underlying (C++23)
 
 namespace luminex {
 
@@ -92,6 +93,7 @@ constexpr Bitboard rank_bb(Rank r) { return BB_RANKS[r]; }
 constexpr Bitboard file_bb(File f) { return BB_FILES[f]; }
 
 inline Square pop_lsb(Bitboard& b) {
+    [[assume(b != 0)]];  // every caller invokes pop_lsb only on a non-empty bitboard
     Square s = lsb(b);
     b &= b - 1;
     return s;
@@ -142,16 +144,16 @@ extern Bitboard LineBB[64][64];
 extern Bitboard BetweenBB[64][64];
 
 inline Bitboard line_bb(Square s1, Square s2) {
-    return LineBB[int(s1)][int(s2)];
+    return LineBB[std::to_underlying(s1)][std::to_underlying(s2)];
 }
 
 inline Bitboard between_bb(Square s1, Square s2) {
-    return BetweenBB[int(s1)][int(s2)];
+    return BetweenBB[std::to_underlying(s1)][std::to_underlying(s2)];
 }
 
 // Check if two squares are aligned
 inline bool aligned(Square s1, Square s2, Square s3) {
-    return LineBB[int(s1)][int(s2)] & square_bb(s3);
+    return LineBB[std::to_underlying(s1)][std::to_underlying(s2)] & square_bb(s3);
 }
 
 // Distance between squares
