@@ -10,7 +10,7 @@ void init() {
     init_line_tables();
     init_zobrist();
     init_evaluation();
-    TT.resize(256); // 256 MB transposition table
+    TT.resize(128); // 128 MB transposition table — sweet spot (256 too much cache pressure, 64 too few entries at bullet)
     TT.clear();
 }
 
