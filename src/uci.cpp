@@ -197,6 +197,13 @@ void handle_uci() {
     safe_output("option name Contempt type spin default 0 min -1000 max 1000\n");
     safe_output("option name Clear Hash type button\n");
     safe_output("option name BookFile type string default <empty>\n");
+    safe_output("option name Move Overhead type spin default 10 min 0 max 5000\n");
+    safe_output("option name SyzygyPath type string default <empty>\n");
+    safe_output("option name Skill Level type spin default 20 min 0 max 20\n");
+    safe_output("option name UCI_ShowWDL type check default false\n");
+    safe_output("option name UCI_Elo type spin default 1320 min 1320 max 3190\n");
+    safe_output("option name UCI_LimitStrength type check default false\n");
+    safe_output("option name UCI_Chess960 type check default false\n");
     // Eval parameters (self-engineered defaults)
     safe_output("option name BishopPairMG type spin default 40 min -100 max 200\n");
     safe_output("option name BishopPairEG type spin default 100 min -100 max 300\n");
@@ -379,7 +386,10 @@ void handle_setoption(const std::string& cmd) {
         value += token;
     }
 
-    if (name == "Contempt" || name == "UCI_AnalyseMode") {
+    if (name == "Move Overhead" || name == "SyzygyPath" || name == "Skill Level" ||
+        name == "UCI_ShowWDL" || name == "UCI_Elo" || name == "UCI_LimitStrength" ||
+        name == "UCI_Chess960" || name == "Analysis") { /* accepted — UCI GUI/bot compatibility */ }
+    else if (name == "Contempt" || name == "UCI_AnalyseMode") {
         if (name == "Contempt") {
             params.contempt = std::stoi(value);
         }
