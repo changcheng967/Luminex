@@ -1,5 +1,6 @@
 #define _CRT_SECURE_NO_WARNINGS
 #include "luminex.h"
+#include "nnue.h"
 #include <algorithm>
 #include <chrono>
 #include <cmath>
@@ -1551,6 +1552,8 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
 // Each helper runs its own iterative deepening, populating the shared TT
 // thread_id is used to offset start depth to reduce TT contention
 static void helper_thread_func(Position pos_copy, int thread_id) {
+    // Seed this thread's NNUE accumulator (each thread has its own, empty at start).
+    if (nnue::loaded()) nnue::refresh(pos_copy);
     // Create per-thread search worker
     SearchWorker* w = new SearchWorker();
     worker = w;

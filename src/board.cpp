@@ -1,5 +1,6 @@
 #include "luminex.h"
 #include "evaluation.h"
+#include "nnue.h"
 #include <algorithm>
 #include <cctype>
 #include <cmath>
@@ -195,6 +196,9 @@ void Position::set(const std::string& fen) {
     }
 
     set_check_info(st_);
+
+    // Seed the NNUE accumulator for the root position (full rebuild). No-op if no net loaded.
+    if (nnue::loaded()) nnue::refresh(*this);
 
     // Compute position key (start with 0, add side key only if BLACK to move)
     Key k = (side_to_move_ == BLACK) ? Zobrist::side : 0;
@@ -803,6 +807,11 @@ bool Position::do_move(Move m) {
     // Update check info
     set_check_info(st_);
 
+    // NNUE: apply the move's feature deltas to the child accumulator. Board is now
+    // mutated; `pc` is the pre-move piece, st_->captured_piece the victim (if any).
+    if (nnue::loaded())
+        nnue::update(*this, m, pc, st_->captured_piece);
+
 #ifndef NDEBUG
     // DEBUG: Check board consistency after every move (debug builds only)
     assert_consistency("do_move");
@@ -944,6 +953,9 @@ void Position::do_null_move() {
     next_st.halfmove_clock = st_->halfmove_clock;  // Don't increment — null move doesn't advance 50-move rule
 
     st_ = &next_st;
+
+    // NNUE: null move doesn't change the board, so the child accumulator = parent's (just copy).
+    if (nnue::loaded()) nnue::copy_for_null(*this);
 
     if (st_->ep_square != SQUARE_NONE) {
         st_->key ^= Zobrist::en_passant[file_of(st_->ep_square)];

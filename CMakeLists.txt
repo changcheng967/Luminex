@@ -82,6 +82,7 @@ set(SOURCES
     src/magic.cpp
     src/tuner_params.cpp
     src/book.cpp
+    src/nnue.cpp
 )
 
 set(HEADERS
@@ -117,6 +118,7 @@ if(BUILD_DATASET_GEN)
         src/board.cpp
         src/movegen.cpp
         src/evaluation.cpp
+        src/nnue.cpp
         src/magic.cpp
         src/transposition.cpp
     )
@@ -132,6 +134,7 @@ if(BUILD_TUNER)
         src/board.cpp
         src/movegen.cpp
         src/evaluation.cpp
+        src/nnue.cpp
         src/magic.cpp
         src/transposition.cpp
     )
@@ -139,6 +142,23 @@ if(BUILD_TUNER)
     target_compile_definitions(luminex-tuner PRIVATE _CRT_SECURE_NO_WARNINGS)
     if(OpenMP_CXX_FOUND)
         target_link_libraries(luminex-tuner PRIVATE OpenMP::OpenMP_CXX)
+    endif()
+
+    # v4 joint Adam tuner (PST + mobility + bonuses, analytic gradients)
+    add_executable(tuner_v4
+        src/tuner_v4.cpp
+        src/tuner_params.cpp
+        src/board.cpp
+        src/movegen.cpp
+        src/evaluation.cpp
+        src/nnue.cpp
+        src/magic.cpp
+        src/transposition.cpp
+    )
+    target_include_directories(tuner_v4 PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
+    target_compile_definitions(tuner_v4 PRIVATE _CRT_SECURE_NO_WARNINGS)
+    if(OpenMP_CXX_FOUND)
+        target_link_libraries(tuner_v4 PRIVATE OpenMP::OpenMP_CXX)
     endif()
 endif()
 

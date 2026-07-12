@@ -1,5 +1,6 @@
 #include "luminex.h"
 #include "tuner_params.h"
+#include "nnue.h"
 #include <cstring>
 
 namespace luminex {
@@ -477,6 +478,11 @@ static void evaluate_pawns(const Position& pos, int32_t& mg_out, int32_t& eg_out
 // Main evaluation function
 // ============================================================
 Value evaluate(const Position& pos, bool tactical_only) {
+    // Optional NNUE evaluation: when a net is loaded AND the user enabled it
+    // via UCI "UseNNUE", the engine uses NNUE instead of HCE. Otherwise the
+    // pure hand-crafted eval below runs unchanged. NNUE is fully optional.
+    if (nnue::enabled()) return nnue::evaluate(pos);
+
     // KXK endgame: one side has only a king
     for (int strong = 0; strong < 2; ++strong) {
         Color c = Color(strong);

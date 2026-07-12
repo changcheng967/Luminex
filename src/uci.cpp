@@ -2,6 +2,7 @@
 #pragma warning(disable: 4459) // variable shadowing - intentional for pos parameter
 #include "luminex.h"
 #include "evaluation.h"
+#include "nnue.h"
 #include "book.h"
 #include <chrono>
 #include <cstdarg>
@@ -113,6 +114,9 @@ static void launch_search_thread(Position pos_copy, Limits lim) {
 
 // Worker function that runs search in a separate thread
 static void search_worker(Position pos_copy, Limits lim) {
+    // The search runs in its own thread → its thread-local NNUE accumulator is empty.
+    // Seed it here (the main thread's Position::set refreshed only the main thread's).
+    if (nnue::loaded()) nnue::refresh(pos_copy);
     if (dbglog) { fprintf(dbglog, "SEARCH_START: depth=%d time[W]=%d time[B]=%d movetime=%d ponder=%d\n",
         lim.depth, lim.time[0], lim.time[1], lim.movetime, lim.ponder); fflush(dbglog); }
 
@@ -204,6 +208,10 @@ void handle_uci() {
     safe_output("option name UCI_Elo type spin default 1320 min 1320 max 3190\n");
     safe_output("option name UCI_LimitStrength type check default false\n");
     safe_output("option name UCI_Chess960 type check default false\n");
+    // Optional NNUE evaluation (defaults to pure HCE). Set NNUEFile to a .nnue
+    // produced by nnue/luminex_nnue_train.py, then UseNNUE=true to switch.
+    safe_output("option name UseNNUE type check default false\n");
+    safe_output("option name NNUEFile type string default luminex_v1.nnue\n");
     // Eval parameters (self-engineered defaults)
     safe_output("option name BishopPairMG type spin default 40 min -100 max 200\n");
     safe_output("option name BishopPairEG type spin default 100 min -100 max 300\n");
@@ -389,6 +397,8 @@ void handle_setoption(const std::string& cmd) {
     if (name == "Move Overhead" || name == "SyzygyPath" || name == "Skill Level" ||
         name == "UCI_ShowWDL" || name == "UCI_Elo" || name == "UCI_LimitStrength" ||
         name == "UCI_Chess960" || name == "Analysis") { /* accepted — UCI GUI/bot compatibility */ }
+    else if (name == "UseNNUE") { nnue::set_enabled(value == "true"); }
+    else if (name == "NNUEFile") { if (!value.empty()) nnue::load(value); }
     else if (name == "Contempt" || name == "UCI_AnalyseMode") {
         if (name == "Contempt") {
             params.contempt = std::stoi(value);
@@ -500,6 +510,12 @@ void uci_loop() {
             break;
         } else if (cmd == "d") {
             safe_output(pos.fen() + "\n");
+        } else if (cmd == "eval") {
+            // Static eval of the current position (NNUE if enabled, else HCE),
+            // side-to-move-relative cp. Used to validate the NNUE inference
+            // against the Python trainer's eval.
+            Value v = evaluate(pos, false);
+            safe_output("eval cp " + std::to_string(int(v)) + "\n");
         }
     }
 

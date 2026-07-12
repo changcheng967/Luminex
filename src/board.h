@@ -85,6 +85,7 @@ public:
 
     Square ep_square() const;
     Square king_sq(Color c) const;
+    int state_ply() const { return st_ply; }   // current state-stack index (NNUE indexes its accumulator by this)
     bool castling_allowed(Color c, CastlingRight cr) const;
 
     int game_ply() const;
