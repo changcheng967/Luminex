@@ -18,11 +18,46 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <chrono>
 #include <fstream>
 #include <string>
 #include <vector>
+#if defined(__AVX2__)
+#include <immintrin.h>
+#endif
 
 namespace luminex::nnue {
+
+#if defined(__AVX2__)
+// Horizontal sum of 8 floats -> scalar.
+static inline float hsum256(__m256 v) {
+    __m128 lo = _mm256_castps256_ps128(v);
+    __m128 hi = _mm256_extractf128_ps(v, 1);
+    __m128 s  = _mm_add_ps(lo, hi);
+    s = _mm_hadd_ps(s, s);
+    s = _mm_hadd_ps(s, s);
+    return _mm_cvtss_f32(s);
+}
+// SCReLU on 8 floats: clamp to [0,1], then square.
+static inline __m256 screlu8(__m256 x, __m256 z, __m256 one) {
+    __m256 c = _mm256_min_ps(_mm256_max_ps(x, z), one);
+    return _mm256_mul_ps(c, c);
+}
+#endif
+
+// ---- profiling counters (data-driven: find the NPS bottleneck from numbers) ----
+namespace { struct Stat { long long n = 0, us = 0; }; }
+static Stat st_eval, st_update, st_refresh;
+static inline long long now_us() {
+    return std::chrono::duration_cast<std::chrono::microseconds>(
+        std::chrono::steady_clock::now().time_since_epoch()).count();
+}
+void print_stats() {
+    std::fprintf(stderr, "NNUE stats: evals=%lld (%lldms, %.2fus/eval) | updates=%lld (%lldms, %.2fus/upd) | refreshes=%lld (%lldms)\n",
+                 st_eval.n, st_eval.us/1000, st_eval.n ? double(st_eval.us)/st_eval.n : 0.0,
+                 st_update.n, st_update.us/1000, st_update.n ? double(st_update.us)/st_update.n : 0.0,
+                 st_refresh.n, st_refresh.us/1000);
+}
 
 constexpr int NUM_SQ = 64;
 constexpr int NUM_PLANES = 768;              // 64 sq * 12 piece types
@@ -128,19 +163,39 @@ static inline void add_feature(Accumulator& a, int p, int ksq, int sq, Piece pie
     int idx = halfka_idx(p == 0, ksq, sq, piece);
     const float* w = &ft_w[static_cast<size_t>(idx) * g_L1];
     float* acc = a.v[p];
+#if defined(__AVX2__)
+    for (int l = 0; l < g_L1; l += 8)
+        _mm256_storeu_ps(acc + l, _mm256_add_ps(_mm256_loadu_ps(acc + l), _mm256_loadu_ps(w + l)));
+#else
     for (int l = 0; l < g_L1; ++l) acc[l] += w[l];
+#endif
 }
 static inline void remove_feature(Accumulator& a, int p, int ksq, int sq, Piece piece) {
     int idx = halfka_idx(p == 0, ksq, sq, piece);
     const float* w = &ft_w[static_cast<size_t>(idx) * g_L1];
     float* acc = a.v[p];
+#if defined(__AVX2__)
+    for (int l = 0; l < g_L1; l += 8)
+        _mm256_storeu_ps(acc + l, _mm256_sub_ps(_mm256_loadu_ps(acc + l), _mm256_loadu_ps(w + l)));
+#else
     for (int l = 0; l < g_L1; ++l) acc[l] -= w[l];
+#endif
 }
 
 static void refresh_perspective(const Position& pos, Accumulator& a, int p) {
     bool white_pov = (p == 0);
     int ksq = static_cast<int>(pos.king_sq(white_pov ? WHITE : BLACK));
     float* acc = a.v[p];
+#if defined(__AVX2__)
+    for (int l = 0; l < g_L1; l += 8) _mm256_storeu_ps(acc + l, _mm256_loadu_ps(&ft_b[l]));
+    for (int sq = 0; sq < NUM_SQ; ++sq) {
+        Piece pc = pos.piece_on(Square(sq));
+        if (pc == NO_PIECE) continue;
+        const float* w = &ft_w[static_cast<size_t>(halfka_idx(white_pov, ksq, sq, pc)) * g_L1];
+        for (int l = 0; l < g_L1; l += 8)
+            _mm256_storeu_ps(acc + l, _mm256_add_ps(_mm256_loadu_ps(acc + l), _mm256_loadu_ps(w + l)));
+    }
+#else
     for (int l = 0; l < g_L1; ++l) acc[l] = ft_b[l];
     for (int sq = 0; sq < NUM_SQ; ++sq) {
         Piece pc = pos.piece_on(Square(sq));
@@ -149,14 +204,17 @@ static void refresh_perspective(const Position& pos, Accumulator& a, int p) {
         const float* w = &ft_w[static_cast<size_t>(idx) * g_L1];
         for (int l = 0; l < g_L1; ++l) acc[l] += w[l];
     }
+#endif
 }
 
 void refresh(Position& pos) {
     if (!g_loaded) return;
+    long long _t = now_us();
     Accumulator* const acc_stack = nnue_acc_stack();
     Accumulator& a = acc_stack[pos.state_ply()];
     refresh_perspective(pos, a, 0);
     refresh_perspective(pos, a, 1);
+    st_refresh.us += now_us() - _t; ++st_refresh.n;
 }
 
 void copy_for_null(Position& pos) {
@@ -168,6 +226,7 @@ void copy_for_null(Position& pos) {
 
 void update(Position& pos, Move m, Piece moved, PieceType captured) {
     if (!g_loaded) return;
+    long long _t = now_us();
     Accumulator* const acc_stack = nnue_acc_stack();
     int ply = pos.state_ply();
     Accumulator& a = acc_stack[ply];
@@ -213,9 +272,11 @@ void update(Position& pos, Move m, Piece moved, PieceType captured) {
             add_feature(a, p, ksq, rto,   make_piece(us, ROOK));
         }
     }
+    st_update.us += now_us() - _t; ++st_update.n;
 }
 
 Value evaluate(const Position& pos) {
+    long long _t = now_us();
     Accumulator* const acc_stack = nnue_acc_stack();
 #ifndef NDEBUG
     // Self-check (debug only): recompute the accumulator from scratch and compare to the
@@ -248,27 +309,56 @@ Value evaluate(const Position& pos) {
     const float* acc_nstm = stm_white ? a.v[1] : a.v[0];
 
     float h[2 * NNUE_L1_MAX];
-    for (int l = 0; l < L1; ++l) {
-        h[l]      = clip01(acc_stm[l]);
-        h[L1 + l] = clip01(acc_nstm[l]);
+#if defined(__AVX2__)
+    // SCReLU on the accumulator → h, 8 floats at a time.
+    const __m256 z = _mm256_setzero_ps(), one = _mm256_set1_ps(1.0f);
+    for (int l = 0; l < L1; l += 8) {
+        __m256 s1 = _mm256_loadu_ps(acc_stm + l);
+        __m256 s2 = _mm256_loadu_ps(acc_nstm + l);
+        _mm256_storeu_ps(h + l,      screlu8(s1, z, one));
+        _mm256_storeu_ps(h + L1 + l, screlu8(s2, z, one));
     }
+    // L2: 16 SIMD dot products over 2*L1 inputs (the dominant cost — was scalar).
     float h2[NNUE_L1_MAX];
     for (int o = 0; o < L2; ++o) {
-        float s = l2_b[o];
         const float* w = &l2_w[o * 2 * L1];
+        __m256 accv = _mm256_setzero_ps();
+        for (int i = 0; i < 2 * L1; i += 8)
+            accv = _mm256_fmadd_ps(_mm256_loadu_ps(w + i), _mm256_loadu_ps(h + i), accv);
+        h2[o] = clip01(hsum256(accv) + l2_b[o]);
+    }
+    // L3: SIMD dot products over L2 inputs.
+    float h3[NNUE_L1_MAX];
+    for (int o = 0; o < L3; ++o) {
+        const float* w = &l3_w[o * L2];
+        __m256 accv = _mm256_setzero_ps();
+        int i = 0;
+        for (; i + 8 <= L2; i += 8)
+            accv = _mm256_fmadd_ps(_mm256_loadu_ps(w + i), _mm256_loadu_ps(h2 + i), accv);
+        float s = hsum256(accv) + l3_b[o];
+        for (; i < L2; ++i) s += w[i] * h2[i];
+        h3[o] = clip01(s);
+    }
+#else
+    float h2[NNUE_L1_MAX];
+    for (int l = 0; l < L1; ++l) { h[l] = clip01(acc_stm[l]); h[L1 + l] = clip01(acc_nstm[l]); }
+    for (int o = 0; o < L2; ++o) {
+        float s = l2_b[o]; const float* w = &l2_w[o * 2 * L1];
         for (int i = 0; i < 2 * L1; ++i) s += w[i] * h[i];
         h2[o] = clip01(s);
     }
     float h3[NNUE_L1_MAX];
     for (int o = 0; o < L3; ++o) {
-        float s = l3_b[o];
-        const float* w = &l3_w[o * L2];
+        float s = l3_b[o]; const float* w = &l3_w[o * L2];
         for (int i = 0; i < L2; ++i) s += w[i] * h2[i];
         h3[o] = clip01(s);
     }
-    float o = out_b;
-    for (int i = 0; i < L3; ++i) o += out_w[i] * h3[i];
-    return static_cast<Value>(std::llround(o * OUT_SCALE));
+#endif
+    float ov = out_b;
+    for (int i = 0; i < L3; ++i) ov += out_w[i] * h3[i];
+    Value v = static_cast<Value>(std::llround(ov * OUT_SCALE));
+    st_eval.us += now_us() - _t; ++st_eval.n;
+    return v;
 }
 
 } // namespace luminex::nnue

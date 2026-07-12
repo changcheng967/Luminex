@@ -507,6 +507,7 @@ void uci_loop() {
             stop.store(true, std::memory_order_seq_cst);
             std::atomic_thread_fence(std::memory_order_seq_cst);
             wait_for_search_thread();
+            if (nnue::loaded()) nnue::print_stats();
             break;
         } else if (cmd == "d") {
             safe_output(pos.fen() + "\n");

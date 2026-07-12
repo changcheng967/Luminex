@@ -31,6 +31,9 @@ bool loaded();
 // Runtime L1 width of the loaded net (0 if none loaded).
 int l1();
 
+// Print profiling counters (evals/updates/refreshes + time each) to stderr.
+void print_stats();
+
 // ---- incremental accumulator hooks (no-ops when !loaded(); cheap branch otherwise) ----
 // Full rebuild of the CURRENT state's accumulator from the board. Call from Position::set.
 void refresh(Position& pos);
