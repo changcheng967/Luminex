@@ -43,6 +43,34 @@ static inline __m256 screlu8(__m256 x, __m256 z, __m256 one) {
     __m256 c = _mm256_min_ps(_mm256_max_ps(x, z), one);
     return _mm256_mul_ps(c, c);
 }
+// Quantize 8 floats ([0,1]) -> 8 uint8 ([0,127]), stored contiguously at dst.
+static inline void quant8(const float* h, uint8_t* dst, __m256 scale127) {
+    __m256i i32 = _mm256_cvtps_epi32(_mm256_mul_ps(_mm256_loadu_ps(h), scale127));
+    __m128i lo = _mm256_castsi256_si128(i32);
+    __m128i hi = _mm256_extracti128_si256(i32, 1);
+    __m128i i16 = _mm_packs_epi32(lo, hi);        // 8 int16 (in-order)
+    __m128i i8 = _mm_packus_epi16(i16, i16);      // 16 uint8 (low 8 = ours)
+    _mm_storel_epi64((__m128i*)dst, i8);          // store low 8 bytes
+}
+// int8 dot product over n bytes: sum(w_signed[i] * a_unsigned[i]) -> int32. Handles
+// any n (SIMD for multiples of 32, scalar tail for the remainder, e.g. L2=16 inputs).
+static inline int32_t dot_i8(const int8_t* w, const uint8_t* a, int n) {
+    __m256i acc = _mm256_setzero_si256();
+    const __m256i ones = _mm256_set1_epi16(1);
+    int i = 0;
+    for (; i + 32 <= n; i += 32) {
+        __m256i wv = _mm256_loadu_si256((const __m256i*)(w + i));
+        __m256i av = _mm256_loadu_si256((const __m256i*)(a + i));
+        __m256i p16 = _mm256_maddubs_epi16(av, wv);   // a(uint8) × w(int8) -> 16 int16
+        acc = _mm256_add_epi32(acc, _mm256_madd_epi16(p16, ones));  // -> 8 int32, accumulate
+    }
+    __m128i lo = _mm256_castsi256_si128(acc);
+    __m128i hi = _mm256_extracti128_si256(acc, 1);
+    __m128i s = _mm_hadd_epi32(_mm_add_epi32(lo, hi), _mm_setzero_si128());
+    int32_t sum = _mm_cvtsi128_si32(_mm_hadd_epi32(s, s));
+    for (; i < n; ++i) sum += (int32_t)w[i] * (int32_t)a[i];
+    return sum;
+}
 #endif
 
 // ---- profiling counters (data-driven: find the NPS bottleneck from numbers) ----
@@ -94,6 +122,10 @@ static std::vector<float> ft_w;   // (NUM_INPUTS, L1) transposed
 static std::vector<float> ft_b;   // (L1,)
 static std::vector<float> l2_w, l2_b, l3_w, l3_b, out_w;
 static float out_b = 0.0f;
+// int8 path (LNI8): L2/L3/out weights as int8 + per-layer scales. FT stays float.
+static bool g_int8 = false;
+static std::vector<int8_t> l2_w_i8, l3_w_i8, out_w_i8;
+static float g_s2 = 1.0f, g_s3 = 1.0f, g_so = 1.0f;  // weight quant scales
 static bool g_loaded = false;
 static bool g_enabled = false;
 
@@ -127,7 +159,9 @@ bool load(const std::string& path) {
     if (!f) { std::fprintf(stderr, "nnue: cannot open %s\n", path.c_str()); return false; }
     char magic[4];
     f.read(magic, 4);
-    if (std::string(magic, 4) != "LNN1") { std::fprintf(stderr, "nnue: bad magic\n"); return false; }
+    std::string mg(magic, 4);
+    if (mg != "LNN1" && mg != "LNI8") { std::fprintf(stderr, "nnue: bad magic\n"); return false; }
+    g_int8 = (mg == "LNI8");
     int32_t hdr[4];
     f.read(reinterpret_cast<char*>(hdr), sizeof(hdr));
     int L1 = hdr[0], L2 = hdr[1], L3 = hdr[2], NI = hdr[3];
@@ -141,19 +175,38 @@ bool load(const std::string& path) {
         for (int l = 0; l < L1; ++l)
             ft_w[i * L1 + l] = ft_w_raw[l * NUM_INPUTS + i];
     if (!read_tensor(f, ft_b, L1)) return false;
-    if (!read_tensor(f, l2_w, L2 * 2 * L1)) return false;
-    if (!read_tensor(f, l2_b, L2)) return false;
-    if (!read_tensor(f, l3_w, L3 * L2)) return false;
-    if (!read_tensor(f, l3_b, L3)) return false;
-    std::vector<float> out_w_raw;
-    if (!read_tensor(f, out_w_raw, L3)) return false;
-    out_w = out_w_raw;
-    int32_t ob_n;
-    f.read(reinterpret_cast<char*>(&ob_n), 4);
-    if (ob_n != 1) { std::fprintf(stderr, "nnue: out.bias size %d\n", ob_n); return false; }
-    f.read(reinterpret_cast<char*>(&out_b), sizeof(float));
+    if (g_int8) {
+        // LNI8: int8 weights + float bias + float scale, per layer.
+        auto read_i8 = [&](std::vector<int8_t>& v, int expected) -> bool {
+            int32_t n = 0; f.read(reinterpret_cast<char*>(&n), 4);
+            if (n != expected) { std::fprintf(stderr, "nnue: i8 size %d != %d\n", n, expected); return false; }
+            v.resize(n); f.read(reinterpret_cast<char*>(v.data()), n); return f.good(); };
+        if (!read_i8(l2_w_i8, L2 * 2 * L1)) return false;
+        if (!read_tensor(f, l2_b, L2)) return false;
+        f.read(reinterpret_cast<char*>(&g_s2), 4);
+        if (!read_i8(l3_w_i8, L3 * L2)) return false;
+        if (!read_tensor(f, l3_b, L3)) return false;
+        f.read(reinterpret_cast<char*>(&g_s3), 4);
+        if (!read_i8(out_w_i8, L3)) return false;
+        std::vector<float> ob;
+        if (!read_tensor(f, ob, 1)) return false;
+        out_b = ob[0];
+        f.read(reinterpret_cast<char*>(&g_so), 4);
+    } else {
+        if (!read_tensor(f, l2_w, L2 * 2 * L1)) return false;
+        if (!read_tensor(f, l2_b, L2)) return false;
+        if (!read_tensor(f, l3_w, L3 * L2)) return false;
+        if (!read_tensor(f, l3_b, L3)) return false;
+        std::vector<float> out_w_raw;
+        if (!read_tensor(f, out_w_raw, L3)) return false;
+        out_w = out_w_raw;
+        int32_t ob_n;
+        f.read(reinterpret_cast<char*>(&ob_n), 4);
+        if (ob_n != 1) { std::fprintf(stderr, "nnue: out.bias size %d\n", ob_n); return false; }
+        f.read(reinterpret_cast<char*>(&out_b), sizeof(float));
+    }
     g_loaded = true;
-    std::printf("nnue: loaded %s (L1=%d L2=%d L3=%d)\n", path.c_str(), L1, L2, L3);
+    std::printf("nnue: loaded %s (%s L1=%d L2=%d L3=%d)\n", path.c_str(), g_int8 ? "int8" : "float", L1, L2, L3);
     return true;
 }
 
@@ -317,6 +370,27 @@ Value evaluate(const Position& pos) {
         __m256 s2 = _mm256_loadu_ps(acc_nstm + l);
         _mm256_storeu_ps(h + l,      screlu8(s1, z, one));
         _mm256_storeu_ps(h + L1 + l, screlu8(s2, z, one));
+    }
+    // ---- int8 path (LNI8): quantize activations, int8 SIMD matmuls. ~3.5x over float ----
+    if (g_int8) {
+        uint8_t h_i8[2 * NNUE_L1_MAX];
+        const __m256 sc = _mm256_set1_ps(127.0f);
+        for (int l = 0; l < 2 * L1; l += 8) quant8(h + l, h_i8 + l, sc);
+        const float cs2 = g_s2 * 127.0f, cs3 = g_s3 * 127.0f, cso = g_so * 127.0f;
+        float h2[NNUE_L1_MAX];
+        for (int o = 0; o < L2; ++o)
+            h2[o] = clip01(l2_b[o] + dot_i8(&l2_w_i8[static_cast<size_t>(o) * 2 * L1], h_i8, 2 * L1) / cs2);
+        uint8_t h2_i8[NNUE_L1_MAX];
+        for (int l = 0; l < L2; l += 8) quant8(h2 + l, h2_i8 + l, sc);
+        float h3[NNUE_L1_MAX];
+        for (int o = 0; o < L3; ++o)
+            h3[o] = clip01(l3_b[o] + dot_i8(&l3_w_i8[static_cast<size_t>(o) * L2], h2_i8, L2) / cs3);
+        uint8_t h3_i8[NNUE_L1_MAX];
+        for (int l = 0; l < L3; l += 8) quant8(h3 + l, h3_i8 + l, sc);
+        float ov = out_b + dot_i8(out_w_i8.data(), h3_i8, L3) / cso;
+        Value v = static_cast<Value>(std::llround(ov * OUT_SCALE));
+        st_eval.us += now_us() - _t; ++st_eval.n;
+        return v;
     }
     // L2: 16 SIMD dot products over 2*L1 inputs (the dominant cost — was scalar).
     float h2[NNUE_L1_MAX];
