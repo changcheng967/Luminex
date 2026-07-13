@@ -9,7 +9,9 @@
 namespace luminex::nnue {
 
 // Compile-time cap on L1 width (the runtime L1, read from the net, may be smaller).
-inline constexpr int NNUE_L1_MAX = 512;
+// Bumped 512->1024 to allow L1=1024 nets (raw-strength push toward 3000 Elo). The
+// accumulator buffers (float [2][NNUE_L1_MAX]) and h_i8/h2 stacks are sized from this.
+inline constexpr int NNUE_L1_MAX = 1024;
 
 // Load a .nnue file. Returns true on success. Safe to call multiple times.
 bool load(const std::string& path);
