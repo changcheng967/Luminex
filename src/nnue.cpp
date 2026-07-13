@@ -124,6 +124,7 @@ static inline long long rdtsc() {
 #endif
 }
 void print_stats() {
+    if (!profile_on()) return;
     std::fprintf(stderr, "NNUE profile: evals=%lld (%.1fM cyc, %.0f cyc/eval) | updates=%lld (%.1fM cyc, %.0f cyc/upd) | refreshes=%lld (%.1fM cyc)\n",
                  st_eval.n, st_eval.cyc/1000000.0, st_eval.n ? double(st_eval.cyc)/st_eval.n : 0.0,
                  st_update.n, st_update.cyc/1000000.0, st_update.n ? double(st_update.cyc)/st_update.n : 0.0,
@@ -340,12 +341,13 @@ static void refresh_perspective(const Position& pos, Accumulator& a, int p) {
 
 void refresh(Position& pos) {
     if (!g_loaded) return;
-    long long t0 = rdtsc();
+    bool pr = profile_on();
+    long long t0 = pr ? rdtsc() : 0;
     Accumulator* const acc_stack = nnue_acc_stack();
     Accumulator& a = acc_stack[pos.state_ply()];
     refresh_perspective(pos, a, 0);
     refresh_perspective(pos, a, 1);
-    st_refresh.cyc += rdtsc() - t0; st_refresh.n++;
+    if (pr) { st_refresh.cyc += rdtsc() - t0; st_refresh.n++; }
 }
 
 void copy_for_null(Position& pos) {
@@ -358,7 +360,8 @@ void copy_for_null(Position& pos) {
 void update(Position& pos, Move m, Piece moved, PieceType captured) {
     if (!g_loaded) return;
 
-    long long t0 = rdtsc();
+    bool pr = profile_on();
+    long long t0 = pr ? rdtsc() : 0;
     Accumulator* const acc_stack = nnue_acc_stack();
     int ply = pos.state_ply();
     Accumulator& a = acc_stack[ply];
@@ -424,11 +427,12 @@ void update(Position& pos, Move m, Piece moved, PieceType captured) {
             add_feature(a, p, ksq, rto,   make_piece(us, ROOK));
         }
     }
-    st_update.cyc += rdtsc() - t0; st_update.n++;
+    if (pr) { st_update.cyc += rdtsc() - t0; st_update.n++; }
 }
 
 Value evaluate(const Position& pos) {
-    long long t0 = rdtsc();
+    bool pr = profile_on();
+    long long t0 = pr ? rdtsc() : 0;
     Accumulator* const acc_stack = nnue_acc_stack();
 #ifndef NDEBUG
     // Self-check (debug only): recompute the accumulator from scratch and compare to the
@@ -560,7 +564,7 @@ Value evaluate(const Position& pos) {
         float ov = out_b + dot_i8(out_w_i8.data(), h3_i8, L3) / cso;
 #endif
         Value v = static_cast<Value>(std::llround(ov * OUT_SCALE));
-        st_eval.cyc += rdtsc() - t0; st_eval.n++;
+        if (pr) { st_eval.cyc += rdtsc() - t0; st_eval.n++; }
         return v;
     }
     // ---- float L2/L3/out path (LNN1 nets) ----
@@ -608,7 +612,7 @@ Value evaluate(const Position& pos) {
     float ov = out_b;
     for (int i = 0; i < L3; ++i) ov += out_w[i] * h3[i];
     Value v = static_cast<Value>(std::llround(ov * OUT_SCALE));
-    st_eval.cyc += rdtsc() - t0; st_eval.n++;
+    if (pr) { st_eval.cyc += rdtsc() - t0; st_eval.n++; }
     return v;
 }
 
