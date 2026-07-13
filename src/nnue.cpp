@@ -133,7 +133,11 @@ static inline int halfka_idx(bool white_pov, int king_sq, int sq, Piece p) {
 }
 
 static int g_L1 = 0, g_L2 = 0, g_L3 = 0;
-static std::vector<float> ft_w;   // (NUM_INPUTS, L1) transposed
+// FT weights stored as int16 (half the memory traffic vs float → fewer L3 misses on
+// feature delta). The accumulator stays full float32 (no SCReLU precision loss).
+static constexpr float FT_WSCALE = 4096.0f;
+static constexpr float FT_WINV = 1.0f / FT_WSCALE;
+static std::vector<int16_t> ft_w;   // (NUM_INPUTS, L1) int16, transposed
 static std::vector<float> ft_b;   // (L1,)
 static std::vector<float> l2_w, l2_b, l3_w, l3_b, out_w;
 static float out_b = 0.0f;
@@ -188,7 +192,7 @@ bool load(const std::string& path) {
     ft_w.resize(static_cast<size_t>(NUM_INPUTS) * L1);
     for (int i = 0; i < NUM_INPUTS; ++i)
         for (int l = 0; l < L1; ++l)
-            ft_w[i * L1 + l] = ft_w_raw[l * NUM_INPUTS + i];
+            ft_w[i * L1 + l] = (int16_t)std::lround(ft_w_raw[l * NUM_INPUTS + i] * FT_WSCALE);
     if (!read_tensor(f, ft_b, L1)) return false;
     if (g_int8) {
         // LNI8: int8 weights + float bias + float scale, per layer.
@@ -244,24 +248,34 @@ static inline float clip01(float x) { float c = x < 0.0f ? 0.0f : (x > 1.0f ? 1.
 
 static inline void add_feature(Accumulator& a, int p, int ksq, int sq, Piece piece) {
     int idx = halfka_idx(p == 0, ksq, sq, piece);
-    const float* w = &ft_w[static_cast<size_t>(idx) * g_L1];
+    const int16_t* w = &ft_w[static_cast<size_t>(idx) * g_L1];
     float* acc = a.v[p];
 #if defined(__AVX2__)
-    for (int l = 0; l < g_L1; l += 8)
-        _mm256_storeu_ps(acc + l, _mm256_add_ps(_mm256_loadu_ps(acc + l), _mm256_loadu_ps(w + l)));
+    const __m256 winv = _mm256_set1_ps(FT_WINV);
+    for (int l = 0; l < g_L1; l += 8) {
+        __m128i w8 = _mm_loadu_si128((const __m128i*)(w + l));   // 8 int16
+        __m256i w32 = _mm256_cvtepi16_epi32(w8);                  // 8 int32
+        __m256 wf = _mm256_mul_ps(_mm256_cvtepi32_ps(w32), winv); // 8 float (scaled)
+        _mm256_storeu_ps(acc + l, _mm256_add_ps(_mm256_loadu_ps(acc + l), wf));
+    }
 #else
-    for (int l = 0; l < g_L1; ++l) acc[l] += w[l];
+    for (int l = 0; l < g_L1; ++l) acc[l] += w[l] * FT_WINV;
 #endif
 }
 static inline void remove_feature(Accumulator& a, int p, int ksq, int sq, Piece piece) {
     int idx = halfka_idx(p == 0, ksq, sq, piece);
-    const float* w = &ft_w[static_cast<size_t>(idx) * g_L1];
+    const int16_t* w = &ft_w[static_cast<size_t>(idx) * g_L1];
     float* acc = a.v[p];
 #if defined(__AVX2__)
-    for (int l = 0; l < g_L1; l += 8)
-        _mm256_storeu_ps(acc + l, _mm256_sub_ps(_mm256_loadu_ps(acc + l), _mm256_loadu_ps(w + l)));
+    const __m256 winv = _mm256_set1_ps(FT_WINV);
+    for (int l = 0; l < g_L1; l += 8) {
+        __m128i w8 = _mm_loadu_si128((const __m128i*)(w + l));
+        __m256i w32 = _mm256_cvtepi16_epi32(w8);
+        __m256 wf = _mm256_mul_ps(_mm256_cvtepi32_ps(w32), winv);
+        _mm256_storeu_ps(acc + l, _mm256_sub_ps(_mm256_loadu_ps(acc + l), wf));
+    }
 #else
-    for (int l = 0; l < g_L1; ++l) acc[l] -= w[l];
+    for (int l = 0; l < g_L1; ++l) acc[l] -= w[l] * FT_WINV;
 #endif
 }
 
@@ -270,13 +284,17 @@ static void refresh_perspective(const Position& pos, Accumulator& a, int p) {
     int ksq = static_cast<int>(pos.king_sq(white_pov ? WHITE : BLACK));
     float* acc = a.v[p];
 #if defined(__AVX2__)
+    const __m256 winv = _mm256_set1_ps(FT_WINV);
     for (int l = 0; l < g_L1; l += 8) _mm256_storeu_ps(acc + l, _mm256_loadu_ps(&ft_b[l]));
     for (int sq = 0; sq < NUM_SQ; ++sq) {
         Piece pc = pos.piece_on(Square(sq));
         if (pc == NO_PIECE) continue;
-        const float* w = &ft_w[static_cast<size_t>(halfka_idx(white_pov, ksq, sq, pc)) * g_L1];
-        for (int l = 0; l < g_L1; l += 8)
-            _mm256_storeu_ps(acc + l, _mm256_add_ps(_mm256_loadu_ps(acc + l), _mm256_loadu_ps(w + l)));
+        const int16_t* w = &ft_w[static_cast<size_t>(halfka_idx(white_pov, ksq, sq, pc)) * g_L1];
+        for (int l = 0; l < g_L1; l += 8) {
+            __m128i w8 = _mm_loadu_si128((const __m128i*)(w + l));
+            __m256 wf = _mm256_mul_ps(_mm256_cvtepi32_ps(_mm256_cvtepi16_epi32(w8)), winv);
+            _mm256_storeu_ps(acc + l, _mm256_add_ps(_mm256_loadu_ps(acc + l), wf));
+        }
     }
 #else
     for (int l = 0; l < g_L1; ++l) acc[l] = ft_b[l];
@@ -284,7 +302,7 @@ static void refresh_perspective(const Position& pos, Accumulator& a, int p) {
         Piece pc = pos.piece_on(Square(sq));
         if (pc == NO_PIECE) continue;
         int idx = halfka_idx(white_pov, ksq, sq, pc);
-        const float* w = &ft_w[static_cast<size_t>(idx) * g_L1];
+        const int16_t* w = &ft_w[static_cast<size_t>(idx) * g_L1];
         for (int l = 0; l < g_L1; ++l) acc[l] += w[l];
     }
 #endif
@@ -309,11 +327,10 @@ void copy_for_null(Position& pos) {
 
 void update(Position& pos, Move m, Piece moved, PieceType captured) {
     if (!g_loaded) return;
-    
+
     Accumulator* const acc_stack = nnue_acc_stack();
     int ply = pos.state_ply();
     Accumulator& a = acc_stack[ply];
-    acc_stack[ply] = acc_stack[ply - 1];   // copy parent → child, then apply deltas below
 
     Square from = m.from(), to = m.to();
     Color us = color_of_piece(moved);
@@ -325,6 +342,27 @@ void update(Position& pos, Move m, Piece moved, PieceType captured) {
     bool castling = m.is_castling();
     PieceType from_pt = promo ? PAWN : moved_pt;
     PieceType to_pt   = promo ? PieceType(m.promotion_type()) : moved_pt;
+
+    // Prefetch the feature weight rows that will be needed for the delta, OVERLAPPING
+    // with the 4KB copy below. This hides the L3→L1 latency (~100 cycles) behind the
+    // memcpy latency (~200 cycles). No engine does this — SF's flat layout doesn't need it,
+    // but our transposed layout has poor spatial locality per feature access.
+    {
+        int wk = static_cast<int>(pos.king_sq(WHITE));
+        int bk = static_cast<int>(pos.king_sq(BLACK));
+        Piece dep_piece = make_piece(us, from_pt);
+        Piece arr_piece = make_piece(us, to_pt);
+        for (int i = 0; i < 4; ++i) {  // up to 4 prefetches per perspective
+            int idx = -1;
+            if (i == 0) idx = halfka_idx(true,  wk, from, dep_piece);
+            else if (i == 1) idx = halfka_idx(true,  wk, to, arr_piece);
+            else if (i == 2) idx = halfka_idx(false, bk, from, dep_piece);
+            else idx = halfka_idx(false, bk, to, arr_piece);
+            _mm_prefetch((const char*)&ft_w[static_cast<size_t>(idx) * g_L1], _MM_HINT_T0);
+        }
+    }
+
+    acc_stack[ply] = acc_stack[ply - 1];   // copy parent → child (overlaps with prefetch)
 
     for (int p = 0; p < 2; ++p) {
         bool white_pov = (p == 0);
@@ -374,7 +412,7 @@ Value evaluate(const Position& pos) {
                 for (int sq = 0; sq < NUM_SQ; ++sq) {
                     Piece pc = pos.piece_on(Square(sq));
                     if (pc == NO_PIECE) continue;
-                    ref += ft_w[static_cast<size_t>(halfka_idx(white_pov, ksq, sq, pc)) * g_L1 + l];
+                    ref += ft_w[static_cast<size_t>(halfka_idx(white_pov, ksq, sq, pc)) * g_L1 + l] * FT_WINV;
                 }
                 if (std::fabs(ref - inc.v[p][l]) > 1e-3) {
                     std::fprintf(stderr, "NNUE ACC MISMATCH ply=%d p=%d l=%d ref=%.4f inc=%.4f\n",
