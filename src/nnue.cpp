@@ -86,20 +86,48 @@ static inline int32_t dot_i8_vnni(const int8_t* w, const uint8_t* a, int n) {
     for (; i < n; ++i) sum += (int32_t)w[i] * (int32_t)a[i];
     return sum;
 }
+// Small-n dot (n <= 64): one VPDPBUSD over zero-extended inputs, then reduce.
+// For L3 (n=L2=16) and out (n=L3=32) this replaces ~512 scalar int muls with a
+// single VNNI instruction — the dominant eval cost after L2.
+static inline int32_t dot_i8_vnni_small(const int8_t* w, const uint8_t* a, int n) {
+    __m512i av, wv;
+    if (n <= 16) {
+        av = _mm512_zextsi128_si512(_mm_loadu_si128((const __m128i*)a));
+        wv = _mm512_zextsi128_si512(_mm_loadu_si128((const __m128i*)w));
+    } else if (n <= 32) {
+        av = _mm512_zextsi256_si512(_mm256_loadu_si256((const __m256i*)a));
+        wv = _mm512_zextsi256_si512(_mm256_loadu_si256((const __m256i*)w));
+    } else {  // 32 < n <= 64: load full 64 bytes (caller guarantees bounds).
+        av = _mm512_loadu_si512((const void*)a);
+        wv = _mm512_loadu_si512((const void*)w);
+    }
+    __m512i acc = _mm512_dpbusd_epi32(_mm512_setzero_si512(), av, wv);
+    return _mm512_reduce_add_epi32(acc);
+}
 #endif
 
 // ---- profiling counters (data-driven: find the NPS bottleneck from numbers) ----
-namespace { struct Stat { long long n = 0, us = 0; }; }
+namespace { struct Stat { long long n = 0, cyc = 0; }; }
 static Stat st_eval, st_update, st_refresh;
-static inline long long now_us() {
-    return std::chrono::duration_cast<std::chrono::microseconds>(
-        std::chrono::steady_clock::now().time_since_epoch()).count();
+static bool g_profile = false;
+static bool g_profile_inited = false;
+static inline bool profile_on() {
+    if (!g_profile_inited) { g_profile = (std::getenv("NNUE_PROFILE") != nullptr); g_profile_inited = true; }
+    return g_profile;
+}
+static inline long long rdtsc() {
+#if defined(__x86_64__) || defined(__i386__)
+    unsigned a, d; __asm__ __volatile__("rdtsc" : "=a"(a), "=d"(d));
+    return ((long long)d << 32) | a;
+#else
+    return 0;
+#endif
 }
 void print_stats() {
-    std::fprintf(stderr, "NNUE stats: evals=%lld (%lldms, %.2fus/eval) | updates=%lld (%lldms, %.2fus/upd) | refreshes=%lld (%lldms)\n",
-                 st_eval.n, st_eval.us/1000, st_eval.n ? double(st_eval.us)/st_eval.n : 0.0,
-                 st_update.n, st_update.us/1000, st_update.n ? double(st_update.us)/st_update.n : 0.0,
-                 st_refresh.n, st_refresh.us/1000);
+    std::fprintf(stderr, "NNUE profile: evals=%lld (%.1fM cyc, %.0f cyc/eval) | updates=%lld (%.1fM cyc, %.0f cyc/upd) | refreshes=%lld (%.1fM cyc)\n",
+                 st_eval.n, st_eval.cyc/1000000.0, st_eval.n ? double(st_eval.cyc)/st_eval.n : 0.0,
+                 st_update.n, st_update.cyc/1000000.0, st_update.n ? double(st_update.cyc)/st_update.n : 0.0,
+                 st_refresh.n, st_refresh.cyc/1000000.0);
 }
 
 constexpr int NUM_SQ = 64;
@@ -312,12 +340,12 @@ static void refresh_perspective(const Position& pos, Accumulator& a, int p) {
 
 void refresh(Position& pos) {
     if (!g_loaded) return;
-    
+    long long t0 = rdtsc();
     Accumulator* const acc_stack = nnue_acc_stack();
     Accumulator& a = acc_stack[pos.state_ply()];
     refresh_perspective(pos, a, 0);
     refresh_perspective(pos, a, 1);
-    
+    st_refresh.cyc += rdtsc() - t0; st_refresh.n++;
 }
 
 void copy_for_null(Position& pos) {
@@ -330,6 +358,7 @@ void copy_for_null(Position& pos) {
 void update(Position& pos, Move m, Piece moved, PieceType captured) {
     if (!g_loaded) return;
 
+    long long t0 = rdtsc();
     Accumulator* const acc_stack = nnue_acc_stack();
     int ply = pos.state_ply();
     Accumulator& a = acc_stack[ply];
@@ -395,11 +424,11 @@ void update(Position& pos, Move m, Piece moved, PieceType captured) {
             add_feature(a, p, ksq, rto,   make_piece(us, ROOK));
         }
     }
-    
+    st_update.cyc += rdtsc() - t0; st_update.n++;
 }
 
 Value evaluate(const Position& pos) {
-    
+    long long t0 = rdtsc();
     Accumulator* const acc_stack = nnue_acc_stack();
 #ifndef NDEBUG
     // Self-check (debug only): recompute the accumulator from scratch and compare to the
@@ -519,10 +548,10 @@ Value evaluate(const Position& pos) {
         float h3[NNUE_L1_MAX];
 #if defined(__AVX512VNNI__)
         for (int o = 0; o < L3; ++o)
-            h3[o] = clip01(l3_b[o] + dot_i8_vnni(&l3_w_i8[static_cast<size_t>(o) * L2], h2_i8, L2) / cs3);
+            h3[o] = clip01(l3_b[o] + dot_i8_vnni_small(&l3_w_i8[static_cast<size_t>(o) * L2], h2_i8, L2) / cs3);
         uint8_t h3_i8[NNUE_L1_MAX];
         for (int l = 0; l < L3; l += 8) quant8(h3 + l, h3_i8 + l, sc127);
-        float ov = out_b + dot_i8_vnni(out_w_i8.data(), h3_i8, L3) / cso;
+        float ov = out_b + dot_i8_vnni_small(out_w_i8.data(), h3_i8, L3) / cso;
 #else
         for (int o = 0; o < L3; ++o)
             h3[o] = clip01(l3_b[o] + dot_i8(&l3_w_i8[static_cast<size_t>(o) * L2], h2_i8, L2) / cs3);
@@ -531,7 +560,7 @@ Value evaluate(const Position& pos) {
         float ov = out_b + dot_i8(out_w_i8.data(), h3_i8, L3) / cso;
 #endif
         Value v = static_cast<Value>(std::llround(ov * OUT_SCALE));
-        
+        st_eval.cyc += rdtsc() - t0; st_eval.n++;
         return v;
     }
     // ---- float L2/L3/out path (LNN1 nets) ----
@@ -579,7 +608,7 @@ Value evaluate(const Position& pos) {
     float ov = out_b;
     for (int i = 0; i < L3; ++i) ov += out_w[i] * h3[i];
     Value v = static_cast<Value>(std::llround(ov * OUT_SCALE));
-    
+    st_eval.cyc += rdtsc() - t0; st_eval.n++;
     return v;
 }
 
