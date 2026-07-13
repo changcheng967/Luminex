@@ -118,20 +118,19 @@ static inline int halfka_idx(bool white_pov, int king_sq, int sq, Piece p) {
 }
 
 static int g_L1 = 0, g_L2 = 0, g_L3 = 0;
-// int16 FT: weights quantized to int8 at load (FT_SCALE), accumulator is int16.
-// Halves the copy (2KB vs 4KB) and makes activations clip+square+shift in pure int.
-static constexpr float FT_SCALE = 64.0f;
-static std::vector<int8_t> ft_w;    // (NUM_INPUTS, L1) int8, transposed
-static std::vector<int16_t> ft_b;   // (L1,) int16
-static std::vector<float> l2_w, l2_b, l3_w, l3_b, out_w;  // float L2/L3/out (LNN1)
+static std::vector<float> ft_w;   // (NUM_INPUTS, L1) transposed
+static std::vector<float> ft_b;   // (L1,)
+static std::vector<float> l2_w, l2_b, l3_w, l3_b, out_w;
 static float out_b = 0.0f;
+// int8 path (LNI8): L2/L3/out weights as int8 + per-layer scales. FT stays float.
 static bool g_int8 = false;
-static std::vector<int8_t> l2_w_i8, l3_w_i8, out_w_i8;  // int8 L2/L3/out (LNI8)
-static float g_s2 = 1.0f, g_s3 = 1.0f, g_so = 1.0f;
+static std::vector<int8_t> l2_w_i8, l3_w_i8, out_w_i8;
+static float g_s2 = 1.0f, g_s3 = 1.0f, g_so = 1.0f;  // weight quant scales
 static bool g_loaded = false;
 static bool g_enabled = false;
 
-struct Accumulator { int16_t v[2][NNUE_L1_MAX]; };
+// Per-thread accumulator stack, indexed by Position::st_ply(). v[perspective][neuron].
+struct Accumulator { float v[2][NNUE_L1_MAX]; };
 // Heap-allocated per thread, NOT a thread_local C-array: an 8MB thread_local array
 // reserves 8MB of *static TLS* for every thread and overflows the stack at creation.
 // The vector object is ~24 bytes of TLS; its 8MB buffer lives on the heap and is freed
@@ -144,11 +143,6 @@ static inline Accumulator* nnue_acc_stack() {
 bool loaded() { return g_loaded; }
 bool enabled() { return g_loaded && g_enabled; }
 void set_enabled(bool on) { g_enabled = on; }
-static bool g_hybrid = false;
-void set_hybrid(bool on) { g_hybrid = on; }
-bool hybrid() { return g_hybrid; }
-static thread_local bool g_skip_updates = false;
-void set_skip_updates(bool on) { g_skip_updates = on; }
 int l1() { return g_L1; }
 
 static bool read_tensor(std::ifstream& f, std::vector<float>& v, int expected) {
@@ -174,20 +168,13 @@ bool load(const std::string& path) {
     if (NI != NUM_INPUTS) { std::fprintf(stderr, "nnue: NUM_INPUTS mismatch %d\n", NI); return false; }
     if (L1 <= 0 || L1 > NNUE_L1_MAX) { std::fprintf(stderr, "nnue: L1=%d out of range (max %d)\n", L1, NNUE_L1_MAX); return false; }
     g_L1 = L1; g_L2 = L2; g_L3 = L3;
-    // Quantize FT to int8 (no retrain): ft_w_int8 = round(ft_w_float * FT_SCALE), clipped.
     std::vector<float> ft_w_raw;
     if (!read_tensor(f, ft_w_raw, L1 * NUM_INPUTS)) return false;
     ft_w.resize(static_cast<size_t>(NUM_INPUTS) * L1);
     for (int i = 0; i < NUM_INPUTS; ++i)
-        for (int l = 0; l < L1; ++l) {
-            int v = (int)std::lround(ft_w_raw[l * NUM_INPUTS + i] * FT_SCALE);
-            ft_w[i * L1 + l] = (int8_t)std::max(-127, std::min(127, v));
-        }
-    {   std::vector<float> ft_b_raw;
-        if (!read_tensor(f, ft_b_raw, L1)) return false;
-        ft_b.resize(L1);
-        for (int l = 0; l < L1; ++l) ft_b[l] = (int16_t)std::lround(ft_b_raw[l] * FT_SCALE);
-    }
+        for (int l = 0; l < L1; ++l)
+            ft_w[i * L1 + l] = ft_w_raw[l * NUM_INPUTS + i];
+    if (!read_tensor(f, ft_b, L1)) return false;
     if (g_int8) {
         // LNI8: int8 weights + float bias + float scale, per layer.
         auto read_i8 = [&](std::vector<int8_t>& v, int expected) -> bool {
@@ -227,30 +214,22 @@ static inline float clip01(float x) { float c = x < 0.0f ? 0.0f : (x > 1.0f ? 1.
 
 static inline void add_feature(Accumulator& a, int p, int ksq, int sq, Piece piece) {
     int idx = halfka_idx(p == 0, ksq, sq, piece);
-    const int8_t* w = &ft_w[static_cast<size_t>(idx) * g_L1];
-    int16_t* acc = a.v[p];
+    const float* w = &ft_w[static_cast<size_t>(idx) * g_L1];
+    float* acc = a.v[p];
 #if defined(__AVX2__)
-    for (int l = 0; l < g_L1; l += 16) {
-        __m128i w8 = _mm_loadu_si128((const __m128i*)(w + l));
-        __m256i w16 = _mm256_cvtepi8_epi16(w8);
-        __m256i a16 = _mm256_loadu_si256((__m256i*)(acc + l));
-        _mm256_storeu_si256((__m256i*)(acc + l), _mm256_add_epi16(a16, w16));
-    }
+    for (int l = 0; l < g_L1; l += 8)
+        _mm256_storeu_ps(acc + l, _mm256_add_ps(_mm256_loadu_ps(acc + l), _mm256_loadu_ps(w + l)));
 #else
     for (int l = 0; l < g_L1; ++l) acc[l] += w[l];
 #endif
 }
 static inline void remove_feature(Accumulator& a, int p, int ksq, int sq, Piece piece) {
     int idx = halfka_idx(p == 0, ksq, sq, piece);
-    const int8_t* w = &ft_w[static_cast<size_t>(idx) * g_L1];
-    int16_t* acc = a.v[p];
+    const float* w = &ft_w[static_cast<size_t>(idx) * g_L1];
+    float* acc = a.v[p];
 #if defined(__AVX2__)
-    for (int l = 0; l < g_L1; l += 16) {
-        __m128i w8 = _mm_loadu_si128((const __m128i*)(w + l));
-        __m256i w16 = _mm256_cvtepi8_epi16(w8);
-        __m256i a16 = _mm256_loadu_si256((__m256i*)(acc + l));
-        _mm256_storeu_si256((__m256i*)(acc + l), _mm256_sub_epi16(a16, w16));
-    }
+    for (int l = 0; l < g_L1; l += 8)
+        _mm256_storeu_ps(acc + l, _mm256_sub_ps(_mm256_loadu_ps(acc + l), _mm256_loadu_ps(w + l)));
 #else
     for (int l = 0; l < g_L1; ++l) acc[l] -= w[l];
 #endif
@@ -259,45 +238,48 @@ static inline void remove_feature(Accumulator& a, int p, int ksq, int sq, Piece 
 static void refresh_perspective(const Position& pos, Accumulator& a, int p) {
     bool white_pov = (p == 0);
     int ksq = static_cast<int>(pos.king_sq(white_pov ? WHITE : BLACK));
-    int16_t* acc = a.v[p];
-    std::memcpy(acc, ft_b.data(), g_L1 * sizeof(int16_t));
+    float* acc = a.v[p];
+#if defined(__AVX2__)
+    for (int l = 0; l < g_L1; l += 8) _mm256_storeu_ps(acc + l, _mm256_loadu_ps(&ft_b[l]));
     for (int sq = 0; sq < NUM_SQ; ++sq) {
         Piece pc = pos.piece_on(Square(sq));
         if (pc == NO_PIECE) continue;
-        const int8_t* w = &ft_w[static_cast<size_t>(halfka_idx(white_pov, ksq, sq, pc)) * g_L1];
-#if defined(__AVX2__)
-        for (int l = 0; l < g_L1; l += 16) {
-            __m128i w8 = _mm_loadu_si128((const __m128i*)(w + l));
-            __m256i w16 = _mm256_cvtepi8_epi16(w8);
-            __m256i a16 = _mm256_loadu_si256((__m256i*)(acc + l));
-            _mm256_storeu_si256((__m256i*)(acc + l), _mm256_add_epi16(a16, w16));
-        }
-#else
-        for (int l = 0; l < g_L1; ++l) acc[l] += w[l];
-#endif
+        const float* w = &ft_w[static_cast<size_t>(halfka_idx(white_pov, ksq, sq, pc)) * g_L1];
+        for (int l = 0; l < g_L1; l += 8)
+            _mm256_storeu_ps(acc + l, _mm256_add_ps(_mm256_loadu_ps(acc + l), _mm256_loadu_ps(w + l)));
     }
+#else
+    for (int l = 0; l < g_L1; ++l) acc[l] = ft_b[l];
+    for (int sq = 0; sq < NUM_SQ; ++sq) {
+        Piece pc = pos.piece_on(Square(sq));
+        if (pc == NO_PIECE) continue;
+        int idx = halfka_idx(white_pov, ksq, sq, pc);
+        const float* w = &ft_w[static_cast<size_t>(idx) * g_L1];
+        for (int l = 0; l < g_L1; ++l) acc[l] += w[l];
+    }
+#endif
 }
 
 void refresh(Position& pos) {
     if (!g_loaded) return;
-    long long _t = now_us();
+    
     Accumulator* const acc_stack = nnue_acc_stack();
     Accumulator& a = acc_stack[pos.state_ply()];
     refresh_perspective(pos, a, 0);
     refresh_perspective(pos, a, 1);
-    st_refresh.us += now_us() - _t; ++st_refresh.n;
+    
 }
 
 void copy_for_null(Position& pos) {
-    if (!g_loaded || g_skip_updates) return;
+    if (!g_loaded) return;
     Accumulator* const acc_stack = nnue_acc_stack();
     int ply = pos.state_ply();
     acc_stack[ply] = acc_stack[ply - 1];   // board unchanged → child = parent
 }
 
 void update(Position& pos, Move m, Piece moved, PieceType captured) {
-    if (!g_loaded || g_skip_updates) return;
-    long long _t = now_us();
+    if (!g_loaded) return;
+    
     Accumulator* const acc_stack = nnue_acc_stack();
     int ply = pos.state_ply();
     Accumulator& a = acc_stack[ply];
@@ -343,28 +325,30 @@ void update(Position& pos, Move m, Piece moved, PieceType captured) {
             add_feature(a, p, ksq, rto,   make_piece(us, ROOK));
         }
     }
-    st_update.us += now_us() - _t; ++st_update.n;
+    
 }
 
 Value evaluate(const Position& pos) {
-    long long _t = now_us();
+    
     Accumulator* const acc_stack = nnue_acc_stack();
 #ifndef NDEBUG
+    // Self-check (debug only): recompute the accumulator from scratch and compare to the
+    // incrementally-maintained one. Catches any bug in update()'s feature deltas immediately.
     if (g_loaded) {
         const Accumulator& inc = acc_stack[pos.state_ply()];
         for (int p = 0; p < 2; ++p) {
             bool white_pov = (p == 0);
             int ksq = static_cast<int>(pos.king_sq(white_pov ? WHITE : BLACK));
             for (int l = 0; l < g_L1; ++l) {
-                int16_t ref = ft_b[l];
+                float ref = ft_b[l];
                 for (int sq = 0; sq < NUM_SQ; ++sq) {
                     Piece pc = pos.piece_on(Square(sq));
                     if (pc == NO_PIECE) continue;
                     ref += ft_w[static_cast<size_t>(halfka_idx(white_pov, ksq, sq, pc)) * g_L1 + l];
                 }
-                if (std::abs(ref - inc.v[p][l]) > 1) {
-                    std::fprintf(stderr, "NNUE ACC MISMATCH ply=%d p=%d l=%d ref=%d inc=%d\n",
-                                 pos.state_ply(), p, l, (int)ref, (int)inc.v[p][l]);
+                if (std::fabs(ref - inc.v[p][l]) > 1e-3) {
+                    std::fprintf(stderr, "NNUE ACC MISMATCH ply=%d p=%d l=%d ref=%.4f inc=%.4f\n",
+                                 pos.state_ply(), p, l, ref, inc.v[p][l]);
                     std::abort();
                 }
             }
@@ -374,41 +358,27 @@ Value evaluate(const Position& pos) {
     const Accumulator& a = acc_stack[pos.state_ply()];
     int L1 = g_L1, L2 = g_L2, L3 = g_L3;
     bool stm_white = (pos.side_to_move() == WHITE);
-    const int16_t* acc_stm  = stm_white ? a.v[0] : a.v[1];
-    const int16_t* acc_nstm = stm_white ? a.v[1] : a.v[0];
+    const float* acc_stm  = stm_white ? a.v[0] : a.v[1];
+    const float* acc_nstm = stm_white ? a.v[1] : a.v[0];
 
-    if (g_int8) {
-        // int16 FT → int activation: clip [0,64], square, >>5 → uint8. Pure int, no float SCReLU.
-        uint8_t h_i8[2 * NNUE_L1_MAX];
+    float h[2 * NNUE_L1_MAX];
 #if defined(__AVX2__)
-        const __m256i zero_i = _mm256_setzero_si256();
-        const __m256i cap = _mm256_set1_epi16((short)FT_SCALE);
-        const __m256i h127 = _mm256_set1_epi16(127);
-        auto act16 = [&](const int16_t* src, uint8_t* dst) {
-            for (int l = 0; l < L1; l += 16) {
-                __m256i x = _mm256_loadu_si256((const __m256i*)(src + l));
-                x = _mm256_min_epi16(_mm256_max_epi16(x, zero_i), cap);  // clip [0, 64]
-                x = _mm256_mullo_epi16(x, x);                            // square (≤4096, fits int16)
-                x = _mm256_srli_epi16(x, 5);                             // >>5 (÷32 ≈ ÷(64²/128))
-                x = _mm256_min_epi16(x, h127);                           // clip 127
-                _mm_storeu_si128((__m128i*)(dst + l),
-                    _mm_packus_epi16(_mm256_castsi256_si128(x), _mm256_extracti128_si256(x, 1)));
-            }
-        };
-        act16(acc_stm, h_i8);
-        act16(acc_nstm, h_i8 + L1);
-#else
-        for (int l = 0; l < L1; ++l) {
-            int c1 = std::max(0, std::min((int)FT_SCALE, (int)acc_stm[l]));
-            int c2 = std::max(0, std::min((int)FT_SCALE, (int)acc_nstm[l]));
-            h_i8[l] = (uint8_t)std::min(127, (c1 * c1) >> 5);
-            h_i8[L1 + l] = (uint8_t)std::min(127, (c2 * c2) >> 5);
-        }
-#endif
-        // L2/L3/out: int8 dot products. FT activation scale = 128 (clip² × 128, not 127).
-        const float cs2 = g_s2 * 128.0f, cs3 = g_s3 * 127.0f, cso = g_so * 127.0f;
+    // SCReLU on the accumulator → h, 8 floats at a time.
+    const __m256 z = _mm256_setzero_ps(), one = _mm256_set1_ps(1.0f);
+    for (int l = 0; l < L1; l += 8) {
+        __m256 s1 = _mm256_loadu_ps(acc_stm + l);
+        __m256 s2 = _mm256_loadu_ps(acc_nstm + l);
+        _mm256_storeu_ps(h + l,      screlu8(s1, z, one));
+        _mm256_storeu_ps(h + L1 + l, screlu8(s2, z, one));
+    }
+    // ---- int8 path (LNI8): quantize activations, int8 SIMD matmuls. ~3.5x over float ----
+    if (g_int8) {
+        uint8_t h_i8[2 * NNUE_L1_MAX];
+        const __m256 sc = _mm256_set1_ps(127.0f);
+        for (int l = 0; l < 2 * L1; l += 8) quant8(h + l, h_i8 + l, sc);
+        const float cs2 = g_s2 * 127.0f, cs3 = g_s3 * 127.0f, cso = g_so * 127.0f;
         float h2[NNUE_L1_MAX];
-        for (int o = 0; o < L2; o += 4) {
+        for (int o = 0; o < L2; o += 4) {  // unroll 4: independent dots -> ILP
             int32_t d0 = dot_i8(&l2_w_i8[static_cast<size_t>(o+0) * 2 * L1], h_i8, 2 * L1);
             int32_t d1 = dot_i8(&l2_w_i8[static_cast<size_t>(o+1) * 2 * L1], h_i8, 2 * L1);
             int32_t d2 = dot_i8(&l2_w_i8[static_cast<size_t>(o+2) * 2 * L1], h_i8, 2 * L1);
@@ -419,7 +389,6 @@ Value evaluate(const Position& pos) {
             h2[o+3] = clip01(l2_b[o+3] + d3 / cs2);
         }
         uint8_t h2_i8[NNUE_L1_MAX];
-        const __m256 sc = _mm256_set1_ps(127.0f);
         for (int l = 0; l < L2; l += 8) quant8(h2 + l, h2_i8 + l, sc);
         float h3[NNUE_L1_MAX];
         for (int o = 0; o < L3; ++o)
@@ -428,16 +397,10 @@ Value evaluate(const Position& pos) {
         for (int l = 0; l < L3; l += 8) quant8(h3 + l, h3_i8 + l, sc);
         float ov = out_b + dot_i8(out_w_i8.data(), h3_i8, L3) / cso;
         Value v = static_cast<Value>(std::llround(ov * OUT_SCALE));
-        st_eval.us += now_us() - _t; ++st_eval.n;
+        
         return v;
     }
-    // ---- LNN1 float path: dequantize int16 acc → float, then float SCReLU + L2/L3/out ----
-    float h[2 * NNUE_L1_MAX];
-    for (int l = 0; l < L1; ++l) {
-        h[l]      = clip01(acc_stm[l]  / FT_SCALE);
-        h[L1 + l] = clip01(acc_nstm[l] / FT_SCALE);
-    }
-#if defined(__AVX2__)
+    // L2: 16 SIMD dot products over 2*L1 inputs (the dominant cost — was scalar).
     float h2[NNUE_L1_MAX];
     for (int o = 0; o < L2; ++o) {
         const float* w = &l2_w[o * 2 * L1];
@@ -446,6 +409,7 @@ Value evaluate(const Position& pos) {
             accv = _mm256_fmadd_ps(_mm256_loadu_ps(w + i), _mm256_loadu_ps(h + i), accv);
         h2[o] = clip01(hsum256(accv) + l2_b[o]);
     }
+    // L3: SIMD dot products over L2 inputs.
     float h3[NNUE_L1_MAX];
     for (int o = 0; o < L3; ++o) {
         const float* w = &l3_w[o * L2];
@@ -459,6 +423,7 @@ Value evaluate(const Position& pos) {
     }
 #else
     float h2[NNUE_L1_MAX];
+    for (int l = 0; l < L1; ++l) { h[l] = clip01(acc_stm[l]); h[L1 + l] = clip01(acc_nstm[l]); }
     for (int o = 0; o < L2; ++o) {
         float s = l2_b[o]; const float* w = &l2_w[o * 2 * L1];
         for (int i = 0; i < 2 * L1; ++i) s += w[i] * h[i];
@@ -474,7 +439,7 @@ Value evaluate(const Position& pos) {
     float ov = out_b;
     for (int i = 0; i < L3; ++i) ov += out_w[i] * h3[i];
     Value v = static_cast<Value>(std::llround(ov * OUT_SCALE));
-    st_eval.us += now_us() - _t; ++st_eval.n;
+    
     return v;
 }
 

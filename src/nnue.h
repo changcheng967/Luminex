@@ -20,14 +20,6 @@ bool enabled();
 // Set the UseNNUE flag (wired from the UCI option handler).
 void set_enabled(bool on);
 
-// Hybrid mode: NNUE for qsearch leaves only, HCE for internal nodes.
-void set_hybrid(bool on);
-bool hybrid();
-
-// Skip accumulator updates (used during qsearch in hybrid mode — the position is
-// restored after qsearch, so the accumulator stays correct without updates).
-void set_skip_updates(bool on);
-
 // The NNUE eval for the position, in engine eval units (centipawns).
 // Reads the incremental accumulator (must be current — see refresh/update).
 // Only valid when enabled() is true.

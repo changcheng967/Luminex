@@ -141,7 +141,7 @@ static double compute_loss_and_gradient(double* grad) {
 
             int eval_cp = (int)evaluate(pos, false);
             double sig = 1.0 / (1.0 + std::exp(-eval_cp / (400.0 * K)));
-            double R = dataset[i].result;
+            double R = dataset[i].result;  // game result 0/0.5/1
             double err = sig - R;
             local_loss += err * err;
 
@@ -272,8 +272,7 @@ static bool load_dataset(const char* path) {
         char* sep = std::strrchr(line, '|');
         if (!sep) continue;
         *sep = 0;
-        double r = std::atof(sep + 1);
-        if (r != 0.0 && r != 0.5 && r != 1.0) continue;
+        double r = std::atof(sep + 1);  // SF eval_cp (any integer) or game result (0/0.5/1)
         dataset.push_back({std::string(line), r});
     }
     std::fclose(f);

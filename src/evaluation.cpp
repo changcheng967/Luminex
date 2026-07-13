@@ -478,14 +478,10 @@ static void evaluate_pawns(const Position& pos, int32_t& mg_out, int32_t& eg_out
 // Main evaluation function
 // ============================================================
 Value evaluate(const Position& pos, bool tactical_only) {
-    // INNOVATION: Hybrid HCE+NNUE eval. When NNUEHybrid is on, use the fast HCE
-    // (~0.1us) for internal-node pruning decisions and the precise NNUE (~1us)
-    // only for qsearch leaves (tactical_only=true). This gets HCE speed for the
-    // 80% hot path + NNUE precision for the 20% that matters. No engine does this
-    // — they all use ONE eval for everything. Luminex can because it has a strong
-    // HCE (2470 Elo) alongside the NNUE.
-    if (nnue::enabled() && (!nnue::hybrid() || !tactical_only))
-        return nnue::evaluate(pos);
+    // Optional NNUE evaluation: when a net is loaded AND the user enabled it
+    // via UCI "UseNNUE", the engine uses NNUE instead of HCE. Otherwise the
+    // pure hand-crafted eval below runs unchanged. NNUE is fully optional.
+    if (nnue::enabled()) return nnue::evaluate(pos);
 
     // KXK endgame: one side has only a king
     for (int strong = 0; strong < 2; ++strong) {

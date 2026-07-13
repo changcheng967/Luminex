@@ -293,10 +293,6 @@ bool check_time() {
 
 // Quiescence search
 Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
-    // Hybrid mode: skip NNUE accumulator updates during qsearch — qsearch uses HCE eval,
-    // and the position is restored after qsearch returns, so the accumulator stays correct.
-    struct SkipGuard { bool prev; SkipGuard() { prev = nnue::hybrid(); nnue::set_skip_updates(prev); } ~SkipGuard() { nnue::set_skip_updates(false); } } skip_guard;
-
     // Check for max ply to prevent stack overflow
     if (ss->ply >= MAX_PLY) {
         return evaluate(pos, true);
