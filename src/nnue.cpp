@@ -109,6 +109,7 @@ static inline int32_t dot_i8_vnni_small(const int8_t* w, const uint8_t* a, int n
 // ---- profiling counters (data-driven: find the NPS bottleneck from numbers) ----
 namespace { struct Stat { long long n = 0, cyc = 0; }; }
 static Stat st_eval, st_update, st_refresh;
+static long long g_act_nz = 0, g_act_tot = 0;   // activation sparsity (non-zero L1 outputs after SCReLU)
 static bool g_profile = false;
 static bool g_profile_inited = false;
 static inline bool profile_on() {
@@ -125,10 +126,11 @@ static inline long long rdtsc() {
 }
 void print_stats() {
     if (!profile_on()) return;
-    std::fprintf(stderr, "NNUE profile: evals=%lld (%.1fM cyc, %.0f cyc/eval) | updates=%lld (%.1fM cyc, %.0f cyc/upd) | refreshes=%lld (%.1fM cyc)\n",
+    std::fprintf(stderr, "NNUE profile: evals=%lld (%.1fM cyc, %.0f cyc/eval) | updates=%lld (%.1fM cyc, %.0f cyc/upd) | refreshes=%lld (%.1fM cyc) | L1-act density=%.1f%%\n",
                  st_eval.n, st_eval.cyc/1000000.0, st_eval.n ? double(st_eval.cyc)/st_eval.n : 0.0,
                  st_update.n, st_update.cyc/1000000.0, st_update.n ? double(st_update.cyc)/st_update.n : 0.0,
-                 st_refresh.n, st_refresh.cyc/1000000.0);
+                 st_refresh.n, st_refresh.cyc/1000000.0,
+                 g_act_tot ? 100.0*g_act_nz/g_act_tot : 0.0);
 }
 
 constexpr int NUM_SQ = 64;
@@ -480,9 +482,7 @@ Value evaluate(const Position& pos) {
             // Pack 16 int32 → 16 uint8: int32→int16→uint8
             __m256i i16 = _mm512_cvtepi32_epi16(i32);  // AVX512F: 16 int32 → 16 int16
             __m128i i8 = _mm256_cvtepi16_epi8(i16);     // AVX512F: 16 int16 → 16 int8
-            // Clamp to [0,127] (SCReLU output is always ≥0, clip max)
-            i8 = _mm_min_epu8(i8, _mm_set1_epi8(127));
-            i8 = _mm_max_epu8(i8, _mm_setzero_si128());
+            // c=clip(s,0,1) -> c² in [0,1] -> ×127 -> [0,127] exactly: no clamp needed.
             _mm_storeu_si128((__m128i*)(h_i8 + l), i8);
             // nstm
             s = _mm512_loadu_ps(acc_nstm + l);
@@ -491,8 +491,6 @@ Value evaluate(const Position& pos) {
             i32 = _mm512_cvtps_epi32(_mm512_mul_ps(sq, sc16));
             i16 = _mm512_cvtepi32_epi16(i32);
             i8 = _mm256_cvtepi16_epi8(i16);
-            i8 = _mm_min_epu8(i8, _mm_set1_epi8(127));
-            i8 = _mm_max_epu8(i8, _mm_setzero_si128());
             _mm_storeu_si128((__m128i*)(h_i8 + L1 + l), i8);
         }
 #else
@@ -512,6 +510,7 @@ Value evaluate(const Position& pos) {
             _mm_storel_epi64((__m128i*)(h_i8 + L1 + l), _mm_packus_epi16(_mm_packs_epi32(lo, hi), _mm_setzero_si128()));
         }
 #endif
+        if (pr) { for (int i = 0; i < 2*L1; ++i) g_act_nz += (h_i8[i] != 0); g_act_tot += 2*L1; }
         const float cs2 = g_s2 * 127.0f, cs3 = g_s3 * 127.0f, cso = g_so * 127.0f;
         float h2[NNUE_L1_MAX];
 #if defined(__AVX512VNNI__)
