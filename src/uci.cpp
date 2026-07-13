@@ -27,6 +27,7 @@ extern volatile bool g_stop_requested;
 
 // Position for UCI
 static Position pos;
+int g_search_depth = 0;  // SearchDepth UCI option: >0 = fixed-depth search (ignore time)
 
 // Search thread management
 static std::thread search_thread;
@@ -205,12 +206,14 @@ void handle_uci() {
     safe_output("option name SyzygyPath type string default <empty>\n");
     safe_output("option name Skill Level type spin default 20 min 0 max 20\n");
     safe_output("option name UCI_ShowWDL type check default false\n");
+    safe_output("option name SearchDepth type spin default 0 min 0 max 30\n");
     safe_output("option name UCI_Elo type spin default 1320 min 1320 max 3190\n");
     safe_output("option name UCI_LimitStrength type check default false\n");
     safe_output("option name UCI_Chess960 type check default false\n");
     // Optional NNUE evaluation (defaults to pure HCE). Set NNUEFile to a .nnue
     // produced by nnue/luminex_nnue_train.py, then UseNNUE=true to switch.
     safe_output("option name UseNNUE type check default false\n");
+    safe_output("option name NNUEHybrid type check default false\n");
     safe_output("option name NNUEFile type string default luminex_v1.nnue\n");
     // Eval parameters (self-engineered defaults)
     safe_output("option name BishopPairMG type spin default 40 min -100 max 200\n");
@@ -360,6 +363,16 @@ void handle_go(Position& pos, const std::string& cmd) {
         else if (token == "movestogo") ss >> limits.movestogo;
     }
 
+    // SearchDepth UCI option: if set (>0), ignore ALL time controls and search to that
+    // exact depth. This enables truly equal-depth matches (both engines same depth,
+    // pure eval-quality comparison — no NPS advantage).
+    if (g_search_depth > 0) {
+        limits.depth = g_search_depth;
+        limits.time[WHITE] = 0; limits.time[BLACK] = 0;
+        limits.inc[WHITE] = 0; limits.inc[BLACK] = 0;
+        limits.movetime = 0; limits.infinite = false;
+    }
+
     // "go" without any time controls or depth: search indefinitely until "stop"
     if (limits.depth == 0 && !limits.infinite && limits.movetime == 0 &&
         limits.time[WHITE] == 0 && limits.time[BLACK] == 0 && limits.nodes == 0) {
@@ -398,7 +411,9 @@ void handle_setoption(const std::string& cmd) {
         name == "UCI_ShowWDL" || name == "UCI_Elo" || name == "UCI_LimitStrength" ||
         name == "UCI_Chess960" || name == "Analysis") { /* accepted — UCI GUI/bot compatibility */ }
     else if (name == "UseNNUE") { nnue::set_enabled(value == "true"); }
+    else if (name == "NNUEHybrid") { nnue::set_hybrid(value == "true"); }
     else if (name == "NNUEFile") { if (!value.empty()) nnue::load(value); }
+    else if (name == "SearchDepth") { g_search_depth = std::stoi(value); }
     else if (name == "Contempt" || name == "UCI_AnalyseMode") {
         if (name == "Contempt") {
             params.contempt = std::stoi(value);
