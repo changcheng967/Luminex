@@ -50,7 +50,7 @@ out_file = os.path.join(out_dir, "luminex_v4_int16.nnue")
 print(f"\nTraining v4 (int16 ACCUMULATOR) from /tmp/code: L1={L1} L2={L2} L3={L3} "
       f"QAT-warmup={QATWARM} epochs={EPOCHS} bs={BS} lr={LR} bf16=ON budget={BUDGET}s "
       f"(~{BUDGET/3600:.1f}h)", flush=True)
-print("v4 = int8 FT + int16 acc + ClippedReLU. Breaks the float-acc floors -> ~1.35M NPS.", flush=True)
+print("v4 = int8 FT + int16 acc + scaled SCReLU. Breaks the float-acc update floor -> ~1.14M NPS.", flush=True)
 
 T.train(
     data=None, out=out_file,

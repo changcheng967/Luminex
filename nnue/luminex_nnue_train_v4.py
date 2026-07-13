@@ -116,18 +116,18 @@ class LNNUEv4(nn.Module):
         nn.init.zeros_(self.ft.bias)
         nn.init.normal_(self.ft.weight, mean=0.0, std=0.2)
         # Learnable FT activation scale. The int16 accumulator (sum of ~32 int8 weights)
-        # spans +-hundreds at init; dividing by ft_scale maps it into the SCReLU's [0,1]
-        # range. A fixed clamp(0,127) saturated everything -> zero gradient -> no learning.
-        # softplus keeps it positive; init 128 maps the init accumulator (~+-181 1-sigma)
-        # to ~+-1.4 so roughly half the neurons are in the linear (learning) range.
-        self.ft_scale = nn.Parameter(torch.tensor(128.0))
+        # spans ~+-158 (1-sigma) at init. ft_scale=256 maps that to ~+-0.6 so ~45% of
+        # neurons sit in the linear [0,1] SCReLU range -> gradients flow -> it learns.
+        # softplus keeps it positive; the net tunes it during training.
+        self.ft_scale = nn.Parameter(torch.tensor(256.0))
 
     def forward(self, w_idx, b_idx, stm, qat=True):
-        # FT: int8 fake-quant weights. embedding_bag sums int8 weights -> the int16
-        # accumulator value (as float; exact for the +-4064 range, no overflow to sim).
-        ftw = self.ft.weight
-        if qat:
-            ftw = fake_quant_i8(ftw)
+        # FT: int8 fake-quant ALWAYS ON (not gated by qat). Reason: the int16 accumulator's
+        # scale depends on the FT weight format — int8 weights give acc ~+-158, float weights
+        # ~+-1. If we fake-quant only during qat, the acc scale flips 100x at the warmup->qat
+        # transition and ft_scale can't track it -> flat loss. Keeping FT int8 from step 0
+        # makes the acc scale consistent; the warmup then gates only L2/L3/out.
+        ftw = fake_quant_i8(self.ft.weight)
         ft_w = torch.cat([ftw.t(), torch.zeros(1, self.L1, device=ftw.device)], dim=0)
         acc_w = torch.nn.functional.embedding_bag(w_idx, ft_w, mode='sum') + self.ft.bias
         acc_b = torch.nn.functional.embedding_bag(b_idx, ft_w, mode='sum') + self.ft.bias
@@ -135,10 +135,9 @@ class LNNUEv4(nn.Module):
         stm_acc = stm_mask * acc_w + (1 - stm_mask) * acc_b
         nstm_acc = (1 - stm_mask) * acc_w + stm_mask * acc_b
         h = torch.cat([stm_acc, nstm_acc], dim=1)
-        # FT activation = SCReLU, but on the int16 accumulator DIVIDED by a learned scale.
-        # The int16 acc spans +-hundreds; /ft_scale maps it to [0,1] so SCReLU doesn't
-        # saturate (a bare clamp(0,127) saturated everything -> zero gradient -> no learning,
-        # which is why the first v4 run was stuck at 0.014). Square keeps v2/v3's activation.
+        # FT activation = SCReLU on the int16 accumulator / learned ft_scale. The int8-weight
+        # acc spans ~+-158 (1-sigma) at init; ft_scale=256 maps it to ~+-0.6 so ~45% of
+        # neurons sit in the linear [0,1] range -> gradients flow -> it learns (like v2).
         scale = torch.nn.functional.softplus(self.ft_scale)
         h = torch.clamp(h / scale, 0.0, 1.0) ** 2
         if qat:
