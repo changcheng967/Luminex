@@ -4,10 +4,11 @@
 # GOAL: stronger AND faster than v2.
 #   v2 = L1=512 L2=16 L3=32, trained in float, quantized to int8 POST-HOC (loses precision).
 #        -> 990K NPS, -13.9 Elo vs HCE.
-#   v3 = L1=256 L2=32 L3=32, trained WITH simulated int8/int16 quantization (QAT).
+#   v3 = L1=256 L2=32 L3=64, trained WITH simulated int8/int16 quantization (QAT).
 #        -> ~1.15-1.2M NPS (SCReLU + the incremental update both halve with L1) AND stronger
 #           (QAT eliminates post-hoc quantization loss; L2=32 doubles L2 capacity at the SAME
-#           dot-product MAC count as v2: 32*512 = 16*1024).
+#           dot-product MAC count as v2: 32*512 = 16*1024; L3=64 adds cheap final-layer capacity
+#           since the L3 dot is tiny: L3 x L2 = 64 x 32).
 #
 # ###############################################################################
 # THE THREE INNOVATIONS
@@ -63,7 +64,7 @@
 #   export NNUE_NPY_DIR=/tmp/code
 #   python luminex_nnue_train_v3.py /tmp/code/sf_dataset_big.txt \
 #       --epochs 30 --batch-size 16384 --lr 1.2e-3 --swa \
-#       --L1 256 --L2 32 --L3 32 --qat-warmup-frac 0.25 \
+#       --L1 256 --L2 32 --L3 64 --qat-warmup-frac 0.25 \
 #       --out /tmp/code/luminex_v3.nnue --ckpt /tmp/code/v3_ckpt.pt
 #   # Then quantize (unchanged from v2):
 #   python quantize_int8.py /tmp/code/luminex_v3.nnue /tmp/code/luminex_v3_i8.nnue
@@ -124,23 +125,31 @@ def active_features(board):
 # as if no rounding happened. This is what lets SGD optimize quantization-aware weights.
 # ============================================================================
 def fake_quant_i8(w):
-    """Per-LAYER int8: round(w * s)/s with s = 127/max_abs(w). Matches quantize_int8.py."""
-    s = (127.0 / w.abs().max().clamp(min=1e-8)).detach()
-    wq = torch.round(w * s) / s
-    return w + (wq - w).detach()
+    """Per-LAYER int8: round(w * s)/s with s = 127/max_abs(w). Matches quantize_int8.py.
+    Forced to fp32 (autocast disabled) so the QAT simulation is EXACT — the rounding step
+    must not itself suffer bf16 error, or we'd be training on a wrong quantization model."""
+    with torch.autocast(device_type=w.device.type, enabled=False):
+        w = w.float()
+        s = (127.0 / w.abs().max().clamp(min=1e-8)).detach()
+        wq = torch.round(w * s) / s
+        return w + (wq - w).detach()
 
 
 def fake_quant_int16(w):
     """FT int16: round(w*8192).clamp(int16)/8192. Matches engine FT load (FT_WSCALE=8192)."""
-    wq = torch.round(w * FT_WSCALE).clamp(-32768.0, 32767.0) / FT_WSCALE
-    return w + (wq - w).detach()
+    with torch.autocast(device_type=w.device.type, enabled=False):
+        w = w.float()
+        wq = torch.round(w * FT_WSCALE).clamp(-32768.0, 32767.0) / FT_WSCALE
+        return w + (wq - w).detach()
 
 
 def fake_quant_u8(h):
     """Activation uint8 after SCReLU: round(h*127)/127. h is already in [0,1] (screlu output).
     Matches the engine 'quant8' pass (screlu then round(x*127))."""
-    wq = torch.round(h * 127.0) / 127.0
-    return h + (wq - h).detach()
+    with torch.autocast(device_type=h.device.type, enabled=False):
+        h = h.float()
+        wq = torch.round(h * 127.0) / 127.0
+        return h + (wq - h).detach()
 
 
 # ============================================================================
@@ -162,7 +171,7 @@ class QLinear(nn.Module):
 
 
 class LNNUEv3(nn.Module):
-    def __init__(self, L1=256, L2=32, L3=32):
+    def __init__(self, L1=256, L2=32, L3=64):
         super().__init__()
         self.ft = nn.Linear(NUM_INPUTS, L1)
         self.l2 = QLinear(2 * L1, L2)
@@ -311,7 +320,7 @@ def load_vram(npy_path, device):
 # Train
 # ============================================================================
 def train(data, out, epochs=30, batch_size=16384, lr=1.2e-3, device='cuda',
-          max_positions=None, L1=256, L2=32, L3=32, swa=False, qat_warmup_frac=0.25,
+          max_positions=None, L1=256, L2=32, L3=64, swa=False, qat_warmup_frac=0.25,
           feat_arrays=None, time_budget_sec=None, ckpt_path=None, use_amp=True):
     device = device if torch.cuda.is_available() else 'cpu'
     print(f"=== Luminex NNUE v3 (QAT) ===", flush=True)
@@ -464,7 +473,7 @@ def main():
     ap.add_argument('--device', default='cuda')
     ap.add_argument('--L1', type=int, default=256)
     ap.add_argument('--L2', type=int, default=32)
-    ap.add_argument('--L3', type=int, default=32)
+    ap.add_argument('--L3', type=int, default=64)
     ap.add_argument('--swa', action='store_true')
     ap.add_argument('--qat-warmup-frac', type=float, default=0.25)
     ap.add_argument('--ckpt', default=None)
