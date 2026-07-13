@@ -1,24 +1,22 @@
 #!/usr/bin/env python3
-"""C500: train v4 NNUE for RAW STRENGTH (L1=1024, float) — surpass v2, approach 3000 Elo.
+"""C500: train v4 = v2's architecture (L1=512) with VALIDATION-loss tracking.
 ONE session, NO command-line arguments.
 
-v4-raw = v2's architecture with 2x the feature-transformer capacity (L1 512->1024, SF's size),
-trained FLOAT (no int8-FT — that loses raw strength). The bigger L1 is the single biggest
-raw-strength (equal-depth eval quality) lever. L2/L3 kept at v2 sizes to avoid overfitting
-on the 280M dataset (the real ceiling for 3000 is more DATA, not just bigger L1).
+DISCIPLINE: do NOT increase L1 (capacity) or data until the train-vs-val loss curves prove
+which is the bottleneck. This run gives you those curves:
+  - val >> train & rising  -> OVERFITTING  -> data is the limit  -> then collect more positions
+  - train plateaus high    -> UNDERFITTING -> capacity is the limit -> then try L1=1024
+  - both converge & close  -> at the sweet spot -> better training (more epochs/LR tuning)
 
-Uses luminex_nnue_train_v3.py (the FLOAT trainer that LEARNS — int16 FT QAT + SCReLU on a
-float accumulator + int8 L2/L3/out QAT). Just L1=1024.
+Same arch as v2 (L1=512 L2=16 L3=32), FLOAT (learns like v2/v3), QAT L2/L3/out, SWA, but
+MORE EPOCHS (30) + per-epoch val loss so you can read the bottleneck off the log. The goal
+is to first see if v2's arch is even converged on 280M — if not, more epochs alone may
+surpass v2; if it plateaus, the curves say what to add next.
 
-Engine: needs NNUE_L1_MAX=1024 (bumped in nnue.h) to load this net.
+Engine: NNUE_L1_MAX=1024 (bumped) loads this L1=512 net fine (and any future L1=1024).
 
 RUN (no arguments):
     python c500_train_v4.py
-
-Files required on /tmp/code:
-    luminex_nnue_train_v3.py   (the float trainer — this wraps it)
-    quantize_int8.py           (unchanged int8 converter)
-    feat_w.npy feat_b.npy feat_s.npy feat_t.npy  (existing 280M cache)
 """
 import os, sys, subprocess
 os.environ.setdefault("PYTORCH_DEFAULT_NCHW", "1")
@@ -38,29 +36,28 @@ if not os.path.exists("/tmp/code/feat_w.npy"):
 
 import luminex_nnue_train_v3 as T
 
-# ---- v4-raw defaults (float, L1=1024; env-overridable; no CLI args) ----
-L1      = int(os.environ.get("NNUE_L1", "1024"))   # 2x v2's capacity -> raw-strength lever
-L2      = int(os.environ.get("NNUE_L2", "16"))     # v2's size (avoid overfit on 280M)
-L3      = int(os.environ.get("NNUE_L3", "32"))     # v2's size
-EPOCHS  = int(os.environ.get("NNUE_EPOCHS", "20"))
+# ---- v4 = v2's arch (L1=512), val-loss-tracked, more epochs. Env-overridable; no CLI args. ----
+L1      = int(os.environ.get("NNUE_L1", "512"))   # v2's size — NOT increased (await curve evidence)
+L2      = int(os.environ.get("NNUE_L2", "16"))
+L3      = int(os.environ.get("NNUE_L3", "32"))
+EPOCHS  = int(os.environ.get("NNUE_EPOCHS", "30"))   # more than v2 -> see full convergence
 BS      = int(os.environ.get("NNUE_BS", "32768"))
 LR      = float(os.environ.get("NNUE_LR", "1.2e-3"))
 BUDGET  = int(os.environ.get("NNUE_BUDGET_SEC", str(int(3.7 * 3600))))
 QATWARM = float(os.environ.get("NNUE_QAT_WARMUP", "0.25"))
-out_file = os.path.join(out_dir, "luminex_v4_raw.nnue")
-i8_file  = os.path.join(out_dir, "luminex_v4_raw_i8.nnue")
+out_file = os.path.join(out_dir, "luminex_v4.nnue")
+i8_file  = os.path.join(out_dir, "luminex_v4_i8.nnue")
 
-print(f"\nTraining v4-raw (FLOAT L1=1024) from /tmp/code: L1={L1} L2={L2} L3={L3} "
-      f"QAT-warmup={QATWARM} epochs={EPOCHS} bs={BS} lr={LR} bf16=ON budget={BUDGET}s "
-      f"(~{BUDGET/3600:.1f}h)", flush=True)
-print("v4-raw = 2x L1 capacity (1024), float FT (no precision loss). Raw-strength push.", flush=True)
+print(f"\nTraining v4 (v2 arch L1=512, val-tracked) from /tmp/code: L1={L1} L2={L2} L3={L3} "
+      f"epochs={EPOCHS} bs={BS} lr={LR} bf16=ON budget={BUDGET}s (~{BUDGET/3600:.1f}h)", flush=True)
+print("v4 = v2 arch + val-loss curves. Read the log: val>>train => need data; train flat-high => need L1.", flush=True)
 
 T.train(
-    data=None, out=out_file,                # data=None: .npy VRAM cache
+    data=None, out=out_file,
     epochs=EPOCHS, batch_size=BS, lr=LR, device="cuda",
     L1=L1, L2=L2, L3=L3, swa=True, qat_warmup_frac=QATWARM,
     time_budget_sec=BUDGET,
-    ckpt_path="/tmp/code/v4_raw_ckpt.pt",
+    ckpt_path="/tmp/code/v4_ckpt.pt",
     use_amp=True,
 )
 
@@ -69,4 +66,4 @@ subprocess.run([sys.executable, "/tmp/code/quantize_int8.py", out_file, i8_file]
 
 print(f"\nUploading nets from {out_dir}...", flush=True)
 upload_output()
-print("DONE! — luminex_v4_raw_i8.nnue (L1=1024, float-trained). Load on the NNUE_L1_MAX=1024 engine.", flush=True)
+print("DONE! — luminex_v4_i8.nnue (L1=512). READ the VAL loss lines to decide next step.", flush=True)

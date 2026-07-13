@@ -343,12 +343,20 @@ def train(data, out, epochs=30, batch_size=16384, lr=1.2e-3, device='cuda',
             cache_path = os.environ.get("NNUE_CACHE", "/tmp/luminex_featurized_v3.pt")
             w_all, b_all, stm_all, target_all = featurize_all(fens, evals, cache_path)
     n = w_all.shape[0]
+    # Hold out a validation set. The train-vs-val loss curves are the ONLY honest way to
+    # decide whether to add capacity (underfitting: train plateaus high) or data
+    # (overfitting: val diverges from train). Don't increase L1 or data without this evidence.
+    VAL_N = min(500000, n // 200)   # ~0.5%, capped at 500K
+    train_n = n - VAL_N
+    val_w = w_all[train_n:]; val_b = b_all[train_n:]
+    val_stm = stm_all[train_n:]; val_tgt = target_all[train_n:]
+    print(f"  train={train_n:,} val={VAL_N:,} (val loss tracked per epoch -> capacity/data diagnosis)", flush=True)
 
     model = LNNUEv3(L1=L1, L2=L2, L3=L3).to(device)
     opt = torch.optim.AdamW(model.parameters(), lr=lr, weight_decay=1e-4)
     SCALE = 400.0
     bs = batch_size
-    steps_per_epoch = (n + bs - 1) // bs
+    steps_per_epoch = (train_n + bs - 1) // bs
     scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(opt, T_max=epochs * steps_per_epoch)
     # SWA: average weights over the last 25% of training -> flatter minimum, better generalization.
     swa_model = None
@@ -383,7 +391,7 @@ def train(data, out, epochs=30, batch_size=16384, lr=1.2e-3, device='cuda',
         if time_budget_sec and (time.time() - train_t0) >= time_budget_sec:
             print(f"  time budget {time_budget_sec}s reached before epoch {epoch} — pausing", flush=True)
             break
-        perm = torch.randperm(n, device=device)
+        perm = torch.randperm(train_n, device=device)   # train positions only (val held out)
         running, t0 = 0.0, time.time()
         for s in range(steps_per_epoch):
             if time_budget_sec and (time.time() - train_t0) >= time_budget_sec:
@@ -419,6 +427,25 @@ def train(data, out, epochs=30, batch_size=16384, lr=1.2e-3, device='cuda',
                 dt = time.time() - t0
                 print(f"  epoch {epoch} step {s+1}/{steps_per_epoch} loss={loss.item():.5f} "
                       f"qat={'ON' if qat else 'off'} ({(s+1)*bs/dt:.0f} pos/s)", flush=True)
+        # Validation loss (no grad, qat=ON = deployed mode). Compare to train loss:
+        #   val >> train & rising  -> OVERFITTING -> data is the limit (need more positions)
+        #   train plateaus high    -> UNDERFITTING -> capacity is the limit (need bigger L1)
+        #   both converge & close  -> at the sweet spot for this L1+data
+        model.eval()
+        with torch.no_grad():
+            vls = []
+            for vi in range(0, VAL_N, bs):
+                vw = val_w[vi:vi+bs]; vb = val_b[vi:vi+bs]
+                vs = val_stm[vi:vi+bs]; vt = val_tgt[vi:vi+bs]
+                if use_amp:
+                    with torch.autocast(device_type=device, dtype=torch.bfloat16):
+                        vp = model(vw.to(device).long(), vb.to(device).long(), vs.to(device), qat=True)
+                else:
+                    vp = model(vw.to(device).long(), vb.to(device).long(), vs.to(device), qat=True)
+                vls.append(((torch.sigmoid(vp/SCALE) - torch.sigmoid(vt.to(device)/SCALE))**2).mean().item())
+            val_loss = sum(vls) / len(vls)
+        model.train()
+        print(f"  >>> epoch {epoch} VAL loss={val_loss:.5f}  (train ~{loss.item():.5f}, gap={val_loss-loss.item():.5f})", flush=True)
         if ckpt_path:
             ck = {'epoch': epoch + 1, 'model': model.state_dict(), 'opt': opt.state_dict(),
                   'sched': scheduler.state_dict(), 'gstep': gstep}
