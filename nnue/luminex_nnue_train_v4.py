@@ -115,6 +115,12 @@ class LNNUEv4(nn.Module):
         self.L1, self.L2, self.L3 = L1, L2, L3
         nn.init.zeros_(self.ft.bias)
         nn.init.normal_(self.ft.weight, mean=0.0, std=0.2)
+        # Learnable FT activation scale. The int16 accumulator (sum of ~32 int8 weights)
+        # spans +-hundreds at init; dividing by ft_scale maps it into the SCReLU's [0,1]
+        # range. A fixed clamp(0,127) saturated everything -> zero gradient -> no learning.
+        # softplus keeps it positive; init 128 maps the init accumulator (~+-181 1-sigma)
+        # to ~+-1.4 so roughly half the neurons are in the linear (learning) range.
+        self.ft_scale = nn.Parameter(torch.tensor(128.0))
 
     def forward(self, w_idx, b_idx, stm, qat=True):
         # FT: int8 fake-quant weights. embedding_bag sums int8 weights -> the int16
@@ -129,10 +135,12 @@ class LNNUEv4(nn.Module):
         stm_acc = stm_mask * acc_w + (1 - stm_mask) * acc_b
         nstm_acc = (1 - stm_mask) * acc_w + stm_mask * acc_b
         h = torch.cat([stm_acc, nstm_acc], dim=1)
-        # FT activation = ClippedReLU on the int16 accumulator: clamp(acc, 0, 127) -> uint8.
-        # /127 maps to [0,1] so the L2 input scale matches v3 (uint8 = act*127). NO square
-        # (integer ClippedReLU in the engine; the net trains for it, SF-style).
-        h = torch.clamp(h, 0.0, 127.0) / 127.0
+        # FT activation = SCReLU, but on the int16 accumulator DIVIDED by a learned scale.
+        # The int16 acc spans +-hundreds; /ft_scale maps it to [0,1] so SCReLU doesn't
+        # saturate (a bare clamp(0,127) saturated everything -> zero gradient -> no learning,
+        # which is why the first v4 run was stuck at 0.014). Square keeps v2/v3's activation.
+        scale = torch.nn.functional.softplus(self.ft_scale)
+        h = torch.clamp(h / scale, 0.0, 1.0) ** 2
         if qat:
             h = fake_quant_u8(h)
         # L2/L3/out: v3-style (int8 weights, SCReLU, uint8 activations) — UNCHANGED.
@@ -309,7 +317,7 @@ def save_nnue_v4(model, path):
     with open(path, 'wb') as f:
         f.write(b'LNI9')
         f.write(struct.pack('iiii', model.L1, model.L2, model.L3, NUM_INPUTS))
-        f.write(struct.pack('f', 127.0))   # FT_SCALE (activation clamp bound, reserved)
+        f.write(struct.pack('f', float(torch.nn.functional.softplus(model.ft_scale))))   # learned FT activation scale (acc/this -> [0,1] SCReLU)
         # FT: int8 weights | int32 scale | int16 bias
         f.write(struct.pack('i', ftw_i8.size)); f.write(ftw_i8.tobytes())
         f.write(struct.pack('i', int(ft_s)))
