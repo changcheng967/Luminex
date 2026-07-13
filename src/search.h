@@ -108,7 +108,7 @@ struct SearchStats {
     int64_t pmg_quiet_cutoffs = 0;   // Quiet move caused cutoff
 };
 
-extern SearchStats g_stats;
+extern thread_local SearchStats g_stats;
 
 class Position;
 class TranspositionTable;

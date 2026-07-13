@@ -22,8 +22,13 @@ extern void uci_debug_log(const char* format, ...);
 // This is set by the main thread when "stop" is received
 volatile bool g_stop_requested = false;
 
-// Global search statistics
-SearchStats g_stats;
+// Search statistics — THREAD_LOCAL: a plain global here was the multithreading killer.
+// Every node touches several of these counters (TT probe, eval-cache hit/miss, prunes);
+// if shared, every node bounces the struct's cache line across all cores and threads
+// serialize on it (observed: 4 threads produced FEWER nodes/sec than 1). Per-thread
+// accumulation eliminates the contention. Node COUNTING is unaffected (uses the `nodes`
+// atomic); only the end-of-search stats dump becomes main-thread-local (informational).
+thread_local SearchStats g_stats;
 
 // Search globals
 Limits limits;
@@ -94,7 +99,11 @@ struct EvalCacheEntry {
     int32_t value;  // Changed from int16_t to match Value type
 };
 constexpr int EVAL_CACHE_SIZE = 65536;  // 64K entries — sweet spot (32K too small, 512K too much)
-EvalCacheEntry eval_cache[EVAL_CACHE_SIZE];
+// THREAD_LOCAL + heap-allocated (vector): a shared global array here was the #2 multithreading
+// killer after g_stats. Every eval-miss writes eval_cache[idx] from every thread -> cache-line
+// bouncing. Per-thread cache removes the contention (evals are deterministic per position, so no
+// cross-thread sharing is lost that the TT doesn't already provide).
+static thread_local std::vector<EvalCacheEntry> eval_cache(EVAL_CACHE_SIZE);
 
 // Correction history: multiple tables for more precise eval correction (from Stash).
 // Each table captures eval errors correlated with a different aspect of the position.
@@ -211,7 +220,7 @@ inline Value eval_cached(const Position& pos) {
 }
 
 [[maybe_unused]] inline void clear_eval_cache() {
-    std::memset(eval_cache, 0, sizeof(eval_cache));
+    std::memset(eval_cache.data(), 0, EVAL_CACHE_SIZE * sizeof(EvalCacheEntry));
 }
 
 // Reduction constants
