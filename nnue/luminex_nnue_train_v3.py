@@ -72,9 +72,11 @@
 
 import sys, math, struct, time, os
 import numpy as np
-import chess
 import torch
 from torch import nn
+# NOTE: python-chess (`import chess`) is a LAZY import below — only the FEN-text fallback
+# (featurize_all/active_features) needs it. The .npy VRAM-cache path that C500 uses does
+# NOT, so this file runs self-contained there without `chess` installed.
 
 # ============================================================================
 # HalfKAv2_hm feature indexer  (identical to v2; proven correct vs SF nnue-pytorch)
@@ -108,6 +110,7 @@ def _halfka_idx(is_white_pov, king_sq, sq, piece_color, piece_type):
 
 
 def active_features(board):
+    import chess   # lazy: only the FEN-text fallback path needs python-chess
     wk = board.king(chess.WHITE)
     bk = board.king(chess.BLACK)
     w, b = [], []
@@ -235,6 +238,7 @@ def load_dataset(path, max_positions=None):
 
 
 def featurize_all(fens, evals, cache_path=None):
+    import chess   # lazy: only the FEN-text fallback path needs python-chess
     if cache_path and os.path.exists(cache_path):
         try:
             d = torch.load(cache_path, map_location='cpu', weights_only=False)
