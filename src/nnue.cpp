@@ -135,7 +135,7 @@ static inline int halfka_idx(bool white_pov, int king_sq, int sq, Piece p) {
 static int g_L1 = 0, g_L2 = 0, g_L3 = 0;
 // FT weights stored as int16 (half the memory traffic vs float → fewer L3 misses on
 // feature delta). The accumulator stays full float32 (no SCReLU precision loss).
-static constexpr float FT_WSCALE = 4096.0f;
+static constexpr float FT_WSCALE = 8192.0f;
 static constexpr float FT_WINV = 1.0f / FT_WSCALE;
 static std::vector<int16_t> ft_w;   // (NUM_INPUTS, L1) int16, transposed
 static std::vector<float> ft_b;   // (L1,)
@@ -149,7 +149,9 @@ static bool g_loaded = false;
 static bool g_enabled = false;
 
 // Per-thread accumulator stack, indexed by Position::st_ply(). v[perspective][neuron].
-struct Accumulator { float v[2][NNUE_L1_MAX]; };
+// Cache-line aligned so each 4KB accumulator starts on a 64B boundary (cleaner loads
+// during the SCReLU/quant8 pass and the feature-delta add).
+struct alignas(64) Accumulator { float v[2][NNUE_L1_MAX]; };
 // Heap-allocated per thread, NOT a thread_local C-array: an 8MB thread_local array
 // reserves 8MB of *static TLS* for every thread and overflows the stack at creation.
 // The vector object is ~24 bytes of TLS; its 8MB buffer lives on the heap and is freed
