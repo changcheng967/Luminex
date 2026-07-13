@@ -72,6 +72,21 @@ static inline int32_t dot_i8(const int8_t* w, const uint8_t* a, int n) {
     return sum;
 }
 #endif
+#if defined(__AVX512VNNI__)
+// VPDPBUSD: 64 uint8 × int8 → 16 int32 accumulate in ONE instruction.
+// ~6x throughput vs AVX2 (2x width + 3x fewer instructions per MAC chunk).
+static inline int32_t dot_i8_vnni(const int8_t* w, const uint8_t* a, int n) {
+    __m512i acc = _mm512_setzero_si512();
+    int i = 0;
+    for (; i + 64 <= n; i += 64)
+        acc = _mm512_dpbusd_epi32(acc,
+            _mm512_loadu_si512((const __m512i*)(a + i)),
+            _mm512_loadu_si512((const __m512i*)(w + i)));
+    int32_t sum = _mm512_reduce_add_epi32(acc);
+    for (; i < n; ++i) sum += (int32_t)w[i] * (int32_t)a[i];
+    return sum;
+}
+#endif
 
 // ---- profiling counters (data-driven: find the NPS bottleneck from numbers) ----
 namespace { struct Stat { long long n = 0, us = 0; }; }
@@ -192,6 +207,21 @@ bool load(const std::string& path) {
         if (!read_tensor(f, ob, 1)) return false;
         out_b = ob[0];
         f.read(reinterpret_cast<char*>(&g_so), 4);
+        // Reorder L2 weights for AVX2 SF-style chunk access (not needed for AVX-512 VNNI).
+#if !defined(__AVX512VNNI__)
+        // Old: [output][chunk]  →  New: [chunk][output]  (each chunk's 16 weight rows contiguous)
+        // Old: [output][chunk]  →  New: [chunk][output]  (each chunk's 16 weight rows contiguous)
+        {
+            int total_in = 2 * L1;
+            int chunks = total_in / 32;
+            std::vector<int8_t> tmp(static_cast<size_t>(L2) * total_in);
+            for (int c = 0; c < chunks; ++c)
+                for (int o = 0; o < L2; ++o)
+                    std::memcpy(&tmp[(static_cast<size_t>(c) * L2 + o) * 32],
+                                &l2_w_i8[static_cast<size_t>(o) * total_in + c * 32], 32);
+            l2_w_i8 = std::move(tmp);
+        }
+#endif // !__AVX512VNNI__
     } else {
         if (!read_tensor(f, l2_w, L2 * 2 * L1)) return false;
         if (!read_tensor(f, l2_b, L2)) return false;
@@ -361,46 +391,116 @@ Value evaluate(const Position& pos) {
     const float* acc_stm  = stm_white ? a.v[0] : a.v[1];
     const float* acc_nstm = stm_white ? a.v[1] : a.v[0];
 
-    float h[2 * NNUE_L1_MAX];
 #if defined(__AVX2__)
-    // SCReLU on the accumulator → h, 8 floats at a time.
-    const __m256 z = _mm256_setzero_ps(), one = _mm256_set1_ps(1.0f);
-    for (int l = 0; l < L1; l += 8) {
-        __m256 s1 = _mm256_loadu_ps(acc_stm + l);
-        __m256 s2 = _mm256_loadu_ps(acc_nstm + l);
-        _mm256_storeu_ps(h + l,      screlu8(s1, z, one));
-        _mm256_storeu_ps(h + L1 + l, screlu8(s2, z, one));
-    }
-    // ---- int8 path (LNI8): quantize activations, int8 SIMD matmuls. ~3.5x over float ----
+    // ---- int8 path: FUSED SCReLU+quant8 (no intermediate h[] — saves 8KB L1 traffic/eval) ----
     if (g_int8) {
         uint8_t h_i8[2 * NNUE_L1_MAX];
-        const __m256 sc = _mm256_set1_ps(127.0f);
-        for (int l = 0; l < 2 * L1; l += 8) quant8(h + l, h_i8 + l, sc);
+        const __m256 sc127 = _mm256_set1_ps(127.0f);  // shared for quant8 (L3/out)
+#if defined(__AVX512F__)
+        // AVX-512: 16 floats/instruction → 2x throughput over AVX2
+        const __m512 z16 = _mm512_setzero_ps(), one16 = _mm512_set1_ps(1.0f), sc16 = _mm512_set1_ps(127.0f);
+        for (int l = 0; l < L1; l += 16) {
+            __m512 s = _mm512_loadu_ps(acc_stm + l);
+            __m512 c = _mm512_min_ps(_mm512_max_ps(s, z16), one16);
+            __m512 sq = _mm512_mul_ps(c, c);
+            __m512i i32 = _mm512_cvtps_epi32(_mm512_mul_ps(sq, sc16));
+            // Pack 16 int32 → 16 uint8: int32→int16→uint8
+            __m256i i16 = _mm512_cvtepi32_epi16(i32);  // AVX512F: 16 int32 → 16 int16
+            __m128i i8 = _mm256_cvtepi16_epi8(i16);     // AVX512F: 16 int16 → 16 int8
+            // Clamp to [0,127] (SCReLU output is always ≥0, clip max)
+            i8 = _mm_min_epu8(i8, _mm_set1_epi8(127));
+            i8 = _mm_max_epu8(i8, _mm_setzero_si128());
+            _mm_storeu_si128((__m128i*)(h_i8 + l), i8);
+            // nstm
+            s = _mm512_loadu_ps(acc_nstm + l);
+            c = _mm512_min_ps(_mm512_max_ps(s, z16), one16);
+            sq = _mm512_mul_ps(c, c);
+            i32 = _mm512_cvtps_epi32(_mm512_mul_ps(sq, sc16));
+            i16 = _mm512_cvtepi32_epi16(i32);
+            i8 = _mm256_cvtepi16_epi8(i16);
+            i8 = _mm_min_epu8(i8, _mm_set1_epi8(127));
+            i8 = _mm_max_epu8(i8, _mm_setzero_si128());
+            _mm_storeu_si128((__m128i*)(h_i8 + L1 + l), i8);
+        }
+#else
+        const __m256 z = _mm256_setzero_ps(), one = _mm256_set1_ps(1.0f);
+        for (int l = 0; l < L1; l += 8) {
+            __m256 s = _mm256_loadu_ps(acc_stm + l);
+            __m256 c = _mm256_min_ps(_mm256_max_ps(s, z), one);
+            __m256 sq = _mm256_mul_ps(c, c);
+            __m256i i32 = _mm256_cvtps_epi32(_mm256_mul_ps(sq, sc127));
+            __m128i lo = _mm256_castsi256_si128(i32), hi = _mm256_extracti128_si256(i32, 1);
+            _mm_storel_epi64((__m128i*)(h_i8 + l), _mm_packus_epi16(_mm_packs_epi32(lo, hi), _mm_setzero_si128()));
+            s = _mm256_loadu_ps(acc_nstm + l);
+            c = _mm256_min_ps(_mm256_max_ps(s, z), one);
+            sq = _mm256_mul_ps(c, c);
+            i32 = _mm256_cvtps_epi32(_mm256_mul_ps(sq, sc127));
+            lo = _mm256_castsi256_si128(i32); hi = _mm256_extracti128_si256(i32, 1);
+            _mm_storel_epi64((__m128i*)(h_i8 + L1 + l), _mm_packus_epi16(_mm_packs_epi32(lo, hi), _mm_setzero_si128()));
+        }
+#endif
         const float cs2 = g_s2 * 127.0f, cs3 = g_s3 * 127.0f, cso = g_so * 127.0f;
         float h2[NNUE_L1_MAX];
-        for (int o = 0; o < L2; o += 4) {  // unroll 4: independent dots -> ILP
-            int32_t d0 = dot_i8(&l2_w_i8[static_cast<size_t>(o+0) * 2 * L1], h_i8, 2 * L1);
-            int32_t d1 = dot_i8(&l2_w_i8[static_cast<size_t>(o+1) * 2 * L1], h_i8, 2 * L1);
-            int32_t d2 = dot_i8(&l2_w_i8[static_cast<size_t>(o+2) * 2 * L1], h_i8, 2 * L1);
-            int32_t d3 = dot_i8(&l2_w_i8[static_cast<size_t>(o+3) * 2 * L1], h_i8, 2 * L1);
-            h2[o+0] = clip01(l2_b[o+0] + d0 / cs2);
-            h2[o+1] = clip01(l2_b[o+1] + d1 / cs2);
-            h2[o+2] = clip01(l2_b[o+2] + d2 / cs2);
-            h2[o+3] = clip01(l2_b[o+3] + d3 / cs2);
+#if defined(__AVX512VNNI__)
+        // VPDPBUSD: 64 MACs/instruction. Per-output dot (output-major weights, no reorder).
+        for (int o = 0; o < L2; ++o)
+            h2[o] = clip01(l2_b[o] + dot_i8_vnni(&l2_w_i8[static_cast<size_t>(o) * 2 * L1], h_i8, 2 * L1) / cs2);
+#else
+        // AVX2 SF-style chunk L2 (chunk-major weights, reordered at load).
+        const __m256i ones = _mm256_set1_epi16(1);
+        const int total_in = 2 * L1;
+        const int num_chunks = total_in / 32;
+        for (int pass = 0; pass < (L2 + 7) / 8; ++pass) {
+            int base_o = pass * 8;
+            int n_out = std::min(8, L2 - base_o);
+            __m256i acc8[8];
+            for (int i = 0; i < 8; ++i) acc8[i] = _mm256_setzero_si256();
+            for (int c = 0; c < num_chunks; ++c) {
+                __m256i hv = _mm256_loadu_si256((const __m256i*)(h_i8 + c * 32));
+                const int8_t* wp = &l2_w_i8[(static_cast<size_t>(c) * L2 + base_o) * 32];
+                for (int o = 0; o < n_out; ++o) {
+                    __m256i wv = _mm256_loadu_si256((const __m256i*)(wp + o * 32));
+                    __m256i p16 = _mm256_maddubs_epi16(hv, wv);
+                    acc8[o] = _mm256_add_epi32(acc8[o], _mm256_madd_epi16(p16, ones));
+                }
+            }
+            for (int o = 0; o < n_out; ++o) {
+                __m128i lo = _mm256_castsi256_si128(acc8[o]);
+                __m128i hi = _mm256_extracti128_si256(acc8[o], 1);
+                __m128i sv = _mm_hadd_epi32(_mm_add_epi32(lo, hi), _mm_setzero_si128());
+                int32_t d = _mm_cvtsi128_si32(_mm_hadd_epi32(sv, sv));
+                h2[base_o + o] = clip01(l2_b[base_o + o] + d / cs2);
+            }
         }
+#endif // AVX2 SF-L2 vs AVX512 VNNI L2
+        // L3/out (shared — uses VNNI when available, AVX2 otherwise)
         uint8_t h2_i8[NNUE_L1_MAX];
-        for (int l = 0; l < L2; l += 8) quant8(h2 + l, h2_i8 + l, sc);
+        for (int l = 0; l < L2; l += 8) quant8(h2 + l, h2_i8 + l, sc127);
         float h3[NNUE_L1_MAX];
+#if defined(__AVX512VNNI__)
+        for (int o = 0; o < L3; ++o)
+            h3[o] = clip01(l3_b[o] + dot_i8_vnni(&l3_w_i8[static_cast<size_t>(o) * L2], h2_i8, L2) / cs3);
+        uint8_t h3_i8[NNUE_L1_MAX];
+        for (int l = 0; l < L3; l += 8) quant8(h3 + l, h3_i8 + l, sc127);
+        float ov = out_b + dot_i8_vnni(out_w_i8.data(), h3_i8, L3) / cso;
+#else
         for (int o = 0; o < L3; ++o)
             h3[o] = clip01(l3_b[o] + dot_i8(&l3_w_i8[static_cast<size_t>(o) * L2], h2_i8, L2) / cs3);
         uint8_t h3_i8[NNUE_L1_MAX];
-        for (int l = 0; l < L3; l += 8) quant8(h3 + l, h3_i8 + l, sc);
+        for (int l = 0; l < L3; l += 8) quant8(h3 + l, h3_i8 + l, sc127);
         float ov = out_b + dot_i8(out_w_i8.data(), h3_i8, L3) / cso;
+#endif
         Value v = static_cast<Value>(std::llround(ov * OUT_SCALE));
         
         return v;
     }
-    // L2: 16 SIMD dot products over 2*L1 inputs (the dominant cost — was scalar).
+    // ---- float L2/L3/out path (LNN1 nets) ----
+    float h[2 * NNUE_L1_MAX];
+    const __m256 z = _mm256_setzero_ps(), one = _mm256_set1_ps(1.0f);
+    for (int l = 0; l < L1; l += 8) {
+        _mm256_storeu_ps(h + l,      screlu8(_mm256_loadu_ps(acc_stm + l), z, one));
+        _mm256_storeu_ps(h + L1 + l, screlu8(_mm256_loadu_ps(acc_nstm + l), z, one));
+    }
     float h2[NNUE_L1_MAX];
     for (int o = 0; o < L2; ++o) {
         const float* w = &l2_w[o * 2 * L1];
