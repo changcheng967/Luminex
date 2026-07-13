@@ -378,8 +378,16 @@ Value evaluate(const Position& pos) {
         for (int l = 0; l < 2 * L1; l += 8) quant8(h + l, h_i8 + l, sc);
         const float cs2 = g_s2 * 127.0f, cs3 = g_s3 * 127.0f, cso = g_so * 127.0f;
         float h2[NNUE_L1_MAX];
-        for (int o = 0; o < L2; ++o)
-            h2[o] = clip01(l2_b[o] + dot_i8(&l2_w_i8[static_cast<size_t>(o) * 2 * L1], h_i8, 2 * L1) / cs2);
+        for (int o = 0; o < L2; o += 4) {  // unroll 4: independent dots -> ILP
+            int32_t d0 = dot_i8(&l2_w_i8[static_cast<size_t>(o+0) * 2 * L1], h_i8, 2 * L1);
+            int32_t d1 = dot_i8(&l2_w_i8[static_cast<size_t>(o+1) * 2 * L1], h_i8, 2 * L1);
+            int32_t d2 = dot_i8(&l2_w_i8[static_cast<size_t>(o+2) * 2 * L1], h_i8, 2 * L1);
+            int32_t d3 = dot_i8(&l2_w_i8[static_cast<size_t>(o+3) * 2 * L1], h_i8, 2 * L1);
+            h2[o+0] = clip01(l2_b[o+0] + d0 / cs2);
+            h2[o+1] = clip01(l2_b[o+1] + d1 / cs2);
+            h2[o+2] = clip01(l2_b[o+2] + d2 / cs2);
+            h2[o+3] = clip01(l2_b[o+3] + d3 / cs2);
+        }
         uint8_t h2_i8[NNUE_L1_MAX];
         for (int l = 0; l < L2; l += 8) quant8(h2 + l, h2_i8 + l, sc);
         float h3[NNUE_L1_MAX];
