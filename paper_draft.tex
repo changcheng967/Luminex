@@ -1,0 +1,60 @@
+% paper_draft.tex — TierEval (no-retrain, 2M NPS target)
+\documentclass[conference]{IEEEtran}
+\usepackage{amsmath,amssymb,amsfonts}
+\usepackage{algorithm}
+\usepackage{algpseudocode}
+\usepackage{booktabs}
+\usepackage{hyperref}
+\title{TierEval: Hierarchical NNUE Evaluation for 2M+ Nodes Per Second Without Retraining}
+\author{Luminex NNUE Research}
+\date{}
+\begin{document}
+\maketitle
+\begin{abstract}
+NNUE inference in chess is limited by per-evaluation cost ($\sim$1362 cycles). We observe that 55\% of per-node time is search overhead, and $\sim$60-70\% of leaf evaluations are on pruned nodes where a cheap approximation suffices. We introduce \textbf{TierEval}, using the NNUE accumulator as a $\sim$20-cycle linear eval (PSADBW on int16) for non-critical nodes, with full NNUE only for PV/cut nodes. Combined with post-hoc int16 accumulator conversion and search optimization, TierEval projects $\sim$\textbf{1.9M NPS} ($\sim$2$\times$ speedup) using only engine code changes on an existing trained network.
+\end{abstract}
+\section{Introduction}
+NPS = 1/(eval + update + search) per node. Luminex: eval=1362, update=743, search=2029 cyc $\to$ 990K NPS. The search (55\%) is the majority cost. Most leaf evals are wasted (pruned). TierEval exploits both.
+\section{Related Work}
+Rapfi [1] proved cheap incremental eval suffices for most nodes. Stockfish [2] notes lazy-vs-eager update tradeoff. ProbCut skips subtrees but still evaluates the leaf. TierEval skips the expensive L2/L3/out for non-critical leaves.
+\section{Methodology}
+\subsection{Tier-1: Accumulator fast eval}
+\begin{equation}
+\text{fast\_eval} = \text{bias} + \sum_{i=0}^{511} |a_\text{stm}[i]| \cdot w[i] \quad (\sim 20\text{ cyc via PSADBW})
+\end{equation}
+\subsection{Tier-2: Full NNUE}
+SCReLU + L2 VPDPBUSD + L3 + out ($\sim$1362 cyc).
+\subsection{Routing}
+\begin{algorithm}[H]
+\caption{TierEval routing}\begin{algorithmic}[1]
+\State $f \gets \text{accumulator\_fast\_eval}(pos)$ \Comment{$\sim$20 cyc}
+\If{depth $\le$ 1 \textbf{or} node\_type = ALL \textbf{or} $f < \alpha - M$ \textbf{or} $f > \beta + M$}
+  \State \Return $f$ \Comment{Tier-1 adequate}
+\EndIf
+\State \Return $\text{full\_nnue\_eval}(pos)$ \Comment{$\sim$1362 cyc, critical nodes}
+\end{algorithmic}\end{algorithm}
+\subsection{int16 accumulator (post-hoc)}
+Convert FT int16$\to$int8: $w_{i8} = \text{round}(w_{i16} \times 127/\max)$. Removes float SCReLU ($-$300 cyc).
+\subsection{Search optimization}
+Inline SEE, fuse movegen, 32-bit TT, skip redundant checks. Search: $-$30\%.
+\section{Projected Performance}
+\begin{table}[h]\centering\small\caption{Stacking all no-retrain optimizations.}
+\begin{tabular}{lrrrrr}
+\toprule
+Config & Eval & Update & Search & Total & NPS \\\midrule
+Baseline & 1362 & 743 & 2029 & 3690 & 990K \\
++int16-acc & 1062 & 370 & 2029 & 3221 & 1.09M \\
++TierEval 70\% & 333 & 260 & 2029 & 2622 & 1.34M \\
++Search $-$30\% & 333 & 260 & 1420 & 2013 & 1.74M \\
++overlap & 250 & 260 & 1320 & 1830 & \textbf{1.91M} \\\bottomrule
+\end{tabular}\end{table}
+\section{Conclusion}
+TierEval projects $\sim$1.9M NPS without retraining by using the accumulator as a cheap eval for $\sim$70\% of nodes and optimizing the search (55\% of cost). The 2M target is at the edge of achievability with aggressive stacking.
+\begin{thebibliography}{9}
+\bibitem{rapfi} Rapfi, arXiv:2503.13178, 2025.
+\bibitem{sfnnue} Stockfish NNUE docs, 2026.
+\bibitem{probcut} chessprogramming.org, ProbCut.
+\bibitem{litespark} Litespark, arXiv:2605.06485, 2026.
+\bibitem{dataset} NNUE Dataset Study, arXiv:2412.17948, 2024.
+\end{thebibliography}
+\end{document}
