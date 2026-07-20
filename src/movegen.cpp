@@ -26,7 +26,7 @@ ExtMove* generate_moves(const Position& pos, ExtMove* moveList) {
         if (!(pos.pieces() & square_bb(to))) {
             if (relative_rank(us, to) == RANK_8) {
                 // Promotion
-                if constexpr (T == GEN_QUIET || T == GEN_ALL || T == GEN_LEGAL || T == GEN_NON_EVASION) {
+                if constexpr (T == GEN_QUIET || T == GEN_ALL || T == GEN_LEGAL || T == GEN_EVASION || T == GEN_NON_EVASION) {
                     *moveList++ = Move(from, to, MF_PROMO_QUEEN);
                     *moveList++ = Move(from, to, MF_PROMO_ROOK);
                     *moveList++ = Move(from, to, MF_PROMO_BISHOP);
