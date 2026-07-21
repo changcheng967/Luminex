@@ -89,9 +89,32 @@ for tmp in glob.glob(FRAME_DIR + "/frame_*.xz.tmp"):
 P(f"=== multistage start {time.strftime('%H:%M:%S')} | auth={'yes' if hdr else 'NO'} | dl_x{DL_CONCURRENCY} ===")
 
 # incremental file iterator
-dates = [e["path"] for e in hf_get("") if e.get("type") == "directory"]
-P(f"{len(dates)} dates available")
-date_idx, date_files = 0, []
+# paginated root listing — HF truncates at ~1000 entries/page, so follow Link rel="next"
+def list_all_dates():
+    url = f"{API}/?recursive=true"
+    out = []
+    while url:
+        try:
+            req = urllib.request.Request(url)
+            for k, v in hdr.items(): req.add_header(k, v)
+            with urllib.request.urlopen(req, timeout=40) as r:
+                for e in json.load(r):
+                    if e.get("type") == "directory": out.append(e["path"])
+                link = r.headers.get("Link") or ""
+                nxt = None
+                for part in link.split(","):
+                    if 'rel="next"' in part:
+                        nxt = part[part.find("<") + 1:part.find(">")]
+                        break
+                url = nxt
+        except Exception as e:
+            P(f"paginate fail: {e}"); break
+    return out
+
+dates = list_all_dates()
+SKIP_DATES = int(os.environ.get("SKIP_DATES", "0"))   # skip first N dates (already processed)
+P(f"{len(dates)} dates total; skipping first {SKIP_DATES}, resuming from {len(glob.glob(FRAME_DIR + '/frame_*.xz'))} frames")
+date_idx, date_files = SKIP_DATES, []
 flock = threading.Lock()
 def next_files(n):
     global date_idx, date_files
