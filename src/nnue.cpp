@@ -394,7 +394,9 @@ void update(Position& pos, Move m, Piece moved, PieceType captured) {
             else if (i == 1) idx = halfka_idx(true,  wk, to, arr_piece);
             else if (i == 2) idx = halfka_idx(false, bk, from, dep_piece);
             else idx = halfka_idx(false, bk, to, arr_piece);
+#if defined(__x86_64__) || defined(__i386__) || defined(_M_X64) || defined(_M_IX86)
             _mm_prefetch((const char*)&ft_w[static_cast<size_t>(idx) * g_L1], _MM_HINT_T0);
+#endif
         }
     }
 
@@ -594,6 +596,7 @@ Value evaluate(const Position& pos) {
         h3[o] = clip01(s);
     }
 #else
+    float h[2 * NNUE_L1_MAX];
     float h2[NNUE_L1_MAX];
     for (int l = 0; l < L1; ++l) { h[l] = clip01(acc_stm[l]); h[L1 + l] = clip01(acc_nstm[l]); }
     for (int o = 0; o < L2; ++o) {
