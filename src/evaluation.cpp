@@ -1,6 +1,7 @@
 #include "luminex.h"
 #include "tuner_params.h"
 #include "nnue.h"
+#include "kpk_bitbase.h"
 #include <cstring>
 
 namespace luminex {
@@ -482,6 +483,25 @@ Value evaluate(const Position& pos, bool tactical_only) {
     // via UCI "UseNNUE", the engine uses NNUE instead of HCE. Otherwise the
     // pure hand-crafted eval below runs unchanged. NNUE is fully optional.
     if (nnue::enabled()) return nnue::evaluate(pos);
+
+    // KPK endgame specialization: exact WDL bitbase (retrograde, verified vs
+    // lichess tablebase). Direct return — bypasses scale_factor (which zeroes
+    // KPK via insufficient-material logic). Fires for BOTH qsearch + full paths.
+    if (popcount(pos.pieces(PAWN)) == 1
+        && (pos.pieces(KNIGHT) | pos.pieces(BISHOP) | pos.pieces(ROOK) | pos.pieces(QUEEN)) == 0) {
+        bool wp = (pos.pieces(WHITE, PAWN) != 0);
+        int wksq = (int)pos.king_sq(WHITE), bksq = (int)pos.king_sq(BLACK);
+        int psq = (int)(wp ? lsb(pos.pieces(WHITE, PAWN)) : lsb(pos.pieces(BLACK, PAWN)));
+        bool won = wp ? kpk_white_wins(wksq, bksq, psq, pos.side_to_move() == WHITE)
+                      : kpk_white_wins(bksq ^ 56, wksq ^ 56, psq ^ 56, pos.side_to_move() == BLACK);
+        if (won) {
+            int adv = wp ? (rank_of(static_cast<Square>(psq)) - 1) : (6 - rank_of(static_cast<Square>(psq)));
+            int bonus = 600 + adv * 80;
+            int score = wp ? bonus : -bonus;
+            return pos.side_to_move() == WHITE ? score : -score;
+        }
+        return 0;  // drawn KPK
+    }
 
     // KXK endgame: one side has only a king
     for (int strong = 0; strong < 2; ++strong) {
