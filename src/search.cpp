@@ -1,6 +1,7 @@
 #define _CRT_SECURE_NO_WARNINGS
 #include "luminex.h"
 #include "nnue.h"
+#include "spsa_params.h"
 #include <algorithm>
 #include <chrono>
 #include <cmath>
@@ -170,15 +171,15 @@ static thread_local uint64_t last_reported_nodes = 0;
 // Quiet moves get ~1.6x the base reduction of noisy moves
 static int reductions_noisy[64];
 static int reductions_quiet[64];
-static constexpr int LMR_SCALE_NOISY = 24;
-static constexpr int LMR_SCALE_QUIET = 40;
-static constexpr int LMR_DENOM = 1024;  // Common denominator
+static constexpr int LMR_DENOM = 1024;
 static bool reductions_initialized = false;
 
 static void init_reductions() {
+    SPSAParams::get().load("spsa_params.txt");  // SPSA: load overrides if file exists
+    auto& sp = SPSAParams::get();
     for (int i = 1; i < 64; ++i) {
-        reductions_noisy[i] = int(LMR_SCALE_NOISY * std::log(double(i)));
-        reductions_quiet[i] = int(LMR_SCALE_QUIET * std::log(double(i)));
+        reductions_noisy[i] = int(sp.lmr_scale_noisy * std::log(double(i)));
+        reductions_quiet[i] = int(sp.lmr_scale_quiet * std::log(double(i)));
     }
     reductions_noisy[0] = reductions_quiet[0] = 0;
     reductions_initialized = true;
@@ -224,13 +225,11 @@ inline Value eval_cached(const Position& pos) {
 }
 
 // Reduction constants
-constexpr int futility_margin(int depth, bool improving) {
-    // Depth-dependent futility margins (slightly tighter for more pruning)
-    int base = 130 * depth + 50;
-
+inline int futility_margin(int depth, bool improving) {
+    auto& sp = SPSAParams::get();
+    int base = sp.futility_coeff * depth + sp.futility_offset;
     if (improving) base -= 20;
     else base += 25;
-
     return base;
 }
 
@@ -667,7 +666,7 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
     // Reverse futility pruning (static null move): if eval is far above beta, prune immediately
     // Also less aggressive when eval is uncertain
     {
-        int rev_margin = 100 * depth + ((ss->improving || opponent_worsening) ? 0 : 30);
+        int rev_margin = SPSAParams::get().rev_fut_coeff * depth + ((ss->improving || opponent_worsening) ? 0 : 30);
         rev_margin += std::min(eval_uncertainty / 2, 80);  // Up to 80cp extra margin when uncertain
         if (!pv_node && !pos.is_check() && depth <= 8 && eval - rev_margin >= beta) {
             g_stats.rev_futility_prunes++;
@@ -677,7 +676,7 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
 
     // Razoring: at low depths, if eval is far below alpha, try qsearch to confirm
     if (!pv_node && !pos.is_check() && depth <= 4) {
-        Value razor_margin = 300 + depth * depth * 60;
+        Value razor_margin = SPSAParams::get().razor_base + depth * depth * SPSAParams::get().razor_coeff;
         if (eval + razor_margin < alpha) {
             // Try quiescence search to confirm the position is really losing
             Value qsearch_value = qsearch(pos, ss, alpha - 1, alpha, 0);
@@ -697,7 +696,8 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
     if (null_move_ok) {
         pos.do_null_move();
 
-        int R = 3 + (depth > 5 ? 1 : 0) + (depth > 12 ? 1 : 0);
+        auto& sp = SPSAParams::get();
+        int R = sp.nmp_base + (depth > sp.nmp_thresh1 ? 1 : 0) + (depth > sp.nmp_thresh2 ? 1 : 0);
 
         if (piece_count < 4) R -= 1;
 
@@ -1900,7 +1900,7 @@ Move search(Position& pos, Limits& lim) {
         // Start with very wide window for stability
         Value alpha = -VALUE_INFINITE;
         Value beta = VALUE_INFINITE;
-        int aspiration_delta = 50;
+        int aspiration_delta = SPSAParams::get().aspiration_delta;
 
         if (root_depth >= 4 && best_value > -VALUE_KNOWN_WIN && best_value < VALUE_KNOWN_WIN) {
             alpha = std::max(Value(-VALUE_INFINITE), Value(best_value - aspiration_delta));
