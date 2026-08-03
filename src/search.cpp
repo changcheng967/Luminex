@@ -822,7 +822,9 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
     }
     if (tt_move != MOVE_NONE && !pv_node && found && tt_depth >= depth - 3 && depth >= 6 &&
         (tte->bound() & BOUND_LOWER) && abs(tt_value) < VALUE_KNOWN_WIN && !is_shuffling) {
-        Value sBeta = Value(tt_value - depth * 10 / 16);
+        // Singular margin scales with depth; _singular_margin default 200
+        // reproduces the prior depth*10/16 (= depth*200/320) exactly.
+        Value sBeta = Value(tt_value - depth * SPSAParams::get()._singular_margin / 320);
         ss->excluded_move = tt_move;
         Value singular_value = search_worker(pos, ss, sBeta - 1, sBeta, (depth - 1) / 2, !cut_node);
         ss->excluded_move = MOVE_NONE;
