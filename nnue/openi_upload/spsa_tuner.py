@@ -110,9 +110,9 @@ def main():
     ap.add_argument("--heldout", required=True)
     ap.add_argument("--weak-test", help="clearly-weaker opponent for sanity check")
     ap.add_argument("--rounds", type=int, default=100)
-    ap.add_argument("--concurrency", type=int, default=2)  # LOW to prevent timeout corruption
+    ap.add_argument("--concurrency", type=int, default=1)  # LOW to prevent timeout corruption
     ap.add_argument("--iterations", type=int, default=50)
-    ap.add_argument("--tc", default="2+0.05")  # LONGER than bullet — fewer timeouts
+    ap.add_argument("--tc", default="1+0.01")  # LONGER than bullet — fewer timeouts
     ap.add_argument("--checkpoint", type=int, default=10)
     ap.add_argument("--output", default="spsa_result.json")
     args = ap.parse_args()
