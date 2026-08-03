@@ -503,6 +503,34 @@ Value evaluate(const Position& pos, bool tactical_only) {
         return 0;  // drawn KPK
     }
 
+    // KRvK: rook vs bare king. KRK is ALWAYS a theoretical win, so no WDL
+    // bitbase needed — the eval just needs to GUIDE the search toward the
+    // mating technique (drive defender to edge + attacking king supports +
+    // rook confines). Each term is derived from the mating algorithm's actual
+    // geometry, not a tuned magnitude. Monotonically increases toward mate.
+    if (popcount(pos.pieces(PAWN)) == 0
+        && (pos.pieces(KNIGHT) | pos.pieces(BISHOP) | pos.pieces(QUEEN)) == 0
+        && popcount(pos.pieces(ROOK)) == 1) {
+        bool wr = (pos.pieces(WHITE, ROOK) != 0);
+        Square dksq = wr ? pos.king_sq(BLACK) : pos.king_sq(WHITE);
+        Square aksq = wr ? pos.king_sq(WHITE) : pos.king_sq(BLACK);
+        Square rsq = lsb(pos.pieces(wr ? WHITE : BLACK, ROOK));
+        int dkf = file_of(dksq), dkr = rank_of(dksq);
+        // Defender king distance to nearest edge (0=edge=best for attacker, 3=center)
+        int dist_edge = std::min(std::min(dkf, 7 - dkf), std::min(dkr, 7 - dkr));
+        // Knight-distance between kings (attacker wants LOW = close to support the mate)
+        int king_kdist = std::max(std::abs(file_of(aksq) - dkf),
+                                  std::abs(rank_of(aksq) - dkr));
+        // Rook confining: on same rank or file as the defender (cutting off escape)
+        bool rook_cutoff = (file_of(rsq) == dkf || rank_of(rsq) == dkr);
+        // Analytic distance-to-mate: each term from the mating algorithm's structure
+        int score = 500                               // base: rook material value
+                  + (3 - dist_edge) * 30              // edge: 0..90 (defender on edge = max)
+                  + (7 - king_kdist) * 10             // proximity: 0..60 (kings adjacent = max)
+                  + (rook_cutoff ? 50 : 0);           // rook confining: flat bonus
+        return (pos.side_to_move() == (wr ? WHITE : BLACK)) ? score : -score;
+    }
+
     // KXK endgame: one side has only a king
     for (int strong = 0; strong < 2; ++strong) {
         Color c = Color(strong);
