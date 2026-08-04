@@ -171,7 +171,7 @@ def main():
 
     # ---- init ----
     theta = list(DEFAULTS)          # real (int) space, current iterate
-    theta_bar = list(DEFAULTS)      # running mean (iterate averaging)
+    theta_bar = to_norm(DEFAULTS)   # running mean in NORMALIZED space (iterate averaging)
     x = to_norm(theta)
     best_bar = list(DEFAULTS)
     best_elo = None
@@ -234,8 +234,9 @@ def main():
             gs.append(gi); steps.append(si)
         theta = to_real(x)
 
-        # iterate averaging (Spall): running mean of theta
-        theta_bar = [(theta_bar[i] * (k + 1) + theta[i]) / (k + 2) for i in range(N)]
+        # iterate averaging (Spall): running mean of x in NORMALIZED space.
+        # (Must average x, not theta — to_real() below expects normalized input.)
+        theta_bar = [(theta_bar[i] * (k + 1) + x[i]) / (k + 2) for i in range(N)]
         theta_bar_real = to_real(theta_bar)
 
         # report top movers (largest |gradient|)
