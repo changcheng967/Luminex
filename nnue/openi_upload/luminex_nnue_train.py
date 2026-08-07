@@ -79,25 +79,28 @@ def active_features(board):
 class LNNUE(nn.Module):
     def __init__(self, L1=256, L2=16, L3=32):
         super().__init__()
-        self.ft = nn.Linear(NUM_INPUTS, L1)            # feature transformer
+        self.ft = nn.Linear(NUM_INPUTS, L1, bias=False)   # GATHER FT (== engine, the v2 proven path)
+        self.ft_bias = nn.Parameter(torch.zeros(L1))
+        self.ft_mode = 'gather'                            # NOT EmbeddingBag (NPU-op + version-drift risk)
         self.l2 = nn.Linear(2 * L1, L2)                # stm + nstm concatenated
         self.l3 = nn.Linear(L2, L3)
         self.out = nn.Linear(L3, 1)
         self.L1, self.L2, self.L3 = L1, L2, L3
-        nn.init.zeros_(self.ft.bias)
         # Feature transformer init must use the EFFECTIVE fan-in (~32 active
-        # features per half), not NUM_INPUTS=24576. Default nn.Linear init
-        # gives weights ~0.004 -> accumulator std ~0.02 -> vanishing gradients.
-        # std ~ 1/sqrt(32) gives accumulator std ~1 (active ClippedReLU range).
+        # features per half), not NUM_INPUTS=24576. Default init gives weights
+        # ~0.004 -> accumulator std ~0.02 -> vanishing gradients. std ~ 1/sqrt(32)
+        # gives accumulator std ~1 (active ClippedReLU range).
         nn.init.normal_(self.ft.weight, mean=0.0, std=0.2)
 
-    def forward(self, w_idx, b_idx, stm):  # idx: (B, MAX) padded with NUM_INPUTS; stm: (B,)
-        # Sparse accumulator: gather active feature weights, sum. A zero-weight
-        # row at index NUM_INPUTS makes padding contribute nothing.
-        ft_w = torch.cat([self.ft.weight.t(),
-                          torch.zeros(1, self.L1, device=w_idx.device)], dim=0)
-        acc_w = ft_w[w_idx].sum(dim=1) + self.ft.bias   # (B, L1)
-        acc_b = ft_w[b_idx].sum(dim=1) + self.ft.bias
+    def forward(self, w_idx, b_idx, stm):  # idx: (B, MAX=32) padded with NUM_INPUTS; stm: (B,)
+        # GATHER FT (== engine accumulator): sum the active feature weight rows.
+        # weight is [L1,NUM_INPUTS] -> weight.t() is [NUM_INPUTS,L1] = per-feature rows.
+        # Padding indices (==NUM_INPUTS) are clamped then masked out (contribute 0).
+        wt = self.ft.weight.t()
+        wi = w_idx.clamp(max=NUM_INPUTS - 1); wm = (w_idx < NUM_INPUTS).unsqueeze(-1).to(wt.dtype)
+        bi = b_idx.clamp(max=NUM_INPUTS - 1); bm = (b_idx < NUM_INPUTS).unsqueeze(-1).to(wt.dtype)
+        acc_w = (wt[wi] * wm).sum(dim=1) + self.ft_bias   # (B, L1)
+        acc_b = (wt[bi] * bm).sum(dim=1) + self.ft_bias
         # Order: side-to-move first
         stm_mask = stm.view(-1, 1).float()
         stm_acc = stm_mask * acc_w + (1 - stm_mask) * acc_b
@@ -307,8 +310,14 @@ def save_nnue(model, path):
         # header: magic + architecture dims
         f.write(b'LNN1')
         f.write(struct.pack('iiii', model.L1, model.L2, model.L3, NUM_INPUTS))
-        for name in ['ft.weight', 'ft.bias', 'l2.weight', 'l2.bias',
-                     'l3.weight', 'l3.bias', 'out.weight', 'out.bias']:
+        # FT first (engine reads ft.weight [L1, NUM_INPUTS], then ft.bias [L1]).
+        # gather: nn.Linear.weight is already [L1, NUM_INPUTS] -> save directly (no transpose).
+        ft_w = model.ft.weight.detach().cpu().numpy().astype(np.float32)  # [L1, NUM_INPUTS]
+        ft_b = model.ft_bias.detach().cpu().numpy().astype(np.float32)                    # [L1]
+        for arr in [ft_w, ft_b]:
+            f.write(struct.pack('i', arr.size))
+            f.write(arr.tobytes())
+        for name in ['l2.weight', 'l2.bias', 'l3.weight', 'l3.bias', 'out.weight', 'out.bias']:
             t = dict(model.named_parameters())[name].detach().cpu().numpy().astype(np.float32)
             f.write(struct.pack('i', t.size))
             f.write(t.tobytes())
