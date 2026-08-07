@@ -89,9 +89,17 @@ BUFFER_POS= int(os.environ.get("NNUE_VRAM_POS", "300000000")) # ~41 GB per inter
 BUF       = int(os.environ.get("NNUE_BUF", "2000000"))        # chunk size (positions) per pipe read
 BUDGET    = int(os.environ.get("NNUE_BUDGET_SEC", str(int(3.5*3600))))
 _gc       = float(os.environ.get("NNUE_GRAD_CLIP", "1.0"))
-_autocast = os.environ.get("NNUE_AUTOCAST", "0") != "0"        # fp32 default: bf16 drove v6+v7 weight-growth (L3 4.8->16) -> SCReLU saturation -> r=0.52 garbage
+_autocast = os.environ.get("NNUE_AUTOCAST", "1") != "0"        # bf16 ON: stress test proved bf16 == fp32 growth (NOT the v7 cause). Guard below catches real growth.
 REC = 136; SCALE = 400.0
-device = "cuda" if torch.cuda.is_available() else "cpu"
+device = os.environ.get("NNUE_DEVICE", "").strip()
+if not device:
+    try:
+        import torch_npu  # Ascend NPU backend (910/910ProA)
+        if torch.npu.is_available(): device = "npu"
+        elif torch.cuda.is_available(): device = "cuda"
+        else: device = "cpu"
+    except ImportError:
+        device = "cuda" if torch.cuda.is_available() else "cpu"
 OUT = os.environ.get("NNUE_OUT_NAME", "luminex_v7.nnue"); OUT_BASE = OUT[:-5] if OUT.endswith(".nnue") else OUT
 
 # ---- shuffle frame order so different frames land in the same early buffers each run ----
