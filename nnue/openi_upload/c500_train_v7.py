@@ -114,7 +114,10 @@ print(f"v7 cross-frame shuffle: {len(FRAMES)} frames ({total_bytes/1e9:.2f}GB, ~
 # ============================================================================
 # Model + optimizer (L2 root-cause fix: tail wd=1e-2, FT wd=0, AMSGrad)
 # ============================================================================
-model = LNNUE(L1=L1).to(device)
+# FT mode: embbag (fused EmbeddingBag, ~28x FASTER on CUDA) on cuda/cpu; gather on npu
+# (EmbeddingBag may be unsupported on Ascend). Both == engine numerically (+74.7 startpos both).
+_ft_mode = os.environ.get("NNUE_FT_MODE", "gather" if device == "npu" else "embbag")
+model = LNNUE(L1=L1, ft_mode=_ft_mode).to(device)
 # FT mode check. CORRECT modes: 'gather' (ft_w[idx].sum, == engine) and 'embbag2d'
 # (nn.EmbeddingBag 2D mode='sum', verified numerically == gather, ~20x faster). The BUGGY
 # mode is 'embbag1d' (the old C500 version, whose accumulator != engine -> -600 Elo garbage).

@@ -77,30 +77,38 @@ def active_features(board):
 # Model
 # ============================================================================
 class LNNUE(nn.Module):
-    def __init__(self, L1=256, L2=16, L3=32):
+    def __init__(self, L1=256, L2=16, L3=32, ft_mode='embbag'):
         super().__init__()
-        self.ft = nn.Linear(NUM_INPUTS, L1, bias=False)   # GATHER FT (== engine, the v2 proven path)
+        # FT mode: 'embbag' = fused EmbeddingBag (FAST on CUDA, ~28x over gather; == gather
+        # numerically — verified +74.7 startpos both — and == engine). 'gather' = nn.Linear
+        # (NPU-compatible; EmbeddingBag may be unsupported on Ascend). Both compute the same
+        # accumulator. Use embbag on CUDA (speed), gather on NPU (compat).
+        self.ft_mode = ft_mode
+        if ft_mode == 'gather':
+            self.ft = nn.Linear(NUM_INPUTS, L1, bias=False)
+        else:
+            self.ft = nn.EmbeddingBag(NUM_INPUTS + 1, L1, mode='sum')  # +1 zero padding row
         self.ft_bias = nn.Parameter(torch.zeros(L1))
-        self.ft_mode = 'gather'                            # NOT EmbeddingBag (NPU-op + version-drift risk)
         self.l2 = nn.Linear(2 * L1, L2)                # stm + nstm concatenated
         self.l3 = nn.Linear(L2, L3)
         self.out = nn.Linear(L3, 1)
         self.L1, self.L2, self.L3 = L1, L2, L3
-        # Feature transformer init must use the EFFECTIVE fan-in (~32 active
-        # features per half), not NUM_INPUTS=24576. Default init gives weights
-        # ~0.004 -> accumulator std ~0.02 -> vanishing gradients. std ~ 1/sqrt(32)
-        # gives accumulator std ~1 (active ClippedReLU range).
+        # FT init: effective fan-in ~32 active features/half (not NUM_INPUTS=24576).
+        # std=1/sqrt(32) -> accumulator std ~1 (active SCReLU range).
         nn.init.normal_(self.ft.weight, mean=0.0, std=0.2)
+        if ft_mode != 'gather':
+            self.ft.weight.data[NUM_INPUTS].zero_()    # padding row (idx NUM_INPUTS) stays zero
 
     def forward(self, w_idx, b_idx, stm):  # idx: (B, MAX=32) padded with NUM_INPUTS; stm: (B,)
-        # GATHER FT (== engine accumulator): sum the active feature weight rows.
-        # weight is [L1,NUM_INPUTS] -> weight.t() is [NUM_INPUTS,L1] = per-feature rows.
-        # Padding indices (==NUM_INPUTS) are clamped then masked out (contribute 0).
-        wt = self.ft.weight.t()
-        wi = w_idx.clamp(max=NUM_INPUTS - 1); wm = (w_idx < NUM_INPUTS).unsqueeze(-1).to(wt.dtype)
-        bi = b_idx.clamp(max=NUM_INPUTS - 1); bm = (b_idx < NUM_INPUTS).unsqueeze(-1).to(wt.dtype)
-        acc_w = (wt[wi] * wm).sum(dim=1) + self.ft_bias   # (B, L1)
-        acc_b = (wt[bi] * bm).sum(dim=1) + self.ft_bias
+        if self.ft_mode == 'gather':
+            wt = self.ft.weight.t()                       # [NUM_INPUTS, L1] per-feature rows
+            wi = w_idx.clamp(max=NUM_INPUTS - 1); wm = (w_idx < NUM_INPUTS).unsqueeze(-1).to(wt.dtype)
+            bi = b_idx.clamp(max=NUM_INPUTS - 1); bm = (b_idx < NUM_INPUTS).unsqueeze(-1).to(wt.dtype)
+            acc_w = (wt[wi] * wm).sum(dim=1) + self.ft_bias   # (B, L1)
+            acc_b = (wt[bi] * bm).sum(dim=1) + self.ft_bias
+        else:  # embbag: fused gather+sum (padding idx NUM_INPUTS -> zero row, contributes nothing)
+            acc_w = self.ft(w_idx) + self.ft_bias
+            acc_b = self.ft(b_idx) + self.ft_bias
         # Order: side-to-move first
         stm_mask = stm.view(-1, 1).float()
         stm_acc = stm_mask * acc_w + (1 - stm_mask) * acc_b
@@ -311,8 +319,10 @@ def save_nnue(model, path):
         f.write(b'LNN1')
         f.write(struct.pack('iiii', model.L1, model.L2, model.L3, NUM_INPUTS))
         # FT first (engine reads ft.weight [L1, NUM_INPUTS], then ft.bias [L1]).
-        # gather: nn.Linear.weight is already [L1, NUM_INPUTS] -> save directly (no transpose).
-        ft_w = model.ft.weight.detach().cpu().numpy().astype(np.float32)  # [L1, NUM_INPUTS]
+        if getattr(model, 'ft_mode', 'embbag') == 'gather':
+            ft_w = model.ft.weight.detach().cpu().numpy().astype(np.float32)            # [L1, NUM_INPUTS]
+        else:  # embbag: EmbeddingBag.weight is [NUM_INPUTS+1, L1] -> drop pad row, transpose
+            ft_w = model.ft.weight.detach().cpu().numpy().astype(np.float32)[:NUM_INPUTS].T
         ft_b = model.ft_bias.detach().cpu().numpy().astype(np.float32)                    # [L1]
         for arr in [ft_w, ft_b]:
             f.write(struct.pack('i', arr.size))
