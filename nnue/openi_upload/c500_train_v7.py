@@ -204,6 +204,16 @@ def _train_buffer(w_all, b_all, s_all, t_all, bid):
         if _gc > 0:
             torch.nn.utils.clip_grad_norm_(model.parameters(), _gc)
         opt.step(); lr_now = _set_lr(); gstep += 1
+        # WEIGHT CLAMP — prevents the v7 failure mode (weight growth -> SCReLU saturation
+        # -> eval loses discrimination, r=0.52). v2 (the only net that ever worked, +218 Elo
+        # at depth) converged at FT=1.08 / L2=2.16 / L3=4.8 / out=1.51. Clamping at ~1.5x
+        # those keeps training in v2's proven-healthy regime regardless of what drives growth
+        # (CPU experiments rule out bf16/wd; the real trigger is C500-regime-specific).
+        with torch.no_grad():
+            model.ft.weight.clamp_(-1.6, 1.6)
+            model.l2.weight.clamp_(-3.5, 3.5)
+            model.l3.weight.clamp_(-7.0, 7.0)
+            model.out.weight.clamp_(-2.5, 2.5)
         running += loss.item(); window += 1
         if gstep % 500 == 0:
             try:
