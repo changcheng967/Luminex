@@ -207,24 +207,19 @@ def _train_buffer(w_all, b_all, s_all, t_all, bid):
         if _gc > 0:
             torch.nn.utils.clip_grad_norm_(model.parameters(), _gc)
         opt.step(); lr_now = _set_lr(); gstep += 1
-        # WEIGHT CLAMP — prevents the v7 failure mode (weight growth -> SCReLU saturation
-        # -> eval loses discrimination, r=0.52). v2 (the only net that ever worked, +218 Elo
-        # at depth) converged at FT=1.08 / L2=2.16 / L3=4.8 / out=1.51. Clamping at ~1.5x
-        # those keeps training in v2's proven-healthy regime regardless of what drives growth
-        # (CPU experiments rule out bf16/wd; the real trigger is C500-regime-specific).
-        with torch.no_grad():
-            model.ft.weight.clamp_(-1.6, 1.6)
-            model.l2.weight.clamp_(-3.5, 3.5)
-            model.l3.weight.clamp_(-7.0, 7.0)
-            model.out.weight.clamp_(-2.5, 2.5)
+        # NO weight clamp — the clamp pegged every layer at the bound (degenerate, saturated):
+        # eval correlated on quiet pos (r=0.993) but was TACTICALLY BLIND (walked into mate,
+        # 492/500). Growth is now controlled by stronger wd (NNUE_WD=5e-4) so weights settle
+        # naturally (v2-like) with tactical vision. Guard below aborts only on true runaway.
         running += loss.item(); window += 1
         if gstep % 500 == 0:
             try:
+                _ftm = float(model.ft.weight.detach().abs().max().item())
                 _l2m = float(model.l2.weight.detach().abs().max().item())
                 _l3m = float(model.l3.weight.detach().abs().max().item())
-                _wm = f" L2|max|={_l2m:.2f} L3|max|={_l3m:.2f}"
+                _wm = f" FT|max|={_ftm:.2f} L2|max|={_l2m:.2f} L3|max|={_l3m:.2f}"
             except Exception:
-                _wm = ""; _l2m = _l3m = 0.0
+                _wm = ""; _ftm = _l2m = _l3m = 0.0
             dt = time.time() - t0
             print(f"  buf{bid} step {gstep}/{total_steps} loss={running/window:.5f}{_wm} | "
                   f"{total_pos/1e9:.2f}B pos ({total_pos/max(dt,1)/1e6:.1f}M/s) "
