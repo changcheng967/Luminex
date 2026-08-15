@@ -104,11 +104,17 @@ OUT = os.environ.get("NNUE_OUT_NAME", "luminex_v7.nnue"); OUT_BASE = OUT[:-5] if
 
 # ---- shuffle frame order so different frames land in the same early buffers each run ----
 random.seed(1337); random.shuffle(FRAMES)
+# ---- SUBSET cap: v2's stability came from CONVERGENCE (multi-epoch repeats). 1 epoch over
+# all 15B never converges -> SCReLU cascade runs away (L3->12-16, tactically-blind nets).
+# Cap the frame count so each epoch is small enough to converge; loop with NNUE_EPOCHS>1.
+_maxf = int(os.environ.get("NNUE_MAX_FRAMES", "0"))
+if _maxf > 0 and len(FRAMES) > _maxf:
+    FRAMES = FRAMES[:_maxf]
 total_bytes = sum(os.path.getsize(f) for f in FRAMES)
 est_pos = int(total_bytes / 1.05)   # ~1.05 B/pos -> ~14.5B from 15.3GB
 nth_per_worker = max(1, NTH // NPAR)
 print(f"v7 cross-frame shuffle: {len(FRAMES)} frames ({total_bytes/1e9:.2f}GB, ~{est_pos/1e9:.1f}B pos), "
-      f"1 epoch, {NPAR} concurrent featurizers x {nth_per_worker} threads, buffer={BUFFER_POS/1e6:.0f}M, "
+      f"{EPOCHS} epoch(s), {NPAR} concurrent featurizers x {nth_per_worker} threads, buffer={BUFFER_POS/1e6:.0f}M, "
       f"L1={L1} bs={BS} bf16={_autocast} grad-clip={_gc} device={device}", flush=True)
 
 # ============================================================================
@@ -164,7 +170,7 @@ def cmd_for(frame_path, wid):
     dec = "zstd -dc" if frame_path.endswith(".zst") else "xz -dc"
     return f"{dec} {frame_path} | {FEAT} --stream --input /dev/stdin --threads {nth_per_worker}"
 
-src = ParallelChunkSource(FRAMES, cmd_for, BUF, NPAR, rec=REC, qsize=max(4, NPAR), raw=False)
+# src is created per-epoch inside the loop below (EPOCHS>1 must re-stream the frames)
 
 # ============================================================================
 # Training loop: accumulate interleaved buffer -> full shuffle -> train -> clear
@@ -240,6 +246,9 @@ def _train_buffer(w_all, b_all, s_all, t_all, bid):
 
 # main epoch loop
 for epoch in range(EPOCHS):
+    if epoch > 0:
+        print(f"\n=== EPOCH {epoch+1}/{EPOCHS}: re-streaming the {len(FRAMES)}-frame subset (convergence repeats) ===", flush=True)
+    src = ParallelChunkSource(FRAMES, cmd_for, BUF, NPAR, rec=REC, qsize=max(4, NPAR), raw=False)
     while True:
         # ---- accumulate BUFFER_POS interleaved positions into VRAM ----
         ws, bs, ss, ts = [], [], [], []
