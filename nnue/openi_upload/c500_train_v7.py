@@ -139,6 +139,13 @@ _tail_params = [p for p in model.parameters() if p.numel() <= 100000]   # L2/L3/
 # it collapsed L2 25x [max 0.0865 vs v2's 2.16] -> eval lost discrimination -> -560 Elo vs v2.
 # v6's L2 divergence was bf16+no-grad-clip, NOT insufficient wd; v2's wd=1e-4 was always correct.)
 _WD = float(os.environ.get("NNUE_WD", "1e-4"))            # uniform wd on ALL params (v2 recipe)
+# TARGET CLIP — THE root-cause fix for the weight-growth cascade. v2's net outputs max
+# +-661cp (measured: its data never demanded more). The gamepack tail (5.6% of pos beyond
+# +-600, up to +-9096) demands out(h)=8-30 — under sigmoid-MSE those labels push forever
+# (sigmoid(2000/400)=0.993 unreachable) -> L2/L3 grow -> SCReLU saturates -> eval loses
+# move discrimination -> 494/500 garbage. Clipping targets to v2's range (+-1000) removes
+# the unlearnable tail; play strength is unaffected (search handles won positions).
+_TCLIP = float(os.environ.get("NNUE_TARGET_CLIP", "1000"))
 _BUF_EPOCHS = max(1, int(os.environ.get("NNUE_BUFFER_EPOCHS", "1")))  # train passes per featurized buffer
 _AMSGRAD = os.environ.get("NNUE_AMSGRAD", "0") != "0"     # off by default (v2 used plain AdamW)
 opt = torch.optim.AdamW(model.parameters(), lr=LR, weight_decay=_WD, amsgrad=_AMSGRAD)
@@ -214,7 +221,8 @@ def _train_buffer(w_all, b_all, s_all, t_all, bid):
                  else torch.autocast(device_type=device, enabled=False)
         with ctx_ac:
             pred = model(wi, bi, si)
-            loss = ((torch.sigmoid(pred / SCALE) - torch.sigmoid(ti / SCALE)) ** 2).mean()
+            ti_c = ti.clamp(-_TCLIP, _TCLIP) if _TCLIP > 0 else ti
+            loss = ((torch.sigmoid(pred / SCALE) - torch.sigmoid(ti_c / SCALE)) ** 2).mean()
         loss.backward()
         if _gc > 0:
             torch.nn.utils.clip_grad_norm_(model.parameters(), _gc)
