@@ -139,6 +139,7 @@ _tail_params = [p for p in model.parameters() if p.numel() <= 100000]   # L2/L3/
 # it collapsed L2 25x [max 0.0865 vs v2's 2.16] -> eval lost discrimination -> -560 Elo vs v2.
 # v6's L2 divergence was bf16+no-grad-clip, NOT insufficient wd; v2's wd=1e-4 was always correct.)
 _WD = float(os.environ.get("NNUE_WD", "1e-4"))            # uniform wd on ALL params (v2 recipe)
+_BUF_EPOCHS = max(1, int(os.environ.get("NNUE_BUFFER_EPOCHS", "1")))  # train passes per featurized buffer
 _AMSGRAD = os.environ.get("NNUE_AMSGRAD", "0") != "0"     # off by default (v2 used plain AdamW)
 opt = torch.optim.AdamW(model.parameters(), lr=LR, weight_decay=_WD, amsgrad=_AMSGRAD)
 print(f"  [opt] AdamW UNIFORM wd={_WD} on ALL params (v2 recipe) | amsgrad={_AMSGRAD} | grad-clip={_gc}", flush=True)
@@ -195,12 +196,17 @@ def _budget_exit(gstep, total_pos):
     sys.exit(0)
 
 def _train_buffer(w_all, b_all, s_all, t_all, bid):
-    """Full-shuffle one interleaved buffer and train every batch (v2's loop, verbatim)."""
+    """Full-shuffle one interleaved buffer and train every batch (v2's loop, verbatim).
+    NNUE_BUFFER_EPOCHS=K > 1 trains this buffer K passes (fresh randperm each) — the
+    pipeline is FEATURIZER-bound (~0.5M/s measured vs GPU's 1.2-1.9M/s ceiling), so
+    re-using each featurized buffer multiplies effective training views per featurized pos."""
     global gstep
     N = w_all.shape[0]
-    perm = torch.randperm(N, device=device)        # <<< FULL SHUFFLE within the interleaved buffer
     running, window = 0.0, 0
-    for i in range(0, N, BS):
+    _npass = _BUF_EPOCHS
+    for _pass in range(_npass):
+      perm = torch.randperm(N, device=device)      # <<< FULL SHUFFLE, fresh every pass
+      for i in range(0, N, BS):
         idx = perm[i:i + BS]
         wi = w_all[idx].long(); bi = b_all[idx].long(); si = s_all[idx]; ti = t_all[idx]
         opt.zero_grad()
@@ -237,12 +243,12 @@ def _train_buffer(w_all, b_all, s_all, t_all, bid):
             if _l2m > 5.0 or _l3m > 12.0:
                 print(f"  *** WEIGHT-GROWTH ABORT @ step {gstep}: L2|max|={_l2m:.2f} L3|max|={_l3m:.2f} "
                       f"exceed guard (5.0/12.0). Saving current net + aborting.", flush=True)
-                del w_all, b_all, s_all, t_all, perm; torch.cuda.empty_cache()
+                del w_all, b_all, s_all, t_all; torch.cuda.empty_cache()
                 _budget_exit(gstep, total_pos)
         if BUDGET and time.time() - t0 >= BUDGET:
-            del w_all, b_all, s_all, t_all, perm; torch.cuda.empty_cache()
+            del w_all, b_all, s_all, t_all; torch.cuda.empty_cache()
             _budget_exit(gstep, total_pos)
-    del perm
+      del perm
 
 # main epoch loop
 for epoch in range(EPOCHS):
