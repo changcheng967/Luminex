@@ -1480,4 +1480,38 @@ void clear_pawn_table() {
     std::memset(pawn_table, 0, sizeof(pawn_table));
 }
 
+// ============================================================
+// Read-only table exports for luminex-evaltrace (HCE distillation
+// tuner). Inline accessors to the file-static tables so the trace
+// tool always mirrors the CURRENT engine values — no value drift.
+// ============================================================
+namespace etrace {
+int* piece_value_mg()  { return PieceValueMG; }
+int* piece_value_eg()  { return PieceValueEG; }
+int* knight_mob_mg()   { return KnightMobilityMG; }
+int* knight_mob_eg()   { return KnightMobilityEG; }
+int* bishop_mob_mg()   { return BishopMobilityMG; }
+int* bishop_mob_eg()   { return BishopMobilityEG; }
+int* rook_mob_mg()     { return RookMobilityMG; }
+int* rook_mob_eg()     { return RookMobilityEG; }
+int* queen_mob_mg()    { return QueenMobilityMG; }
+int* queen_mob_eg()    { return QueenMobilityEG; }
+const int* pawn_threat_mg()   { return PawnThreatMG; }
+const int* pawn_threat_eg()   { return PawnThreatEG; }
+const int* knight_threat_mg() { return KnightThreatMG; }
+const int* knight_threat_eg() { return KnightThreatEG; }
+const int* bishop_threat_mg() { return BishopThreatMG; }
+const int* bishop_threat_eg() { return BishopThreatEG; }
+const int* rook_threat_mg()   { return RookThreatMG; }
+const int* rook_threat_eg()   { return RookThreatEG; }
+const int* queen_threat_mg()  { return QueenThreatMG; }
+const int* queen_threat_eg()  { return QueenThreatEG; }
+const int* phalanx_mg() { return PhalanxMG; }
+const int* phalanx_eg() { return PhalanxEG; }
+const int* cand_mg()    { return &CandMG[0][0]; }
+const int* cand_eg()    { return &CandEG[0][0]; }
+const int* passed_mg()  { return PassedMG; }
+const int* passed_eg()  { return PassedEG; }
+} // namespace etrace
+
 } // namespace luminex

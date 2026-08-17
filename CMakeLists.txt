@@ -112,6 +112,7 @@ option(BUILD_TUNER "Build texel tuner" OFF)
 option(BUILD_DATASET_GEN "Build dataset generator" OFF)
 option(BUILD_FEATURIZER "Build Game-Pack NNUE featurizer" OFF)
 option(BUILD_ENCODER "Build Game-Pack PGN encoder" OFF)
+option(BUILD_EVALTRACE "Build HCE eval trace tool" OFF)
 
 add_executable(luminex-merge src/merge_frames.cpp)
 target_include_directories(luminex-merge PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
@@ -145,6 +146,21 @@ if(BUILD_FEATURIZER)
     )
     target_include_directories(luminex-featurize PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
     target_compile_definitions(luminex-featurize PRIVATE _CRT_SECURE_NO_WARNINGS)
+endif()
+
+if(BUILD_EVALTRACE)
+    add_executable(luminex-evaltrace
+        src/eval_trace.cpp
+        src/tuner_params.cpp
+        src/board.cpp
+        src/movegen.cpp
+        src/evaluation.cpp
+        src/nnue.cpp
+        src/magic.cpp
+        src/transposition.cpp
+    )
+    target_include_directories(luminex-evaltrace PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
+    target_compile_definitions(luminex-evaltrace PRIVATE _CRT_SECURE_NO_WARNINGS)
 endif()
 
 if(BUILD_DATASET_GEN)
