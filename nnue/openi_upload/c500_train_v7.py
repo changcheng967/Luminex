@@ -115,7 +115,7 @@ est_pos = int(total_bytes / 1.05)   # ~1.05 B/pos -> ~14.5B from 15.3GB
 nth_per_worker = max(1, NTH // NPAR)
 print(f"v7 cross-frame shuffle: {len(FRAMES)} frames ({total_bytes/1e9:.2f}GB, ~{est_pos/1e9:.1f}B pos), "
       f"{EPOCHS} epoch(s), {NPAR} concurrent featurizers x {nth_per_worker} threads, buffer={BUFFER_POS/1e6:.0f}M, "
-      f"L1={L1} bs={BS} bf16={_autocast} grad-clip={_gc} device={device}", flush=True)
+      f"L1={L1} bs={BS} bf16={_autocast} grad-clip={_gc} tclip={_TCLIP} device={device}", flush=True)
 
 # ============================================================================
 # Model + optimizer (L2 root-cause fix: tail wd=1e-2, FT wd=0, AMSGrad)
