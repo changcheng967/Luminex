@@ -135,7 +135,27 @@ feature vector + SF target, never the mirror). Committed at the
 feature-expansion commit with coefs zero-initialized (engine identical to
 fit6 until a fit is adopted).
 
-## 5. Adjacent negative results (isolated eval-term changes)
+## 5. Rung 3b — per-file pawn-shield family (IN FLIGHT)
+
+The coarse shield terms (SHIELD_R1-3, one weight per rank-distance summed
+across all 3 files; OPEN_KFILE/OPEN_ADJ which count ENEMY pawns as cover)
+collapse the file dimension. New family (NPHASE 610→621, 2f6d78d, zero-init):
+
+| feature | meaning | λ=1e7 | λ=3e7 | λ=1e8 |
+|---|---|---|---|---|
+| SHIELD_KF_R1-3 | own pawn on (king file, rel-rank r) | 1.2/2.5/1.4 | 0.4/1.4/0.8 | 0.1/0.6/0.3 |
+| SHIELD_ADJ_R1-3 | own pawns on (kf±1, r) | 1.4/−2.3/0.1 | 1.2/−1.8/0.0 | 0.7/−1.1/0.0 |
+| SHIELD_EXT_R1-3 | own pawns on (kf±2, r) | 6.2/2.9/1.9 | 3.2/0.9/0.7 | 1.1/0.2/0.2 |
+| HOLE_KF / HOLE_ADJ | own-pawn-missing flags | −4.4/−2.8 | −2.7/−1.6 | −1.2/−0.8 |
+
+Residual-refinement magnitudes (|0.4..3.2|cp) — the family sits ON TOP of
+the existing shield weights, so only the file-resolution delta is fitted.
+Chess-coherent signs where interpretable (ADJ_R2 negative = pushed f3/h3
+pawns weaken the king; HOLE penalties; EG values near-zero or noise).
+Gates pass all λ. Verify 0/0 both zero-init and fitted. Isolation A/B
+(fit6 + ONLY the 22 new values, λ=3e7) vs fit6 RUNNING — result appended.
+
+## 6. Adjacent negative results (isolated eval-term changes)
 
 - King-safety isolated tweaks regress (quadratic-KS −25.7, coordinated
   redesign −40, king-activity −30, king-defender −13 vs Stash) — but the
@@ -145,7 +165,7 @@ fit6 until a fit is adopted).
 - Eval-diff move ordering −12, 2× mobility scale + 2D phase −100,
   TT-eval upgrade −153, forcing-line fast-eval −249 (full list in git log).
 
-## 6. Standing lessons
+## 7. Standing lessons
 
 1. **Never judge a fitted eval by R² or spot-evals — game-match it.**
 2. Anchored ridge only; sanity gates (piece values in range, mobility
