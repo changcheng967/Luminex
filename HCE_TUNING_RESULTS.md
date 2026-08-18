@@ -93,7 +93,7 @@ All PLAY conclusions stand (game matches were always ground truth);
 old R² numbers were noise. Diagnosed via identical-arrays-different-scores
 + `ETRACE_DEBUG` fill print.
 
-## 4. Rung 3 — feature-basis expansion (IN FLIGHT)
+## 4. Rung 3a — imbalance-polynomial family (CLOSED: neutral)
 
 Deprioritized 200M-row data rung (more data only refines post-fit
 directions already shown play-harmful); expanding the BASIS instead.
@@ -135,7 +135,7 @@ feature vector + SF target, never the mirror). Committed at the
 feature-expansion commit with coefs zero-initialized (engine identical to
 fit6 until a fit is adopted).
 
-## 5. Rung 3b — per-file pawn-shield family (IN FLIGHT)
+## 5. Rung 3b — per-file pawn-shield family (CLOSED: neutral)
 
 The coarse shield terms (SHIELD_R1-3, one weight per rank-distance summed
 across all 3 files; OPEN_KFILE/OPEN_ADJ which count ENEMY pawns as cover)
