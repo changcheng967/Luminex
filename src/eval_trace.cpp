@@ -1197,6 +1197,15 @@ int main(int argc, char** argv) {
             sc_base[i] = luminex::CMG[i];
             sc_base[i + luminex::feat::NPHASE] = luminex::CEG[i];
         }
+        if (getenv("ETRACE_DEBUG")) {
+            double mx = 0; int amx = 0;
+            for (int i = 0; i < luminex::NSOLVE; ++i) {
+                double d = sc_base[i] - sc_cand[i];
+                if (std::fabs(d) > mx) { mx = std::fabs(d); amx = i; }
+            }
+            std::fprintf(stderr, "DBG[score-fill] cand[0]=%.3f base[0]=%.3f cand[607]=%.3f base[607]=%.3f maxdiff=%.4f at %d\n",
+                         sc_cand[0], sc_base[0], sc_cand[607], sc_base[607], mx, amx);
+        }
         sc_ok = true;
     }
 
@@ -1280,8 +1289,11 @@ int main(int argc, char** argv) {
                 int idx = t.touched[i];
                 int v = t.f[idx];
                 if (v == 0) continue;
+                // TEMPO features (idx >= 2*NPHASE) are accounted explicitly via the
+                // tempo term above and have no solver slot -- scoring them read past
+                // the end of sc_cand/sc_base (stack garbage, silently poisoned R2).
                 if (idx < luminex::feat::NPHASE) { pc += sc_cand[idx] * v * wmg; pb += sc_base[idx] * v * wmg; }
-                else { pc += sc_cand[idx] * v * weg; pb += sc_base[idx] * v * weg; }
+                else if (idx < luminex::NSOLVE)  { pc += sc_cand[idx] * v * weg; pb += sc_base[idx] * v * weg; }
             }
             sc_n++;
             sc_sum_r += r;
