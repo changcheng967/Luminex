@@ -152,8 +152,17 @@ Residual-refinement magnitudes (|0.4..3.2|cp) — the family sits ON TOP of
 the existing shield weights, so only the file-resolution delta is fitted.
 Chess-coherent signs where interpretable (ADJ_R2 negative = pushed f3/h3
 pawns weaken the king; HOLE penalties; EG values near-zero or noise).
-Gates pass all λ. Verify 0/0 both zero-init and fitted. Isolation A/B
-(fit6 + ONLY the 22 new values, λ=3e7) vs fit6 RUNNING — result appended.
+Gates pass all λ. Verify 0/0 both zero-init and fitted.
+
+**Isolation A/B (fit6 + ONLY the 22 new values, λ=3e7): 183-183-134
+(0.500), 0.0 ± 26.1, LOS 50.0% — DEAD NEUTRAL, not adopted.**
+
+**PATTERN (3a + 3b): feature-basis expansion on top of the distilled basis
+yields ZERO play value even when holdout R² improves.** The fitted
+material/PST terms already encode these interactions; explicit features
+only re-express absorbed signal. Rung-3 basis expansion is EXHAUSTED at
+this data scale — the remaining HCE levers are more DATA (refit with 9×
+rows at scaled λ) or structural search, not more features.
 
 ## 6. Adjacent negative results (isolated eval-term changes)
 
