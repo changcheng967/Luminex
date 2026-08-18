@@ -110,9 +110,16 @@ Chess-coherent: rooks devalue with own pawns (want open files; 2R×8P side
 existing bishop-pair / knight-pawn terms.
 
 Holdout (2.46M rows, clipped): base c0 0.4123 / λ=1e7 **0.4918** /
-λ=3e7 0.4641 / λ=1e8 0.4385. A/B λ=3e7 vs fit6 pending. **STATUS: the
-fitted-candidate `--verify` shows tracer/engine mirror mismatches — under
-investigation; nothing adopted until verify is 0/0 and the A/B gate passes.**
+λ=3e7 0.4641 / λ=1e8 0.4385. A/B λ=3e7 vs fit6 in flight.
+
+**Verify anomaly resolved (same day):** the first fitted build failed
+`--verify` (3005 mirror mismatches) — the tracer's new block emitted
+features but never added `FE_MG/FE_EG` to its mirror accumulator; engine
+and reconstruction were correct all along. Fixed; verify 0/0 with fitted
+coefs. **The solve/coefs/holdout scores were unaffected** (they use the
+feature vector + SF target, never the mirror). Committed at the
+feature-expansion commit with coefs zero-initialized (engine identical to
+fit6 until a fit is adopted).
 
 ## 5. Adjacent negative results (isolated eval-term changes)
 

@@ -74,7 +74,10 @@ constexpr int TRADEDOWN      = 603;  // EG only, value = diff*simpl/256
 constexpr int KS_AU          = 604;  // value = attack-unit danger (pre-flight)
 constexpr int KS_FLIGHT1     = 605;
 constexpr int KS_FLIGHT2     = 606;
-constexpr int NPHASE         = 607;
+constexpr int ROOK_PAWN      = 607;  // value = rooks * pawns (per side)
+constexpr int NN_PAIR        = 608;  // both knights present (per side)
+constexpr int NB_PAIR        = 609;  // knight + bishop present (per side)
+constexpr int NPHASE         = 610;
 constexpr int TEMPO_MG       = 2 * NPHASE;      // value = +ph / -ph
 constexpr int TEMPO_EG       = 2 * NPHASE + 1;  // value = +(24-ph) / -(24-ph)
 constexpr int NFEAT          = 2 * NPHASE + 2;

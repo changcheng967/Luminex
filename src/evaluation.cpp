@@ -17,7 +17,7 @@ namespace luminex {
 // "regenerate eval_fitted.h + rebuild", and eval_trace.cpp reads the
 // SAME arrays so --verify revalidates the applied engine.
 // ============================================================
-static_assert(feat::NPHASE == 607);
+static_assert(feat::NPHASE == 610);
 
 EvalParams g_eval_params;
 
@@ -1185,6 +1185,21 @@ Value evaluate(const Position& pos, bool tactical_only) {
     // Bishop pair: two bishops cover both color complexes
     if (bishop_count[WHITE] >= 2) { mg_score += FE_MG[feat::BISHOP_PAIR]; eg_score += FE_EG[feat::BISHOP_PAIR]; }
     if (bishop_count[BLACK] >= 2) { mg_score -= FE_MG[feat::BISHOP_PAIR]; eg_score -= FE_EG[feat::BISHOP_PAIR]; }
+
+    // Imbalance polynomial: pairwise piece-count interactions the linear
+    // material terms cannot express. Rooks devalue with own pawns (they want
+    // open files); NN pair lacks square-color coverage; N+B complements.
+    for (int c_idx = 0; c_idx < 2; ++c_idx) {
+        Color c = Color(c_idx);
+        Sign sign = (c_idx == 0) ? 1 : -1;
+        int rooks = popcount(pos.pieces(c, ROOK));
+        int pawns = popcount(pos.pieces(c, PAWN));
+        int knights = popcount(pos.pieces(c, KNIGHT));
+        mg_score += sign * rooks * pawns * FE_MG[feat::ROOK_PAWN];
+        eg_score += sign * rooks * pawns * FE_EG[feat::ROOK_PAWN];
+        if (knights >= 2) { mg_score += sign * FE_MG[feat::NN_PAIR]; eg_score += sign * FE_EG[feat::NN_PAIR]; }
+        if (knights >= 1 && bishop_count[c_idx] >= 1) { mg_score += sign * FE_MG[feat::NB_PAIR]; eg_score += sign * FE_EG[feat::NB_PAIR]; }
+    }
 
     // Knight bonus with many pawns: knights can jump over pawn chains,
     // making them relatively stronger in closed positions (many pawns).

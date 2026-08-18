@@ -3,7 +3,7 @@
 
 Normal equations from luminex-evaltrace --solve: A = X'X, b = X'r over rows
   r = y_white - tempo,  x_j = f_j*ph/24 (MG) or f_j*(24-ph)*sf/768 (EG),
-in solver space (1214 = 607 MG + 607 EG single coefs). Ridge toward the
+in solver space (1220 = 610 MG + 610 EG single coefs). Ridge toward the
 CURRENT engine coefs c0 with per-feature scaling d_j = sqrt(A_jj/N)
 (standardized space; rare features pin to c0, dense features move freely):
 
@@ -24,7 +24,7 @@ Rank-1 gauge anchors pin the EFFECTIVE piece value (MAT + mean PST), which
 the diagonal gauge freedom otherwise splits arbitrarily. Both keep A
 symmetric so the eigen path still applies.
 
-.bin layout: [int64 N][double A[1214*1214]][double b[1214]]
+.bin layout: [int64 N][double A[1220*1220]][double b[1220]]
              [+ v2 tail: double sum_r, double sum_r2]
 
 Usage:
@@ -34,7 +34,7 @@ Usage:
 import sys
 import numpy as np
 
-NPHASE = 607
+NPHASE = 610
 NS = 2 * NPHASE
 PST, MAT = 0, 384
 
@@ -142,7 +142,7 @@ def gates(c, c0):
         chk(lo <= mg <= hi and lo <= eg <= hi, f"{nm} value {mg:.0f}/{eg:.0f} outside [{lo},{hi}]")
     for base, n_m, nm in [(390, 9, "knight mobility"), (399, 14, "bishop mobility"),
                           (413, 15, "rook mobility"), (428, 28, "queen mobility")]:
-        mg = c[base:base + n_m]; eg = c[607 + base:607 + base + n_m]
+        mg = c[base:base + n_m]; eg = c[NPHASE + base:NPHASE + base + n_m]
         mono_mg = np.all(np.diff(mg) > -25)
         print(f"  {nm:<22} mg [{mg[0]:.0f}..{mg[-1]:.0f}] eg [{eg[0]:.0f}..{eg[-1]:.0f}]"
               f"{'  (non-monotone)' if not mono_mg else ''}")

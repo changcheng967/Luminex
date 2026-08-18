@@ -940,6 +940,20 @@ static TraceOut trace_eval(const Position& pos, Tracer& t) {
         t.add(BISHOP_PAIR, -1); t.add(BISHOP_PAIR + NPHASE, -1);
     }
 
+    // Imbalance polynomial (mirrors evaluation.cpp): pairwise piece-count interactions
+    for (int c_idx = 0; c_idx < 2; ++c_idx) {
+        Color c = Color(c_idx);
+        int sign = (c_idx == 0) ? 1 : -1;
+        int rooks = popcount(pos.pieces(c, ROOK));
+        int pawns = popcount(pos.pieces(c, PAWN));
+        int knights = popcount(pos.pieces(c, KNIGHT));
+        int rp = rooks * pawns;
+        if (rp) { mg_score += sign * rp * FE_MG[ROOK_PAWN]; eg_score += sign * rp * FE_EG[ROOK_PAWN]; }
+        if (rp) { t.add(ROOK_PAWN, sign * rp); t.add(ROOK_PAWN + NPHASE, sign * rp); }
+        if (knights >= 2) { mg_score += sign * FE_MG[NN_PAIR]; eg_score += sign * FE_EG[NN_PAIR]; t.add(NN_PAIR, sign); t.add(NN_PAIR + NPHASE, sign); }
+        if (knights >= 1 && bishop_count[c_idx] >= 1) { mg_score += sign * FE_MG[NB_PAIR]; eg_score += sign * FE_EG[NB_PAIR]; t.add(NB_PAIR, sign); t.add(NB_PAIR + NPHASE, sign); }
+    }
+
     {
         int w_pawns = popcount(pos.pieces(WHITE, PAWN));
         int b_pawns = popcount(pos.pieces(BLACK, PAWN));
