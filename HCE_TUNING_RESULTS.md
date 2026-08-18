@@ -164,7 +164,33 @@ only re-express absorbed signal. Rung-3 basis expansion is EXHAUSTED at
 this data scale — the remaining HCE levers are more DATA (refit with 9×
 rows at scaled λ) or structural search, not more features.
 
-## 6. Adjacent negative results (isolated eval-term changes)
+## 6. Rung 3c — 9× data refit — NEGATIVE, not adopted
+
+1-in-66 gamepack dump → **223.56M rows** (9.05× the 22.1M), tail-clipped
+(804K dropped), anchored refit from c0=fit6. Effective-shrinkage mapping
+(λ ∝ N) puts the fit6-analog at λ=3e8 — shield/imbalance slots reproduced
+their 22M values to 2 decimals (−5.80 vs −5.72, 3.16 vs 3.16), confirming
+the scaling; the payload was the 1220 old-coef refinements (mean |Δ| 5.3,
+max 134).
+
+**A/B λ=3e8 vs fit6: 177-210-113 (0.467), −23.0 ± 26.8, LOS 4.7%.**
+λ=1e8 (bigger drift, mean 9.2) untested — era-2's curve says bigger
+post-fit movement loses MORE; no upside story.
+
+**Conclusion: more data on the same basis is play-NEGATIVE at matched
+shrinkage.** The distillation play-optimum is not the MSE-optimum — 9×
+data moves estimates toward the true SF-eval MSE minimizer and AWAY from
+whatever imperfect-agreement distance plays best (fit1's −210 at the
+extreme). fit6 is a delicate sweet spot, not a step toward a limit.
+
+**Fit-lever scoreboard (all measured):** Texel-tune existing terms DEAD ×8;
+SPSA search constants NO GAIN; distillation@22M +43 (the one win); 3a
+features NEUTRAL; 3b features NEUTRAL; 3c 9×-data refit NEGATIVE. The
+linear-basis fit is exhausted in every direction around fit6. Remaining
+HCE levers: nonlinear expressiveness (king-danger curvature — untested
+axis) and search structure.
+
+## 7. Adjacent negative results (isolated eval-term changes)
 
 - King-safety isolated tweaks regress (quadratic-KS −25.7, coordinated
   redesign −40, king-activity −30, king-defender −13 vs Stash) — but the
@@ -174,7 +200,7 @@ rows at scaled λ) or structural search, not more features.
 - Eval-diff move ordering −12, 2× mobility scale + 2D phase −100,
   TT-eval upgrade −153, forcing-line fast-eval −249 (full list in git log).
 
-## 7. Standing lessons
+## 8. Standing lessons
 
 1. **Never judge a fitted eval by R² or spot-evals — game-match it.**
 2. Anchored ridge only; sanity gates (piece values in range, mobility
