@@ -108,7 +108,7 @@ static inline int32_t dot_i8_vnni_small(const int8_t* w, const uint8_t* a, int n
 
 // ---- profiling counters (data-driven: find the NPS bottleneck from numbers) ----
 namespace { struct Stat { long long n = 0, cyc = 0; }; }
-static Stat st_eval, st_update, st_refresh;
+static Stat st_eval, st_update, st_refresh, st_king_refresh, st_incremental;
 static long long g_act_nz = 0, g_act_tot = 0;   // activation sparsity (non-zero L1 outputs after SCReLU)
 static bool g_profile = false;
 static bool g_profile_inited = false;
@@ -126,9 +126,11 @@ static inline long long rdtsc() {
 }
 void print_stats() {
     if (!profile_on()) return;
-    std::fprintf(stderr, "NNUE profile: evals=%lld (%.1fM cyc, %.0f cyc/eval) | updates=%lld (%.1fM cyc, %.0f cyc/upd) | refreshes=%lld (%.1fM cyc) | L1-act density=%.1f%%\n",
+    std::fprintf(stderr, "NNUE profile: evals=%lld (%.1fM cyc, %.0f cyc/eval) | updates=%lld (%.1fM cyc, %.0f cyc/upd) | king-refreshes=%lld (%.0f cyc/kr) | incrementals=%lld (%.0f cyc/inc) | refreshes=%lld (%.1fM cyc) | L1-act density=%.1f%%\n",
                  st_eval.n, st_eval.cyc/1000000.0, st_eval.n ? double(st_eval.cyc)/st_eval.n : 0.0,
                  st_update.n, st_update.cyc/1000000.0, st_update.n ? double(st_update.cyc)/st_update.n : 0.0,
+                 st_king_refresh.n, st_king_refresh.n ? double(st_king_refresh.cyc)/st_king_refresh.n : 0.0,
+                 st_incremental.n, st_incremental.n ? double(st_incremental.cyc)/st_incremental.n : 0.0,
                  st_refresh.n, st_refresh.cyc/1000000.0,
                  g_act_tot ? 100.0*g_act_nz/g_act_tot : 0.0);
 }
@@ -406,9 +408,12 @@ void update(Position& pos, Move m, Piece moved, PieceType captured) {
         bool white_pov = (p == 0);
         bool our_king_moved = king_moved && ((us == WHITE) == white_pov);
         if (our_king_moved) {
+            long long kr_t0 = pr ? rdtsc() : 0;   // #51: independent king-refresh cost (not derived)
             refresh_perspective(pos, a, p);   // king_sq changed → full refresh of this perspective
+            if (pr) { st_king_refresh.cyc += rdtsc() - kr_t0; st_king_refresh.n++; }
             continue;
         }
+        long long inc_t0 = pr ? rdtsc() : 0;   // #51: independent incremental cost (closes last derived number)
         int ksq = static_cast<int>(pos.king_sq(white_pov ? WHITE : BLACK));
         remove_feature(a, p, ksq, from, make_piece(us, from_pt));
         add_feature(a, p, ksq, to,   make_piece(us, to_pt));
@@ -430,6 +435,7 @@ void update(Position& pos, Move m, Piece moved, PieceType captured) {
             remove_feature(a, p, ksq, rfrom, make_piece(us, ROOK));
             add_feature(a, p, ksq, rto,   make_piece(us, ROOK));
         }
+        if (pr) { st_incremental.cyc += rdtsc() - inc_t0; st_incremental.n++; }
     }
     if (pr) { st_update.cyc += rdtsc() - t0; st_update.n++; }
 }

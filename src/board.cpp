@@ -825,6 +825,47 @@ bool Position::do_move(Move m) {
     return true;  // Move executed successfully
 }
 
+// Lean forward-only board update for the Game-Pack featurizer. Applies the move to
+// board[]/bitboards/king_square and flips side to move -- NOTHING else. Skips the
+// StateInfo copy, Zobrist keys, psq, castling-rights-key, set_check_info, NNUE update
+// and repetition history that do_move does for search/undo (the featurizer never undoes
+// and computes no eval). ~5-10x faster; bit-identical board result -> identical features.
+bool Position::do_move_replay(Move m) {
+    Square from = m.from(), to = m.to();
+    Piece pc = board[from];
+    if (pc == NO_PIECE) return false;
+    Color us = Color(pc / 6), them = Color(us ^ 1);
+    if (us != side_to_move_) return false;
+    PieceType pt = piece_type_of(pc);
+
+    // Capture (normal or en passant). remove_piece clears board[]/bitboards/piece_list.
+    if (m.is_en_passant()) {
+        Square cap_sq = Square(to - (us == WHITE ? 8 : -8));
+        remove_piece(cap_sq);
+    } else if (board[to] != NO_PIECE) {
+        remove_piece(to);
+    }
+
+    // Move the piece (king_square updated by move_piece/put_piece on king moves).
+    if (m.is_promotion()) {
+        remove_piece(from);
+        put_piece(us, m.promotion_type(), to);
+    } else {
+        move_piece(from, to);
+    }
+
+    // Castling: also slide the rook.
+    if (m.is_castling()) {
+        Square rfrom, rto;
+        if (to == (us == WHITE ? G1 : G8)) { rfrom = (us == WHITE ? H1 : H8); rto = (us == WHITE ? F1 : F8); }
+        else { rfrom = (us == WHITE ? A1 : A8); rto = (us == WHITE ? D1 : D8); }
+        move_piece(rfrom, rto);
+    }
+
+    side_to_move_ = them;
+    return true;
+}
+
 void Position::undo_move(Move m) {
     if (st_ply <= 0) {
         return;

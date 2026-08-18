@@ -253,7 +253,15 @@ static void process_files(const std::vector<std::string>& files, Shared& sh, Per
         std::string cur_fen;
         bool have_fen = false, game_set = false, start_stm_white = true, in_movetext = false, skip_game = false;
         bool pending = false;
-        uint8_t pending_idx = 0; bool pending_stm_white = false; int pending_eval = EVAL_NONE;
+#ifdef RAW_MOVES
+        // Direct-move mode: store the raw 16-bit Move (from/to/flags) instead of a sorted-list
+        // index. Featurizer replays Move(raw) with ZERO movegen -> the throughput win. Build
+        // with -DRAW_MOVES. Default build (index mode) is bit-identical to before.
+        uint16_t pending_raw = 0;
+#else
+        uint8_t pending_idx = 0;
+#endif
+        bool pending_stm_white = false; int pending_eval = EVAL_NONE;
         bool first_ply = true; int16_t prev_eq = 0, start_eval = 0; int game_npos = 0;
 
         auto emit_pend = [&]() -> bool {
@@ -271,7 +279,11 @@ static void process_files(const std::vector<std::string>& files, Shared& sh, Per
                 else { int8_t esc = -128; fwrite(&esc, 1, 1, fev); fwrite(&eq, 2, 1, fev); }
             }
             prev_eq = eq;
+#ifdef RAW_MOVES
+            fwrite(&pending_raw, 2, 1, fmv);
+#else
             fputc((int)pending_idx, fmv);
+#endif
             game_npos++; pt.pos++;
             return true;
         };
@@ -326,11 +338,19 @@ static void process_files(const std::vector<std::string>& files, Shared& sh, Per
                 skip_game = true;   // stop the cascade: skip until the next game header
                 continue;
             }
+#ifdef RAW_MOVES
+            // Direct-move: mv is already the exact legal Move from parse_san. Store its raw
+            // 16-bit form (from/to/flags). No sort, no index search. Featurizer replays it
+            // without generate<GEN_LEGAL> (the per-ply bottleneck, ~80% of featurize cost).
+            pos.do_move(mv);
+            pending = true; pending_raw = mv.raw();
+#else
             std::sort(list, list + nlegal, [](const ExtMove& a, const ExtMove& b){ return move_sort_key(a.move) < move_sort_key(b.move); });
             uint8_t idx = 255;
             for (int k = 0; k < nlegal; ++k) if (list[k].move == mv) { idx = (uint8_t)k; break; }
             pos.do_move(mv);
             pending = true; pending_idx = idx;
+#endif
             pending_stm_white = (pos.side_to_move() == WHITE);
         }
         flush_game();                                       // EOF: last game

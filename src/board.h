@@ -103,6 +103,7 @@ public:
     bool is_check() const;
 
     bool do_move(Move m);  // Returns true if move executed, false if failed
+    bool do_move_replay(Move m);  // Lean forward-only board update for the featurizer (no StateInfo/keys/check info)
     void undo_move(Move m);
 
     void do_null_move();
