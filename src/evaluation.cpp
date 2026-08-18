@@ -17,7 +17,7 @@ namespace luminex {
 // "regenerate eval_fitted.h + rebuild", and eval_trace.cpp reads the
 // SAME arrays so --verify revalidates the applied engine.
 // ============================================================
-static_assert(feat::NPHASE == 610);
+static_assert(feat::NPHASE == 621);
 
 EvalParams g_eval_params;
 
@@ -995,6 +995,42 @@ Value evaluate(const Position& pos, bool tactical_only) {
                         mg_score += sign * weight;
                     }
                 }
+            }
+
+            // Per-file pawn shield: resolve the file dimension the coarse
+            // SHIELD_R1-3 weights collapse -- king-file, adjacent, and
+            // next-adjacent shelter are worth different amounts (SF's shelter
+            // table is per (king_file, pawn_file, rank)). HOLE_* are the
+            // own-pawn-missing flags (OPEN_KFILE/OPEN_ADJ count enemy pawns
+            // as cover).
+            {
+                int kf_cnt[3] = {0, 0, 0}, adj_cnt[3] = {0, 0, 0}, ext_cnt[3] = {0, 0, 0};
+                for (int df = -2; df <= 2; ++df) {
+                    File sf = File(int(kfile) + df);
+                    if (sf < FILE_A || sf > FILE_H) continue;
+                    for (int r = 1; r <= 3; ++r) {
+                        if (!(our_pawns & square_bb(relative_square(c, make_square(sf, Rank(r)))))) continue;
+                        if (df == 0)      ++kf_cnt[r - 1];
+                        else if (df == -1 || df == 1) ++adj_cnt[r - 1];
+                        else              ++ext_cnt[r - 1];
+                    }
+                }
+                int hole_kf = (our_pawns & file_bb(kfile)) ? 0 : 1;
+                int hole_adj = 0;
+                if (kfile > FILE_A && !(our_pawns & file_bb(File(kfile - 1)))) ++hole_adj;
+                if (kfile < FILE_H && !(our_pawns & file_bb(File(kfile + 1)))) ++hole_adj;
+                for (int r = 1; r <= 3; ++r) {
+                    mg_score += sign * kf_cnt[r - 1]  * FE_MG[feat::SHIELD_KF_R1 + r - 1];
+                    eg_score += sign * kf_cnt[r - 1]  * FE_EG[feat::SHIELD_KF_R1 + r - 1];
+                    mg_score += sign * adj_cnt[r - 1] * FE_MG[feat::SHIELD_ADJ_R1 + r - 1];
+                    eg_score += sign * adj_cnt[r - 1] * FE_EG[feat::SHIELD_ADJ_R1 + r - 1];
+                    mg_score += sign * ext_cnt[r - 1] * FE_MG[feat::SHIELD_EXT_R1 + r - 1];
+                    eg_score += sign * ext_cnt[r - 1] * FE_EG[feat::SHIELD_EXT_R1 + r - 1];
+                }
+                mg_score += sign * hole_kf  * FE_MG[feat::HOLE_KF];
+                eg_score += sign * hole_kf  * FE_EG[feat::HOLE_KF];
+                mg_score += sign * hole_adj * FE_MG[feat::HOLE_ADJ];
+                eg_score += sign * hole_adj * FE_EG[feat::HOLE_ADJ];
             }
 
             Bitboard all_pawns = pos.pieces(PAWN);

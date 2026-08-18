@@ -77,7 +77,12 @@ constexpr int KS_FLIGHT2     = 606;
 constexpr int ROOK_PAWN      = 607;  // value = rooks * pawns (per side)
 constexpr int NN_PAIR        = 608;  // both knights present (per side)
 constexpr int NB_PAIR        = 609;  // knight + bishop present (per side)
-constexpr int NPHASE         = 610;
+constexpr int SHIELD_KF_R1   = 610;  // +3 (r-1): own pawn on (king file, rel-rank r)
+constexpr int SHIELD_ADJ_R1  = 613;  // +3 (r-1): own pawns on (kf+-1, r), value = count
+constexpr int SHIELD_EXT_R1  = 616;  // +3 (r-1): own pawns on (kf+-2, r), value = count
+constexpr int HOLE_KF        = 619;  // no own pawn anywhere on king file
+constexpr int HOLE_ADJ       = 620;  // value = # adjacent files with no own pawn
+constexpr int NPHASE         = 621;
 constexpr int TEMPO_MG       = 2 * NPHASE;      // value = +ph / -ph
 constexpr int TEMPO_EG       = 2 * NPHASE + 1;  // value = +(24-ph) / -(24-ph)
 constexpr int NFEAT          = 2 * NPHASE + 2;

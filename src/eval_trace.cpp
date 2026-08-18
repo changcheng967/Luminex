@@ -726,6 +726,41 @@ static TraceOut trace_eval(const Position& pos, Tracer& t) {
                 }
             }
 
+            // Per-file pawn shield (mirrors evaluation.cpp): king-file vs
+            // adjacent vs next-adjacent shelter resolved per rank band, plus
+            // own-pawn-missing HOLE flags.
+            {
+                int kf_cnt[3] = {0, 0, 0}, adj_cnt[3] = {0, 0, 0}, ext_cnt[3] = {0, 0, 0};
+                for (int df = -2; df <= 2; ++df) {
+                    File sf = File(int(kfile) + df);
+                    if (sf < FILE_A || sf > FILE_H) continue;
+                    for (int r = 1; r <= 3; ++r) {
+                        if (!(our_pawns & square_bb(relative_square(c, make_square(sf, Rank(r)))))) continue;
+                        if (df == 0)      ++kf_cnt[r - 1];
+                        else if (df == -1 || df == 1) ++adj_cnt[r - 1];
+                        else              ++ext_cnt[r - 1];
+                    }
+                }
+                int hole_kf = (our_pawns & file_bb(kfile)) ? 0 : 1;
+                int hole_adj = 0;
+                if (kfile > FILE_A && !(our_pawns & file_bb(File(kfile - 1)))) ++hole_adj;
+                if (kfile < FILE_H && !(our_pawns & file_bb(File(kfile + 1)))) ++hole_adj;
+                for (int r = 1; r <= 3; ++r) {
+                    int kf_j = SHIELD_KF_R1 + r - 1, adj_j = SHIELD_ADJ_R1 + r - 1, ext_j = SHIELD_EXT_R1 + r - 1;
+                    mg_score += sign * kf_cnt[r - 1]  * FE_MG[kf_j];
+                    eg_score += sign * kf_cnt[r - 1]  * FE_EG[kf_j];
+                    mg_score += sign * adj_cnt[r - 1] * FE_MG[adj_j];
+                    eg_score += sign * adj_cnt[r - 1] * FE_EG[adj_j];
+                    mg_score += sign * ext_cnt[r - 1] * FE_MG[ext_j];
+                    eg_score += sign * ext_cnt[r - 1] * FE_EG[ext_j];
+                    if (kf_cnt[r - 1])  { t.add(kf_j,  sign * kf_cnt[r - 1]);  t.add(kf_j  + NPHASE, sign * kf_cnt[r - 1]); }
+                    if (adj_cnt[r - 1]) { t.add(adj_j, sign * adj_cnt[r - 1]); t.add(adj_j + NPHASE, sign * adj_cnt[r - 1]); }
+                    if (ext_cnt[r - 1]) { t.add(ext_j, sign * ext_cnt[r - 1]); t.add(ext_j + NPHASE, sign * ext_cnt[r - 1]); }
+                }
+                if (hole_kf)  { mg_score += sign * FE_MG[HOLE_KF];  eg_score += sign * FE_EG[HOLE_KF];  t.add(HOLE_KF, sign);  t.add(HOLE_KF + NPHASE, sign); }
+                if (hole_adj) { mg_score += sign * hole_adj * FE_MG[HOLE_ADJ]; eg_score += sign * hole_adj * FE_EG[HOLE_ADJ]; t.add(HOLE_ADJ, sign * hole_adj); t.add(HOLE_ADJ + NPHASE, sign * hole_adj); }
+            }
+
             Bitboard all_pawns = pos.pieces(PAWN);
             if (!(all_pawns & file_bb(kfile))) {
                 mg_score += sign * FE_MG[OPEN_KFILE];
