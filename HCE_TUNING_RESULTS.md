@@ -110,7 +110,13 @@ Chess-coherent: rooks devalue with own pawns (want open files; 2R×8P side
 existing bishop-pair / knight-pawn terms.
 
 Holdout (2.46M rows, clipped): base c0 0.4123 / λ=1e7 **0.4918** /
-λ=3e7 0.4641 / λ=1e8 0.4385. A/B λ=3e7 vs fit6 in flight.
+λ=3e7 0.4641 / λ=1e8 0.4385.
+
+**A/B λ=3e7 vs fit6: 186-206-108 (0.480), −13.9 ± 27.0, LOS 15.6% —
+neutral-to-negative, not adopted.** But the refit drifted the 1214 old
+coefs too (mean |Δ| 5.3cp, max 133), conflating the feature family with
+refit noise. Isolation test queued: fit6 coefs exactly + ONLY the 6 new
+values (MG −5.7/−11.9/−12.0, EG −2.9/−9.4/−8.6).
 
 **Verify anomaly resolved (same day):** the first fitted build failed
 `--verify` (3005 mirror mismatches) — the tracer's new block emitted
