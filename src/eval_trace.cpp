@@ -28,6 +28,8 @@
 // ============================================================================
 #include "luminex.h"
 #include "evaluation.h"
+#include "eval_feat.h"
+#include "eval_fitted.h"
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
@@ -54,76 +56,6 @@ const int* cand_mg();    const int* cand_eg();
 const int* passed_mg();  const int* passed_eg();
 }
 
-namespace feat {
-constexpr int PST            = 0;    // 384: pt*64 + relsq (relsq = sq^56 for black)
-constexpr int MAT            = 384;  // 6
-constexpr int MOB_N          = 390;  // 9
-constexpr int MOB_B          = 399;  // 14
-constexpr int MOB_R          = 413;  // 15
-constexpr int MOB_Q          = 428;  // 28
-constexpr int PAWN_DOUBLED   = 456;
-constexpr int PAWN_ISOLATED  = 457;
-constexpr int PAWN_CONNECTED = 458;  // +7 (r-1)
-constexpr int PAWN_PHALANX   = 465;  // +7 (r-1)
-constexpr int PAWN_LEVER     = 472;  // +7 (r-1)
-constexpr int PAWN_LEVER_C   = 479;
-constexpr int PAWN_BACKWARD  = 480;
-constexpr int PAWN_CAND      = 481;  // +14: sup*7 + (r-1)
-constexpr int PAWN_PASSED    = 495;  // +7 (r-1)
-constexpr int PP_CONNECTED   = 502;  // +7 (r-1), value = n_connected
-constexpr int PP_ROOK_BEHIND = 509;
-constexpr int PP_ENEMY_ROOK  = 510;
-constexpr int PP_KING_PROX   = 511;  // value = (their_kdist - our_kdist)
-constexpr int PP_UNREACH_S   = 512;  // value = unreachable delta (<=4)
-constexpr int PP_UNREACH_B   = 513;  // value = unreachable delta (>4)
-constexpr int PP_BLOCKADE    = 514;  // +7 (r-1)
-constexpr int PP_STOP_OWN    = 521;
-constexpr int PP_STOP_ATT    = 522;
-constexpr int PP_SAFE        = 523;  // +7 (r-1)
-constexpr int PP_CLEAR       = 530;  // +7 (r-1)
-constexpr int OUTPOST_N      = 537;  // +3 (kr-3)
-constexpr int TRAPPED_N      = 540;
-constexpr int FAR_N          = 541;
-constexpr int FAR_B          = 542;
-constexpr int BSC            = 543;  // +7 (same-color pawn count, capped 6)
-constexpr int BISH_LONG      = 550;
-constexpr int OUTPOST_B      = 551;
-constexpr int ROOK_OPEN      = 552;
-constexpr int ROOK_SEMI      = 553;
-constexpr int ROOK_7TH       = 554;
-constexpr int ROOK_XRAY_Q    = 555;
-constexpr int FAR_R          = 556;
-constexpr int ROOK_TRAP_C    = 557;
-constexpr int ROOK_TRAP_NC   = 558;
-constexpr int ROOK_BLOCKED   = 559;
-constexpr int FAR_Q          = 560;
-constexpr int SHIELD_R1      = 561;
-constexpr int SHIELD_R2      = 562;
-constexpr int SHIELD_R3      = 563;
-constexpr int OPEN_KFILE     = 564;
-constexpr int OPEN_ADJ       = 565;  // value = # adjacent open files
-constexpr int STORM          = 566;  // value = sum(pr-3) over storm pawns
-constexpr int CASTLED        = 567;
-constexpr int NOCASTLE       = 568;
-constexpr int THR            = 569;  // +25: attacker(P..Q)*5 + target(P..Q)
-constexpr int HANG_PAWN      = 594;
-constexpr int HANG_PIECE     = 595;
-constexpr int PINNED         = 596;
-constexpr int SPACE_OWN      = 597;
-constexpr int SPACE_OPP      = 598;
-constexpr int IMBAL_CONST    = 599;
-constexpr int IMBAL_PAWN     = 600;  // value = pawn count of bishop side
-constexpr int BISHOP_PAIR    = 601;
-constexpr int KNIGHT_PAWN    = 602;  // value = knights * (total_pawns - 8)
-constexpr int TRADEDOWN      = 603;  // EG only, value = diff*simpl/256
-constexpr int KS_AU          = 604;  // value = attack-unit danger (pre-flight)
-constexpr int KS_FLIGHT1     = 605;
-constexpr int KS_FLIGHT2     = 606;
-constexpr int NPHASE         = 607;
-constexpr int TEMPO_MG       = 2 * NPHASE;      // value = +ph / -ph
-constexpr int TEMPO_EG       = 2 * NPHASE + 1;  // value = +(24-ph) / -(24-ph)
-constexpr int NFEAT          = 2 * NPHASE + 2;
-} // namespace feat
 
 struct Tracer {
     int f[feat::NFEAT] = {0};
@@ -245,8 +177,8 @@ static void trace_pawns(const Position& pos, Tracer& t, int32_t& mg_out, int32_t
 
             // Doubled pawn
             if (file_count[f] > 1) {
-                mg -= sign * 12;
-                eg -= sign * 20;
+                mg += sign * FE_MG[PAWN_DOUBLED];
+                eg += sign * FE_EG[PAWN_DOUBLED];
                 t.add(PAWN_DOUBLED, sign); t.add(PAWN_DOUBLED + NPHASE, sign);
             }
 
@@ -254,16 +186,15 @@ static void trace_pawns(const Position& pos, Tracer& t, int32_t& mg_out, int32_t
             bool left = (f > FILE_A && file_count[f - 1] > 0);
             bool right = (f < FILE_H && file_count[f + 1] > 0);
             if (!left && !right) {
-                mg -= sign * 15;
-                eg -= sign * 20;
+                mg += sign * FE_MG[PAWN_ISOLATED];
+                eg += sign * FE_EG[PAWN_ISOLATED];
                 t.add(PAWN_ISOLATED, sign); t.add(PAWN_ISOLATED + NPHASE, sign);
             }
 
             // Connected pawn (protected by another pawn)
             if (square_bb(sq) & supported_by_adj) {
-                int connected_bonus = 5 + r * 3;
-                mg += sign * connected_bonus;
-                eg += sign * (3 + r * 2);
+                mg += sign * FE_MG[PAWN_CONNECTED + r - 1];
+                eg += sign * FE_EG[PAWN_CONNECTED + r - 1];
                 t.add(PAWN_CONNECTED + (r - 1), sign);
                 t.add(PAWN_CONNECTED + (r - 1) + NPHASE, sign);
             }
@@ -286,11 +217,10 @@ static void trace_pawns(const Position& pos, Tracer& t, int32_t& mg_out, int32_t
             {
                 Bitboard lever_targets = pawn_attacks_bb(c, sq) & their_pawns;
                 if (lever_targets) {
-                    int lever_bonus = 4 + r * 2;
-                    mg += sign * lever_bonus;
+                    mg += sign * FE_MG[PAWN_LEVER + r - 1];
                     t.add(PAWN_LEVER + (r - 1), sign);
                     if (f >= FILE_C && f <= FILE_F) {
-                        mg += sign * 3;
+                        mg += sign * FE_MG[PAWN_LEVER_C];
                         t.add(PAWN_LEVER_C, sign);
                     }
                 }
@@ -305,8 +235,8 @@ static void trace_pawns(const Position& pos, Tracer& t, int32_t& mg_out, int32_t
                         Bitboard our_pawn_attacks = pawn_attacks_bb(c, our_pawns);
                         bool defended = (our_pawn_attacks & square_bb(push)) != 0;
                         if (!defended) {
-                            mg -= sign * 12;
-                            eg -= sign * 15;
+                            mg += sign * FE_MG[PAWN_BACKWARD];
+                            eg += sign * FE_EG[PAWN_BACKWARD];
                             t.add(PAWN_BACKWARD, sign); t.add(PAWN_BACKWARD + NPHASE, sign);
                         }
                     }
@@ -453,8 +383,8 @@ static TraceOut trace_eval(const Position& pos, Tracer& t) {
             Bitboard connected = passed_pawns_bb & adjacent_files & rank_bb(rank_of(sq));
             if (connected) {
                 int n_connected = popcount(connected);
-                mg_passer += n_connected * 15;
-                eg_passer += n_connected * (10 + r * 8);
+                mg_passer += n_connected * FE_MG[PP_CONNECTED + r - 1];
+                eg_passer += n_connected * FE_EG[PP_CONNECTED + r - 1];
                 t.add(PP_CONNECTED + (r - 1), sign * n_connected);
                 t.add(PP_CONNECTED + (r - 1) + NPHASE, sign * n_connected);
             }
@@ -464,8 +394,8 @@ static TraceOut trace_eval(const Position& pos, Tracer& t) {
                 Square rsq2 = lsb(behind);
                 bool rook_behind = (c == WHITE) ? (rank_of(rsq2) < rank_of(sq)) : (rank_of(rsq2) > rank_of(sq));
                 if (rook_behind) {
-                    mg_passer += 20;
-                    eg_passer += 30;
+                    mg_passer += FE_MG[PP_ROOK_BEHIND];
+                    eg_passer += FE_EG[PP_ROOK_BEHIND];
                     t.add(PP_ROOK_BEHIND, sign); t.add(PP_ROOK_BEHIND + NPHASE, sign);
                 }
             }
@@ -475,8 +405,8 @@ static TraceOut trace_eval(const Position& pos, Tracer& t) {
                 Square ersq = lsb(enemy_behind);
                 bool enemy_rook_behind = (c == WHITE) ? (rank_of(ersq) < rank_of(sq)) : (rank_of(ersq) > rank_of(sq));
                 if (enemy_rook_behind) {
-                    mg_passer -= 10;
-                    eg_passer -= 15;
+                    mg_passer += FE_MG[PP_ENEMY_ROOK];
+                    eg_passer += FE_EG[PP_ENEMY_ROOK];
                     t.add(PP_ENEMY_ROOK, sign); t.add(PP_ENEMY_ROOK + NPHASE, sign);
                 }
             }
@@ -486,12 +416,13 @@ static TraceOut trace_eval(const Position& pos, Tracer& t) {
             Square promo_sq = relative_square(c, make_square(f, RANK_8));
             int our_kdist = distance(our_ksq, promo_sq);
             int their_kdist = distance(their_ksq, promo_sq);
-            eg_passer += (their_kdist - our_kdist) * 8;
+            eg_passer += (their_kdist - our_kdist) * FE_EG[PP_KING_PROX];
             t.add(PP_KING_PROX + NPHASE, sign * (their_kdist - our_kdist));
 
             if (their_kdist > our_kdist + (c == pos.side_to_move() ? 0 : 1)) {
                 int unreachable = their_kdist - our_kdist;
-                eg_passer += unreachable * (unreachable > 4 ? 25 : 15);
+                eg_passer += unreachable * (unreachable > 4 ? FE_EG[PP_UNREACH_B]
+                                                           : FE_EG[PP_UNREACH_S]);
                 if (unreachable > 4) t.add(PP_UNREACH_B + NPHASE, sign * unreachable);
                 else                 t.add(PP_UNREACH_S + NPHASE, sign * unreachable);
             }
@@ -504,24 +435,23 @@ static TraceOut trace_eval(const Position& pos, Tracer& t) {
                 bool enemy_on_path = (ahead_file & pos.pieces(them)) != 0;
 
                 if (stop_enemy) {
-                    int blk = r * r;
-                    mg_passer -= blk / 3;
-                    eg_passer -= blk * 2;
+                    mg_passer += FE_MG[PP_BLOCKADE + r - 1];
+                    eg_passer += FE_EG[PP_BLOCKADE + r - 1];
                     t.add(PP_BLOCKADE + (r - 1), sign); t.add(PP_BLOCKADE + (r - 1) + NPHASE, sign);
                 } else if (stop_own) {
-                    mg_passer -= 6;
-                    eg_passer -= 10;
+                    mg_passer += FE_MG[PP_STOP_OWN];
+                    eg_passer += FE_EG[PP_STOP_OWN];
                     t.add(PP_STOP_OWN, sign); t.add(PP_STOP_OWN + NPHASE, sign);
                 } else if (stop_attacked_by_enemy) {
-                    mg_passer -= 4;
-                    eg_passer -= 8;
+                    mg_passer += FE_MG[PP_STOP_ATT];
+                    eg_passer += FE_EG[PP_STOP_ATT];
                     t.add(PP_STOP_ATT, sign); t.add(PP_STOP_ATT + NPHASE, sign);
                 } else {
-                    mg_passer += 2 + r;
-                    eg_passer += 4 + r * 2;
+                    mg_passer += FE_MG[PP_SAFE + r - 1];
+                    eg_passer += FE_EG[PP_SAFE + r - 1];
                     t.add(PP_SAFE + (r - 1), sign); t.add(PP_SAFE + (r - 1) + NPHASE, sign);
                     if (!enemy_on_path) {
-                        eg_passer += 8 + r * 3;
+                        eg_passer += FE_EG[PP_CLEAR + r - 1];
                         t.add(PP_CLEAR + (r - 1) + NPHASE, sign);
                     }
                 }
@@ -559,8 +489,8 @@ static TraceOut trace_eval(const Position& pos, Tracer& t) {
                 if (pawn_attacks_bb(c, our_pawns) & square_bb(sq)) {
                     Bitboard enemy_pawn_attacks = pawn_attacks_bb(them, their_pawns);
                     if (!(enemy_pawn_attacks & square_bb(sq))) {
-                        mg_score += sign * (EP.outpost_knight_mg + (kr - 3) * 5);
-                        eg_score += sign * (EP.outpost_knight_eg + (kr - 3) * 3);
+                        mg_score += sign * FE_MG[OUTPOST_N + kr - 3];
+                        eg_score += sign * FE_EG[OUTPOST_N + kr - 3];
                         t.add(OUTPOST_N + (kr - 3), sign);
                         t.add(OUTPOST_N + (kr - 3) + NPHASE, sign);
                     }
@@ -568,14 +498,14 @@ static TraceOut trace_eval(const Position& pos, Tracer& t) {
             }
 
             if (mob == 0) {
-                mg_score -= sign * 10;
-                eg_score -= sign * 5;
+                mg_score += sign * FE_MG[TRAPPED_N];
+                eg_score += sign * FE_EG[TRAPPED_N];
                 t.add(TRAPPED_N, sign); t.add(TRAPPED_N + NPHASE, sign);
             }
 
             if (distance(sq, ksq_arr[c_idx]) > 3) {
-                mg_score -= sign * EP.far_knight_mg;
-                eg_score -= sign * EP.far_knight_eg;
+                mg_score += sign * FE_MG[FAR_N];
+                eg_score += sign * FE_EG[FAR_N];
                 t.add(FAR_N, sign); t.add(FAR_N + NPHASE, sign);
             }
         }
@@ -610,17 +540,15 @@ static TraceOut trace_eval(const Position& pos, Tracer& t) {
                 Bitboard same_color_bb = is_dark ? BB_DARK_SQ : BB_LIGHT_SQ;
                 int same_color_pawns = popcount(our_pawns & same_color_bb);
                 same_color_pawns = std::min(same_color_pawns, 6);
-                static constexpr int BscMG[7] = { 20, 15, 10, 5, 0, -8, -15 };
-                static constexpr int BscEG[7] = { 40, 30, 20, 10, 0, -10, -20 };
-                mg_score += sign * BscMG[same_color_pawns];
-                eg_score += sign * BscEG[same_color_pawns];
+                mg_score += sign * FE_MG[BSC + same_color_pawns];
+                eg_score += sign * FE_EG[BSC + same_color_pawns];
                 t.add(BSC + same_color_pawns, sign);
                 t.add(BSC + same_color_pawns + NPHASE, sign);
             }
 
             if (popcount(attacks & BB_CENTER) >= 2) {
-                mg_score += sign * 12;
-                eg_score += sign * 20;
+                mg_score += sign * FE_MG[BISH_LONG];
+                eg_score += sign * FE_EG[BISH_LONG];
                 t.add(BISH_LONG, sign); t.add(BISH_LONG + NPHASE, sign);
             }
 
@@ -629,16 +557,16 @@ static TraceOut trace_eval(const Position& pos, Tracer& t) {
                 if (br >= RANK_4 && br <= RANK_6) {
                     if ((pawn_attacks_bb(c, our_pawns) & square_bb(sq)) &&
                         !(pawn_attacks_bb(them, their_pawns) & square_bb(sq))) {
-                        mg_score += sign * EP.outpost_bishop_mg;
-                        eg_score += sign * EP.outpost_bishop_eg;
+                        mg_score += sign * FE_MG[OUTPOST_B];
+                        eg_score += sign * FE_EG[OUTPOST_B];
                         t.add(OUTPOST_B, sign); t.add(OUTPOST_B + NPHASE, sign);
                     }
                 }
             }
 
             if (distance(sq, ksq_arr[c_idx]) > 3) {
-                mg_score -= sign * EP.far_bishop_mg;
-                eg_score -= sign * EP.far_bishop_eg;
+                mg_score += sign * FE_MG[FAR_B];
+                eg_score += sign * FE_EG[FAR_B];
                 t.add(FAR_B, sign); t.add(FAR_B + NPHASE, sign);
             }
         }
@@ -667,31 +595,31 @@ static TraceOut trace_eval(const Position& pos, Tracer& t) {
 
             File f = file_of(sq);
             if (!(pos.pieces(PAWN) & file_bb(f))) {
-                mg_score += sign * EP.rook_open_mg;
-                eg_score += sign * EP.rook_open_eg;
+                mg_score += sign * FE_MG[ROOK_OPEN];
+                eg_score += sign * FE_EG[ROOK_OPEN];
                 t.add(ROOK_OPEN, sign); t.add(ROOK_OPEN + NPHASE, sign);
             } else if (!(our_pawns & file_bb(f))) {
-                mg_score += sign * EP.rook_semi_open_mg;
-                eg_score += sign * EP.rook_semi_open_eg;
+                mg_score += sign * FE_MG[ROOK_SEMI];
+                eg_score += sign * FE_EG[ROOK_SEMI];
                 t.add(ROOK_SEMI, sign); t.add(ROOK_SEMI + NPHASE, sign);
             }
 
             Rank rr = relative_rank(c, rank_of(sq));
             if (rr == RANK_7) {
-                mg_score += sign * EP.rook_7th_mg;
-                eg_score += sign * EP.rook_7th_eg;
+                mg_score += sign * FE_MG[ROOK_7TH];
+                eg_score += sign * FE_EG[ROOK_7TH];
                 t.add(ROOK_7TH, sign); t.add(ROOK_7TH + NPHASE, sign);
             }
 
             if (file_bb(f) & pos.pieces(them, QUEEN)) {
-                mg_score += sign * 15;
-                eg_score += sign * 5;
+                mg_score += sign * FE_MG[ROOK_XRAY_Q];
+                eg_score += sign * FE_EG[ROOK_XRAY_Q];
                 t.add(ROOK_XRAY_Q, sign); t.add(ROOK_XRAY_Q + NPHASE, sign);
             }
 
             if (distance(sq, ksq_arr[c_idx]) > 3) {
-                mg_score -= sign * 8;
-                eg_score -= sign * 5;
+                mg_score += sign * FE_MG[FAR_R];
+                eg_score += sign * FE_EG[FAR_R];
                 t.add(FAR_R, sign); t.add(FAR_R + NPHASE, sign);
             }
 
@@ -706,12 +634,12 @@ static TraceOut trace_eval(const Position& pos, Tracer& t) {
                     CastlingRight qs_cr = c == WHITE ? WHITE_QUEENSIDE : BLACK_QUEENSIDE;
                     bool has_castling = pos.castling_allowed(c, ks_cr) || pos.castling_allowed(c, qs_cr);
                     if (has_castling) {
-                        mg_score += sign * (-8);
-                        eg_score += sign * (-12);
+                        mg_score += sign * FE_MG[ROOK_TRAP_C];
+                        eg_score += sign * FE_EG[ROOK_TRAP_C];
                         t.add(ROOK_TRAP_C, sign); t.add(ROOK_TRAP_C + NPHASE, sign);
                     } else {
-                        mg_score += sign * (-55);
-                        eg_score += sign * (-25);
+                        mg_score += sign * FE_MG[ROOK_TRAP_NC];
+                        eg_score += sign * FE_EG[ROOK_TRAP_NC];
                         t.add(ROOK_TRAP_NC, sign); t.add(ROOK_TRAP_NC + NPHASE, sign);
                     }
                 }
@@ -731,8 +659,8 @@ static TraceOut trace_eval(const Position& pos, Tracer& t) {
                     ahead_pawns = our_pawns & file_bb(f) & ~above_and_same;
                 }
                 if (ahead_pawns) {
-                    mg_score += sign * (-8);
-                    eg_score += sign * (-8);
+                    mg_score += sign * FE_MG[ROOK_BLOCKED];
+                    eg_score += sign * FE_EG[ROOK_BLOCKED];
                     t.add(ROOK_BLOCKED, sign); t.add(ROOK_BLOCKED + NPHASE, sign);
                 }
             }
@@ -762,8 +690,8 @@ static TraceOut trace_eval(const Position& pos, Tracer& t) {
             t.add(MOB_Q + mob, sign); t.add(MOB_Q + mob + NPHASE, sign);
 
             if (distance(sq, ksq_arr[c_idx]) > 3) {
-                mg_score -= sign * 8;
-                eg_score -= sign * 3;
+                mg_score += sign * FE_MG[FAR_Q];
+                eg_score += sign * FE_EG[FAR_Q];
                 t.add(FAR_Q, sign); t.add(FAR_Q + NPHASE, sign);
             }
         }
@@ -785,9 +713,9 @@ static TraceOut trace_eval(const Position& pos, Tracer& t) {
         if (on_back) {
             for (int r = 1; r <= 3; ++r) {
                 int feat_id = (r == 1) ? SHIELD_R1 : (r == 2) ? SHIELD_R2 : SHIELD_R3;
-                int weight = (r == 1) ? EP.pawn_shield_knight
-                             : (r == 2) ? EP.pawn_shield_center
-                             : EP.pawn_shield_rook;
+                int weight = (r == 1) ? FE_MG[SHIELD_R1]
+                             : (r == 2) ? FE_MG[SHIELD_R2]
+                             : FE_MG[SHIELD_R3];
                 for (int df = -1; df <= 1; ++df) {
                     File sf = File(int(kfile) + df);
                     if (sf < FILE_A || sf > FILE_H) continue;
@@ -801,16 +729,16 @@ static TraceOut trace_eval(const Position& pos, Tracer& t) {
 
             Bitboard all_pawns = pos.pieces(PAWN);
             if (!(all_pawns & file_bb(kfile))) {
-                mg_score -= sign * EP.open_file_penalty_mg;
+                mg_score += sign * FE_MG[OPEN_KFILE];
                 t.add(OPEN_KFILE, sign);
             }
             int adj_open = 0;
             if (kfile > FILE_A && !(all_pawns & file_bb(File(kfile - 1)))) {
-                mg_score -= sign * EP.open_file_penalty_eg;
+                mg_score += sign * FE_MG[OPEN_ADJ];
                 adj_open++;
             }
             if (kfile < FILE_H && !(all_pawns & file_bb(File(kfile + 1)))) {
-                mg_score -= sign * EP.open_file_penalty_eg;
+                mg_score += sign * FE_MG[OPEN_ADJ];
                 adj_open++;
             }
             if (adj_open) t.add(OPEN_ADJ, sign * adj_open);
@@ -824,8 +752,7 @@ static TraceOut trace_eval(const Position& pos, Tracer& t) {
                     Square psq = pop_lsb(enemy_file_pawns);
                     Rank pr = relative_rank(c, rank_of(psq));
                     if (pr >= RANK_4) {
-                        int storm_danger = (pr - 3) * EP.pawn_storm;
-                        mg_score -= sign * storm_danger;
+                        mg_score += sign * (pr - 3) * FE_MG[STORM];
                         storm_sum += (pr - 3);
                     }
                 }
@@ -837,15 +764,15 @@ static TraceOut trace_eval(const Position& pos, Tracer& t) {
         if (c == WHITE && krank == RANK_1 && (kfile == FILE_G || kfile == FILE_C)) castled = true;
         if (c == BLACK && krank == RANK_8 && (kfile == FILE_G || kfile == FILE_C)) castled = true;
         if (castled) {
-            mg_score += sign * 30; eg_score += sign * 10;
+            mg_score += sign * FE_MG[CASTLED]; eg_score += sign * FE_EG[CASTLED];
             t.add(CASTLED, sign); t.add(CASTLED + NPHASE, sign);
         }
 
         CastlingRight ks_cr = c == WHITE ? WHITE_KINGSIDE : BLACK_KINGSIDE;
         CastlingRight qs_cr = c == WHITE ? WHITE_QUEENSIDE : BLACK_QUEENSIDE;
         if (!pos.castling_allowed(c, ks_cr) && !pos.castling_allowed(c, qs_cr) && !castled) {
-            mg_score -= sign * 25;
-            eg_score -= sign * 10;
+            mg_score += sign * FE_MG[NOCASTLE];
+            eg_score += sign * FE_EG[NOCASTLE];
             t.add(NOCASTLE, sign); t.add(NOCASTLE + NPHASE, sign);
         }
         }
@@ -906,8 +833,8 @@ static TraceOut trace_eval(const Position& pos, Tracer& t) {
             }
             Bitboard hanging_pawns = pos.pieces(them, PAWN) & ~all_attacks[them] & all_attacks[c];
             if (hanging_pawns) {
-                mg_score += sign * EP.hanging_pawn_mg * popcount(hanging_pawns);
-                eg_score += sign * EP.hanging_pawn_eg * popcount(hanging_pawns);
+                mg_score += sign * FE_MG[HANG_PAWN] * popcount(hanging_pawns);
+                eg_score += sign * FE_EG[HANG_PAWN] * popcount(hanging_pawns);
                 t.add(HANG_PAWN, sign * popcount(hanging_pawns));
                 t.add(HANG_PAWN + NPHASE, sign * popcount(hanging_pawns));
             }
@@ -915,8 +842,8 @@ static TraceOut trace_eval(const Position& pos, Tracer& t) {
                                      | pos.pieces(them, ROOK) | pos.pieces(them, QUEEN))
                                      & ~all_attacks[them] & all_attacks[c];
             if (hanging_pieces) {
-                mg_score += sign * 25 * popcount(hanging_pieces);
-                eg_score += sign * 15 * popcount(hanging_pieces);
+                mg_score += sign * FE_MG[HANG_PIECE] * popcount(hanging_pieces);
+                eg_score += sign * FE_EG[HANG_PIECE] * popcount(hanging_pieces);
                 t.add(HANG_PIECE, sign * popcount(hanging_pieces));
                 t.add(HANG_PIECE + NPHASE, sign * popcount(hanging_pieces));
             }
@@ -936,8 +863,8 @@ static TraceOut trace_eval(const Position& pos, Tracer& t) {
                 }
                 if (enemy_pinned) {
                     int pin_count = popcount(enemy_pinned);
-                    mg_score += sign * pin_count * 20;
-                    eg_score += sign * pin_count * 10;
+                    mg_score += sign * pin_count * FE_MG[PINNED];
+                    eg_score += sign * pin_count * FE_EG[PINNED];
                     t.add(PINNED, sign * pin_count);
                     t.add(PINNED + NPHASE, sign * pin_count);
                 }
@@ -981,11 +908,11 @@ static TraceOut trace_eval(const Position& pos, Tracer& t) {
             space[c] = popcount(space_area);
         }
         if (pawn_count[WHITE] > pawn_count[BLACK]) {
-            mg_score += space[WHITE] * 4 - space[BLACK] * 2;
+            mg_score += space[WHITE] * FE_MG[SPACE_OWN] + space[BLACK] * FE_MG[SPACE_OPP];
             t.add(SPACE_OWN, space[WHITE]);
             t.add(SPACE_OPP, space[BLACK]);
         } else if (pawn_count[BLACK] > pawn_count[WHITE]) {
-            mg_score -= space[BLACK] * 4 - space[WHITE] * 2;
+            mg_score -= space[BLACK] * FE_MG[SPACE_OWN] + space[WHITE] * FE_MG[SPACE_OPP];
             t.add(SPACE_OWN, -space[BLACK]);
             t.add(SPACE_OPP, -space[WHITE]);
         }
@@ -998,19 +925,19 @@ static TraceOut trace_eval(const Position& pos, Tracer& t) {
         int pawns = popcount(pos.pieces(c, PAWN));
         int bishops = bishop_count[c_idx];
         if (bishops >= 1) {
-            mg_score += sign * (25 - pawns * 2);
-            eg_score += sign * (45 - pawns * 3);
+            mg_score += sign * (FE_MG[IMBAL_CONST] + pawns * FE_MG[IMBAL_PAWN]);
+            eg_score += sign * (FE_EG[IMBAL_CONST] + pawns * FE_EG[IMBAL_PAWN]);
             t.add(IMBAL_CONST, sign); t.add(IMBAL_CONST + NPHASE, sign);
             t.add(IMBAL_PAWN, sign * pawns); t.add(IMBAL_PAWN + NPHASE, sign * pawns);
         }
     }
 
     if (bishop_count[WHITE] >= 2) {
-        mg_score += g_eval_params.bishop_pair_mg; eg_score += g_eval_params.bishop_pair_eg;
+        mg_score += FE_MG[BISHOP_PAIR]; eg_score += FE_EG[BISHOP_PAIR];
         t.add(BISHOP_PAIR, 1); t.add(BISHOP_PAIR + NPHASE, 1);
     }
     if (bishop_count[BLACK] >= 2) {
-        mg_score -= g_eval_params.bishop_pair_mg; eg_score -= g_eval_params.bishop_pair_eg;
+        mg_score -= FE_MG[BISHOP_PAIR]; eg_score -= FE_EG[BISHOP_PAIR];
         t.add(BISHOP_PAIR, -1); t.add(BISHOP_PAIR + NPHASE, -1);
     }
 
@@ -1022,10 +949,10 @@ static TraceOut trace_eval(const Position& pos, Tracer& t) {
         int w_knights = popcount(pos.pieces(WHITE, KNIGHT));
         int b_knights = popcount(pos.pieces(BLACK, KNIGHT));
         if (knight_adj > 0) {
-            mg_score += w_knights * knight_adj * 2;
-            mg_score -= b_knights * knight_adj * 2;
-            eg_score += w_knights * knight_adj;
-            eg_score -= b_knights * knight_adj;
+            mg_score += w_knights * knight_adj * FE_MG[KNIGHT_PAWN];
+            mg_score -= b_knights * knight_adj * FE_MG[KNIGHT_PAWN];
+            eg_score += w_knights * knight_adj * FE_EG[KNIGHT_PAWN];
+            eg_score -= b_knights * knight_adj * FE_EG[KNIGHT_PAWN];
             t.add(KNIGHT_PAWN, (w_knights - b_knights) * knight_adj);
             t.add(KNIGHT_PAWN + NPHASE, (w_knights - b_knights) * knight_adj);
         }
@@ -1045,8 +972,8 @@ static TraceOut trace_eval(const Position& pos, Tracer& t) {
         int simplification = 14 - nonpawn_pieces;
         if (simplification > 0) {
             int diff = w_np_mat - b_np_mat;
-            eg_score += diff * simplification / 256;
-            t.add(TRADEDOWN + NPHASE, diff * simplification / 256);
+            eg_score += FE_EG[TRADEDOWN] * diff * simplification / 256;
+            t.add(TRADEDOWN + NPHASE, FE_EG[TRADEDOWN] * diff * simplification / 256);
         }
     }
 
@@ -1138,27 +1065,27 @@ static TraceOut trace_eval(const Position& pos, Tracer& t) {
 
         if (attacker_count >= 2) {
             int au_pos = std::max(0, attack_units);
-            int danger_mg = (au_pos * au_pos) / 8;
-            int danger_eg = au_pos / 2;
+            int au_danger_mg = (au_pos * au_pos) / 8;
+            int au_danger_eg = au_pos / 2;
 
-            if (!enemy_qu) danger_mg = danger_mg / 4;
-            if (!enemy_qu && !enemy_ro) danger_mg = danger_mg / 4;
+            if (!enemy_qu) au_danger_mg = au_danger_mg / 4;
+            if (!enemy_qu && !enemy_ro) au_danger_mg = au_danger_mg / 4;
 
             Bitboard king_moves = king_attacks_bb(our_ksq);
             Bitboard safe_king_squares = king_moves & ~pos.pieces(c) & ~all_attacks[them];
             int flight = popcount(safe_king_squares);
             int flight1 = 0, flight2 = 0;
-            if (flight <= 1) { danger_mg += 80; danger_eg += 40; flight1 = 1; }
-            else if (flight == 2) { danger_mg += 30; danger_eg += 15; flight2 = 1; }
+            int flight_mg = (flight <= 1) ? FE_MG[KS_FLIGHT1]
+                          : (flight == 2) ? FE_MG[KS_FLIGHT2] : 0;
+            int flight_eg = (flight <= 1) ? FE_EG[KS_FLIGHT1]
+                          : (flight == 2) ? FE_EG[KS_FLIGHT2] : 0;
+            if (flight <= 1) flight1 = 1;
+            else if (flight == 2) flight2 = 1;
 
-            mg_score -= sign * danger_mg;
-            eg_score -= sign * danger_eg;
-            // KS_AU feature: the pre-flight attack-unit danger (per phase).
-            int au_danger_mg = (au_pos * au_pos) / 8;
-            if (!enemy_qu) au_danger_mg = au_danger_mg / 4;
-            if (!enemy_qu && !enemy_ro) au_danger_mg = au_danger_mg / 4;
+            mg_score -= sign * (FE_MG[KS_AU] * au_danger_mg + flight_mg);
+            eg_score -= sign * (FE_EG[KS_AU] * au_danger_eg + flight_eg);
             t.add(KS_AU, -sign * au_danger_mg);
-            t.add(KS_AU + NPHASE, -sign * (au_pos / 2));
+            t.add(KS_AU + NPHASE, -sign * au_danger_eg);
             if (flight1) { t.add(KS_FLIGHT1, -sign); t.add(KS_FLIGHT1 + NPHASE, -sign); }
             if (flight2) { t.add(KS_FLIGHT2, -sign); t.add(KS_FLIGHT2 + NPHASE, -sign); }
         }
@@ -1195,98 +1122,13 @@ static double CMG[feat::NPHASE];
 static double CEG[feat::NPHASE];
 
 static void init_coefs() {
-    using namespace feat;
-    const EvalParams& EP = g_eval_params;
-    const int* PVMG = etrace::piece_value_mg();
-    const int* PVEG = etrace::piece_value_eg();
-
-    for (int i = 0; i < NPHASE; ++i) { CMG[i] = 0.0; CEG[i] = 0.0; }
-
-    for (int pt = 0; pt < 6; ++pt) { CMG[MAT + pt] = PVMG[pt]; CEG[MAT + pt] = PVEG[pt]; }
-    for (int pt = 0; pt < 6; ++pt)
-        for (int s = 0; s < 64; ++s) {
-            CMG[PST + pt * 64 + s] = PST_MG_TABLE[WHITE][pt][s];
-            CEG[PST + pt * 64 + s] = PST_EG_TABLE[WHITE][pt][s];
-        }
-    for (int i = 0; i < 9;  ++i) { CMG[MOB_N + i] = etrace::knight_mob_mg()[i]; CEG[MOB_N + i] = etrace::knight_mob_eg()[i]; }
-    for (int i = 0; i < 14; ++i) { CMG[MOB_B + i] = etrace::bishop_mob_mg()[i]; CEG[MOB_B + i] = etrace::bishop_mob_eg()[i]; }
-    for (int i = 0; i < 15; ++i) { CMG[MOB_R + i] = etrace::rook_mob_mg()[i];   CEG[MOB_R + i] = etrace::rook_mob_eg()[i]; }
-    for (int i = 0; i < 28; ++i) { CMG[MOB_Q + i] = etrace::queen_mob_mg()[i];  CEG[MOB_Q + i] = etrace::queen_mob_eg()[i]; }
-
-    CMG[PAWN_DOUBLED] = -12; CEG[PAWN_DOUBLED] = -20;
-    CMG[PAWN_ISOLATED] = -15; CEG[PAWN_ISOLATED] = -20;
-    for (int r = 1; r <= 6; ++r) { CMG[PAWN_CONNECTED + r - 1] = 5 + r * 3; CEG[PAWN_CONNECTED + r - 1] = 3 + r * 2; }
-    for (int r = 1; r <= 6; ++r) { CMG[PAWN_PHALANX + r - 1] = etrace::phalanx_mg()[r]; CEG[PAWN_PHALANX + r - 1] = etrace::phalanx_eg()[r]; }
-    for (int r = 1; r <= 6; ++r) { CMG[PAWN_LEVER + r - 1] = 4 + r * 2; CEG[PAWN_LEVER + r - 1] = 0; }
-    CMG[PAWN_LEVER_C] = 3; CEG[PAWN_LEVER_C] = 0;
-    CMG[PAWN_BACKWARD] = -12; CEG[PAWN_BACKWARD] = -15;
-    for (int sup = 0; sup < 2; ++sup)
-        for (int r = 1; r <= 6; ++r) {
-            CMG[PAWN_CAND + sup * 7 + r - 1] = etrace::cand_mg()[sup * 8 + r];
-            CEG[PAWN_CAND + sup * 7 + r - 1] = etrace::cand_eg()[sup * 8 + r];
-        }
-    for (int r = 1; r <= 6; ++r) { CMG[PAWN_PASSED + r - 1] = etrace::passed_mg()[r]; CEG[PAWN_PASSED + r - 1] = etrace::passed_eg()[r]; }
-
-    for (int r = 1; r <= 6; ++r) { CMG[PP_CONNECTED + r - 1] = 15; CEG[PP_CONNECTED + r - 1] = 10 + r * 8; }
-    CMG[PP_ROOK_BEHIND] = 20; CEG[PP_ROOK_BEHIND] = 30;
-    CMG[PP_ENEMY_ROOK] = -10; CEG[PP_ENEMY_ROOK] = -15;
-    CMG[PP_KING_PROX] = 0;    CEG[PP_KING_PROX] = 8;
-    CMG[PP_UNREACH_S] = 0;    CEG[PP_UNREACH_S] = 15;
-    CMG[PP_UNREACH_B] = 0;    CEG[PP_UNREACH_B] = 25;
-    for (int r = 1; r <= 6; ++r) { CMG[PP_BLOCKADE + r - 1] = -(r * r / 3); CEG[PP_BLOCKADE + r - 1] = -(r * r * 2); }
-    CMG[PP_STOP_OWN] = -6; CEG[PP_STOP_OWN] = -10;
-    CMG[PP_STOP_ATT] = -4; CEG[PP_STOP_ATT] = -8;
-    for (int r = 1; r <= 6; ++r) { CMG[PP_SAFE + r - 1] = 2 + r; CEG[PP_SAFE + r - 1] = 4 + r * 2; }
-    for (int r = 1; r <= 6; ++r) { CMG[PP_CLEAR + r - 1] = 0; CEG[PP_CLEAR + r - 1] = 8 + r * 3; }
-
-    for (int k = 0; k < 3; ++k) { // kr = RANK_4..RANK_6 (0-based 3,4,5); engine adds (kr-3)*{5,3}
-        CMG[OUTPOST_N + k] = EP.outpost_knight_mg + k * 5;
-        CEG[OUTPOST_N + k] = EP.outpost_knight_eg + k * 3;
+    // FE_MG/FE_EG ARE the engine's current coefficients (evaluation.cpp reads
+    // them directly), so the reconstruction check compares against the same
+    // numbers the engine uses — by construction, no drift possible.
+    for (int i = 0; i < feat::NPHASE; ++i) {
+        CMG[i] = FE_MG[i];
+        CEG[i] = FE_EG[i];
     }
-    CMG[TRAPPED_N] = -10; CEG[TRAPPED_N] = -5;
-    CMG[FAR_N] = -EP.far_knight_mg; CEG[FAR_N] = -EP.far_knight_eg;
-    CMG[FAR_B] = -EP.far_bishop_mg; CEG[FAR_B] = -EP.far_bishop_eg;
-    {
-        static constexpr int BscMG[7] = { 20, 15, 10, 5, 0, -8, -15 };
-        static constexpr int BscEG[7] = { 40, 30, 20, 10, 0, -10, -20 };
-        for (int i = 0; i < 7; ++i) { CMG[BSC + i] = BscMG[i]; CEG[BSC + i] = BscEG[i]; }
-    }
-    CMG[BISH_LONG] = 12; CEG[BISH_LONG] = 20;
-    CMG[OUTPOST_B] = EP.outpost_bishop_mg; CEG[OUTPOST_B] = EP.outpost_bishop_eg;
-    CMG[ROOK_OPEN] = EP.rook_open_mg; CEG[ROOK_OPEN] = EP.rook_open_eg;
-    CMG[ROOK_SEMI] = EP.rook_semi_open_mg; CEG[ROOK_SEMI] = EP.rook_semi_open_eg;
-    CMG[ROOK_7TH] = EP.rook_7th_mg; CEG[ROOK_7TH] = EP.rook_7th_eg;
-    CMG[ROOK_XRAY_Q] = 15; CEG[ROOK_XRAY_Q] = 5;
-    CMG[FAR_R] = -8; CEG[FAR_R] = -5;
-    CMG[ROOK_TRAP_C] = -8; CEG[ROOK_TRAP_C] = -12;
-    CMG[ROOK_TRAP_NC] = -55; CEG[ROOK_TRAP_NC] = -25;
-    CMG[ROOK_BLOCKED] = -8; CEG[ROOK_BLOCKED] = -8;
-    CMG[FAR_Q] = -8; CEG[FAR_Q] = -3;
-    CMG[SHIELD_R1] = EP.pawn_shield_knight; CEG[SHIELD_R1] = 0;
-    CMG[SHIELD_R2] = EP.pawn_shield_center; CEG[SHIELD_R2] = 0;
-    CMG[SHIELD_R3] = EP.pawn_shield_rook;   CEG[SHIELD_R3] = 0;
-    CMG[OPEN_KFILE] = -EP.open_file_penalty_mg; CEG[OPEN_KFILE] = 0;
-    CMG[OPEN_ADJ] = -EP.open_file_penalty_eg;   CEG[OPEN_ADJ] = 0; // EG param, added to MG score (engine quirk)
-    CMG[STORM] = -EP.pawn_storm; CEG[STORM] = 0;
-    CMG[CASTLED] = 30; CEG[CASTLED] = 10;
-    CMG[NOCASTLE] = -25; CEG[NOCASTLE] = -10;
-    const int* thr_mg[5] = { etrace::pawn_threat_mg(), etrace::knight_threat_mg(), etrace::bishop_threat_mg(), etrace::rook_threat_mg(), etrace::queen_threat_mg() };
-    const int* thr_eg[5] = { etrace::pawn_threat_eg(), etrace::knight_threat_eg(), etrace::bishop_threat_eg(), etrace::rook_threat_eg(), etrace::queen_threat_eg() };
-    for (int a = 0; a < 5; ++a)
-        for (int p = 0; p < 5; ++p) { CMG[THR + a * 5 + p] = thr_mg[a][p]; CEG[THR + a * 5 + p] = thr_eg[a][p]; }
-    CMG[HANG_PAWN] = EP.hanging_pawn_mg; CEG[HANG_PAWN] = EP.hanging_pawn_eg;
-    CMG[HANG_PIECE] = 25; CEG[HANG_PIECE] = 15;
-    CMG[PINNED] = 20; CEG[PINNED] = 10;
-    CMG[SPACE_OWN] = 4; CEG[SPACE_OWN] = 0;
-    CMG[SPACE_OPP] = -2; CEG[SPACE_OPP] = 0;
-    CMG[IMBAL_CONST] = 25; CEG[IMBAL_CONST] = 45;
-    CMG[IMBAL_PAWN] = -2; CEG[IMBAL_PAWN] = -3;
-    CMG[BISHOP_PAIR] = EP.bishop_pair_mg; CEG[BISHOP_PAIR] = EP.bishop_pair_eg;
-    CMG[KNIGHT_PAWN] = 2; CEG[KNIGHT_PAWN] = 1;
-    CMG[TRADEDOWN] = 0; CEG[TRADEDOWN] = 1;
-    CMG[KS_AU] = 1; CEG[KS_AU] = 1;
-    CMG[KS_FLIGHT1] = 80; CEG[KS_FLIGHT1] = 40;
-    CMG[KS_FLIGHT2] = 30; CEG[KS_FLIGHT2] = 15;
 }
 
 // White-perspective reconstruction: dot(features, coefs) blended like the engine.
