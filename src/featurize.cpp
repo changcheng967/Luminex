@@ -153,6 +153,63 @@ static void crash_handler(int sig) {
     _exit(1);
 }
 
+// --fen-eval mode: read "fen<tab>cp_white_rel" lines from stdin (one position per
+// line, e.g. from Gigafish), featurize each HalfKAv2 independently, emit the SAME
+// 136-byte records as --stream so the trainer consumes them identically. No game
+// replay (positions are independent). cp is white-relative; target flipped to stm-rel.
+static void fen_eval_mode(long max_pos) {
+    Position pos;
+    std::string line, tbuf;
+    tbuf.reserve(136 * 4096);
+    long n = 0;
+    auto flush = [&]() { if (!tbuf.empty()) { std::fwrite(tbuf.data(), 1, tbuf.size(), stdout); tbuf.clear(); } };
+    while (std::getline(std::cin, line)) {
+        if (max_pos && n >= max_pos) break;
+        auto tab = line.find_last_of('\t');
+        if (tab == std::string::npos) continue;
+        std::string fen = line.substr(0, tab);
+        float cp = (float)atoi(line.c_str() + tab + 1);   // cp is an int (centipawns); atoi never throws
+        pos.set(fen.c_str());
+        int wk = (int)pos.king_sq(WHITE), bk = (int)pos.king_sq(BLACK);
+        int16_t wfeat[MAX_PIECES], bfeat[MAX_PIECES]; int nw = 0, nb = 0;
+#ifdef FAST_HALFKA
+        int xor_w  = ((wk & 7) < 4 ? 7 : 0);
+        int xor_b  = ((bk & 7) < 4 ? 7 : 0) ^ 56;
+        int bucket_w = KingBuckets[xor_w ^ wk] * NUM_PLANES;
+        int bucket_b = KingBuckets[xor_b ^ bk] * NUM_PLANES;
+        Bitboard occ = pos.pieces();
+        while (occ && nw < MAX_PIECES) {
+            int sq = (int)pop_lsb(occ);
+            Piece pc = pos.piece_on(Square(sq));
+            int pt = (int)piece_type_of(pc);
+            bool is_w = (color_of_piece(pc) == WHITE);
+            wfeat[nw++] = (int16_t)((xor_w ^ sq) + (pt * 2 + (is_w ? 0 : 1)) * NUM_SQ + bucket_w);
+            bfeat[nb++] = (int16_t)((xor_b ^ sq) + (pt * 2 + (is_w ? 1 : 0)) * NUM_SQ + bucket_b);
+        }
+#else
+        for (int sq = 0; sq < NUM_SQ && nw < MAX_PIECES; ++sq) {
+            Piece pc = pos.piece_on(Square(sq));
+            if (pc == NO_PIECE) continue;
+            wfeat[nw++] = (int16_t)halfka_idx(true,  wk, sq, pc);
+            bfeat[nb++] = (int16_t)halfka_idx(false, bk, sq, pc);
+        }
+#endif
+        for (int i = nw; i < MAX_PIECES; ++i) wfeat[i] = (int16_t)NUM_INPUTS;
+        for (int i = nb; i < MAX_PIECES; ++i) bfeat[i] = (int16_t)NUM_INPUTS;
+        bool stm_white = (pos.side_to_move() == WHITE);
+        float target = stm_white ? cp : -cp;
+        float stm = stm_white ? 1.0f : 0.0f;
+        char buf[136];
+        std::memcpy(buf, wfeat, 64); std::memcpy(buf + 64, bfeat, 64);
+        std::memcpy(buf + 128, &stm, 4); std::memcpy(buf + 132, &target, 4);
+        tbuf.insert(tbuf.end(), buf, buf + 136);
+        if (tbuf.size() >= 136 * 4096) { flush(); if ((++n) % 1000000 == 0) std::fprintf(stderr, "  %ldM\n", n/1000000); }
+        else ++n;
+    }
+    flush();
+    std::fprintf(stderr, "fen-eval: featurized %ld positions\n", n);
+}
+
 int main(int argc, char** argv) {
     signal(SIGSEGV, crash_handler);
     signal(SIGABRT, crash_handler);
@@ -160,6 +217,7 @@ int main(int argc, char** argv) {
     const char* in_path = nullptr;          // nullptr => stdin
     long max_pos = 0;                        // 0 = no limit
     bool stream_mode = false;                // --stream: emit 136-byte records to stdout (no .npy)
+    bool fen_eval = false;                   // --fen-eval: read "fen<tab>cp" lines, emit 136-byte records
     int nthreads = (int)std::thread::hardware_concurrency();
     for (int i = 1; i < argc; ++i) {
         std::string a = argv[i];
@@ -169,11 +227,15 @@ int main(int argc, char** argv) {
         else if (a == "--max-pos") max_pos = std::atol(next("0"));
         else if (a == "--threads") nthreads = std::atoi(next("0"));
         else if (a == "--stream")  stream_mode = true;
+        else if (a == "--fen-eval") fen_eval = true;
         else { std::fprintf(stderr, "unknown arg: %s\n", a.c_str()); return 2; }
     }
 
-    if (!stream_mode) mkdir(out_dir, 0755);   // create output dir if missing (fopen "wb" won't)
     init_magic_bitboards();
+    init_line_tables();
+    if (fen_eval) { fen_eval_mode(max_pos); return 0; }
+
+    if (!stream_mode) mkdir(out_dir, 0755);   // create output dir if missing (fopen "wb" won't)
     init_line_tables();   // CRITICAL: populates BetweenBB/LineBB; without it pin detection
                           // fails and generate<GEN_LEGAL> returns illegal moves (the C featurizer
                           // would then emit wrong move indices on any pinned position).
@@ -241,7 +303,12 @@ int main(int argc, char** argv) {
         g.stm   = hdr[hp++];
         g.fen_idx = rd_u32();
         g.start_eval = rd_s16();
-        g.mv_off = mv_acc; mv_acc += g.n_pos;
+        g.mv_off = mv_acc;
+#ifdef RAW_MOVES
+        mv_acc += (long)g.n_pos * 2;   // raw mode stores 2 bytes/pos (Move::raw)
+#else
+        mv_acc += g.n_pos;             // index mode: 1 byte/pos
+#endif
         g.ev_off = 0;   // computed by the scan below (eval entries are VARIABLE-length)
         games.push_back(g);
     }
@@ -305,6 +372,20 @@ int main(int argc, char** argv) {
     // Per-thread output buffers (write whole rows via one pwrite/fwrite each).
     constexpr size_t WROW = MAX_PIECES * sizeof(int16_t);  // 64
     std::mutex out_mtx;   // guards stdout in --stream mode
+    // Optional FEN+target dump (for data-integrity diagnosis): NNUE_DUMP_FENS=file.
+    // NNUE_DUMP_RATE=K keeps a hash-based 1-in-K sample (position-stable: the hash keys on
+    // fen_idx/game/ply, so the sample is identical under any thread split). Output line:
+    //   fen \t stm_white \t target   (target is stm-RELATIVE; y_white = stm ? target : -target)
+    // NNUE_DUMP_NOFEAT=1 = dump-only fast path: replay + eval decode, skip feature compute
+    // and record emission entirely (a 14.5B-position gamepack -> 25M FENs in minutes).
+    FILE* dump_fens = nullptr;
+    long dump_rate = 1;
+    if (const char* dp = std::getenv("NNUE_DUMP_FENS")) dump_fens = std::fopen(dp, "w");
+    if (const char* dr = std::getenv("NNUE_DUMP_RATE")) {
+        long r = std::atol(dr);
+        if (r > 0) dump_rate = r;
+    }
+    bool dump_only = std::getenv("NNUE_DUMP_NOFEAT") != nullptr && dump_fens;
     auto write_row = [&](long row, const int16_t* w, const int16_t* b, float s, float t) {
         if (stream_mode) return;   // stream emit is batched in the worker (below)
         long ow = hw + row * WROW, ob = hb + row * WROW;
@@ -325,24 +406,63 @@ int main(int argc, char** argv) {
     std::atomic<long> emitted{0};
     std::atomic<long> errors{0};
     auto t0 = std::chrono::steady_clock::now();
+#ifdef PROFILE
+    // Per-thread stage timers: setup(pos.set FEN) + move + feat + write.
+    std::vector<std::array<double,4>> prof(nthreads);
+    for (auto& p : prof) p = {0,0,0,0};
+#endif
 
     auto worker = [&](int tid) {
         Position pos;
         ExtMove list[MAX_MOVES];
         std::vector<char> tbuf;   // per-thread stream buffer (136 bytes/record)
+        tbuf.reserve(136 * 2048); // no reallocation; flush every 2048 records
+        long local_n = 0;         // positions buffered since last global update (batch the atomic)
+        long last_emitted_m = -1; // for the periodic progress print
+#ifdef PROFILE
+        double tm=0, tf=0, tw=0, tset=0;
+        std::chrono::steady_clock::time_point _ts;
+        #define _TICK() _ts = std::chrono::steady_clock::now()
+        #define _TOCK(x) x += std::chrono::duration<double>(std::chrono::steady_clock::now()-_ts).count()
+#else
+        #define _TICK()
+        #define _TOCK(x)
+#endif
         for (size_t gi = tid; gi < games.size(); gi += nthreads) {
             Game& g = games[gi];
             if (g.out_off < 0) continue;
             if (tid == 0 && (gi % 50000 == 0))
                 std::fprintf(stderr, "  [prog] game %zu/%zu (emitted %ld)\n", gi, games.size(), emitted.load());
+#ifdef PROFILE
+                _TICK();
+#endif
             pos.set(fens[g.fen_idx]);   // FENs come from python-chess via the encoder — valid
 
             long mv_p = g.mv_off;
             long ev_p = g.ev_off;
             int16_t prev_eval = g.start_eval;   // white-relative
             bool first = true;
+#ifdef PROFILE
+                _TOCK(tset);
+#endif
 
             for (int ply = 0; ply < g.n_pos; ++ply) {
+#ifdef PROFILE
+                _TICK();
+#endif
+#ifdef RAW_MOVES
+                // Direct-move: read the raw 16-bit Move (from/to/flags) written by encode and
+                // replay it. ZERO generate<GEN_LEGAL>, ZERO sort -> ~5-10x faster featurize.
+                // The move is exactly legal (encode parsed it via generate<GEN_LEGAL>), so
+                // do_move cannot diverge from the index path -> bit-identical features.
+                uint16_t raw = (uint16_t)mv[mv_p] | ((uint16_t)mv[mv_p + 1] << 8); mv_p += 2;
+                Move mvmove(raw);
+#ifdef REPLAY_MOVE
+                if (!pos.do_move_replay(mvmove)) { std::atomic_fetch_add(&errors, 1L); break; }
+#else
+                if (!pos.do_move(mvmove)) { std::atomic_fetch_add(&errors, 1L); break; }
+#endif
+#else
                 // Decode the move index -> legal move.
                 uint8_t idx = mv[mv_p++];
                 ExtMove* end = generate<GEN_LEGAL>(pos, list);
@@ -364,6 +484,10 @@ int main(int argc, char** argv) {
                 }
                 Move mv = list[idx].move;
                 if (!pos.do_move(mv)) { std::atomic_fetch_add(&errors, 1L); break; }
+#endif
+#ifdef PROFILE
+                _TOCK(tm); _TICK();
+#endif
 
                 // Decode the white-relative eval for THIS resulting position.
                 int16_t eq;
@@ -380,18 +504,55 @@ int main(int argc, char** argv) {
                 long row = g.out_off + ply;
                 if (row >= total_pos) break;                 // --max-pos cap
 
+                // FEN+target dump: sampled replay positions for the HCE distillation fit.
+                if (dump_fens) {
+                    uint32_t h = (uint32_t)(g.fen_idx * 2654435761u) ^ (uint32_t)(gi * 40503u)
+                               ^ (uint32_t)(ply * 2246822519u);
+                    h ^= h >> 13; h *= 2654435761u; h ^= h >> 16;
+                    if (h % (uint32_t)dump_rate == 0) {
+                        bool dw = (pos.side_to_move() == WHITE);
+                        float dt = dw ? (float)eq : (float)(-eq);
+                        std::lock_guard<std::mutex> lk(out_mtx);
+                        std::fprintf(dump_fens, "%s\t%d\t%.1f\n", pos.fen().c_str(), (int)dw, (double)dt);
+                    }
+                    if (dump_only) continue;   // skip features + record emission
+                }
+
                 // Compute HalfKAv2 features of the resulting position.
                 int wk = (int)pos.king_sq(WHITE), bk = (int)pos.king_sq(BLACK);
                 int16_t wfeat[MAX_PIECES], bfeat[MAX_PIECES];
                 int nw = 0, nb = 0;
+#ifdef FAST_HALFKA
+                // Precompute the 4 king-dependent constants (constant for all pieces in
+                // THIS position), then iterate ONLY occupied squares via pop_lsb. Per-piece
+                // work drops to ~1 xor + 2 adds (vs a full halfka_idx call). pop_lsb yields
+                // squares in increasing order -> bit-identical to the 0..63 scan.
+                int xor_w  = ((wk & 7) < 4 ? 7 : 0);
+                int xor_b  = ((bk & 7) < 4 ? 7 : 0) ^ 56;
+                int bucket_w = KingBuckets[xor_w ^ wk] * NUM_PLANES;
+                int bucket_b = KingBuckets[xor_b ^ bk] * NUM_PLANES;
+                Bitboard occ = pos.pieces();
+                while (occ && nw < MAX_PIECES) {
+                    int sq = (int)pop_lsb(occ);
+                    Piece pc = pos.piece_on(Square(sq));
+                    int pt = (int)piece_type_of(pc);
+                    bool is_w = (color_of_piece(pc) == WHITE);
+                    wfeat[nw++] = (int16_t)((xor_w ^ sq) + (pt * 2 + (is_w ? 0 : 1)) * NUM_SQ + bucket_w);
+                    bfeat[nb++] = (int16_t)((xor_b ^ sq) + (pt * 2 + (is_w ? 1 : 0)) * NUM_SQ + bucket_b);
+                }
+#else
                 for (int sq = 0; sq < NUM_SQ && nw < MAX_PIECES; ++sq) {
                     Piece pc = pos.piece_on(Square(sq));
                     if (pc == NO_PIECE) continue;
                     wfeat[nw++] = (int16_t)halfka_idx(true,  wk, sq, pc);
                     bfeat[nb++] = (int16_t)halfka_idx(false, bk, sq, pc);
                 }
+#endif
                 for (int i = nw; i < MAX_PIECES; ++i) wfeat[i] = (int16_t)NUM_INPUTS;
                 for (int i = nb; i < MAX_PIECES; ++i) bfeat[i] = (int16_t)NUM_INPUTS;
+#ifdef PROFILE
+                _TOCK(tf); _TICK();
+#endif
 
                 // STM-relative eval target (engine returns net output without stm negation).
                 bool stm_white = (pos.side_to_move() == WHITE);
@@ -406,32 +567,57 @@ int main(int argc, char** argv) {
                     std::memcpy(buf, wfeat, 64); std::memcpy(buf + 64, bfeat, 64);
                     std::memcpy(buf + 128, &stm, 4); std::memcpy(buf + 132, &target, 4);
                     tbuf.insert(tbuf.end(), buf, buf + 136);
-                    if (tbuf.size() >= 136 * 512) {
+                    local_n++;
+                    if (tbuf.size() >= 136 * 2048) {
                         std::lock_guard<std::mutex> lk(out_mtx);
                         std::fwrite(tbuf.data(), 1, tbuf.size(), stdout);
-                        tbuf.clear();
+                        tbuf.resize(0);          // keep capacity (no realloc)
+                        emitted.fetch_add(local_n); local_n = 0;   // batched atomic
                     }
                 } else {
                     write_row(row, wfeat, bfeat, stm, target);
+                    local_n++;
                 }
+#ifdef PROFILE
+                _TOCK(tw);
+#endif
 
-                long e = emitted.fetch_add(1) + 1;
-                if (tid == 0 && e % 1000000 == 0) {
-                    double dt = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
-                    std::fprintf(stderr, "  %ldM pos (%.1fM/s)\n", e / 1000000, e / dt / 1e6);
+                if (tid == 0) {
+                    long e = emitted.load() + local_n;
+                    long em = e / 1000000;
+                    if (em != last_emitted_m) {
+                        last_emitted_m = em;
+                        double dt = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
+                        std::fprintf(stderr, "  %ldM pos (%.1fM/s)\n", em, e / dt / 1e6);
+                    }
                 }
             }
         }
         if (stream_mode && !tbuf.empty()) {   // flush this thread's leftover
             std::lock_guard<std::mutex> lk(out_mtx);
             std::fwrite(tbuf.data(), 1, tbuf.size(), stdout);
-            tbuf.clear();
+            tbuf.resize(0);
+            emitted.fetch_add(local_n); local_n = 0;
+        } else if (!stream_mode && local_n) {
+            emitted.fetch_add(local_n); local_n = 0;
         }
+#ifdef PROFILE
+        prof[tid] = {tset, tm, tf, tw};
+#endif
     };
 
     std::vector<std::thread> th;
     for (int t = 0; t < nthreads; ++t) th.emplace_back(worker, t);
     for (auto& t : th) t.join();
+#ifdef PROFILE
+    {
+        double se=0,m=0,f=0,w=0;
+        for (auto& p : prof) { se+=p[0]; m+=p[1]; f+=p[2]; w+=p[3]; }
+        double tot=se+m+f+w;
+        if (tot>0) std::fprintf(stderr, "[PROFILE] setup=%.2fs (%.0f%%)  move=%.2fs (%.0f%%)  feat=%.2fs (%.0f%%)  write=%.2fs (%.0f%%)  [sum=%.2fs x nthreads]\n",
+            se,100*se/tot, m,100*m/tot, f,100*f/tot, w,100*w/tot, tot);
+    }
+#endif
 
     double dt = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
     if (stream_mode) {

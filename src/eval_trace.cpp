@@ -34,6 +34,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <string>
+#include <vector>
 
 namespace luminex {
 
@@ -146,6 +147,59 @@ struct Tracer {
 };
 
 struct TraceOut { int ph = 0, sf = 32, stm = 1, mirror_white = 0; bool linear = true; };
+
+// ============================================================================
+// --solve mode: closed-form ridge accumulation, in-process.
+//
+// Row model (cp space, white perspective):
+//   y    = target * (stm ? 1 : -1)              [SF eval, white-relative]
+//   r    = y - tempo                            [tempo is fixed, not a fit param]
+//   x_j  = f_j * ph / 24                (j in MG block)
+//        = f_j * (24-ph) * sf / 768    (j in EG block; = (24-ph)/24 * sf/32)
+//   predict: sum_j c_j x_j ~= r  ->  normal equations A = X'X, b = X'r over all rows.
+// TEMPO features are excluded from the parameter vector. Writes binary
+// <out>.bin = [int64 N][double A[NPF][NPF]][double b[NPF]] with NPF = 2*NPHASE.
+// ============================================================================
+constexpr int NSOLVE = 2 * feat::NPHASE;   // MG block (0..606) + EG block (607..1213)
+struct SolverAcc {
+    std::vector<double> A, b;     // A row-major NSOLVE*NSOLVE
+    long long n = 0;
+    double sum_r = 0, sum_r2 = 0; // train-side target stats: R^2 = 1 - SSE/ (sum_r2 - sum_r^2/n)
+    SolverAcc() : A((size_t)NSOLVE * NSOLVE, 0.0), b(NSOLVE, 0.0) {}
+    void add(const Tracer& t, int ph, int sf, double r, int* sidx, double* sxv, int& snz) {
+        // build the weighted sparse row (MG then EG slots in solver space)
+        snz = 0;
+        double wmg = ph / 24.0;
+        double weg = (24 - ph) * sf / 768.0;
+        for (int i = 0; i < t.nt; ++i) {
+            int idx = t.touched[i];
+            int v = t.f[idx];
+            if (v == 0) continue;
+            // solver index space = feature index space (MG 0..606, EG 607..1213)
+            if (idx < feat::NPHASE)          { sidx[snz] = idx; sxv[snz] = v * wmg; ++snz; }
+            else if (idx < 2 * feat::NPHASE) { sidx[snz] = idx; sxv[snz] = v * weg; ++snz; }
+        }
+        // touched[] is in ADD order, not sorted. The outer product below only
+        // fills A[min][max] (true upper triangle); an unsorted row would drop
+        // every product whose later-added index is numerically smaller — the
+        // mirror at flush would then overwrite them. Sort (idx,val) pairs first.
+        for (int i = 1; i < snz; ++i) {
+            int ti = sidx[i]; double tv = sxv[i];
+            int j = i - 1;
+            while (j >= 0 && sidx[j] > ti) { sidx[j + 1] = sidx[j]; sxv[j + 1] = sxv[j]; --j; }
+            sidx[j + 1] = ti; sxv[j + 1] = tv;
+        }
+        for (int i = 0; i < snz; ++i) {
+            int j = sidx[i];
+            double xi = sxv[i];
+            b[j] += xi * r;
+            double* row = &A[(size_t)j * NSOLVE];
+            for (int k = i; k < snz; ++k) row[sidx[k]] += xi * sxv[k];   // upper triangle
+        }
+        sum_r += r; sum_r2 += r * r;
+        ++n;
+    }
+};
 
 // Mirror of evaluate_pawns (engine caches in pawn_table; values identical).
 static void trace_pawns(const Position& pos, Tracer& t, int32_t& mg_out, int32_t& eg_out) {
@@ -1254,10 +1308,12 @@ static double reconstruct(const Tracer& t, int ph, int sf) {
 } // namespace luminex
 
 int main(int argc, char** argv) {
-    bool verify = false, dump_coefs = false;
+    bool verify = false, dump_coefs = false, solve = false, score = false;
     for (int i = 1; i < argc; ++i) {
         if (std::strcmp(argv[i], "--verify") == 0) verify = true;
         if (std::strcmp(argv[i], "--dump-coefs") == 0) dump_coefs = true;
+        if (std::strcmp(argv[i], "--solve") == 0) solve = true;
+        if (std::strcmp(argv[i], "--score") == 0) score = true;
     }
 
     luminex::init_magic_bitboards();   // attack tables (set()/eval depend on these)
@@ -1267,13 +1323,10 @@ int main(int argc, char** argv) {
     luminex::init_coefs();
 
     if (dump_coefs) {
-        for (int i = 0; i < luminex::feat::NFEAT; ++i) {
-            double mg = (i < luminex::feat::NPHASE) ? luminex::CMG[i]
-                       : (i < 2 * luminex::feat::NPHASE) ? luminex::CMG[i - luminex::feat::NPHASE] : 0.0;
-            double eg = (i < luminex::feat::NPHASE) ? luminex::CEG[i]
-                       : (i < 2 * luminex::feat::NPHASE) ? luminex::CEG[i - luminex::feat::NPHASE] : 0.0;
-            std::printf("%d %.1f %.1f\n", i, mg, eg);
-        }
+        // solver-space single coefs: line j = "j value" with j<607 -> CMG[j], j>=607 -> CEG[j-607]
+        for (int j = 0; j < luminex::NSOLVE; ++j)
+            std::printf("%d %.6f\n", j, j < luminex::feat::NPHASE ? luminex::CMG[j]
+                                                              : luminex::CEG[j - luminex::feat::NPHASE]);
         return 0;
     }
 
@@ -1282,6 +1335,57 @@ int main(int argc, char** argv) {
     long long n = 0, gated = 0, bad_fen = 0;
     long long mirror_mismatch = 0, rec_fail = 0;
     double max_rec_diff = 0.0, sum_rec_diff = 0.0;
+
+    // --score state: score fen\tstm\ttarget rows under candidate coefs (arg 1) AND the
+    // current-engine coefs (baseline) in one pass. Prints R^2 / RMSE / MAE for both.
+    double sc_cand[luminex::NSOLVE], sc_base[luminex::NSOLVE];
+    bool sc_ok = false;
+    long long sc_n = 0;
+    double sc_ss_tot = 0, sc_ssr_c = 0, sc_ssr_b = 0, sc_abs_c = 0, sc_abs_b = 0, sc_sum_r = 0;
+    if (score) {
+        const char* cf = std::getenv("NNUE_SCORE_COEFS");
+        if (!cf) { std::fprintf(stderr, "--score needs NNUE_SCORE_COEFS=<coefs file>\n"); return 2; }
+        FILE* f = std::fopen(cf, "r");
+        if (!f) { std::fprintf(stderr, "cannot read %s\n", cf); return 2; }
+        for (int i = 0; i < luminex::NSOLVE; ++i)
+            if (std::fscanf(f, "%*d %lf", &sc_cand[i]) != 1) {
+                std::fprintf(stderr, "coefs file too short at %d\n", i); return 2;
+            }
+        std::fclose(f);
+        for (int i = 0; i < luminex::feat::NPHASE; ++i) {
+            sc_base[i] = luminex::CMG[i];
+            sc_base[i + luminex::feat::NPHASE] = luminex::CEG[i];
+        }
+        sc_ok = true;
+    }
+
+    // --solve state: normal-equation accumulator + holdout stream (1-in-K by FEN hash).
+    // sidx/sxv must hold ANY row's nonzero count: worst case ~NFEAT (every touched
+    // feature distinct) — 256 overflowed silently on complex positions.
+    // NNUE_TARGET_MAX=cp drops rows whose white-perspective target exceeds +-cp (the
+    // gamepack eval tail runs to +-9096; a handful of near-mate targets would
+    // otherwise dominate the squared error of a cp-space linear fit).
+    luminex::SolverAcc acc;
+    FILE* solve_out = nullptr;
+    FILE* holdout = nullptr;
+    long long n_hold = 0;
+    double tmax = 1e18;
+    if (const char* tm = std::getenv("NNUE_TARGET_MAX")) tmax = std::atof(tm);
+    long long n_tmax = 0;
+    int sidx[luminex::feat::NFEAT];
+    double sxv[luminex::feat::NFEAT];
+    if (solve) {
+        const char* so = std::getenv("NNUE_SOLVE_OUT");
+        if (!so) { std::fprintf(stderr, "--solve needs NNUE_SOLVE_OUT=<prefix>\n"); return 2; }
+        std::string bin = std::string(so) + ".bin";
+        solve_out = std::fopen(bin.c_str(), "wb");
+        if (!solve_out) { std::fprintf(stderr, "cannot write %s\n", bin.c_str()); return 2; }
+        const char* hf = std::getenv("NNUE_SOLVE_HOLDOUT");
+        if (hf) {
+            holdout = std::fopen(hf, "w");
+            if (!holdout) { std::fprintf(stderr, "cannot write %s\n", hf); return 2; }
+        }
+    }
 
     while (std::getline(std::cin, line)) {
         size_t tab = line.find('\t');
@@ -1301,9 +1405,64 @@ int main(int argc, char** argv) {
         luminex::TraceOut out = luminex::trace_eval(pos, t);
         n++;
 
+        // Echo the target field (if present) so trace lines are self-contained for the
+        // solver: "<ph> <sf> <stm> <mirror> <target> idx:val ...". Dump format is
+        // "fen\tstm\ttarget" -> target is the 3rd field; a lone "fen\tX" echo X.
+        std::string target = "NA";
+        if (tab != std::string::npos) {
+            size_t t2 = line.find('\t', tab + 1);
+            size_t t3 = (t2 == std::string::npos) ? std::string::npos : line.find('\t', t2 + 1);
+            if (t2 != std::string::npos && t3 != std::string::npos)
+                target = line.substr(t2 + 1, t3 - t2 - 1);          // fen\tstm\tTARGET\t...
+            else if (t2 != std::string::npos)
+                target = line.substr(t2 + 1);                        // fen\tstm\tTARGET(eol)
+            else
+                target = line.substr(tab + 1);                       // fen\tTARGET
+        }
+
         if (!out.linear) {
             gated++;
-            if (!verify) std::printf("%d %d %d G\n", out.ph, out.sf, out.stm);
+            if (!verify && !solve) std::printf("%d %d %d G %s\n", out.ph, out.sf, out.stm, target.c_str());
+            continue;
+        }
+
+        if (score) {
+            double tgt = (target != "NA") ? std::strtod(target.c_str(), nullptr) : 0.0;
+            double y_white = out.stm ? tgt : -tgt;
+            if (std::fabs(y_white) > tmax) { n_tmax++; continue; }
+            double tempo = (15.0 * t.f[luminex::feat::TEMPO_MG] + 5.0 * t.f[luminex::feat::TEMPO_EG]) / 24.0;
+            double r = y_white - tempo;
+            double wmg = out.ph / 24.0;
+            double weg = (24 - out.ph) * out.sf / 768.0;
+            double pc = 0.0, pb = 0.0;
+            for (int i = 0; i < t.nt; ++i) {
+                int idx = t.touched[i];
+                int v = t.f[idx];
+                if (v == 0) continue;
+                if (idx < luminex::feat::NPHASE) { pc += sc_cand[idx] * v * wmg; pb += sc_base[idx] * v * wmg; }
+                else { pc += sc_cand[idx] * v * weg; pb += sc_base[idx] * v * weg; }
+            }
+            sc_n++;
+            sc_sum_r += r;
+            sc_ss_tot += r * r;
+            sc_ssr_c += (r - pc) * (r - pc); sc_abs_c += std::fabs(r - pc);
+            sc_ssr_b += (r - pb) * (r - pb); sc_abs_b += std::fabs(r - pb);
+            continue;
+        }
+
+        if (solve) {
+            // holdout: 1-in-10 by FEN hash, written verbatim for --score passes
+            if (holdout) {
+                uint32_t h = 2166136261u;
+                for (char ch : fen) { h ^= (uint8_t)ch; h *= 16777619u; }
+                if (h % 10 == 0) { std::fprintf(holdout, "%s\n", line.c_str()); n_hold++; continue; }
+            }
+            double tgt = (target != "NA") ? std::strtod(target.c_str(), nullptr) : 0.0;
+            double y_white = out.stm ? tgt : -tgt;
+            if (std::fabs(y_white) > tmax) { n_tmax++; continue; }
+            double tempo = (15.0 * t.f[luminex::feat::TEMPO_MG] + 5.0 * t.f[luminex::feat::TEMPO_EG]) / 24.0;
+            int snz = 0;
+            acc.add(t, out.ph, out.sf, y_white - tempo, sidx, sxv, snz);
             continue;
         }
 
@@ -1328,7 +1487,7 @@ int main(int argc, char** argv) {
             }
         } else {
             std::sort(t.touched, t.touched + t.nt);
-            std::printf("%d %d %d %d", out.ph, out.sf, out.stm, out.mirror_white);
+            std::printf("%d %d %d %d %s", out.ph, out.sf, out.stm, out.mirror_white, target.c_str());
             for (int i = 0; i < t.nt; ++i) {
                 int idx = t.touched[i];
                 if (t.f[idx] == 0) continue;   // net-zero features carry no info
@@ -1340,6 +1499,35 @@ int main(int argc, char** argv) {
         if (verify && n % 1000000 == 0)
             std::fprintf(stderr, "  ... %lldM pos: mirror_mismatch=%lld rec_fail=%lld max_diff=%.2f\n",
                          n / 1000000, mirror_mismatch, rec_fail, max_rec_diff);
+    }
+
+    if (score) {
+        double mean_r = sc_sum_r / std::max(1LL, sc_n);
+        double var_r = sc_ss_tot / std::max(1LL, sc_n) - mean_r * mean_r;
+        double r2_c = 1.0 - (sc_ssr_c / std::max(1LL, sc_n)) / std::max(1e-9, var_r);
+        double r2_b = 1.0 - (sc_ssr_b / std::max(1LL, sc_n)) / std::max(1e-9, var_r);
+        std::fprintf(stderr, "SCORE %lld rows (dropped %lld >|%.0f|cp) | cand: R2=%.4f RMSE=%.2f MAE=%.2f | base: R2=%.4f RMSE=%.2f MAE=%.2f\n",
+                     sc_n, n_tmax, tmax, r2_c, std::sqrt(sc_ssr_c / std::max(1LL, sc_n)), sc_abs_c / std::max(1LL, sc_n),
+                     r2_b, std::sqrt(sc_ssr_b / std::max(1LL, sc_n)), sc_abs_b / std::max(1LL, sc_n));
+        return 0;
+    }
+
+    if (solve) {
+        // mirror A to full symmetric (accumulated upper triangle only)
+        constexpr int NS_ = luminex::NSOLVE;
+        for (int j = 0; j < NS_; ++j)
+            for (int k = 0; k < j; ++k)
+                acc.A[(size_t)j * NS_ + k] = acc.A[(size_t)k * NS_ + j];
+        std::fwrite(&acc.n, sizeof(long long), 1, solve_out);
+        std::fwrite(acc.A.data(), sizeof(double), (size_t)NS_ * NS_, solve_out);
+        std::fwrite(acc.b.data(), sizeof(double), NS_, solve_out);
+        std::fwrite(&acc.sum_r, sizeof(double), 1, solve_out);    // tail v2: target stats
+        std::fwrite(&acc.sum_r2, sizeof(double), 1, solve_out);
+        std::fclose(solve_out);
+        if (holdout) std::fclose(holdout);
+        std::fprintf(stderr, "SOLVE: %lld rows accumulated, %lld held out, %lld dropped >|%.0f|cp\n",
+                     acc.n, n_hold, n_tmax, tmax);
+        return 0;
     }
 
     if (verify) {
