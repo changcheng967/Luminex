@@ -115,8 +115,16 @@ Holdout (2.46M rows, clipped): base c0 0.4123 / λ=1e7 **0.4918** /
 **A/B λ=3e7 vs fit6: 186-206-108 (0.480), −13.9 ± 27.0, LOS 15.6% —
 neutral-to-negative, not adopted.** But the refit drifted the 1214 old
 coefs too (mean |Δ| 5.3cp, max 133), conflating the feature family with
-refit noise. Isolation test queued: fit6 coefs exactly + ONLY the 6 new
-values (MG −5.7/−11.9/−12.0, EG −2.9/−9.4/−8.6).
+refit noise.
+
+**Isolation A/B (fit6 coefs exactly + ONLY the 6 new values): 189-196-115
+(0.493), −4.9 ± 26.7, LOS 36.1% — DEAD NEUTRAL. VERDICT: the imbalance
+polynomial family (ROOK_PAWN / NN_PAIR / NB_PAIR) adds no play value at
+fitted magnitudes; two independent 500g tests agree (−13.9 confounded,
+−4.9 clean).** The distillation already absorbed these interactions into
+the fitted material/PST terms. Features stay in the code zero-initialized
+(engine identical to fit6); fitted values NOT adopted. Next rung-3
+candidate: per-file shield family.
 
 **Verify anomaly resolved (same day):** the first fitted build failed
 `--verify` (3005 mirror mismatches) — the tracer's new block emitted
