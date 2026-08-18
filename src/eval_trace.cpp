@@ -332,7 +332,6 @@ static TraceOut trace_eval(const Position& pos, Tracer& t) {
 
     const int* PVMG = etrace::piece_value_mg();
     const int* PVEG = etrace::piece_value_eg();
-    const EvalParams& EP = g_eval_params;
 
     for (int c_idx = 0; c_idx < 2; ++c_idx) {
         Color c = Color(c_idx);
@@ -972,8 +971,8 @@ static TraceOut trace_eval(const Position& pos, Tracer& t) {
         int simplification = 14 - nonpawn_pieces;
         if (simplification > 0) {
             int diff = w_np_mat - b_np_mat;
-            eg_score += FE_EG[TRADEDOWN] * diff * simplification / 256;
-            t.add(TRADEDOWN + NPHASE, FE_EG[TRADEDOWN] * diff * simplification / 256);
+            eg_score += FE_EG[TRADEDOWN] * (diff * simplification / 256);
+            t.add(TRADEDOWN + NPHASE, diff * simplification / 256);
         }
     }
 

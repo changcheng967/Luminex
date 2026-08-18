@@ -17,19 +17,26 @@ A is collinear (PST sums vs material, EG tradedown vs material) so the
 eigen form is mandatory: np.linalg.solve on A is garbage (non-monotone lam
 path, 1e6 coefficients on near-null directions).
 
+Anchors (fit2+): optional augmented observations, applied BEFORE whitening:
+  diag  j w             -> A_jj += w,            b_j  += w*c0[j]
+  rank1 w target j1 a1 j2 a2 ... -> A += w*g*g', b += w*target*g  (g = sparse)
+Rank-1 gauge anchors pin the EFFECTIVE piece value (MAT + mean PST), which
+the diagonal gauge freedom otherwise splits arbitrarily. Both keep A
+symmetric so the eigen path still applies.
+
 .bin layout: [int64 N][double A[1214*1214]][double b[1214]]
              [+ v2 tail: double sum_r, double sum_r2]
 
 Usage:
-  python solve_ridge.py <prefix> <c0_file> sweep          # lam grid + train path + gates
-  python solve_ridge.py <prefix> <c0_file> <lam> [<out>]  # single solve + gates
-Validate generalization: NNUE_SCORE_COEFS=<coefs> luminex-evaltrace --score < holdout
+  solve_ridge.py <prefix> <c0> sweep [anchors]     # lam grid + train path + gates
+  solve_ridge.py <prefix> <c0> <lam> [out] [anchors]
 """
 import sys
 import numpy as np
 
 NPHASE = 607
 NS = 2 * NPHASE
+PST, MAT = 0, 384
 
 
 def load(prefix):
@@ -47,6 +54,30 @@ def load_coefs(path):
         vals = [float(ln.split()[1]) for ln in fh if ln.strip()]
     assert len(vals) == NS, f"coefs file has {len(vals)} lines, want {NS}"
     return np.array(vals)
+
+
+def apply_anchors(A, b, c0, path):
+    n_diag = n_rank1 = 0
+    with open(path) as fh:
+        for ln in fh:
+            tok = ln.split()
+            if not tok or tok[0] == "#":
+                continue
+            if tok[0] == "diag":
+                _, j, w = tok[0], int(tok[1]), float(tok[2])
+                A[j, j] += w
+                b[j] += w * c0[j]
+                n_diag += 1
+            elif tok[0] == "rank1":
+                w, target = float(tok[1]), float(tok[2])
+                g = np.zeros(NS)
+                for k in range(3, len(tok) - 1, 2):
+                    g[int(tok[k])] = float(tok[k + 1])
+                A += w * np.outer(g, g)
+                b += w * target * g
+                n_rank1 += 1
+    print(f"anchors: {n_diag} diag, {n_rank1} rank1 from {path}")
+    return A, b
 
 
 class RidgePath:
@@ -85,6 +116,16 @@ class RidgePath:
         return 1 - sse / self.sst, np.sqrt(max(sse, 0) / self.n)
 
 
+def eff_values(c):
+    """Effective piece values (MAT + mean PST) — the quantity the engine sums."""
+    out = []
+    for pt in range(6):
+        mg = c[MAT + pt] + c[PST + pt * 64:PST + pt * 64 + 64].mean()
+        eg = c[MAT + pt + NPHASE] + c[PST + pt * 64 + NPHASE:PST + pt * 64 + 64 + NPHASE].mean()
+        out.append((mg, eg))
+    return out
+
+
 def gates(c, c0):
     ok = True
     def chk(cond, msg):
@@ -92,9 +133,11 @@ def gates(c, c0):
         if not cond:
             ok = False
             print(f"  [GATE FAIL] {msg}")
+    print("  effective values (MAT + mean PST):")
+    eff = eff_values(c)
     for pt, lo, hi, nm in [(0, 60, 140, "pawn"), (1, 250, 400, "knight"),
                            (2, 250, 400, "bishop"), (3, 420, 640, "rook"), (4, 750, 1100, "queen")]:
-        mg = c[384 + pt]; eg = c[607 + 384 + pt]
+        mg, eg = eff[pt]
         print(f"  {nm + ' value':<22} mg={mg:8.2f}  eg={eg:8.2f}")
         chk(lo <= mg <= hi and lo <= eg <= hi, f"{nm} value {mg:.0f}/{eg:.0f} outside [{lo},{hi}]")
     for base, n_m, nm in [(390, 9, "knight mobility"), (399, 14, "bishop mobility"),
@@ -117,14 +160,22 @@ def main():
     mode = sys.argv[3] if len(sys.argv) > 3 else "sweep"
     n, A, b, sum_r, sum_r2 = load(prefix)
     c0 = load_coefs(c0_path)
+    anchors = None
+    for a in sys.argv[4:]:
+        if a.endswith(".anchors"):
+            anchors = a
+    if anchors:
+        A, b = apply_anchors(A, b, c0, anchors)
+        have_tail = False          # anchors change SSE baseline; skip train-R2 reporting
+    else:
+        have_tail = sum_r2 == sum_r2
     rp = RidgePath(n, A, b, c0, sum_r, sum_r2)
-    have_tail = sum_r2 == sum_r2
     print(f"rows={n:,}  active={rp.inactive}/{NS}  eig[min,max]=[{rp.L.min():.3g},{rp.L.max():.3g}]")
     if have_tail:
         r0, rm0 = 1 - rp.sse0 / rp.sst, np.sqrt(rp.sse0 / n)
         print(f"base c0 train fit: R2={r0:.4f} RMSE={rm0:.2f}")
     if mode == "sweep":
-        for lam in [1e1, 1e2, 3e2, 1e3, 3e3, 1e4, 3e4, 1e5, 3e5, 1e6]:
+        for lam in [1e1, 1e2, 3e2, 1e3, 3e3, 1e4, 3e4, 1e5, 3e5, 1e6, 3e6, 1e7, 3e7]:
             c = rp.coefs(lam)
             shift = np.abs(c - c0)
             extra = ""
@@ -137,7 +188,7 @@ def main():
     else:
         lam = float(mode)
         c = rp.coefs(lam)
-        out = sys.argv[4] if len(sys.argv) > 4 else f"{prefix}.coefs"
+        out = sys.argv[4] if (len(sys.argv) > 4 and not sys.argv[4].endswith(".anchors")) else f"{prefix}.coefs"
         write_coefs(out, c)
         print(f"wrote {out} (lam={lam})")
     print("\nGates:")

@@ -1224,7 +1224,7 @@ Value evaluate(const Position& pos, bool tactical_only) {
         int simplification = 14 - nonpawn_pieces;  // 0 at start position, grows as pieces trade
         if (simplification > 0) {
             int diff = w_np_mat - b_np_mat;  // white-relative non-pawn material
-            eg_score += FE_EG[feat::TRADEDOWN] * diff * simplification / 256;
+            eg_score += FE_EG[feat::TRADEDOWN] * (diff * simplification / 256);
         }
     }
 
@@ -1447,16 +1447,19 @@ static void init_fitted_eval() {
             thr_eg[a][p] = FE_EG[THR + a * 5 + p];
         }
 
-    for (int r = 1; r <= 6; ++r) {
+    // Phalanx/Passed fire up to relative rank 7 (7th-rank pawns); Cand is
+    // guarded r<=6 by construction.
+    for (int r = 1; r <= 7; ++r) {
         PhalanxMG[r] = FE_MG[PAWN_PHALANX + r - 1];
         PhalanxEG[r] = FE_EG[PAWN_PHALANX + r - 1];
         PassedMG[r]  = FE_MG[PAWN_PASSED + r - 1];
         PassedEG[r]  = FE_EG[PAWN_PASSED + r - 1];
-        for (int sup = 0; sup < 2; ++sup) {
+    }
+    for (int sup = 0; sup < 2; ++sup)
+        for (int r = 1; r <= 6; ++r) {
             CandMG[sup][r] = FE_MG[PAWN_CAND + sup * 7 + r - 1];
             CandEG[sup][r] = FE_EG[PAWN_CAND + sup * 7 + r - 1];
         }
-    }
 
     g_eval_params.outpost_knight_mg = FE_MG[OUTPOST_N];
     g_eval_params.outpost_knight_eg = FE_EG[OUTPOST_N];
