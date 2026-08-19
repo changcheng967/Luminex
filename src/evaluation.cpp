@@ -17,7 +17,7 @@ namespace luminex {
 // "regenerate eval_fitted.h + rebuild", and eval_trace.cpp reads the
 // SAME arrays so --verify revalidates the applied engine.
 // ============================================================
-static_assert(feat::NPHASE == 626);
+static_assert(feat::NPHASE == 627);
 
 EvalParams g_eval_params;
 
@@ -1283,6 +1283,7 @@ Value evaluate(const Position& pos, bool tactical_only) {
     // King safety: sigmoid danger model (Hill equation)
     // Selective: skip if no enemy minor/major pieces near king zone
     // -------------------------------------------------------
+    int ks_au_arr[2] = {0, 0};  // per-side attack units (context eval input)
     if (!tactical_only) {
     for (int c_idx = 0; c_idx < 2; ++c_idx) {
         Color c = Color(c_idx);
@@ -1382,6 +1383,7 @@ Value evaluate(const Position& pos, bool tactical_only) {
         if (attacker_count >= 2) {
             // Quadratic danger: au^2 / 8 (no hard cap, grows naturally)
             int au_pos = std::max(0, attack_units);
+            ks_au_arr[c_idx] = au_pos;
             int au_danger_mg = (au_pos * au_pos) / 8;
             int danger_eg = au_pos / 2;
 
@@ -1414,6 +1416,26 @@ Value evaluate(const Position& pos, bool tactical_only) {
                 }
             }
         }
+    }
+    // Context eval (rung 5a, Innovation v22 Pathway D): volatility x margin.
+    // Attack tension is outcome VARIANCE (measured: 45% of losses start from
+    // WON positions entered into punch exchanges). Ahead -> drain tension;
+    // behind -> create it. The margin-sign interaction is unreachable by the
+    // linear basis (why pure accuracy fixes read neutral). MG only.
+    for (int c_idx = 0; c_idx < 2; ++c_idx) {
+        Color c = Color(c_idx);
+        Sign sign = (c_idx == 0) ? 1 : -1;
+        Color them = Color(c_idx ^ 1);
+        int mat_margin = 0;
+        for (int pt = PAWN; pt <= QUEEN; ++pt) {
+            mat_margin += PieceValueMG[pt]
+                * (popcount(pos.pieces(c, PieceType(pt))) - popcount(pos.pieces(them, PieceType(pt))));
+        }
+        int margin_term = std::max(-600, std::min(600, mat_margin));
+        int tension = std::min(60, ks_au_arr[0] + ks_au_arr[1]);
+        if (margin_term == 0 || tension == 0) continue;
+        int v = tension * margin_term / (30 * 300);  // |v| <= 4
+        mg_score -= sign * FE_MG[feat::VOL_CTX] * v;
     }
     } // end !tactical_only king safety
 

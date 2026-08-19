@@ -1026,6 +1026,7 @@ static TraceOut trace_eval(const Position& pos, Tracer& t) {
     }
 
     // ----------------- king safety -----------------
+    int ks_au_arr[2] = {0, 0};  // per-side attack units (context eval input)
     for (int c_idx = 0; c_idx < 2; ++c_idx) {
         Color c = Color(c_idx);
         Color them = Color(c_idx ^ 1);
@@ -1113,6 +1114,7 @@ static TraceOut trace_eval(const Position& pos, Tracer& t) {
 
         if (attacker_count >= 2) {
             int au_pos = std::max(0, attack_units);
+            ks_au_arr[c_idx] = au_pos;
             int au_danger_mg = (au_pos * au_pos) / 8;
             int au_danger_eg = au_pos / 2;
 
@@ -1146,6 +1148,24 @@ static TraceOut trace_eval(const Position& pos, Tracer& t) {
                 }
             }
         }
+    }
+
+    // Context eval (mirrors evaluation.cpp rung 5a): volatility x margin.
+    for (int c_idx = 0; c_idx < 2; ++c_idx) {
+        Color c = Color(c_idx);
+        int sign = (c_idx == 0) ? 1 : -1;
+        Color them = Color(c_idx ^ 1);
+        int mat_margin = 0;
+        for (int pt = PAWN; pt <= QUEEN; ++pt) {
+            mat_margin += PVMG[pt]
+                * (popcount(pos.pieces(c, PieceType(pt))) - popcount(pos.pieces(them, PieceType(pt))));
+        }
+        int margin_term = std::max(-600, std::min(600, mat_margin));
+        int tension = std::min(60, ks_au_arr[0] + ks_au_arr[1]);
+        if (margin_term == 0 || tension == 0) continue;
+        int v = tension * margin_term / (30 * 300);  // |v| <= 4
+        mg_score -= sign * FE_MG[VOL_CTX] * v;
+        t.add(VOL_CTX, -sign * v);
     }
 
     // ----------------- blend -----------------

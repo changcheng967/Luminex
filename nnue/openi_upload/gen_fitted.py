@@ -14,7 +14,7 @@ Usage: python gen_fitted.py <coefs.txt> [src/eval_fitted.h]
 """
 import sys
 
-NPHASE = 626
+NPHASE = 627
 
 # index -> label for readable output (sparse; unlabeled entries print bare)
 LBL = {

@@ -9,8 +9,8 @@ Usage: python remap_c0_v5.py [src/eval_fitted.h] [c0_v5.txt]
 import re
 import sys
 
-OLD = 610
-NEW = 621
+OLD = 626
+NEW = 627
 
 src = sys.argv[1] if len(sys.argv) > 1 else "src/eval_fitted.h"
 dst = sys.argv[2] if len(sys.argv) > 2 else "c0_v5.txt"
