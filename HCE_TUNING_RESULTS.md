@@ -259,6 +259,27 @@ bounded variant loses: the NPS cost at bullet outweighs the tactical gain.
 Reverted both ends; captures-only qsearch confirmed optimal.
 (NPS IS Elo at bullet — matches the v7-bullet-baselines finding.)
 
+### 4a audit conclusion — search playbook-complete
+
+Full inventory vs SF15/16-era: history gravity + counter + continuation ✓;
+corrhist-CORRECTED eval (6 tables) wired into futility/RFP/prune margins ✓;
+improving + improving_deep + opponent-worsening ✓; rich LMR (ttPv,
+cut-node, killers, checks, TT-noisy, capture-response, eval-adaptive,
+hindsight) ✓; progressive aspiration + root PVS ✓; generation-aged
+depth-preferred TT ✓; soft-time with best-move-stability + node-effort
+dominance + score-drop extension ✓ (ideal_time initially looked unused —
+wrong, it drives the stability-scaled soft-stop); singular/probcut/NMP/
+IIR per works list ✓; modern qsearch ✓. SPSA already says constants
+optimal. **Nothing structural remains from the shared playbook.**
+
+**STRATEGIC CONCLUSION: Luminex shares the SF playbook with Stash on BOTH
+axes — eval distilled from SF evals, search built from SF patterns. Every
+adopt-the-known-pattern rung converges toward Stash: parity, not
+superiority (empirically: 4 fit rungs null, search complete, 0.501 vs
+V20). The ladder above ≈2512 requires asymmetric ideas OUTSIDE the shared
+playbook** — next rungs come from the Innovation Protocol (fresh re-read
+before use) with the SF18-referee gap analysis as the targeting instrument.
+
 ## 10. Adjacent negative results (isolated eval-term changes)
 
 - King-safety isolated tweaks regress (quadratic-KS −25.7, coordinated
