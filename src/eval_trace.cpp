@@ -78,7 +78,7 @@ struct Tracer {
     }
 };
 
-struct TraceOut { int ph = 0, sf = 32, stm = 1, mirror_white = 0; bool linear = true; };
+struct TraceOut { int ph = 0, sf = 32, stm = 1, mirror_white = 0, tension = 0; bool linear = true; };
 
 // ============================================================================
 // --solve mode: closed-form ridge accumulation, in-process.
@@ -181,6 +181,7 @@ static int texel_train(const char* out_path, const char* c0_path) {
     double l2 = envd("NNUE_TEXEL_L2", 1e-7);
     int batch = (int)envd("NNUE_TEXEL_BATCH", 16384);
     int holdevery = (int)envd("NNUE_TEXEL_HOLDOUT", 0);   // every Nth row: eval-only
+    double wsharp = envd("NNUE_TEXEL_WSHARP", 0.0);       // tension row-weight (0 = off)
 
     std::vector<double> c0(NTX, 0.0);
     {
@@ -237,6 +238,7 @@ static int texel_train(const char* out_path, const char* c0_path) {
             loss_sum += lrow;
             ++loss_n;
             double g = (p - z) / scale;              // dLoss/dscore
+            if (wsharp > 0.0) g *= 1.0 + wsharp * std::min(60, o.tension) / 30.0;
             for (int i = 0; i < snz; ++i) grad[sidx[i]] += g * sxv[i];
             if (++in_batch == batch) {
                 adam_t++;
@@ -1293,6 +1295,7 @@ static TraceOut trace_eval(const Position& pos, Tracer& t) {
     }
 
     // Context eval (mirrors evaluation.cpp rung 5a): volatility x margin.
+    out.tension = std::min(60, ks_au_arr[0] + ks_au_arr[1]);
     for (int c_idx = 0; c_idx < 2; ++c_idx) {
         Color c = Color(c_idx);
         int sign = (c_idx == 0) ? 1 : -1;
