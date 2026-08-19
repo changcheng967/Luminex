@@ -326,6 +326,24 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
         return VALUE_DRAW + draw_noise - (pos.side_to_move() == WHITE ? params.contempt / 2 : -params.contempt / 2);
     }
 
+    // TT probe BEFORE stand-pat: a usable entry cuts off without paying the
+    // eval (Stash measured +35 Elo for this ordering in qsearch).
+    {
+        TT.prefetch(pos.key());
+        bool tt_found;
+        TTEntry* qte = TT.probe(pos.key(), tt_found);
+        g_stats.tt_probes++;
+        if (tt_found) {
+            g_stats.tt_hits++;
+            Value qv = value_from_tt(qte->value(), ss->ply);
+            if (qte->depth() >= depth
+                && (qv >= beta ? (qte->bound() & BOUND_LOWER) : (qte->bound() & BOUND_UPPER))) {
+                g_stats.tt_cutoffs++;
+                return qv;
+            }
+        }
+    }
+
     // Evaluate position
     bool in_check = pos.is_check();
     Value eval = VALUE_ZERO;
