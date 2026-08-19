@@ -133,6 +133,142 @@ struct SolverAcc {
     }
 };
 
+static TraceOut trace_eval(const Position& pos, Tracer& t);   // fwd (def below)
+
+// ============================================================================
+// --texel mode: logistic training (outcomes or sigma(eval) labels).
+//
+// Rows on stdin: "fen\tz" with z in [0,1] (P(white scores)). Model:
+//   p = sigmoid((sum_j c_j x_j) / SCALE)   with the SAME blended sparse rows
+//   as --solve (x_j includes ph/sf weighting; tempo excluded).
+// Adam with mini-batches, L2 pull toward c0 (gauge anchor). Trains the
+// decision-relevant regime naturally: confidently-wrong rows get the
+// largest gradients, unlike uniform squared error.
+// Env: NNUE_TEXEL_C0 (init/anchor coefs, required), NNUE_TEXEL_EPOCHS,
+//      NNUE_TEXEL_LR, NNUE_TEXEL_SCALE, NNUE_TEXEL_L2, NNUE_TEXEL_BATCH.
+// Output: coefs file (arg after --texel), same "j value" format as --solve.
+// ============================================================================
+constexpr int NTX = 2 * feat::NPHASE;
+
+static int build_sparse_row(const Tracer& t, int ph, int sf, int* sidx, double* sxv) {
+    int snz = 0;
+    double wmg = ph / 24.0;
+    double weg = (24 - ph) * sf / 768.0;
+    for (int i = 0; i < t.nt; ++i) {
+        int idx = t.touched[i];
+        int v = t.f[idx];
+        if (v == 0) continue;
+        if (idx < feat::NPHASE)          { sidx[snz] = idx; sxv[snz] = v * wmg; ++snz; }
+        else if (idx < 2 * feat::NPHASE) { sidx[snz] = idx; sxv[snz] = v * weg; ++snz; }
+    }
+    for (int i = 1; i < snz; ++i) {          // sort by index (stable enough)
+        int ti = sidx[i]; double tv = sxv[i];
+        int j = i - 1;
+        while (j >= 0 && sidx[j] > ti) { sidx[j + 1] = sidx[j]; sxv[j + 1] = sxv[j]; --j; }
+        sidx[j + 1] = ti; sxv[j + 1] = tv;
+    }
+    return snz;
+}
+
+static int texel_train(const char* out_path, const char* c0_path) {
+    auto envd = [](const char* k, double d) {
+        const char* s = std::getenv(k);
+        return s ? std::atof(s) : d;
+    };
+    int epochs = (int)envd("NNUE_TEXEL_EPOCHS", 40);
+    double lr = envd("NNUE_TEXEL_LR", 0.001);
+    double scale = envd("NNUE_TEXEL_SCALE", 400.0);
+    double l2 = envd("NNUE_TEXEL_L2", 1e-7);
+    int batch = (int)envd("NNUE_TEXEL_BATCH", 16384);
+
+    std::vector<double> c0(NTX, 0.0);
+    {
+        std::FILE* f = std::fopen(c0_path, "r");
+        if (!f) { std::fprintf(stderr, "texel: cannot open c0 %s\n", c0_path); return 2; }
+        int j; double v;
+        while (std::fscanf(f, "%d %lf", &j, &v) == 2)
+            if (j >= 0 && j < NTX) c0[j] = v;
+        std::fclose(f);
+    }
+    std::vector<double> c = c0, m(NTX, 0.0), vv(NTX, 0.0), grad(NTX, 0.0);
+    int adam_t = 0;
+
+    // Load rows: fen \t z
+    std::vector<std::pair<std::string, double>> rows;
+    std::string line;
+    long long bad = 0;
+    while (std::getline(std::cin, line)) {
+        size_t tab = line.find('\t');
+        if (tab == std::string::npos) continue;
+        char* endp = nullptr;
+        double z = std::strtod(line.c_str() + tab + 1, &endp);
+        if (!endp || endp == line.c_str() + tab + 1 || z < 0.0 || z > 1.0) { ++bad; continue; }
+        rows.emplace_back(line.substr(0, tab), z);
+    }
+    std::fprintf(stderr, "texel: %zu rows (%lld bad)\n", rows.size(), bad);
+
+    Position pos;
+    std::vector<int> sidx(feat::NFEAT);
+    std::vector<double> sxv(feat::NFEAT);
+    const double b1 = 0.9, b2 = 0.999, eps = 1e-8;
+
+    for (int ep = 1; ep <= epochs; ++ep) {
+        double loss_sum = 0.0; long long loss_n = 0; int in_batch = 0;
+        std::fill(grad.begin(), grad.end(), 0.0);
+        for (auto& [fen, z] : rows) {
+            // Cheap validity guard (built -fno-exceptions; set() on garbage is UB)
+            int fields = 1;
+            for (char ch : fen) if (ch == ' ') fields++;
+            if (fields < 4) continue;
+            pos.set(fen);
+            Tracer t;
+            TraceOut o = trace_eval(pos, t);
+            int snz = build_sparse_row(t, o.ph, o.sf, sidx.data(), sxv.data());
+            double score = 0.0;
+            for (int i = 0; i < snz; ++i) score += c[sidx[i]] * sxv[i];
+            double p = 1.0 / (1.0 + std::exp(-score / scale));
+            double pc = std::min(std::max(p, 1e-12), 1.0 - 1e-12);
+            loss_sum += -(z * std::log(pc) + (1 - z) * std::log(1 - pc));
+            ++loss_n;
+            double g = (p - z) / scale;              // dLoss/dscore
+            for (int i = 0; i < snz; ++i) grad[sidx[i]] += g * sxv[i];
+            if (++in_batch == batch) {
+                adam_t++;
+                double bc1 = 1 - std::pow(b1, adam_t), bc2 = 1 - std::pow(b2, adam_t);
+                for (int j = 0; j < NTX; ++j) {
+                    double gj = grad[j] / batch + l2 * (c[j] - c0[j]);
+                    m[j] = b1 * m[j] + (1 - b1) * gj;
+                    vv[j] = b2 * vv[j] + (1 - b2) * gj * gj;
+                    c[j] -= lr * (m[j] / bc1) / (std::sqrt(vv[j] / bc2) + eps);
+                }
+                std::fill(grad.begin(), grad.end(), 0.0);
+                in_batch = 0;
+            }
+        }
+        if (in_batch > 0) {   // flush trailing partial batch
+            adam_t++;
+            double bc1 = 1 - std::pow(b1, adam_t), bc2 = 1 - std::pow(b2, adam_t);
+            for (int j = 0; j < NTX; ++j) {
+                double gj = grad[j] / in_batch + l2 * (c[j] - c0[j]);
+                m[j] = b1 * m[j] + (1 - b1) * gj;
+                vv[j] = b2 * vv[j] + (1 - b2) * gj * gj;
+                c[j] -= lr * (m[j] / bc1) / (std::sqrt(vv[j] / bc2) + eps);
+            }
+        }
+    }
+        std::fprintf(stderr, "texel: epoch %d/%d  logloss=%.6f  max|c-c0|=%.4f  mean|c-c0|=%.5f\n",
+                     ep, epochs, loss_n ? loss_sum / loss_n : 0.0,
+                     [&]{ double mx = 0; for (int j = 0; j < NTX; ++j) mx = std::max(mx, std::abs(c[j] - c0[j])); return mx; }(),
+                     [&]{ double s = 0; for (int j = 0; j < NTX; ++j) s += std::abs(c[j] - c0[j]); return s / NTX; }());
+    }
+    std::FILE* fo = std::fopen(out_path, "w");
+    if (!fo) { std::fprintf(stderr, "texel: cannot write %s\n", out_path); return 2; }
+    for (int j = 0; j < NTX; ++j) std::fprintf(fo, "%d %.6f\n", j, c[j]);
+    std::fclose(fo);
+    std::fprintf(stderr, "texel: wrote %s\n", out_path);
+    return 0;
+}
+
 // Mirror of evaluate_pawns (engine caches in pawn_table; values identical).
 static void trace_pawns(const Position& pos, Tracer& t, int32_t& mg_out, int32_t& eg_out) {
     using namespace feat;
@@ -1230,12 +1366,13 @@ static double reconstruct(const Tracer& t, int ph, int sf) {
 } // namespace luminex
 
 int main(int argc, char** argv) {
-    bool verify = false, dump_coefs = false, solve = false, score = false;
+    bool verify = false, dump_coefs = false, solve = false, score = false, texel = false;
     for (int i = 1; i < argc; ++i) {
         if (std::strcmp(argv[i], "--verify") == 0) verify = true;
         if (std::strcmp(argv[i], "--dump-coefs") == 0) dump_coefs = true;
         if (std::strcmp(argv[i], "--solve") == 0) solve = true;
         if (std::strcmp(argv[i], "--score") == 0) score = true;
+        if (std::strcmp(argv[i], "--texel") == 0) texel = true;
     }
 
     luminex::init_magic_bitboards();   // attack tables (set()/eval depend on these)
@@ -1250,6 +1387,18 @@ int main(int argc, char** argv) {
             std::printf("%d %.6f\n", j, j < luminex::feat::NPHASE ? luminex::CMG[j]
                                                               : luminex::CEG[j - luminex::feat::NPHASE]);
         return 0;
+    }
+
+    if (texel) {
+        const char* c0p = std::getenv("NNUE_TEXEL_C0");
+        const char* outp = nullptr;
+        for (int i = 1; i < argc; ++i)
+            if (std::strcmp(argv[i], "--texel") != 0) outp = argv[i];
+        if (!c0p || !outp) {
+            std::fprintf(stderr, "usage: NNUE_TEXEL_C0=<coefs> %s --texel <out.coefs> < rows\n", argv[0]);
+            return 2;
+        }
+        return luminex::texel_train(outp, c0p);
     }
 
     luminex::Position pos;
