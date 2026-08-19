@@ -180,6 +180,7 @@ static int texel_train(const char* out_path, const char* c0_path) {
     double scale = envd("NNUE_TEXEL_SCALE", 400.0);
     double l2 = envd("NNUE_TEXEL_L2", 1e-7);
     int batch = (int)envd("NNUE_TEXEL_BATCH", 16384);
+    int holdevery = (int)envd("NNUE_TEXEL_HOLDOUT", 0);   // every Nth row: eval-only
 
     std::vector<double> c0(NTX, 0.0);
     {
@@ -213,9 +214,12 @@ static int texel_train(const char* out_path, const char* c0_path) {
     const double b1 = 0.9, b2 = 0.999, eps = 1e-8;
 
     for (int ep = 1; ep <= epochs; ++ep) {
-        double loss_sum = 0.0; long long loss_n = 0; int in_batch = 0;
+        double loss_sum = 0.0, hold_sum = 0.0; long long loss_n = 0, hold_n = 0; int in_batch = 0;
+        size_t row_i = 0;
         std::fill(grad.begin(), grad.end(), 0.0);
         for (auto& [fen, z] : rows) {
+            ++row_i;
+            bool is_holdout = holdevery > 0 && (row_i % holdevery) == 0;
             // Cheap validity guard (built -fno-exceptions; set() on garbage is UB)
             int fields = 1;
             for (char ch : fen) if (ch == ' ') fields++;
@@ -228,7 +232,9 @@ static int texel_train(const char* out_path, const char* c0_path) {
             for (int i = 0; i < snz; ++i) score += c[sidx[i]] * sxv[i];
             double p = 1.0 / (1.0 + std::exp(-score / scale));
             double pc = std::min(std::max(p, 1e-12), 1.0 - 1e-12);
-            loss_sum += -(z * std::log(pc) + (1 - z) * std::log(1 - pc));
+            double lrow = -(z * std::log(pc) + (1 - z) * std::log(1 - pc));
+            if (is_holdout) { hold_sum += lrow; ++hold_n; continue; }
+            loss_sum += lrow;
             ++loss_n;
             double g = (p - z) / scale;              // dLoss/dscore
             for (int i = 0; i < snz; ++i) grad[sidx[i]] += g * sxv[i];
@@ -255,8 +261,9 @@ static int texel_train(const char* out_path, const char* c0_path) {
                 c[j] -= lr * (m[j] / bc1) / (std::sqrt(vv[j] / bc2) + eps);
             }
         }
-        std::fprintf(stderr, "texel: epoch %d/%d  logloss=%.6f  max|c-c0|=%.4f  mean|c-c0|=%.5f\n",
+        std::fprintf(stderr, "texel: epoch %d/%d  logloss=%.6f  holdout=%.6f (n=%lld)  max|c-c0|=%.4f  mean|c-c0|=%.5f\n",
                      ep, epochs, loss_n ? loss_sum / loss_n : 0.0,
+                     hold_n ? hold_sum / hold_n : -1.0, hold_n,
                      [&]{ double mx = 0; for (int j = 0; j < NTX; ++j) mx = std::max(mx, std::abs(c[j] - c0[j])); return mx; }(),
                      [&]{ double s = 0; for (int j = 0; j < NTX; ++j) s += std::abs(c[j] - c0[j]); return s / NTX; }());
     }
