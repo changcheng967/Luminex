@@ -1161,9 +1161,11 @@ static TraceOut trace_eval(const Position& pos, Tracer& t) {
                 * (popcount(pos.pieces(c, PieceType(pt))) - popcount(pos.pieces(them, PieceType(pt))));
         }
         int margin_term = std::max(-600, std::min(600, mat_margin));
-        int tension = std::min(60, ks_au_arr[0] + ks_au_arr[1]);
-        if (margin_term == 0 || tension == 0) continue;
-        int v = tension * margin_term / (30 * 300);  // |v| <= 4
+        // Per-side danger (mirrors evaluation.cpp): ahead -> own king's au;
+        // behind -> opponent's au.
+        int au_relevant = (margin_term > 0) ? ks_au_arr[c_idx] : ks_au_arr[c_idx ^ 1];
+        if (margin_term == 0 || au_relevant == 0) continue;
+        int v = std::min(60, au_relevant) * margin_term / (30 * 300);  // |v| <= 4
         mg_score -= sign * FE_MG[VOL_CTX] * v;
         t.add(VOL_CTX, -sign * v);
     }
