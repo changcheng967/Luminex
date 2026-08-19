@@ -248,7 +248,18 @@ architecture. The measured sharp-position compression is real but not
 addressable by eval refits.** Remaining levers: search structure (validated
 compounding track record), time management (46-0 flag headroom), NNUE.
 
-## 9. Adjacent negative results (isolated eval-term changes)
+## 9. Rung 4a — bounded qsearch checks — NEGATIVE, reverted
+
+The old "quiet checks removed for speed" comment (qsearch tail) predates
+measurement. Re-tested with a different design point: quiet checks via the
+dedicated GEN_QUIET_CHECK generator, TOP qsearch ply only (depth>=0),
+capped at 3 moves, SEE-safe, not-in-check, gated on alpha<beta.
+**A/B vs fit6: 181-205-114 (0.476), −16.7 ± 26.8, LOS 11.1%.** Even the
+bounded variant loses: the NPS cost at bullet outweighs the tactical gain.
+Reverted both ends; captures-only qsearch confirmed optimal.
+(NPS IS Elo at bullet — matches the v7-bullet-baselines finding.)
+
+## 10. Adjacent negative results (isolated eval-term changes)
 
 - King-safety isolated tweaks regress (quadratic-KS −25.7, coordinated
   redesign −40, king-activity −30, king-defender −13 vs Stash) — but the
@@ -258,7 +269,7 @@ compounding track record), time management (46-0 flag headroom), NNUE.
 - Eval-diff move ordering −12, 2× mobility scale + 2D phase −100,
   TT-eval upgrade −153, forcing-line fast-eval −249 (full list in git log).
 
-## 10. Standing lessons
+## 11. Standing lessons
 
 1. **Never judge a fitted eval by R² or spot-evals — game-match it.**
 2. Anchored ridge only; sanity gates (piece values in range, mobility
