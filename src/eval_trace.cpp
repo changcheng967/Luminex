@@ -255,7 +255,6 @@ static int texel_train(const char* out_path, const char* c0_path) {
                 c[j] -= lr * (m[j] / bc1) / (std::sqrt(vv[j] / bc2) + eps);
             }
         }
-    }
         std::fprintf(stderr, "texel: epoch %d/%d  logloss=%.6f  max|c-c0|=%.4f  mean|c-c0|=%.5f\n",
                      ep, epochs, loss_n ? loss_sum / loss_n : 0.0,
                      [&]{ double mx = 0; for (int j = 0; j < NTX; ++j) mx = std::max(mx, std::abs(c[j] - c0[j])); return mx; }(),
