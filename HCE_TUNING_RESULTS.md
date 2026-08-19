@@ -280,7 +280,15 @@ V20). The ladder above ≈2512 requires asymmetric ideas OUTSIDE the shared
 playbook** — next rungs come from the Innovation Protocol (fresh re-read
 before use) with the SF18-referee gap analysis as the targeting instrument.
 
-## 10. Adjacent negative results (isolated eval-term changes)
+## 10. TT 256MB default — ADOPTED (c5637e7)
+
+Config-only probe after five dead rungs: Hash=256 vs 128. Self-play A/B:
+**203-179-118 (0.524), +16.7 ± 26.7, LOS 89%**. Ladder confirm vs
+StashV20: **233-224-43 (0.509)** vs the 128-era 0.504 — consistent. The old
+"256 too much cache pressure" comment in main.cpp was an unmeasured
+assumption. Default bumped 128→256 (main.cpp + uci option default).
+
+## 11. Adjacent negative results (isolated eval-term changes)
 
 - King-safety isolated tweaks regress (quadratic-KS −25.7, coordinated
   redesign −40, king-activity −30, king-defender −13 vs Stash) — but the
@@ -290,7 +298,7 @@ before use) with the SF18-referee gap analysis as the targeting instrument.
 - Eval-diff move ordering −12, 2× mobility scale + 2D phase −100,
   TT-eval upgrade −153, forcing-line fast-eval −249 (full list in git log).
 
-## 11. Standing lessons
+## 12. Standing lessons
 
 1. **Never judge a fitted eval by R² or spot-evals — game-match it.**
 2. Anchored ridge only; sanity gates (piece values in range, mobility
