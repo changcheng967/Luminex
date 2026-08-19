@@ -1438,7 +1438,7 @@ Value evaluate(const Position& pos, bool tactical_only) {
         // ahead side for its own winning attacks (edge-case audit 5.0).
         int au_relevant = (margin_term > 0) ? ks_au_arr[c_idx] : ks_au_arr[c_idx ^ 1];
         if (margin_term == 0 || au_relevant == 0) continue;
-        int v = std::min(60, au_relevant) * margin_term / (30 * 300);  // |v| <= 4
+        int v = std::min(60, au_relevant) * margin_term / 900;  // |v| <= 40
         mg_score -= sign * FE_MG[feat::VOL_CTX] * v;
     }
     } // end !tactical_only king safety

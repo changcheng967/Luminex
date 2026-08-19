@@ -1165,7 +1165,8 @@ static TraceOut trace_eval(const Position& pos, Tracer& t) {
         // behind -> opponent's au.
         int au_relevant = (margin_term > 0) ? ks_au_arr[c_idx] : ks_au_arr[c_idx ^ 1];
         if (margin_term == 0 || au_relevant == 0) continue;
-        int v = std::min(60, au_relevant) * margin_term / (30 * 300);  // |v| <= 4
+        int v = std::min(60, au_relevant) * margin_term / 900;  // |v| <= 40
+        if (getenv("VOLCTX_DEBUG")) fprintf(stderr, "VOLCTX m=%d au=%d v=%d\n", margin_term, au_relevant, v);
         mg_score -= sign * FE_MG[VOL_CTX] * v;
         t.add(VOL_CTX, -sign * v);
     }
