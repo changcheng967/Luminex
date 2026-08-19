@@ -33,8 +33,8 @@ def load_refs():
     quiet = []
     for ln in open(f"{DIR}\\quiet5k.txt"):
         f = ln.rstrip("\n").split("\t")
-        if len(f) >= 3:
-            quiet.append((f[0], int(float(f[2]))))
+        if len(f) >= 2:
+            quiet.append((f[0], int(float(f[1]))))
     return sharp, quiet
 
 def eval_all(fens):
