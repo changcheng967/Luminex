@@ -218,6 +218,19 @@ au²/8 danger curve with one fitted scale is the suspect. Fix: KS_AUB8-40
 cumulative attack-unit buckets (NPHASE 621→626) — the solver grafts a
 learned shape correction onto the fixed quadratic. Isolation A/B gates it.
 
+**3d RESULT: BOTH DIRECTIONS DEAD NEUTRAL, not adopted.** Fitted buckets
+(λ=3e7: MG −4.7/−4.5/−2.9/−2.4/−0.7 = mild FLATTENING — the MSE-fit votes
+danger overshoots in the high-AU band, opposite the play-gap prediction):
+A/B vs fit6 **−4.2 ± 26.6, LOS 38%**. Sign-flipped mirror (same magnitudes,
+referee-directed STEEPENING): **−11.1 ± 26.1, LOS 20%**. Conclusion:
+±15cp tail corrections are ~20× too small to move the measured 300cp
+decisive-regime mispricing; the KS_AUB axis is exhausted. If the
+danger mispricing is real, it lives in the attack-unit WEIGHTS (pawn=2
+N=4 B=3 R=5 Q=7 + check bonuses + 2-attacker gate + /4 no-queen rules),
+which no fitted feature can correct — that would need game-outcome-driven
+tuning of the KS accumulation itself, not eval features. Verify 0/0 both
+candidates. Features stay zero-init (engine = fit6).
+
 ## 8. Adjacent negative results (isolated eval-term changes)
 
 - King-safety isolated tweaks regress (quadratic-KS −25.7, coordinated
