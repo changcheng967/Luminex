@@ -280,7 +280,31 @@ V20). The ladder above ≈2512 requires asymmetric ideas OUTSIDE the shared
 playbook** — next rungs come from the Innovation Protocol (fresh re-read
 before use) with the SF18-referee gap analysis as the targeting instrument.
 
-## 10. TT 256MB default — ADOPTED (c5637e7)
+## 10. Rung 7 — logistic trainer (Grant/Texel method) — first results
+
+Built `--texel` into evaltrace (Adam log-loss on the --solve sparse rows,
+L2-anchored to fit6, holdout monitoring; committed 6f83bf9, 5e12269).
+Fixed readout: static-eval MAE vs frozen refs — sharp = 177 swing
+positions (SF18 d24), quiet = fixed 5K sample (gamepack SF evals).
+Baseline fit6+TT256: **sharp 754.4 / quiet 199.9**.
+
+**Control (σ(eval) labels, 24.9M rows, 40 epochs): REFUTED the clean
+loss-mismatch hypothesis.** Readout sharp 764.8 / quiet 169.1 — logistic
+loss IMPROVED the mid-range 31cp and shrank the tail harder. Mechanism:
+log-loss on σ(eval) is near-invariant to monotone rescaling → cp scale
+drifts free (material values walked −31..−58cp; fit1's gauge disease via
+the loss function). No A/B (gate failed). Lesson: any σ-link fit needs
+gauge/scale anchors as hard as the ridge fits had.
+
+**Outcome fit v1 (890K rows from V35-vs-V36 corpus, L2 1e-7): FAIL**
+(sharp 751.3 / quiet 211.7 — quiet regressed). **v2 (L2 1e-8, 200 ep):
+outcome logloss 0.5469→0.5363 (holdout clean, no overfit) but readout
+WORSE both axes (757.5 / 236.9).** Natural-distribution outcome labels
+inherit the quiet-majority drag — the SAME imbalance as MSE distillation.
+Next: full 24K-game corpus (~3M rows) + sharpness-stratified row weights
++ hard material anchors.
+
+## 11. TT 256MB default — ADOPTED (c5637e7)
 
 Config-only probe after five dead rungs: Hash=256 vs 128. Self-play A/B:
 **203-179-118 (0.524), +16.7 ± 26.7, LOS 89%**. Ladder confirm vs
@@ -288,7 +312,7 @@ StashV20: **233-224-43 (0.509)** vs the 128-era 0.504 — consistent. The old
 "256 too much cache pressure" comment in main.cpp was an unmeasured
 assumption. Default bumped 128→256 (main.cpp + uci option default).
 
-## 11. Adjacent negative results (isolated eval-term changes)
+## 12. Adjacent negative results (isolated eval-term changes)
 
 - King-safety isolated tweaks regress (quadratic-KS −25.7, coordinated
   redesign −40, king-activity −30, king-defender −13 vs Stash) — but the
@@ -298,7 +322,7 @@ assumption. Default bumped 128→256 (main.cpp + uci option default).
 - Eval-diff move ordering −12, 2× mobility scale + 2D phase −100,
   TT-eval upgrade −153, forcing-line fast-eval −249 (full list in git log).
 
-## 12. Standing lessons
+## 13. Standing lessons
 
 1. **Never judge a fitted eval by R² or spot-evals — game-match it.**
 2. Anchored ridge only; sanity gates (piece values in range, mobility
