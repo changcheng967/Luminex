@@ -231,7 +231,24 @@ which no fitted feature can correct — that would need game-outcome-driven
 tuning of the KS accumulation itself, not eval features. Verify 0/0 both
 candidates. Features stay zero-init (engine = fit6).
 
-## 8. Adjacent negative results (isolated eval-term changes)
+## 8. Rung 3d — danger-shape buckets — NEUTRAL, not adopted
+
+KS_AUB8-40 cumulative attack-unit buckets on the king-danger curve
+(NPHASE 626). Fresh 22M dump + solve + anchored fit. Fitted MG coefs came
+out NEGATIVE (−4.7/−4.5/−2.9/−2.4/−0.7; cumulative ≈ −15cp at au≥40) —
+the data says the hand-shaped au²/8 curve OVERSTATES tail danger, the
+OPPOSITE of the SF18-referee compression prediction (under-press −273 /
+under-defend +462). Data-optimum and play-relevant direction disagree.
+
+**Isolation A/B (fit6 + only 10 bucket values): 183-182-135 (0.501),
++0.7 ± 26.0, LOS 52.1% — DEAD NEUTRAL.** Fourth consecutive fit-lever
+null (3a/3b neutral, 3c negative, 3d neutral). **The eval-fit lever is
+fully exhausted: fit6 is the play-optimum of the linear + hand-shaped
+architecture. The measured sharp-position compression is real but not
+addressable by eval refits.** Remaining levers: search structure (validated
+compounding track record), time management (46-0 flag headroom), NNUE.
+
+## 9. Adjacent negative results (isolated eval-term changes)
 
 - King-safety isolated tweaks regress (quadratic-KS −25.7, coordinated
   redesign −40, king-activity −30, king-defender −13 vs Stash) — but the
@@ -241,7 +258,7 @@ candidates. Features stay zero-init (engine = fit6).
 - Eval-diff move ordering −12, 2× mobility scale + 2D phase −100,
   TT-eval upgrade −153, forcing-line fast-eval −249 (full list in git log).
 
-## 9. Standing lessons
+## 10. Standing lessons
 
 1. **Never judge a fitted eval by R² or spot-evals — game-match it.**
 2. Anchored ridge only; sanity gates (piece values in range, mobility
