@@ -9,7 +9,7 @@ movement roughly in half even when the data screams).
 import sys
 import numpy as np
 
-NPHASE, NS, PST, MAT = 621, 1242, 0, 384
+NPHASE, NS, PST, MAT = 626, 1252, 0, 384
 PIECES = ["pawn", "knight", "bishop", "rook", "queen", "king"]
 
 prefix = sys.argv[1]

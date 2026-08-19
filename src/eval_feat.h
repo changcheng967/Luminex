@@ -82,7 +82,8 @@ constexpr int SHIELD_ADJ_R1  = 613;  // +3 (r-1): own pawns on (kf+-1, r), value
 constexpr int SHIELD_EXT_R1  = 616;  // +3 (r-1): own pawns on (kf+-2, r), value = count
 constexpr int HOLE_KF        = 619;  // no own pawn anywhere on king file
 constexpr int HOLE_ADJ       = 620;  // value = # adjacent files with no own pawn
-constexpr int NPHASE         = 621;
+constexpr int KS_AUB8        = 621;  // +5: attack_units >= T (T=8,16,24,32,40)
+constexpr int NPHASE         = 626;
 constexpr int TEMPO_MG       = 2 * NPHASE;      // value = +ph / -ph
 constexpr int TEMPO_EG       = 2 * NPHASE + 1;  // value = +(24-ph) / -(24-ph)
 constexpr int NFEAT          = 2 * NPHASE + 2;

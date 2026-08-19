@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
 """Generate src/eval_fitted.h from a solver-space coefs file.
 
-Input: 1242 lines of "j value" (j<621 -> MG, j>=621 -> EG) — the format
+Input: 1252 lines of "j value" (j<626 -> MG, j>=626 -> EG) — the format
 emitted by luminex-evaltrace --dump-coefs (current engine) and
 solve_ridge.py (fitted candidates). Values are rounded to int (engine eval
 is integer cp).
 
-The generated header defines inline FE_MG[621] / FE_EG[621] in solver-index
+The generated header defines inline FE_MG[626] / FE_EG[626] in solver-index
 space; evaluation.cpp + eval_trace.cpp reference features by feat:: index,
 so applying a fit = regenerate this one header and rebuild.
 
@@ -14,7 +14,7 @@ Usage: python gen_fitted.py <coefs.txt> [src/eval_fitted.h]
 """
 import sys
 
-NPHASE = 621
+NPHASE = 626
 
 # index -> label for readable output (sparse; unlabeled entries print bare)
 LBL = {
@@ -34,7 +34,8 @@ LBL = {
     609: "nb_pair", 610: "shield_kf_r1", 611: "shield_kf_r2", 612: "shield_kf_r3",
     613: "shield_adj_r1", 614: "shield_adj_r2", 615: "shield_adj_r3",
     616: "shield_ext_r1", 617: "shield_ext_r2", 618: "shield_ext_r3",
-    619: "hole_kf", 620: "hole_adj",
+    619: "hole_kf", 620: "hole_adj", 621: "ks_aub8", 622: "ks_aub16",
+    623: "ks_aub24", 624: "ks_aub32", 625: "ks_aub40",
 }
 
 

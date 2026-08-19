@@ -17,7 +17,7 @@ namespace luminex {
 // "regenerate eval_fitted.h + rebuild", and eval_trace.cpp reads the
 // SAME arrays so --verify revalidates the applied engine.
 // ============================================================
-static_assert(feat::NPHASE == 621);
+static_assert(feat::NPHASE == 626);
 
 EvalParams g_eval_params;
 
@@ -1401,6 +1401,18 @@ Value evaluate(const Position& pos, bool tactical_only) {
 
             mg_score -= sign * (FE_MG[feat::KS_AU] * au_danger_mg + flight_mg);
             eg_score -= sign * (FE_EG[feat::KS_AU] * danger_eg + flight_eg);
+
+            // Danger-curve shape correction: cumulative attack-unit buckets
+            // let the fit steepen/flatten the hand-shaped au^2/8 curve in
+            // the tail (measured: our eval ~2x compressed vs Stash on sharp
+            // sac positions — the rare high-AU regime the global fit
+            // underweights). Buckets apply BEFORE the no-queen softening.
+            for (int t = 0; t < 5; ++t) {
+                if (au_pos >= 8 * (t + 1)) {
+                    mg_score -= sign * FE_MG[feat::KS_AUB8 + t];
+                    eg_score -= sign * FE_EG[feat::KS_AUB8 + t];
+                }
+            }
         }
     }
     } // end !tactical_only king safety

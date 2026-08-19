@@ -1136,6 +1136,15 @@ static TraceOut trace_eval(const Position& pos, Tracer& t) {
             t.add(KS_AU + NPHASE, -sign * au_danger_eg);
             if (flight1) { t.add(KS_FLIGHT1, -sign); t.add(KS_FLIGHT1 + NPHASE, -sign); }
             if (flight2) { t.add(KS_FLIGHT2, -sign); t.add(KS_FLIGHT2 + NPHASE, -sign); }
+            // Danger-curve shape buckets (mirrors evaluation.cpp): au >= 8/16/24/32/40
+            for (int b = 0; b < 5; ++b) {
+                if (au_pos >= 8 * (b + 1)) {
+                    mg_score -= sign * FE_MG[KS_AUB8 + b];
+                    eg_score -= sign * FE_EG[KS_AUB8 + b];
+                    t.add(KS_AUB8 + b, -sign);
+                    t.add(KS_AUB8 + b + NPHASE, -sign);
+                }
+            }
         }
     }
 

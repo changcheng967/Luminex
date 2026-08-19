@@ -190,7 +190,35 @@ linear-basis fit is exhausted in every direction around fit6. Remaining
 HCE levers: nonlinear expressiveness (king-danger curvature — untested
 axis) and search structure.
 
-## 7. Adjacent negative results (isolated eval-term changes)
+## 7. Gap analysis vs Stash/SF (2026-08-19) — the measured weakness
+
+Fresh 500g vs StashV20: 0.501 (0.7 ± 29.5 — even), PGNs saved
+(`-pgnout`; note: this cutechess rejects `-pgn`). Attribution
+(`analyze_gap.py`): **75% of losses = ≥5 material swing within ≤4 plies**
+(bullet punches), opening disasters 16%, endgame-conversion losses **0**
+(July's #1 weakness is GONE — fit6 fixed it), flags 46-0 in our favor,
+draw rate 6.6% (was ~40%).
+
+Fixed-depth-12 duel on the 177 pre-swing loss positions (`swingduel.py`):
+we repeat the game move 86%, Stash 82%, engines agree 83% — no dedicated
+tactical search gap. But eval magnitudes: **stash_cp ≈ 2.02 × our_cp − 91**
+(r=0.93) — our eval ~2× compressed on sharp sac positions.
+
+**SF18 referee (depth 24, ground truth) on the same 177** (`referee.py` +
+`threeway.py`): SF18 itself plays the game move 79% (razor positions, not
+blunders); position at swing start **79 won / 41 balanced / 57 lost** —
+45% of our losses begin from WON positions. cp MAE vs truth: **us 301,
+Stash 256** (we misprice sharp positions 18% worse). Bestmove agreement:
+77% vs 81%. True-blunder rate: 6 vs 6 (symmetric).
+
+**Diagnosis: won-position conversion under fire + ~300cp eval error on
+attack-heavy positions (king-danger tail mispricing).** The linear basis
+cannot fix this (3a/3b proved feature-refits absorbed); the hand-shaped
+au²/8 danger curve with one fitted scale is the suspect. Fix: KS_AUB8-40
+cumulative attack-unit buckets (NPHASE 621→626) — the solver grafts a
+learned shape correction onto the fixed quadratic. Isolation A/B gates it.
+
+## 8. Adjacent negative results (isolated eval-term changes)
 
 - King-safety isolated tweaks regress (quadratic-KS −25.7, coordinated
   redesign −40, king-activity −30, king-defender −13 vs Stash) — but the
@@ -200,7 +228,7 @@ axis) and search structure.
 - Eval-diff move ordering −12, 2× mobility scale + 2D phase −100,
   TT-eval upgrade −153, forcing-line fast-eval −249 (full list in git log).
 
-## 8. Standing lessons
+## 9. Standing lessons
 
 1. **Never judge a fitted eval by R² or spot-evals — game-match it.**
 2. Anchored ridge only; sanity gates (piece values in range, mobility
