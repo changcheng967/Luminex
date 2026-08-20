@@ -358,3 +358,10 @@ ideas is 1/12. The binding constraint is VERIFICATION SCALE, not idea supply:
 Stash compounded +890 via ~150 patches at 1.5K-90K-game SPRT each.
 NEXT LEVER: SPRT batch harness (box does ~7K games/h; LLR early-stop),
 then patch pipeline at that precision.
+
+**SPRT era (harness 61442e4, validated live against the known Hash-128-vs-256
+relationship — which itself resolved to only +1-3, showing the original
++16.7 was noise-flattered): mtg 25->20 (more time/move): ACCEPT H0 after
+1500 games — the stability-reduction TM already spends time optimally;
+more base time burns the flag margin.** ec256 (eval-cache 64K->256K)
+SPRT in flight at elo1=5.
