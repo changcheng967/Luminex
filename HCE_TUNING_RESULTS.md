@@ -343,3 +343,18 @@ assumption. Default bumped 128→256 (main.cpp + uci option default).
 3. Clip targets (|eval| > 1000cp) in every future fit.
 4. λ ≈ 3e7 is the play-optimum regime for this data at 22M rows.
 5. Small data-directed corrections win; big reallocations lose.
+**Qsearch TT-before-stand-pat (Stash's +35.7 patch transplanted): 171-212-117
+(0.459), -28.6 +- 26.7, LOS 1.8% — NEGATIVE, reverted (b11dee6).** Our qsearch
+already fronts a 64K eval-cache serving the same skip-the-eval role; the TT
+probe adds cost without new benefit. LESSON: even proven Stash patches do not
+transplant — codebase context dominates patch value.
+
+## Session summary (2026-08-19/20 night)
+12 ideas measured, 1 adopted (TT 256MB, +16.7 self-play / 0.509 ladder).
+The eval-parameter optimum is SHARP: every refit (data-scaled, logistic,
+outcome-weighted) and every transplanted patch reads negative. At 500g
+screening precision (<+20 invisible), the measured base rate of candidate
+ideas is 1/12. The binding constraint is VERIFICATION SCALE, not idea supply:
+Stash compounded +890 via ~150 patches at 1.5K-90K-game SPRT each.
+NEXT LEVER: SPRT batch harness (box does ~7K games/h; LLR early-stop),
+then patch pipeline at that precision.
