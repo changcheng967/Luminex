@@ -301,8 +301,21 @@ gauge/scale anchors as hard as the ridge fits had.
 outcome logloss 0.5469→0.5363 (holdout clean, no overfit) but readout
 WORSE both axes (757.5 / 236.9).** Natural-distribution outcome labels
 inherit the quiet-majority drag — the SAME imbalance as MSE distillation.
-Next: full 24K-game corpus (~3M rows) + sharpness-stratified row weights
-+ hard material anchors.
+
+**v3 (FULL corpus: 3.31M rows from 23,008 V35-vs-V36 games, tension
+row-weights WSHARP=2, anchored L2 1e-7, holdout 66K clean): outcome
+logloss 0.5387 — and the A/B: 179-230-91 (0.449), −35.6 ± 27.7, LOS
+0.6%. DECISIVELY NEGATIVE.**
+
+**RUNG-7 VERDICT: the Grant/Texel outcome-tuning recipe does NOT
+transfer to a baseline already at its play-optimum.** Stash v21's +205
+harvested low-hanging fruit from badly-tuned hand values; fit6's
+neighborhood punishes even small eval-space movement (mean drift 1.7cp
+→ −35.6 Elo; cf. 3c's −23 at matched shrinkage, era-2's "any movement
+loses"). The eval-parameter optimum is SHARP. Infrastructure preserved:
+--texel trainer (tension-weighted, holdout), 3.3M-row strong-teacher
+outcome corpus, readout harness — reusable for search-side outcome
+learning or regularization studies.
 
 ## 11. TT 256MB default — ADOPTED (c5637e7)
 
