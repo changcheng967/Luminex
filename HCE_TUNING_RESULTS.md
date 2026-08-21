@@ -360,8 +360,16 @@ NEXT LEVER: SPRT batch harness (box does ~7K games/h; LLR early-stop),
 then patch pipeline at that precision.
 
 **SPRT era (harness 61442e4, validated live against the known Hash-128-vs-256
-relationship — which itself resolved to only +1-3, showing the original
-+16.7 was noise-flattered): mtg 25->20 (more time/move): ACCEPT H0 after
-1500 games — the stability-reduction TM already spends time optimally;
-more base time burns the flag margin.** ec256 (eval-cache 64K->256K)
-SPRT in flight at elo1=5.
+**SPRT-era scoreboard (phase 1 — parameter probes at ±5 precision):**
+- mtg 25→20 (more time/move): **H0 in 1,500 games** — the stability-reduction
+  TM already spends time optimally.
+- eval-cache 64K→256K: **H0 at ~3,000 games** (−7 trend — worse locality).
+- Non-PV extra LMR reduction (Stash v26's +5.1): **H0 by 16K-game cap**,
+  −1.5 ± ~3 — exactly neutral; our LMR tables already calibrated.
+
+Three rejections, zero acceptances. **Parameter space is saturated,
+now confirmed at ±5 precision (SPSA's earlier ±27 claim reproduced with
+sharper tools). Transplant base rate: 0/3 for external patches.** The
+remaining positive-EV leads are novel structures aimed at our measured
+gaps: root-verification search (86% punch-repeat mechanism) and
+opponent-class root tiebreak — both queued for build slots.
