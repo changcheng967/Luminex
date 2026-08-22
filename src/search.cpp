@@ -1842,6 +1842,7 @@ Move search(Position& pos, Limits& lim) {
     // Always start from depth 1 for proper iterative deepening
     int effective_depth = (limits.depth == 0) ? MAX_PLY : limits.depth;
     int start_depth = 1;
+    int last_aspiration_attempts = 1;  // root sharpness signal for time mgmt
 
     for (root_depth = start_depth; root_depth <= effective_depth; ++root_depth) {
         // Check stop at the very start of each depth iteration
@@ -1879,6 +1880,11 @@ Move search(Position& pos, Limits& lim) {
             }
             // Score-drop extension: when eval drops sharply, spend more time investigating
             if (score_dropped_sharply) {
+                stability_reduction = std::min(stability_reduction * 3 / 2, max_time);
+            }
+            // Sharp-root extension: repeated aspiration widening at the last depth
+            // means the top moves are razor-close (the measured punch-loss regime)
+            if (last_aspiration_attempts >= 3) {
                 stability_reduction = std::min(stability_reduction * 3 / 2, max_time);
             }
             if (elapsed > stability_reduction) {
@@ -2074,6 +2080,8 @@ Move search(Position& pos, Limits& lim) {
             }
             // Score-drop extension: detect sharp eval drops between iterations
             score_dropped_sharply = (root_depth > 2 && depth_best_value < best_value - 30);
+            // Root sharpness: repeated aspiration widening = razor position
+            last_aspiration_attempts = aspiration_attempts;
             best_value = depth_best_value;
             best_move = depth_best_move;
             previous_root_best = depth_best_move;
