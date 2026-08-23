@@ -369,7 +369,11 @@ then patch pipeline at that precision.
 
 Three rejections, zero acceptances. **Parameter space is saturated,
 now confirmed at ±5 precision (SPSA's earlier ±27 claim reproduced with
-sharper tools). Transplant base rate: 0/3 for external patches.** The
-remaining positive-EV leads are novel structures aimed at our measured
-gaps: root-verification search (86% punch-repeat mechanism) and
-opponent-class root tiebreak — both queued for build slots.
+sharper tools). Transplant base rate: 0/3 for external patches.**
+
+**drop2x (score-drop extension x1.5 -> x2): first SPRT run +6.6 +- 4.5
+at 12K games (LLR +2.09, one short of accept at elo1=5); confirmation
+run resolved to ~+1.6 at 10K (LLR -0.13). Pooled ~+2-3 over 22K games —
+NOT adopted.** The replication gate caught what the first run would have
+claimed. Sharp-root extension (aspiration-widening-aware time spend,
+59c1afe, built) now under SPRT.
