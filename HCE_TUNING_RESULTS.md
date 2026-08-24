@@ -428,3 +428,14 @@ flip): SPRT resolved -1.4 at 12K cap, LLR -1.98 — NOT adopted, reverted
 (d3ddb62).** The GM trade-when-ahead rule as a root decision overrides the
 search's genuine preference among ties and loses ~2-4 Elo. Tenth SPRT-era
 verdict: zero adoptions.
+
+**PORT REVERTED (2026-08-24, user directive: self-derived only).** The port
+survives only as DIAGNOSTIC FACTS: their eval + our search (scale-aligned)
+beats our eval at 100K fixed nodes +56 +- 67 — a real ~50-100 Elo eval-knowledge
+gap, now the target for SELF-DERIVED fixes. METHOD POSTMORTEM (why 25+ attempts
+read zero): (1) granularity — tested families/refits, never single-term
+micro-patches; (2) anchoring — every fit L2-pinned to fit6's basin, never
+allowed to travel; (3) precision — 500g/12-16K gates cannot see +3-8 Elo
+(fishtest uses 40-100K+). Corrected methodology: weakness map (fit6 vs real
+Stash static-eval differential by position class), then micro-patches at
+fishtest-scale SPRT precision, unanchored basin exploration allowed.
