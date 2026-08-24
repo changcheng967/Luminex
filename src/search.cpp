@@ -1843,6 +1843,8 @@ Move search(Position& pos, Limits& lim) {
     int effective_depth = (limits.depth == 0) ? MAX_PLY : limits.depth;
     int start_depth = 1;
     int last_aspiration_attempts = 1;  // root sharpness signal for time mgmt
+    ExtMove* root_moves_arr = nullptr;   // last iteration's root moves (tiebreak)
+    ExtMove* root_moves_end = nullptr;
 
     for (root_depth = start_depth; root_depth <= effective_depth; ++root_depth) {
         // Check stop at the very start of each depth iteration
@@ -1880,7 +1882,7 @@ Move search(Position& pos, Limits& lim) {
             }
             // Score-drop extension: when eval drops sharply, spend more time investigating
             if (score_dropped_sharply) {
-                stability_reduction = std::min(stability_reduction * 3 / 2, max_time);
+                stability_reduction = std::min(stability_reduction * 2, max_time);
             }
             // Sharp-root extension: repeated aspiration widening at the last depth
             // means the top moves are razor-close (the measured punch-loss regime)
@@ -1967,6 +1969,9 @@ Move search(Position& pos, Limits& lim) {
             // Reset on each aspiration iteration to avoid stale values
             depth_best_value = -VALUE_INFINITE;
             depth_best_move = MOVE_NONE;
+            // Sentinel per-move values: only moves actually searched this
+            // iteration get a real value (for the simplification tiebreak)
+            for (ExtMove* it = moves; it != end; ++it) it->value = (Value)-32001;
             if (aspiration_attempts > 5) {
                 alpha = -VALUE_INFINITE;
                 beta = VALUE_INFINITE;
@@ -2018,6 +2023,7 @@ Move search(Position& pos, Limits& lim) {
 
                 pos.undo_move(it->move);
                 root_moves_searched++;
+                it->value = value;   // fresh per-move value for the tiebreak
 
                 if (check_time()) break;
 
@@ -2096,6 +2102,7 @@ Move search(Position& pos, Limits& lim) {
         }
 
         root_score = depth_best_value;
+        root_moves_arr = moves; root_moves_end = end;
 
         // Flush local node count to atomic for accurate reporting
         nodes.fetch_add(local_nodes - last_reported_nodes, std::memory_order_relaxed);
@@ -2107,6 +2114,44 @@ Move search(Position& pos, Limits& lim) {
 
         // Send UCI info
         uci_info(pos, root_depth, depth_best_value, local_nodes, time_ms);
+    }
+
+    // Rung 9: material-simplification tiebreak among near-equal root moves.
+    // The GM conversion rule as a ROOT DECISION (stronger than an eval term):
+    // ahead in piece count -> prefer trades (simplify toward conversion);
+    // behind -> prefer non-captures (keep tension, keep opponent error
+    // chances alive). Only applies within 12cp ties, never near mate scores.
+    if (limits.use_time_management() && best_move != MOVE_NONE
+        && root_moves_arr && std::abs(int(best_value)) < 250) {
+        Value sentinel = (Value)-32001;
+        int n_tied = 0;
+        bool tie_has_capture = false, tie_has_quiet = false;
+        for (ExtMove* it = root_moves_arr; it != root_moves_end; ++it) {
+            if (it->value == sentinel) continue;
+            if (it->value > best_value - 12) {
+                ++n_tied;
+                if (it->move.is_capture() || it->move.is_promotion()) tie_has_capture = true;
+                else tie_has_quiet = true;
+            }
+        }
+        if (n_tied >= 2 && (tie_has_capture != tie_has_quiet)) {
+            Color us = pos.side_to_move();
+            int mat_margin = popcount(pos.pieces(us) & ~pos.pieces(KING))
+                           - popcount(pos.pieces(Color(us ^ 1)) & ~pos.pieces(KING));
+            bool prefer_capture = (mat_margin >= 2);   // ahead: trade
+            if (mat_margin <= -2) prefer_capture = false;
+            else if (mat_margin >= 2) prefer_capture = true;
+            else prefer_capture = tie_has_capture && !tie_has_quiet;  // neutral: no change
+            if ((prefer_capture && tie_has_capture && !(best_move.is_capture() || best_move.is_promotion()))
+                || (!prefer_capture && tie_has_quiet && (best_move.is_capture() || best_move.is_promotion()))) {
+                for (ExtMove* it = root_moves_arr; it != root_moves_end; ++it) {
+                    if (it->value == sentinel) continue;
+                    if (it->value <= best_value - 12) continue;
+                    bool isc = it->move.is_capture() || it->move.is_promotion();
+                    if (isc == prefer_capture) { best_move = it->move; break; }
+                }
+            }
+        }
     }
 
     // Fallback: if best_move is still MOVE_NONE, use the first legal move we found
