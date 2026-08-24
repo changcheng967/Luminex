@@ -359,6 +359,30 @@ Stash compounded +890 via ~150 patches at 1.5K-90K-game SPRT each.
 NEXT LEVER: SPRT batch harness (box does ~7K games/h; LLR early-stop),
 then patch pipeline at that precision.
 
+## Rung 10 — Stash eval PORT (the whatever-it-takes path) — IN FLIGHT
+
+After ~25 zero-verdict ideas and the falsification of every local lever,
+the strategic pivot: **port Morgan Houppin's Stash eval verbatim**
+(GPL-3.0, proven 3399-ladder HCE, our-license-compatible) into our
+search behind UCI "UseStashEval". ~930 lines translated (59abb7c):
+PSQT + all piece terms with their tuned mobility tables, quadratic-MG
+king safety, storm/shelter, threats, passed king-distance tables, EG
+scaling, KXK, pawn-structure hash.
+
+Status:
+- Faithfulness: **depth-1 differential vs real Stash V36 on 1500 shared
+  positions: MAE 129, p50 89, p90 256** — the core is ported correctly
+  (disagreements concentrate in KXK mate endings, VICTORY scale).
+- Speed: initial port 1.39M NPS (loop-built bitboards per call!) —
+  fixed to 1.71M (f404794); fit6 = 2.17M. Remaining gap ~21% (~-37 Elo).
+- Bullet smoke (tc=1+0.01): 0.370, then 0.345 after speed fix —
+  -92 to -111. With -37 explained by NPS, the residual ~-60 is the
+  SEARCH-MARGIN SCALE MISMATCH: our futility/razoring/aspiration are
+  calibrated to fit6's cp scale; Stash's EG scores live at 2x scale.
+- Isolation test IN FLIGHT: fixed-node 100K/move smoke (NodesPerMove)
+  splits eval-quality from speed. Then: margin retune (their
+  search_params.c) or NPS recovery per its verdict.
+
 **SPRT era (harness 61442e4, validated live against the known Hash-128-vs-256
 **SPRT-era scoreboard (phase 1 — parameter probes at ±5 precision):**
 - mtg 25→20 (more time/move): **H0 in 1,500 games** — the stability-reduction
