@@ -452,3 +452,14 @@ Root cause candidate: only 7% of the 24.9M training rows are EG — the EG
 terms were fit on 1/14th of the MG data. Not saturation: STARVATION.
 First self-derived fix: EG-upsampled refit (EG rows x5, streamed solve,
 ~28M rows) in flight.
+
+### Depth-1 control (artifact isolation): EG gap corrected
+
+Our depth-1 (qsearch-inclusive) eval vs V36 depth-1 on the same positions:
+EG bias -276 -> -1.1, disagreement 646 -> 413, sfMAE 758 -> 687. So ~230cp
+of the apparent gap was static-vs-depth-1 artifact; REAL depth-1 EG gap =
+687 vs 518 = ~170cp, still THE weakness (MG dead parity 141 vs 142).
+EG-upsampled refit (50.26M rows) FALSIFIED data-starvation: EG sfMAE
+unchanged (757.7). Remaining attack: EG RESOLUTION — qsearch depth-4 cutoff
+(our qsearch already recovers 70cp in EG at depth 1) and EG expressiveness.
+First micro-patch under test: qsearch depth -4 -> -6 at fixed nodes.
