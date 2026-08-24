@@ -39,7 +39,7 @@ def run_batch(cand, base, batch_games, seed_offset, log_path):
            "-engine", f"name=cand", f"cmd={cand}", "proto=uci", f"option.Hash={ch}",
            "-engine", f"name=base", f"cmd={base}", "proto=uci", f"option.Hash={bh}",
            "-each", "tc=1+0.01", "-openings", f"file={OPEN}", "format=pgn",
-           f"-rounds", str(batch_games), "-repeat", "-concurrency", "4",
+           f"-rounds", str(batch_games), "-repeat", "-concurrency", os.environ.get("SPRT_CONC", "4"),
            "-pgnout", log_path.replace(".log", f"_{seed_offset}.pgn")]
     out = subprocess.run(cmd, capture_output=True, text=True, timeout=7200)
     txt = out.stdout + out.stderr
@@ -57,11 +57,23 @@ def main():
     elo1 = float(sys.argv[5]) if len(sys.argv) > 5 else 10.0
     max_games = int(sys.argv[6]) if len(sys.argv) > 6 else 20000
     batch = int(sys.argv[7]) if len(sys.argv) > 7 else 250
+    conc = os.environ.get("SPRT_CONC", "4")
     W = L = D = 0
     n_done = 0
     log = f"/hyperai/home/sftest/sprt_{name}.log"
-    with open(log, "w") as fh:
-        fh.write(f"SPRT {name} elo0={elo0} elo1={elo1} max={max_games}\n")
+    # resume: parse cumulative W/L/D from an existing log's last stat line
+    if os.path.exists(log):
+        for ln in open(log):
+            if ln.startswith("n="):
+                import re
+                m = re.match(r"n=(\d+) W/L/D=(\d+)/(\d+)/(\d+)", ln)
+                if m:
+                    n_done, W, L, D = int(m.group(1)), int(m.group(2)), int(m.group(3)), int(m.group(4))
+        if n_done:
+            print(f"resuming from n={n_done} W/L/D={W}/{L}/{D}", flush=True)
+    with open(log, "a") as fh:
+        if not n_done:
+            fh.write(f"SPRT {name} elo0={elo0} elo1={elo1} max={max_games} conc={conc}\n")
     while n_done < max_games:
         w, l, d = run_batch(cand, base, batch, n_done // batch, log)
         if w + l + d == 0:
