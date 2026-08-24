@@ -439,3 +439,16 @@ allowed to travel; (3) precision — 500g/12-16K gates cannot see +3-8 Elo
 (fishtest uses 40-100K+). Corrected methodology: weakness map (fit6 vs real
 Stash static-eval differential by position class), then micro-patches at
 fishtest-scale SPRT precision, unanchored basin exploration allowed.
+
+## WEAKNESS MAP (2026-08-24, fit6 vs Stash V36 static-eval differential, 4000 gamepack positions)
+
+| regime | our SF-error | V36 SF-error | gap |
+|---|---|---|---|
+| MG | 155 | 142 | -13 (parity) |
+| MG-EG | 286 | 302 | +17 (we win) |
+| EG (npm<10) | 758 | 518 | **-240 THE GAP** |
+
+Root cause candidate: only 7% of the 24.9M training rows are EG — the EG
+terms were fit on 1/14th of the MG data. Not saturation: STARVATION.
+First self-derived fix: EG-upsampled refit (EG rows x5, streamed solve,
+~28M rows) in flight.
