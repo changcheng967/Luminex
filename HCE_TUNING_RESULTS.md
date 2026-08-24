@@ -463,3 +463,9 @@ EG-upsampled refit (50.26M rows) FALSIFIED data-starvation: EG sfMAE
 unchanged (757.7). Remaining attack: EG RESOLUTION — qsearch depth-4 cutoff
 (our qsearch already recovers 70cp in EG at depth 1) and EG expressiveness.
 First micro-patch under test: qsearch depth -4 -> -6 at fixed nodes.
+
+**qsearch depth -4 -> -6 (global): 36-41-23 (0.475), -17.4 +- 60.3 at
+100K fixed nodes — NEUTRAL, reverted.** Global deepening pays NPS cost
+everywhere for EG gains that wash out. Next: EG-CONDITIONAL qsearch depth
+(extend only when npm < 10) + EG-passed-pawn/king-activity expressiveness
+micro-patches at 40K-game SPRT precision.
