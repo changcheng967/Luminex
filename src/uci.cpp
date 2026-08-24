@@ -22,6 +22,9 @@
 
 namespace luminex {
 
+// Stash eval port toggle (eval_stash.cpp)
+void set_stash_eval(bool on);
+
 // Global volatile stop flag - defined in search.cpp
 extern volatile bool g_stop_requested;
 
@@ -215,6 +218,7 @@ void handle_uci() {
     // Optional NNUE evaluation (defaults to pure HCE). Set NNUEFile to a .nnue
     // produced by nnue/luminex_nnue_train.py, then UseNNUE=true to switch.
     safe_output("option name UseNNUE type check default false\n");
+    safe_output("option name UseStashEval type check default false\n");
     safe_output("option name NNUEFile type string default luminex_v1.nnue\n");
     // Eval parameters (self-engineered defaults)
     safe_output("option name BishopPairMG type spin default 40 min -100 max 200\n");
@@ -421,6 +425,7 @@ void handle_setoption(const std::string& cmd) {
         name == "UCI_ShowWDL" || name == "UCI_Elo" || name == "UCI_LimitStrength" ||
         name == "UCI_Chess960" || name == "Analysis") { /* accepted — UCI GUI/bot compatibility */ }
     else if (name == "UseNNUE") { nnue::set_enabled(value == "true"); }
+    else if (name == "UseStashEval") { luminex::set_stash_eval(value == "true"); }
     else if (name == "NNUEFile") { if (!value.empty()) nnue::load(value); }
     else if (name == "SearchDepth") { g_search_depth = std::stoi(value); }
     else if (name == "NodesPerMove") { g_nodes_per_move = std::stoi(value); }
