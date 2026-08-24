@@ -921,9 +921,6 @@ int evaluate_stash(const Position& pos) {
 
     int mg = tapered.mg;
     int eg = scale_endgame(pos, kpe, tapered.eg);
-    // Scale probe: Stash EG scores live at ~2x our search's expected cp
-    // scale; halve the EG blend input so margins fire as our search expects.
-    eg /= 2;
     int phase = 4 * popcount(pos.pieces(QUEEN)) + 2 * popcount(pos.pieces(ROOK))
               + popcount(pos.pieces(BISHOP)) + popcount(pos.pieces(KNIGHT));
     phase = std::max((int)ENDGAME_COUNT, std::min((int)MIDGAME_COUNT, phase));
