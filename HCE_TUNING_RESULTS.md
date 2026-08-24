@@ -376,4 +376,25 @@ at 12K games (LLR +2.09, one short of accept at elo1=5); confirmation
 run resolved to ~+1.6 at 10K (LLR -0.13). Pooled ~+2-3 over 22K games —
 NOT adopted.** The replication gate caught what the first run would have
 claimed. Sharp-root extension (aspiration-widening-aware time spend,
-59c1afe, built) now under SPRT.
+59c1afe): SPRT resolved +3.7 at 12K cap, LLR +0.62 — same small-positive-
+unresolved profile. Combined (drop2x + sharproot) SPRT: +4.3 at 14K when
+the box dropped; definitive 40K-game run (combfinal) relaunched.
+
+## Rung 8 — overloaded-defender features (protocol v26 D-derivation) — NEGATIVE
+
+Full-protocol run on "where does the next Elo live for a saturated HCE":
+Phase 0 assumption graph post-falsification (A1-A5 dead; A8 "eval = purely
+static features" the surviving upstream flip) → Pathway D derivation:
+"compressed micro-proofs" — features encoding 2-3-ply tactical facts.
+Triage survivor: OVERLOAD2/OVERLOAD3 (sole defender of 2+/3+ attacked
+own pieces; the punch corpus's dominant motif by duel-FEN inspection).
+Implemented (NPHASE 629), mirror-verified 0/0, fitted anchored λ=3e7 on
+24.6M rows. Fitted signs INVERTED vs chess theory (MG -6.6/-5.9 through
+the feature's negative-sign convention = overload correlates BETTER for
+the owner — an activity confound: pieces that defend things are developed
+pieces). **Isolation A/B: 186-205-109 (0.481), -13.2 +- 27.0, LOS 17% —
+neutral-to-negative, NOT adopted.** Features stay zero-init. D-derivation
+#1 complete per protocol 7.6: the anomaly-driven micro-proof family, in
+its first instantiation, does not convert; whether the FAMILY has other
+instantiations (discovered-attack potential) remains open but priors are
+now low.

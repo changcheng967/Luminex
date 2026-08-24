@@ -34,7 +34,7 @@ Usage:
 import sys
 import numpy as np
 
-NPHASE = 627
+NPHASE = 629
 NS = 2 * NPHASE
 PST, MAT = 0, 384
 

@@ -1131,6 +1131,33 @@ static TraceOut trace_eval(const Position& pos, Tracer& t) {
         if (rp) { t.add(ROOK_PAWN, sign * rp); t.add(ROOK_PAWN + NPHASE, sign * rp); }
         if (knights >= 2) { mg_score += sign * FE_MG[NN_PAIR]; eg_score += sign * FE_EG[NN_PAIR]; t.add(NN_PAIR, sign); t.add(NN_PAIR + NPHASE, sign); }
         if (knights >= 1 && bishop_count[c_idx] >= 1) { mg_score += sign * FE_MG[NB_PAIR]; eg_score += sign * FE_EG[NB_PAIR]; t.add(NB_PAIR, sign); t.add(NB_PAIR + NPHASE, sign); }
+
+        // Overloaded defenders (mirrors evaluation.cpp rung 8)
+        {
+            Color them = Color(c_idx ^ 1);
+            Bitboard attacked_ours = pos.pieces(c) & all_attacks[them];
+            attacked_ours &= ~(pos.pieces(c, PAWN) | pos.pieces(c, KING));
+            int loads[64] = {0};
+            Bitboard scan = attacked_ours;
+            while (scan) {
+                Square sq = pop_lsb(scan);
+                Bitboard defs = pos.attackers_to(sq) & pos.pieces(c) & ~pos.pieces(c, KING);
+                if (popcount(defs) == 1) ++loads[int(lsb(defs))];
+            }
+            int over2 = 0, over3 = 0;
+            for (int s = 0; s < 64; ++s) {
+                if (loads[s] >= 3) ++over3;
+                else if (loads[s] == 2) ++over2;
+            }
+            if (over2) {
+                mg_score -= sign * over2 * FE_MG[OVERLOAD2]; eg_score -= sign * over2 * FE_EG[OVERLOAD2];
+                t.add(OVERLOAD2, -sign * over2); t.add(OVERLOAD2 + NPHASE, -sign * over2);
+            }
+            if (over3) {
+                mg_score -= sign * over3 * FE_MG[OVERLOAD3]; eg_score -= sign * over3 * FE_EG[OVERLOAD3];
+                t.add(OVERLOAD3, -sign * over3); t.add(OVERLOAD3 + NPHASE, -sign * over3);
+            }
+        }
     }
 
     {

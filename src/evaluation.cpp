@@ -17,7 +17,7 @@ namespace luminex {
 // "regenerate eval_fitted.h + rebuild", and eval_trace.cpp reads the
 // SAME arrays so --verify revalidates the applied engine.
 // ============================================================
-static_assert(feat::NPHASE == 627);
+static_assert(feat::NPHASE == 629);
 
 EvalParams g_eval_params;
 
@@ -1235,6 +1235,35 @@ Value evaluate(const Position& pos, bool tactical_only) {
         eg_score += sign * rooks * pawns * FE_EG[feat::ROOK_PAWN];
         if (knights >= 2) { mg_score += sign * FE_MG[feat::NN_PAIR]; eg_score += sign * FE_EG[feat::NN_PAIR]; }
         if (knights >= 1 && bishop_count[c_idx] >= 1) { mg_score += sign * FE_MG[feat::NB_PAIR]; eg_score += sign * FE_EG[feat::NB_PAIR]; }
+    }
+
+    // Overloaded defenders (rung 8): a piece that is the SOLE defender of
+    // 2+ own attacked pieces carries a latent tactic -- the punch corpus's
+    // dominant motif (mutual back-rank defenders, pawn-fork victims).
+    // Prices the structural weakness before the tactic exists; the regime
+    // where all engines' depth-limited evals agree and lose (gap analysis).
+    if (!tactical_only) {
+        for (int c_idx = 0; c_idx < 2; ++c_idx) {
+            Color c = Color(c_idx);
+            Color them = Color(c_idx ^ 1);
+            Sign sign = (c_idx == 0) ? 1 : -1;
+            Bitboard attacked_ours = pos.pieces(c) & all_attacks[them];
+            attacked_ours &= ~(pos.pieces(c, PAWN) | pos.pieces(c, KING));
+            int loads[64] = {0};
+            Bitboard scan = attacked_ours;
+            while (scan) {
+                Square t = pop_lsb(scan);
+                Bitboard defs = pos.attackers_to(t) & pos.pieces(c) & ~pos.pieces(c, KING);
+                if (popcount(defs) == 1) ++loads[int(lsb(defs))];
+            }
+            int over2 = 0, over3 = 0;
+            for (int s = 0; s < 64; ++s) {
+                if (loads[s] >= 3) ++over3;
+                else if (loads[s] == 2) ++over2;
+            }
+            if (over2) { mg_score -= sign * over2 * FE_MG[feat::OVERLOAD2]; eg_score -= sign * over2 * FE_EG[feat::OVERLOAD2]; }
+            if (over3) { mg_score -= sign * over3 * FE_MG[feat::OVERLOAD3]; eg_score -= sign * over3 * FE_EG[feat::OVERLOAD3]; }
+        }
     }
 
     // Knight bonus with many pawns: knights can jump over pawn chains,
