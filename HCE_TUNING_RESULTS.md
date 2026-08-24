@@ -398,3 +398,9 @@ neutral-to-negative, NOT adopted.** Features stay zero-init. D-derivation
 its first instantiation, does not convert; whether the FAMILY has other
 instantiations (discovered-attack potential) remains open but priors are
 now low.
+
+**Rung 9 (material-simplification root tiebreak, the A6 opponent-stateless
+flip): SPRT resolved -1.4 at 12K cap, LLR -1.98 — NOT adopted, reverted
+(d3ddb62).** The GM trade-when-ahead rule as a root decision overrides the
+search's genuine preference among ties and loses ~2-4 Elo. Tenth SPRT-era
+verdict: zero adoptions.
