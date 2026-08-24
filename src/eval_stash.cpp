@@ -110,26 +110,22 @@ inline Bitboard pawn_attack_span_bb(Square sq, Color c) {
     }
     return out;
 }
-// Static bitboards (built once; the naive per-call loops cost ~36% NPS)
-static const Bitboard g_dark = [] {
+inline Bitboard dark_squares() {
     Bitboard b = 0;
     for (int s = 0; s < 64; ++s)
         if (((s / 8) + (s % 8)) % 2 == 1) b |= square_bb(Square(s));
     return b;
-}();
-static const Bitboard g_center = square_bb(Square(D4)) | square_bb(Square(E4))
-                               | square_bb(Square(D5)) | square_bb(Square(E5));
-static const Bitboard g_queenside = [] {
+}
+inline Bitboard center_bb() {
+    return square_bb(Square(D4)) | square_bb(Square(E4)) | square_bb(Square(D5)) | square_bb(Square(E5));
+}
+inline Bitboard queenside_bb() {
     Bitboard b = 0;
     for (int r = 0; r < 8; ++r)
         for (int f = 0; f < 4; ++f) b |= square_bb(make_square(File(f), Rank(r)));
     return b;
-}();
-static const Bitboard g_kingside = ~g_queenside;
-inline Bitboard dark_squares() { return g_dark; }
-inline Bitboard center_bb() { return g_center; }
-inline Bitboard queenside_bb() { return g_queenside; }
-inline Bitboard kingside_bb() { return g_kingside; }
+}
+inline Bitboard kingside_bb() { return ~queenside_bb(); }
 
 // King blockers: squares between our king and enemy sliders that would
 // expose a check if the occupant moved (SF-style, used for pin mobility).
@@ -501,70 +497,46 @@ static SP kp_doubled_isolated(Bitboard our_pawns) {
     return ret;
 }
 
-// Pawn-structure hash (keyed by pawn_key; king-dependent passed-pos scoring
-// computed fresh — it needs king squares, which the pawn key doesn't cover).
-struct KPHashEntry {
-    uint64_t key = 0;
-    SP core;
-    Bitboard attack_span[2] = {0, 0};
-    Bitboard passed[2] = {0, 0};
-};
-static KPHashEntry kpt[1 << 14];
-
 static KPEntry king_pawn_probe(const Position& pos) {
-    uint64_t key = pos.pawn_key();
-    KPHashEntry& e = kpt[key & ((1 << 14) - 1)];
     KPEntry kpe;
-    if (e.key == key) {
-        kpe.value = e.core;
-        kpe.attack_span[WHITE] = e.attack_span[WHITE];
-        kpe.attack_span[BLACK] = e.attack_span[BLACK];
-        kpe.passed[WHITE] = e.passed[WHITE];
-        kpe.passed[BLACK] = e.passed[BLACK];
-    } else {
-        Bitboard wp = pos.pieces(WHITE, PAWN), bp = pos.pieces(BLACK, PAWN);
-        Bitboard wa = pawn_attacks(wp, WHITE), ba = pawn_attacks(bp, BLACK);
-        Bitboard wa2 = pawn_attacks2(wp, WHITE), ba2 = pawn_attacks2(bp, BLACK);
+    kpe.value = SP(0, 0);
+    kpe.passed[WHITE] = kpe.passed[BLACK] = 0;
+    Bitboard wp = pos.pieces(WHITE, PAWN), bp = pos.pieces(BLACK, PAWN);
+    Bitboard wa = pawn_attacks(wp, WHITE), ba = pawn_attacks(bp, BLACK);
+    Bitboard wa2 = pawn_attacks2(wp, WHITE), ba2 = pawn_attacks2(bp, BLACK);
 
-        auto span = [](Bitboard pawns, Color c) {
-            Bitboard s = 0;
-            while (pawns) s |= pawn_attack_span_bb(pop_lsb(pawns), c);
-            return s;
-        };
-        e.key = key;
-        e.attack_span[WHITE] = kpe.attack_span[WHITE] = span(wp, WHITE);
-        e.attack_span[BLACK] = kpe.attack_span[BLACK] = span(bp, BLACK);
-        e.passed[WHITE] = kpe.passed[WHITE] = 0;
-        e.passed[BLACK] = kpe.passed[BLACK] = 0;
+    auto span = [](Bitboard pawns, Color c) {
+        Bitboard s = 0;
+        while (pawns) s |= pawn_attack_span_bb(pop_lsb(pawns), c);
+        return s;
+    };
+    kpe.attack_span[WHITE] = span(wp, WHITE);
+    kpe.attack_span[BLACK] = span(bp, BLACK);
 
-        SP core(0, 0);
-        // PSQT pawns (relative, ranks 2..7)
-        auto pawn_psq = [&](Bitboard pawns, Color c) {
-            SP r(0, 0);
-            while (pawns) {
-                Square sq = pop_lsb(pawns);
-                Square rel = relative_square(c, sq);
-                r += PawnSQT[(rank_of(rel) - 1) * 8 + file_of(rel)];
-            }
-            return r;
-        };
-        core += pawn_psq(wp, WHITE);
-        core -= pawn_psq(bp, BLACK);
-        core += kp_backward(kpe, wp, bp, ba, e.attack_span[WHITE], WHITE);
-        core -= kp_backward(kpe, bp, wp, wa, e.attack_span[BLACK], BLACK);
-        core += kp_connected(wp, WHITE);
-        core -= kp_connected(bp, BLACK);
-        core += kp_passed(kpe, wp, bp, ba, wa, ba2, wa2, WHITE);
-        core -= kp_passed(kpe, bp, wp, wa, ba, wa2, ba2, BLACK);
-        core += kp_doubled_isolated(wp);
-        core -= kp_doubled_isolated(bp);
-        e.core = kpe.value = core;
-        e.passed[WHITE] = kpe.passed[WHITE];
-        e.passed[BLACK] = kpe.passed[BLACK];
-    }
-    // King-dependent scoring: fresh every call (cheap — passed pawns only)
+    // PSQT pawns (relative, ranks 2..7)
+    auto pawn_psq = [&](Bitboard pawns, Color c) {
+        SP r(0, 0);
+        Bitboard b = pawns;
+        while (b) {
+            Square sq = pop_lsb(b);
+            Square rel = relative_square(c, sq);
+            r += PawnSQT[(rank_of(rel) - 1) * 8 + file_of(rel)];
+        }
+        return r;
+    };
+    kpe.value += pawn_psq(wp, WHITE);
+    kpe.value -= pawn_psq(bp, BLACK);
+
+    kpe.value += kp_backward(kpe, wp, bp, ba, kpe.attack_span[WHITE], WHITE);
+    kpe.value -= kp_backward(kpe, bp, wp, wa, kpe.attack_span[BLACK], BLACK);
+    kpe.value += kp_connected(wp, WHITE);
+    kpe.value -= kp_connected(bp, BLACK);
+    kpe.value += kp_passed(kpe, wp, bp, ba, wa, ba2, wa2, WHITE);
+    kpe.value -= kp_passed(kpe, bp, wp, wa, ba, wa2, ba2, BLACK);
     kpe.value += kp_passed_pos(kpe, pos, WHITE);
     kpe.value -= kp_passed_pos(kpe, pos, BLACK);
+    kpe.value += kp_doubled_isolated(wp);
+    kpe.value -= kp_doubled_isolated(bp);
     return kpe;
 }
 
