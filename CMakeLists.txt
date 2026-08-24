@@ -83,7 +83,6 @@ set(SOURCES
     src/tuner_params.cpp
     src/book.cpp
     src/nnue.cpp
-    src/eval_stash.cpp
 )
 
 set(HEADERS
@@ -159,7 +158,6 @@ if(BUILD_EVALTRACE)
         src/nnue.cpp
         src/magic.cpp
         src/transposition.cpp
-        src/eval_stash.cpp
     )
     target_include_directories(luminex-evaltrace PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
     target_compile_definitions(luminex-evaltrace PRIVATE _CRT_SECURE_NO_WARNINGS)

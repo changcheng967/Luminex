@@ -19,10 +19,6 @@ namespace luminex {
 // ============================================================
 static_assert(feat::NPHASE == 629);
 
-// Stash eval port (eval_stash.cpp) — enabled via UCI "UseStashEval"
-bool stash_eval_enabled();
-namespace stash_eval { int evaluate_stash(const Position& pos); }
-
 EvalParams g_eval_params;
 
 // ============================================================
@@ -498,9 +494,6 @@ Value evaluate(const Position& pos, bool tactical_only) {
     // via UCI "UseNNUE", the engine uses NNUE instead of HCE. Otherwise the
     // pure hand-crafted eval below runs unchanged. NNUE is fully optional.
     if (nnue::enabled()) return nnue::evaluate(pos);
-
-    // Stash eval port: replaces the HCE entirely when enabled
-    if (stash_eval_enabled()) return stash_eval::evaluate_stash(pos);
 
     // KPK endgame specialization: exact WDL bitbase (retrograde, verified vs
     // lichess tablebase). Direct return — bypasses scale_factor (which zeroes
