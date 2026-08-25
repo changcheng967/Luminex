@@ -469,3 +469,14 @@ First micro-patch under test: qsearch depth -4 -> -6 at fixed nodes.
 everywhere for EG gains that wash out. Next: EG-CONDITIONAL qsearch depth
 (extend only when npm < 10) + EG-passed-pawn/king-activity expressiveness
 micro-patches at 40K-game SPRT precision.
+
+### EG-type decomposition (1732 EG positions, 25K sample, depth-1 both engines)
+
+Top rows (/R +10151, /NB +7560) are SCORING-SCALE ARTIFACTS: SF scores
+won endgames at +-3000..9000; both engines score VICTORY-scale (~+10000
+V36, ~+15600 us); the error gap is convention, not ignorance (verified:
+true KRK we score +15486 correctly; corpus /R example SF=-3096).
+REAL weaknesses: **RP-vs-R endings +651** (the conversion ending) and a
+consistent **+50..130 deficit across ALL minor-piece ending types**.
+Next self-derived targets: (1) rook-endgame scaling for RPvR (one-sided
+pawns drawishness), (2) minor-ending EG terms (N/B EG PST refinement).
