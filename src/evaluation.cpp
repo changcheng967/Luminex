@@ -1506,6 +1506,8 @@ int scale_factor(const Position& pos, [[maybe_unused]] Value eg) {
     }
 
     // Opposite-colored bishops: drawish
+    int w_rooks = popcount(pos.pieces(WHITE, ROOK));
+    int b_rooks = popcount(pos.pieces(BLACK, ROOK));
     int wb = popcount(pos.pieces(WHITE, BISHOP));
     int bb = popcount(pos.pieces(BLACK, BISHOP));
     if (wb == 1 && bb == 1) {
@@ -1530,6 +1532,42 @@ int scale_factor(const Position& pos, [[maybe_unused]] Value eg) {
     int b_minors = popcount(pos.pieces(BLACK, KNIGHT)) + popcount(pos.pieces(BLACK, BISHOP));
     if (w_queens == 1 && b_queens == 0 && b_minors >= 2 && wp == 0) return 20;
     if (b_queens == 1 && w_queens == 0 && w_minors >= 2 && bp == 0) return 20;
+
+    // Rook endings with a small edge and one-wing pawns are drawish when
+    // the defending king stands near the pawn mass (classical scaling rule;
+    // measured: RP-vs-R endings carry the largest real eval error of any
+    // endgame type — weakness map 2026-08-24).
+    if (eg != 0 && w_rooks >= 1 && b_rooks >= 1
+        && w_queens == 0 && b_queens == 0 && w_minors == 0 && b_minors == 0) {
+        Color strong = eg > 0 ? WHITE : BLACK;
+        Color weak = Color(strong ^ 1);
+        int sp = strong == WHITE ? wp : bp;
+        int wpn = strong == WHITE ? bp : wp;
+        Bitboard spb = pos.pieces(strong, PAWN);
+        Bitboard queenside = 0, kingside = 0;
+        for (int r = 0; r < 8; ++r)
+            for (int f = 0; f < 8; ++f) {
+                Square s = make_square(File(f), Rank(r));
+                if (f <= 3) queenside |= square_bb(s);
+                else kingside |= square_bb(s);
+            }
+        bool one_wing = spb && !((spb & queenside) && (spb & kingside));
+        if (sp - wpn <= 1 && one_wing) {
+            // Defending king within 2 king-moves of any strong pawn
+            Square wk = pos.king_sq(weak);
+            bool king_near = false;
+            Bitboard scan = spb;
+            while (scan) {
+                Square psq = pop_lsb(scan);
+                if (std::abs(int(file_of(wk)) - int(file_of(psq)))
+                      + std::abs(int(rank_of(wk)) - int(rank_of(psq))) <= 2) {
+                    king_near = true;
+                    break;
+                }
+            }
+            if (king_near) return 26;
+        }
+    }
 
     return 32;
 }
