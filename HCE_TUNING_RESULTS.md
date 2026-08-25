@@ -480,3 +480,12 @@ REAL weaknesses: **RP-vs-R endings +651** (the conversion ending) and a
 consistent **+50..130 deficit across ALL minor-piece ending types**.
 Next self-derived targets: (1) rook-endgame scaling for RPvR (one-sided
 pawns drawishness), (2) minor-ending EG terms (N/B EG PST refinement).
+
+**Rook one-wing scaling (classical rule, targeted at the +651 RPvR gap):
+ACCEPT H0 in 1,500 games — -51.5 Elo, LLR -3.30. REVERTED (a62133d).**
+The rule as implemented HURTS: our engine was already converting these
+endings well enough, and blunting its EG scores there loses games. The
++651 static-eval gap vs V36 does not translate into a play gap — V36
+may simply be scoring its own conversion intent differently.
+Lesson repeated: eval-agreement gaps are NOT play gaps (3rd time:
+danger compression, outcome-logloss, now RPvR static error).
