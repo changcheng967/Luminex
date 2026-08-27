@@ -306,9 +306,20 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
         return evaluate(pos, true);
     }
 
-    // Search captures to depth -4 to avoid horizon effect
-    if (depth < -4) {
-        return evaluate(pos, true);
+    // Search captures to depth -4 to avoid horizon effect.
+    // EG-conditional horizon: in piece-sparse positions (measured ~170cp
+    // depth-1 eval deficit vs V36 lives in endgames), extend the capture
+    // horizon — endgame tactics run through longer capture chains and
+    // promotion races.
+    {
+        int qs_horizon = -4;
+        if (popcount(pos.pieces(KNIGHT) | pos.pieces(BISHOP)
+                   | pos.pieces(ROOK) | pos.pieces(QUEEN)) <= 4) {
+            qs_horizon = -8;
+        }
+        if (depth < qs_horizon) {
+            return evaluate(pos, true);
+        }
     }
 
     // Memory barrier for ensure we see the latest stop flag
@@ -1045,6 +1056,14 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
                 reduction = gives_chk ? 2 : 3;
             } else {
                 reduction = compute_reduction(m, moves_played, gives_chk);
+            }
+            // A3: uncertainty-as-depth-allocation. When the correction
+            // history says the eval has been very wrong in positions like
+            // this, the reductions (computed FROM that eval) are suspect —
+            // search closer to full depth instead of trusting the reduced
+            // result. Capped so razor-tiny reductions stay tiny.
+            if (eval_uncertainty > 120 && reduction > 1) {
+                reduction -= 1;
             }
             // Reduce less in PV nodes
             if (pv_node) reduction = std::max(1, reduction - 1);
