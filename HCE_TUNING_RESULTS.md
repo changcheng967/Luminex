@@ -489,3 +489,21 @@ endings well enough, and blunting its EG scores there loses games. The
 may simply be scoring its own conversion intent differently.
 Lesson repeated: eval-agreement gaps are NOT play gaps (3rd time:
 danger compression, outcome-logloss, now RPvR static error).
+
+## A1: unanchored outcome retune — NEGATIVE, the objective space is CLOSED
+
+The audit's never-pulled lever (engine_audit.md A1): outcome-logistic,
+L2=1e-9 (no anchor), 120 epochs on 3.3M strong-teacher outcome rows,
+holdout clean throughout (0.5379, zero overfit), genuine travel from
+fit6 (mean drift 2.1cp, max 6.7cp). A/B vs fit6+TT256: 176-217-107
+(0.459), **-28.6 +- 27.1, LOS 2% — decisively negative.**
+
+**This completes the falsification of the ENTIRE tuning-objective space:**
+MSE-to-SF-evals (8x), sigma(eval)-logistic, outcome-logistic anchored
+(3 variants), outcome-logistic UNANCHORED with correct methodology —
+every objective, data source, and constraint configuration lands at or
+below the same play value. The linear function class on this feature
+basis is at its play ceiling (~2515). This is a property of the
+architecture, not of any tuning method. Remaining self-derived levers
+per the audit: A3 (uncertainty-as-depth-allocation) and structural
+search innovation.
