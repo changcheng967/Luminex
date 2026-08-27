@@ -653,12 +653,10 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
     // Futility pruning - use improving for better pruning decisions
     // Depth <= 6 for balance between pruning and tactical accuracy
     // More aggressive when opponent is worsening (wider margin)
-    // A3v2: when correction history flags the eval as UNRELIABLE, disable
-    // eval-based futility here — the margin adjustment (v1, rejected)
-    // was too weak a dose; the signal either gates the prune or is noise.
-    if (eval_uncertainty <= 150) {
+    // LESS aggressive when eval_uncertainty is high (eval unreliable, don't trust it for pruning)
+    {
         int fut_margin = futility_margin(depth, ss->improving || opponent_worsening);
-        fut_margin += std::min(eval_uncertainty / 2, 100);
+        fut_margin += std::min(eval_uncertainty / 2, 100);  // Up to 100cp extra margin when uncertain
         if (!pv_node && !pos.is_check() && depth <= 6 && eval - fut_margin >= beta) {
             g_stats.futility_prunes++;
             return eval;
@@ -666,10 +664,10 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
     }
 
     // Reverse futility pruning (static null move): if eval is far above beta, prune immediately
-    // A3v2: same uncertainty gate as futility — unreliable eval cannot justify a prune
-    if (eval_uncertainty <= 150) {
+    // Also less aggressive when eval is uncertain
+    {
         int rev_margin = SPSAParams::get().rev_fut_coeff * depth + ((ss->improving || opponent_worsening) ? 0 : 30);
-        rev_margin += std::min(eval_uncertainty / 2, 80);
+        rev_margin += std::min(eval_uncertainty / 2, 80);  // Up to 80cp extra margin when uncertain
         if (!pv_node && !pos.is_check() && depth <= 8 && eval - rev_margin >= beta) {
             g_stats.rev_futility_prunes++;
             return eval;
