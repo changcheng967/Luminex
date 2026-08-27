@@ -514,3 +514,10 @@ The extra depth at high-uncertainty nodes costs what it gains; the
 correction-history signal is already fully exploited via margin
 modulation (futility/reverse-futility/LMP adjustments). A3 v1 joins the
 ledger as the 6th gap-targeted rejection.
+
+**A3 v2 (uncertainty-gated pruning disable: skip futility+rev-futility
+when eval_uncertainty > 150): H0 (combined with v1's record at 13.75K
+games, LLR -3.21). REVERTED (26ee0ca).** Both doses of the
+uncertainty-as-search-allocation idea are dead: the correction-history
+signal's play value is fully expressed through margin modulation alone.
+The uncertainty axis is CLOSED.
