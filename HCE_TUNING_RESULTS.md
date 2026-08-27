@@ -507,3 +507,10 @@ basis is at its play ceiling (~2515). This is a property of the
 architecture, not of any tuning method. Remaining self-derived levers
 per the audit: A3 (uncertainty-as-depth-allocation) and structural
 search innovation.
+
+**A3 v1 (uncertainty-as-depth: -1 LMR when eval_uncertainty > 120):
+ACCEPT H0 in 13,500 games — -3.1, LLR -3.17. REVERTED (6c0d295).**
+The extra depth at high-uncertainty nodes costs what it gains; the
+correction-history signal is already fully exploited via margin
+modulation (futility/reverse-futility/LMP adjustments). A3 v1 joins the
+ledger as the 6th gap-targeted rejection.
