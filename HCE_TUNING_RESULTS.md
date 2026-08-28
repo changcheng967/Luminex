@@ -541,3 +541,39 @@ least-squares endpoint already (fit to SF depth-26 fishtest search scores),
 so the outcome gradient at fit6 is ~zero: five independent
 outcome-tuning configurations (anchored ×3, unanchored, self-play) now
 all land at or below zero. The recipe was never magic; the headroom was.
+
+## E0 — model-class oracle (2026-08-28): interactions help a little, and only in sharp positions
+
+Question: is the linear basis the binding constraint, and how much would
+unrestricted nonlinearity buy on OUR features? Measurement: dumped
+2.46M rows (features + SF-d26 targets) from the exact engine basis
+(evaltrace --dump-rows, sample of fens22m), then compared on a shared
+245,965-row holdout: (a) ridge in the ENGINE's model class
+(MG*wmg | EG*weg | ph), (b) LightGBM (63 leaves × 800 trees —
+interactions + thresholds unrestricted). Pre-registered rule: ΔR² <0.05
+basis information-poor; >0.10 wholesale interaction refit; between →
+selective families.
+
+| model | holdout R² | MAE |
+|---|---|---|
+| linear (engine class) | 0.5754 | 97.4 |
+| GBM (unrestricted) | 0.6472 | 87.5 |
+
+**ΔR² = +0.072 → the middle band: selective interaction families, not a
+wholesale quadratic refit.** Bucket MAEs show WHERE: quiet (|y|<100)
+75.6 → 68.6 (−9%), 100–300: 83.5 → 76.5 (−8%), 300–600: 191.7 → 165.9
+(−13.5%), 600–1000: 309.4 → 271.1 (−12.4%) — the interaction advantage
+CONCENTRATES in the sharp/decisive regimes, exactly the measured play
+weakness (razor mispricings). Equally important: **even unrestricted
+nonlinearity on current features caps at R²≈0.65 — ~35% of SF's eval is
+not representable by ANY model on this feature set.** That residual is
+missing relational information (SF11-audit families we lack: per-type
+safe checks, passed-pawn path-safety states × asymmetric king
+proximity). Next rungs, in order: (E1) selective sharp-regime
+interaction families + wholesale refit through the full gate ladder;
+(E2) missing relational families (self-implemented) + refit. R² is not
+play — both go through 500g → 40K SPRT before any adoption.
+
+Infra notes: chunked parse (oracle_chunk_*.npz kept, raw dump deleted);
+the single-process version OOM'd the box twice — all heavy jobs now
+ulimit-capped, nice'd, n_jobs≤4 (see MEMORY.md box-crash triggers).
