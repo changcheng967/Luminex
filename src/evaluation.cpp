@@ -17,7 +17,7 @@ namespace luminex {
 // "regenerate eval_fitted.h + rebuild", and eval_trace.cpp reads the
 // SAME arrays so --verify revalidates the applied engine.
 // ============================================================
-static_assert(feat::NPHASE == 629);
+static_assert(feat::NPHASE == 632);
 
 EvalParams g_eval_params;
 
@@ -597,6 +597,12 @@ Value evaluate(const Position& pos, bool tactical_only) {
         eg_score += pawn_eg;
     }
 
+    // Per-side counts for the razor-interaction features (E2b): enemy pieces
+    // we attack, and enemy pieces hanging (attacked + undefended). Filled in
+    // the threat section below, consumed by the king-safety section.
+    int thr_cnt_arr[2]  = {0, 0};
+    int hang_cnt_arr[2] = {0, 0};
+
     for (int c_idx = 0; c_idx < 2; ++c_idx) {
         Color c = Color(c_idx);
         Color them = Color(c_idx ^ 1);
@@ -1072,6 +1078,8 @@ Value evaluate(const Position& pos, bool tactical_only) {
         {
             Bitboard their_pieces = pos.pieces(them);
 
+            // Razor-interaction input (E2b): every enemy piece we attack
+            thr_cnt_arr[c_idx] = popcount(their_pieces & all_attacks[c]);
             // Pawn threats: cheapest attacker = most valuable threats
             Bitboard threats = their_pieces & attacks_by[c][PAWN];
             while (threats) {
@@ -1129,8 +1137,9 @@ Value evaluate(const Position& pos, bool tactical_only) {
                                      | pos.pieces(them, ROOK) | pos.pieces(them, QUEEN))
                                      & ~all_attacks[them] & all_attacks[c];
             if (hanging_pieces) {
-                mg_score += sign * FE_MG[feat::HANG_PIECE] * popcount(hanging_pieces);
-                eg_score += sign * FE_EG[feat::HANG_PIECE] * popcount(hanging_pieces);
+                hang_cnt_arr[c_idx] = popcount(hanging_pieces);
+                mg_score += sign * FE_MG[feat::HANG_PIECE] * hang_cnt_arr[c_idx];
+                eg_score += sign * FE_EG[feat::HANG_PIECE] * hang_cnt_arr[c_idx];
             }
             // Pinned enemy pieces: pieces between their king and our sliders
             // Principle: a pinned piece can't move without exposing its king (Nimzowitsch)
@@ -1442,6 +1451,34 @@ Value evaluate(const Position& pos, bool tactical_only) {
                 if (au_pos >= 8 * (t + 1)) {
                     mg_score -= sign * FE_MG[feat::KS_AUB8 + t];
                     eg_score -= sign * FE_EG[feat::KS_AUB8 + t];
+                }
+            }
+
+            // Razor-class interactions (E2b): products of the threat state and
+            // king danger that the linear basis cannot express. Defender is c
+            // (sign); attacker is them. au_b caps the danger lever at 48 units.
+            // E0 oracle: unrestricted interactions buy -13% MAE in the |y|>300
+            // bands — the razor class where 75% of our losses begin.
+            {
+                int att = c_idx ^ 1;
+                int au_b = std::min(au_pos, 48) / 16;
+                if (au_b > 0) {
+                    int hang_v = hang_cnt_arr[att] * au_b;
+                    int thr_v  = thr_cnt_arr[att] * au_b;
+                    int margin = 0;
+                    for (int pt = PAWN; pt <= QUEEN; ++pt) {
+                        margin += PieceValueMG[pt]
+                            * (popcount(pos.pieces(them, PieceType(pt)))
+                             - popcount(pos.pieces(c, PieceType(pt))));
+                    }
+                    margin = std::max(-400, std::min(400, margin));
+                    int mat_v = margin / 100 * au_b;
+                    if (hang_v) { mg_score -= sign * FE_MG[feat::RAZOR_HANGAU] * hang_v;
+                                  eg_score -= sign * FE_EG[feat::RAZOR_HANGAU] * hang_v; }
+                    if (thr_v)  { mg_score -= sign * FE_MG[feat::RAZOR_THRAU] * thr_v;
+                                  eg_score -= sign * FE_EG[feat::RAZOR_THRAU] * thr_v; }
+                    if (mat_v)  { mg_score -= sign * FE_MG[feat::RAZOR_MATAU] * mat_v;
+                                  eg_score -= sign * FE_EG[feat::RAZOR_MATAU] * mat_v; }
                 }
             }
         }

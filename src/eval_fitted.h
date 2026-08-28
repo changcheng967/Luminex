@@ -6,7 +6,7 @@
 
 namespace luminex {
 
-inline int FE_MG[629] = {
+inline int FE_MG[632] = {
         32,     32,     32,     32,     32,     32,     32,     32,
        -12,     -5,     -3,     -5,     -2,      0,     -3,    -17,
        -14,     -5,     -1,     -3,      2,     -1,     -1,    -13,
@@ -86,9 +86,10 @@ inline int FE_MG[629] = {
          0, /*nn_pair*/      0, /*nb_pair*/      0, /*shield_kf_r1*/      0, /*shield_kf_r2*/      0, /*shield_kf_r3*/      0, /*shield_adj_r1*/      0, /*shield_adj_r2*/      0, /*shield_adj_r3*/
          0, /*shield_ext_r1*/      0, /*shield_ext_r2*/      0, /*shield_ext_r3*/      0, /*hole_kf*/      0, /*hole_adj*/      0, /*ks_aub8*/      0, /*ks_aub16*/      0, /*ks_aub24*/
          0, /*ks_aub32*/      0, /*ks_aub40*/      0,      0,      0,
+    0, 0, 0
 };
 
-inline int FE_EG[629] = {
+inline int FE_EG[632] = {
          9,      9,      9,      9,      9,      9,      9,      9,
         -3,      0,      7,     -2,      5,      8,      3,     -9,
         -6,     -2,      1,     -1,      2,      3,      0,     -4,
@@ -168,6 +169,7 @@ inline int FE_EG[629] = {
          0, /*nn_pair*/      0, /*nb_pair*/      0, /*shield_kf_r1*/      0, /*shield_kf_r2*/      0, /*shield_kf_r3*/      0, /*shield_adj_r1*/      0, /*shield_adj_r2*/      0, /*shield_adj_r3*/
          0, /*shield_ext_r1*/      0, /*shield_ext_r2*/      0, /*shield_ext_r3*/      0, /*hole_kf*/      0, /*hole_adj*/      0, /*ks_aub8*/      0, /*ks_aub16*/      0, /*ks_aub24*/
          0, /*ks_aub32*/      0, /*ks_aub40*/      0,      0,      0,
+    0, 0, 0
 };
 
 } // namespace luminex

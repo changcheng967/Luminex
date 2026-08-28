@@ -86,7 +86,10 @@ constexpr int KS_AUB8        = 621;  // +5: attack_units >= T (T=8,16,24,32,40)
 constexpr int VOL_CTX        = 626;  // value = tension x clamped material margin (context eval)
 constexpr int OVERLOAD2      = 627;  // own pieces solely defending >= 2 attacked targets
 constexpr int OVERLOAD3      = 628;  // own pieces solely defending >= 3 attacked targets
-constexpr int NPHASE         = 629;
+constexpr int RAZOR_HANGAU   = 629;  // value = enemy-hanging-count * min(au,48)/16 (razor class)
+constexpr int RAZOR_THRAU    = 630;  // value = our-threat-count * min(au,48)/16
+constexpr int RAZOR_MATAU    = 631;  // value = clamp(npm_diff,+-400)/100 * min(au,48)/16 (sac compensation)
+constexpr int NPHASE         = 632;
 constexpr int TEMPO_MG       = 2 * NPHASE;      // value = +ph / -ph
 constexpr int TEMPO_EG       = 2 * NPHASE + 1;  // value = +(24-ph) / -(24-ph)
 constexpr int NFEAT          = 2 * NPHASE + 2;

@@ -477,6 +477,11 @@ static TraceOut trace_eval(const Position& pos, Tracer& t) {
     const int* PVMG = etrace::piece_value_mg();
     const int* PVEG = etrace::piece_value_eg();
 
+    // Razor-interaction inputs (E2b): filled in the threat loop, consumed by
+    // the king-safety section — mirrors evaluation.cpp.
+    int thr_cnt_arr[2]  = {0, 0};
+    int hang_cnt_arr[2] = {0, 0};
+
     for (int c_idx = 0; c_idx < 2; ++c_idx) {
         Color c = Color(c_idx);
         Color them = Color(c_idx ^ 1);
@@ -959,6 +964,8 @@ static TraceOut trace_eval(const Position& pos, Tracer& t) {
         {
             Bitboard their_pieces = pos.pieces(them);
 
+            thr_cnt_arr[c_idx] = popcount(their_pieces & all_attacks[c]);
+
             Bitboard threats = their_pieces & attacks_by[c][PAWN];
             while (threats) {
                 PieceType pt = piece_type_of(pos.piece_on(pop_lsb(threats)));
@@ -1020,10 +1027,11 @@ static TraceOut trace_eval(const Position& pos, Tracer& t) {
                                      | pos.pieces(them, ROOK) | pos.pieces(them, QUEEN))
                                      & ~all_attacks[them] & all_attacks[c];
             if (hanging_pieces) {
-                mg_score += sign * FE_MG[HANG_PIECE] * popcount(hanging_pieces);
-                eg_score += sign * FE_EG[HANG_PIECE] * popcount(hanging_pieces);
-                t.add(HANG_PIECE, sign * popcount(hanging_pieces));
-                t.add(HANG_PIECE + NPHASE, sign * popcount(hanging_pieces));
+                hang_cnt_arr[c_idx] = popcount(hanging_pieces);
+                mg_score += sign * FE_MG[HANG_PIECE] * hang_cnt_arr[c_idx];
+                eg_score += sign * FE_EG[HANG_PIECE] * hang_cnt_arr[c_idx];
+                t.add(HANG_PIECE, sign * hang_cnt_arr[c_idx]);
+                t.add(HANG_PIECE + NPHASE, sign * hang_cnt_arr[c_idx]);
             }
             {
                 Square their_ksq = ksq_arr[c_idx ^ 1];
@@ -1316,6 +1324,42 @@ static TraceOut trace_eval(const Position& pos, Tracer& t) {
                     eg_score -= sign * FE_EG[KS_AUB8 + b];
                     t.add(KS_AUB8 + b, -sign);
                     t.add(KS_AUB8 + b + NPHASE, -sign);
+                }
+            }
+
+            // Razor-class interactions (mirrors evaluation.cpp E2b)
+            {
+                int att = c_idx ^ 1;
+                int au_b = std::min(au_pos, 48) / 16;
+                if (au_b > 0) {
+                    int hang_v = hang_cnt_arr[att] * au_b;
+                    int thr_v  = thr_cnt_arr[att] * au_b;
+                    int margin = 0;
+                    for (int pt = PAWN; pt <= QUEEN; ++pt) {
+                        margin += PVMG[pt]
+                            * (popcount(pos.pieces(them, PieceType(pt)))
+                             - popcount(pos.pieces(c, PieceType(pt))));
+                    }
+                    margin = std::max(-400, std::min(400, margin));
+                    int mat_v = margin / 100 * au_b;
+                    if (hang_v) {
+                        mg_score -= sign * FE_MG[RAZOR_HANGAU] * hang_v;
+                        eg_score -= sign * FE_EG[RAZOR_HANGAU] * hang_v;
+                        t.add(RAZOR_HANGAU, -sign * hang_v);
+                        t.add(RAZOR_HANGAU + NPHASE, -sign * hang_v);
+                    }
+                    if (thr_v) {
+                        mg_score -= sign * FE_MG[RAZOR_THRAU] * thr_v;
+                        eg_score -= sign * FE_EG[RAZOR_THRAU] * thr_v;
+                        t.add(RAZOR_THRAU, -sign * thr_v);
+                        t.add(RAZOR_THRAU + NPHASE, -sign * thr_v);
+                    }
+                    if (mat_v) {
+                        mg_score -= sign * FE_MG[RAZOR_MATAU] * mat_v;
+                        eg_score -= sign * FE_EG[RAZOR_MATAU] * mat_v;
+                        t.add(RAZOR_MATAU, -sign * mat_v);
+                        t.add(RAZOR_MATAU + NPHASE, -sign * mat_v);
+                    }
                 }
             }
         }
