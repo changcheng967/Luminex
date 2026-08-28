@@ -114,7 +114,7 @@ jobs:
           gh release create "$TAG" \
             --title "Luminex $TAG" \
             --notes "## Luminex $TAG" \
-            --target "$TAG"
+            --target "$GITHUB_SHA"
         fi
         gh release upload "$TAG" \
           artifacts/luminex-linux-x86-64-modern/luminex-linux-x86-64-modern \
