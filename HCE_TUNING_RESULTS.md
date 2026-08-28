@@ -521,3 +521,23 @@ games, LLR -3.21). REVERTED (26ee0ca).** Both doses of the
 uncertainty-as-search-allocation idea are dead: the correction-history
 signal's play value is fully expressed through margin modulation alone.
 The uncertainty axis is CLOSED.
+
+## Rung 11 — self-play outcome fit (the exact Houppin recipe, our own games) — DEFLATED TO H0, not adopted
+
+The last untested tuning configuration: 10K games our-engine-vs-our-engine
+(the position distribution our search actually visits), 1.44M positions,
+outcome-logistic via --texel, 150 epochs, holdout clean throughout
+(0.5818), genuine travel (drift mean 1.17cp / max 4.4cp), mirror-verified
+0/0. 40K-game SPRT vs fit6+TT256: started −19 → peaked **+4.7 Elo
+(LLR +2.03) at n≈23K** → deflated steadily to **+1.6 (LLR −1.20) at
+n=33.5K** when the box rebooted (killed before formal termination). The
+same mid-run-inflation-then-deflation profile as drop2x; at the cap it
+reads H0. NOT adopted; luminex_spfit binary shelved.
+
+**This closes the "iterative self-play re-centering" hypothesis for our
+baseline.** Houppin's V21 +205 harvested the gap between an UNTUNED hand
+baseline and its outcome-optimum — a one-time harvest. Our baseline is a
+least-squares endpoint already (fit to SF depth-26 fishtest search scores),
+so the outcome gradient at fit6 is ~zero: five independent
+outcome-tuning configurations (anchored ×3, unanchored, self-play) now
+all land at or below zero. The recipe was never magic; the headroom was.
