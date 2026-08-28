@@ -577,3 +577,35 @@ play — both go through 500g → 40K SPRT before any adoption.
 Infra notes: chunked parse (oracle_chunk_*.npz kept, raw dump deleted);
 the single-process version OOM'd the box twice — all heavy jobs now
 ulimit-capped, nice'd, n_jobs≤4 (see MEMORY.md box-crash triggers).
+
+## E0b — target-metric calibration (2026-08-28): R² vs d26 targets SATURATES at ~0.5 for everyone, including SF18
+
+Prompted by "how do we get to R²=1.0": scored SF18's own NNUE eval (the
+strongest eval in existence) against the SAME fishtest-d26 targets our
+distillation trains on — 45,721 shared non-check positions, pairing
+validated by shifted-controls ≈ 0 (the in-check rows had been silently
+shifting all pairings; "Final evaluation: none (in check)").
+
+| eval | R² vs d26 targets | MAE |
+|---|---|---|
+| SF18 raw NNUE (plays ~3600) | **0.4789** | 150.3 |
+| our fit6 (same rows) | 0.3802 | **117.8** |
+| our linear α300 ridge (E0 holdout) | 0.5754 | 97.4 |
+
+**Reading: the best eval in the world agrees with raw depth-26 search
+scores only ~0.48 — barely different from ours. Our distillation is
+ALREADY at (or beyond, by MAE) the world's static-agreement level. R²
+against search targets is a SATURATED metric: it cannot distinguish us
+from SF, and pushing it toward 1.0 asks the eval to statically duplicate
+what the search computes dynamically — which SF's own design avoids and
+which our own 3c falsification measured as play-NEGATIVE (9× data moved
+the fit toward the true MSE optimum of this exact target and lost 23
+Elo).** Note the signature: SF18 wins squared error (150.7 RMSE vs our
+164.4) while we win absolute error (117.8 vs 150.3) — our compression
+buys small bulk errors at the cost of the heavy decisive-regime tails
+(the measured 300cp sharp-position mispricing). The play-relevant axis
+is TAIL STRUCTURE, not R². Consequences: E1 (interactions for +0.07
+R²) is DEMOTED — its gain is on a dead metric. E2 (new relational
+features) stays plausible but must be justified and gated by play
+exclusively. The 1000-Elo gap to SF lives in tail structure, search-eval
+coevolution, and feature information — none of which this metric sees.
