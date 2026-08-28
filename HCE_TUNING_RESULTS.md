@@ -610,41 +610,31 @@ features) stays plausible but must be justified and gated by play
 exclusively. The 1000-Elo gap to SF lives in tail structure, search-eval
 coevolution, and feature information — none of which this metric sees.
 
-## E0c — cross-engine static calibration (2026-08-28): the decisive-band commitment gap, quantified
+## E0c — cross-engine static calibration (2026-08-28) — CORRECTED same day: convention error in band joins
 
-Same 45,721 non-check positions, same d26 targets; static evals per
-engine (eval-command / tracer-mirror; validated by shifted-pairing
-controls ≈ 0 and per-row coherence). Slope = regression of target on
-engine score WITHIN |target| band (1.0 = full-scale commitment).
+The original E0c band analysis (864cp decisive-band MAE, slope ~0,
+"our static does not express decisive magnitude") was WRONG: the
+tracer's mirror/static field is STM-perspective, and the band joins
+never flipped it by side-to-move — every black-to-move row (half the
+corpus) was sign-inverted, destroying within-band slopes. Corrected
+band stats (statics flipped to white-POV; overall rows unaffected —
+--score/eval-command paths flip correctly internally):
 
-| eval | overall R² | <100 slope | 300-600 slope/MAE | 600+ slope/MAE |
+| eval | overall R² | <100 slope/MAE | 300-600 slope/MAE | 600+ slope/MAE |
 |---|---|---|---|---|
-| SF11 HCE (~3500) | 0.113 | 0.06 | 0.73 / 221 | **0.96 / 313** |
-| SF18 NNUE static | 0.479 | — | — | MAE ~300 |
-| our fit6 static | 0.380 | 0.003 | 0.001 / 452 | **−0.17 / 864** |
+| SF11 HCE (~3500) | 0.113 | 0.06 / 104 | 0.73 / 221 | 0.96 / 313 |
+| our fit6 static | 0.319* | 0.17 / 107 | **1.19 / 174** | **1.32 / 252** |
 
-**Findings.** (1) SF11 — the strongest HCE ever — agrees with d26 WORSE
-than we do overall (0.113 vs 0.380), yet within decisive bands it
-commits at essentially full scale (slope 0.73→0.96). Its quiet-band
-slopes are tiny BY DESIGN: static neutrality where search will resolve,
-full commitment where the eval must decide. (2) Our static is the
-opposite where it hurts: within-band slope ≈ 0.00 EVERYWHERE and MAE
-864cp in the ≥600 band — **our static does not express decisive-
-advantage magnitude at all; the 0.380 overall R² is coarse between-
-regime (material-count) discrimination only.** This is the eval-side
-signature of the loss-corpus F1 (45% of losses start from WON
-positions) and the +651 RPvR / minor-ending deficits. (3) Stash V36 has
-no eval command; the depth-1 harness alternative was abandoned after 5
-debugging rounds (persistent-process TT pollution + an unresolved
-score-reporting systematic) — no conclusions drawn from it.
-
-**Consequence for the attack plan.** The 864cp decisive-band headroom
-reorders E2: cheapest first test = **E2a, unanchored-EG-block refit**
-— same ridge pipeline, MG block anchored to fit6, EG block (and EG
-scale terms) freed to travel. Prior EG refits were all L2-anchored to
-fit6 (the postmortem's anchoring bug on exactly the axis that is 864cp
-off) and the one hand-rule scaling patch (rook one-wing) failed —
-data-directed, MG-anchored, EG-free refit has never been run. Then E2b
-(relational features: safe checks, path safety). Note the reconciliation
-duty: won-position scores that rise must not blunt conversion play
-(rook-scaling lesson) — the play gates arbitrate.
+(*overall r on this sample; the --score R²=0.38 uses the exact
+prediction path.) **Corrected findings: (1) our static DOES commit in
+decisive bands — slope 1.19-1.32, mildly OVER-committed vs SF11's
+0.73-0.96 — and its in-band MAE (252 @600+) BEATS SF11's static (313).
+(2) Our shape mirrors the strong-HCE philosophy: quiet-flat (0.17 vs
+SF11's 0.06), decisive-committed. (3) Therefore the 1000-Elo play gap
+is NOT explained by decisive-band static calibration vs d26 — the
+eval-side hunt must target the RAZOR class (75% of losses = quiet-sac
+punches; E0 oracle's interaction gain concentrates exactly there) and
+search, not EG-decisive scaling.** Depth-1 harness also abandoned (TT
+pollution + unresolved reporting; no conclusions drawn). The one real
+artifact found while chasing this: tracer mirror is stm-POV —
+documented; every future join must flip by stm.
