@@ -638,3 +638,17 @@ search, not EG-decisive scaling.** Depth-1 harness also abandoned (TT
 pollution + unresolved reporting; no conclusions drawn). The one real
 artifact found while chasing this: tracer mirror is stm-POV —
 documented; every future join must flip by stm.
+
+## Rung E2a — unanchored-EG-block refit — REJECTED (decisively negative)
+
+Built during the (mistaken) 864cp hunt: solve8.bin re-solved with MG
+anchored (λ=3e7) and the EG block freed (λ_EG sweep 3e7→1e4, rank-1
+gauge anchors kept; EG drift mean 5→77cp, gates PASS, EG-PST-std ≤
+2.79×). λ_EG=1e6 candidate read out on corrected bands: quiet MAE
+107→81 but 300-600 MAE 174→202 and 600+ 252→284 with slope rising
+further over-commitment (1.32→1.46) — bulk-MSE-better/tail-worse, the
+classic non-converting pattern. Play A/B 1500g tc=1+0.01 vs
+fit6+TT256: **495-695-310 (0.433), ≈ −47 Elo, LOS≈0 — REJECTED.**
+Seventh refit configuration, same verdict: the coefficient space
+around fit6 is play-exhausted in every anchoring geometry. Candidate
+binary deleted; coefs kept in sftest/dump for the record.
