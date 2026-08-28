@@ -1403,12 +1403,14 @@ static double reconstruct(const Tracer& t, int ph, int sf) {
 
 int main(int argc, char** argv) {
     bool verify = false, dump_coefs = false, solve = false, score = false, texel = false;
+    bool dump_rows = false;
     for (int i = 1; i < argc; ++i) {
         if (std::strcmp(argv[i], "--verify") == 0) verify = true;
         if (std::strcmp(argv[i], "--dump-coefs") == 0) dump_coefs = true;
         if (std::strcmp(argv[i], "--solve") == 0) solve = true;
         if (std::strcmp(argv[i], "--score") == 0) score = true;
         if (std::strcmp(argv[i], "--texel") == 0) texel = true;
+        if (std::strcmp(argv[i], "--dump-rows") == 0) dump_rows = true;
     }
 
     luminex::init_magic_bitboards();   // attack tables (set()/eval depend on these)
@@ -1441,6 +1443,7 @@ int main(int argc, char** argv) {
     std::string line, fen;
     long long n = 0, gated = 0, bad_fen = 0;
     long long mirror_mismatch = 0, rec_fail = 0;
+    long long dr_n = 0;
     double max_rec_diff = 0.0, sum_rec_diff = 0.0;
 
     // --score state: score fen\tstm\ttarget rows under candidate coefs (arg 1) AND the
@@ -1539,6 +1542,29 @@ int main(int argc, char** argv) {
         if (!out.linear) {
             gated++;
             if (!verify && !solve) std::printf("%d %d %d G %s\n", out.ph, out.sf, out.stm, target.c_str());
+            continue;
+        }
+
+        // --dump-rows: emit one line per position, "y ph sf idx:val ...", for
+        // offline model-class experiments (GBM oracle vs linear). y is the
+        // white-perspective target after the NNUE_TARGET_MAX clip; idx runs
+        // over the raw feature space 0..2*NPHASE-1 (MG+EG blocks, TEMPO
+        // excluded); val is the raw feature value (no ph/sf weighting).
+        if (dump_rows) {
+            double tgt = (target != "NA") ? std::strtod(target.c_str(), nullptr) : 0.0;
+            double y_white = out.stm ? tgt : -tgt;
+            if (std::fabs(y_white) > tmax) { n_tmax++; continue; }
+            std::printf("%.1f %d %d", y_white, out.ph, out.sf);
+            for (int i = 0; i < t.nt; ++i) {
+                int idx = t.touched[i];
+                if (idx >= luminex::NSOLVE) continue;   // TEMPO features
+                if (t.f[idx] == 0) continue;
+                std::printf(" %d:%d", idx, t.f[idx]);
+            }
+            std::printf("\n");
+            dr_n++;
+            if (dr_n % 1000000 == 0)
+                std::fprintf(stderr, "  ... %lldM rows dumped (%lld clipped)\n", dr_n / 1000000, n_tmax);
             continue;
         }
 
@@ -1655,6 +1681,12 @@ int main(int argc, char** argv) {
         std::fprintf(stderr, "  reconstruction   : %lld fails (>2cp), max diff %.2f, mean %.3f\n",
                      rec_fail, max_rec_diff, sum_rec_diff / std::max(1LL, n - gated));
         return (mirror_mismatch == 0 && rec_fail == 0) ? 0 : 1;
+    }
+
+    if (dump_rows) {
+        std::fprintf(stderr, "DUMP-ROWS: %lld rows written, %lld clipped >|%.0f|cp, %lld gated, %lld bad fen\n",
+                     dr_n, n_tmax, tmax, gated, bad_fen);
+        return 0;
     }
     return 0;
 }
