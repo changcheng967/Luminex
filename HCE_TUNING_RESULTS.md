@@ -691,3 +691,30 @@ acceptance of the SPRT era after ten rejections; new baseline ≈2520.**
 The interaction-feature axis is VALIDATED as adoptable — the first new
 adoptable axis since the distillation. Immediately stacked: LMP P2
 probe (changelog-mined structural aggressiveness) on the new baseline.
+
+**LMP P2 (threshold base + ¾·d²) vs razor baseline: ACCEPT H0 at
+n=5,000 (−7.5 trend at cutoff, LLR −2.94) — REJECTED, direction
+closed.** Dose-response logic: a 25% threshold cut at depth 5 lost
+decisively; the milder P1 (4% cut) cannot reach +5 from there, and
+the conservative direction costs NPS with no evidence. Our LMP is at
+its play-optimum — consistent with the earlier SPSA null on scalars;
+Stash's +24-class LMP gains were theirs, not ours (transplant base
+rate now 0/6). Changelog-mined follow-up: mobility-zone refinement
+(+19.95 theirs) — eval-side, own-value change, goes through the game
+gates directly.
+
+## Rung E3 — mobility-zone refinement (rammed/low-rank exclusion) — SPRT in flight
+
+Zone now also excludes squares covered by own RAMMED pawns (enemy
+pawn directly ahead — can never advance) and own undeveloped pawns on
+the two lowest ranks: those squares are not real maneuvering space.
+Mirrored term-identically in the tracer (verify 0/0 over 45,721).
+This is a feature-VALUE change on existing coefficients (no refit):
+500g A/B vs razor baseline: 190-184-126 (0.506), +4.2 — the same
+neutral-positive screen profile the razor family showed before its
+SPRT accept. 40K SPRT launched. If it accepts, a re-centered refit on
+the new zone definition is the natural amplifier (their +19.95 came
+tuned, not raw). Box incident note: the first A/B launch after the
+12h restart silently ran razor-vs-razor (venv cmake missing, pipeline
+exit masked the failed build) — killed, cmake reinstalled, md5
+verified before relaunch; add pip-cmake to the restart checklist.
