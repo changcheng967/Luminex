@@ -682,3 +682,12 @@ fit6+TT256:
 pending.** Coverage limitation noted: the ±500 early-exit skips the KS
 section, so the features do not fire on already-decisive positions;
 the family prices the pre-decisive razor band only.
+
+**VERDICT: ACCEPT H1 at n=27,500 (10,501-10,149-6,850, 0.506, +5.1,
+LLR +3.00) — ADOPTED (94896af).** Trajectory: +28.8 (n=250) → 0.000
+(n=6.25K) → +3.4 (n=18.25K) → accept — the middle-run dip was noise,
+the effect held. **First eval-side adoption since fit6; first
+acceptance of the SPRT era after ten rejections; new baseline ≈2520.**
+The interaction-feature axis is VALIDATED as adoptable — the first new
+adoptable axis since the distillation. Immediately stacked: LMP P2
+probe (changelog-mined structural aggressiveness) on the new baseline.
