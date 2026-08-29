@@ -652,3 +652,33 @@ fit6+TT256: **495-695-310 (0.433), ≈ −47 Elo, LOS≈0 — REJECTED.**
 Seventh refit configuration, same verdict: the coefficient space
 around fit6 is play-exhausted in every anchoring geometry. Candidate
 binary deleted; coefs kept in sftest/dump for the record.
+
+## Rung E2b — razor-class interaction features (HANGAU/THRAU/MATAU) — SPRT in flight
+
+First INTERACTION family (products, not new predicates): the E0 oracle
+measured interactions buying −13% MAE exactly in the |y|>300 bands, and
+the linear basis cannot express products. Three features (NPHASE
+629→632, zero-init committed 00758f2, --verify 0/0), emitted in the KS
+block (attacker≥2, au≤48), mirrored term-for-term in the tracer:
+
+- RAZOR_HANGAU = enemy-hanging-count × min(au,48)/16
+- RAZOR_THRAU = enemy-pieces-attacked × min(au,48)/16
+- RAZOR_MATAU = clamp(matmargin,±400)/100 × min(au,48)/16
+
+Fresh 22.14M-row solve (run_v9.bin, c0 remapped 1258→1264, anchors
+remapped, gen_fitted patched for 632). Fitted at λ=3e7: MATAU MG
+−10.07 (CHESS-COHERENT: under attack by a side that SACRIFICED →
+~60cp extra danger at AU40/300cp-sac — the initiative is real;
+attacked by the material-ahead side → less incremental danger, base
+already prices material). HANGAU −3.68 (rung-8-style activity confound
+sign). THRAU ≈ 0. λ=1e7 dose ≈ 1.5× magnitudes.
+
+Isolation A/Bs (c0 + ONLY the 6 new values), 500g tc=1+0.01 vs
+fit6+TT256:
+- λ=3e7: 195-197-108 (0.498), −1.4 — dead neutral.
+- λ=1e7: 196-184-120 (0.512), +8.4 ± ~28 — maybe.
+
+**40K SPRT (elo0=0, elo1=5) on the λ=1e7 dose launched — verdict
+pending.** Coverage limitation noted: the ±500 early-exit skips the KS
+section, so the features do not fire on already-decisive positions;
+the family prices the pre-decisive razor band only.
