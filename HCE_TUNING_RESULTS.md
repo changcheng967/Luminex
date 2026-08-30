@@ -725,6 +725,39 @@ LLR −2.96) — REJECTED, reverted both ends.** The +36.8 opening and
 base rate 0/7. The raw zone change carries no play value here; the
 Stash +19.95 was in THEIR feature geometry, tuned.
 
+## Rung E5 — one-queen KS trigger — neutral; box rebuild; bullet-ladder recalibration
+
+**Volume-swap incident (2026-08-30):** the 12h reprovision attached a
+WRONG volume (foreign data in /hyperai/home; all box artifacts gone:
+Luminex tree, binaries, fens22m.txt, dumps, cutechess, sprt.py).
+Nothing irreplaceable lost — every adopted state lives in git. Box
+rebuilt from scratch: clean clone (main = razor baseline), cutechess
+1.5.1 built from source (needed qt6-svg-dev + fresh apt index), sprt.py
+restored from nnue/openi_upload, openings book rebuilt by concatenating
+the 23K corpus games (ECO-diverse).
+
+**QKS (lone-queen king-safety trigger): 183-185-132 (0.498) — dead
+neutral, rejected.** Implementation lesson (the second of its kind):
+the first version was DEAD CODE — `enemy_qu` is consumed by the
+pop_lsb loop before the gate; compiler DCE'd it; binaries were
+byte-identical and only a 45K-position eval-diff (645 changed) proved
+the fixed version alive. **Mirror-verify alone cannot detect
+behavior-null changes — always eval-diff against base before any
+match.**
+
+**Bullet-ladder recalibration (major measurement correction):** on the
+rebuilt fast setup (500 bullet games ≈ 70s at 7-way), luminex-razor:
+vs Stash V20: 191-185-124 (0.506, 500g); vs Stash V21: 765-779-456
+(0.496, 2000g, ±14) — **bullet-parity with V21** whose LTC ladder is
+2714. V20 and V21 both read "even" → the +205 V20→V21 LTC gap largely
+does not exist at 1+0.01 (eval-knowledge gains need depth). The
+standing convention (bullet-parity ⇒ ladder-Elo ≈ opponent's) gives
+"≈2714" but that is a CONVENTION, not a measurement: our true
+blitz/LTC Elo remains unmeasured; an honest ladder claim needs an LTC
+match. Note also: matches on this hardware/book draw at 23-24%
+(vs 8.6% on the old book) — book sensitivity is real; all future
+ladder numbers quote the book.
+
 ## Rung E4 — post-adoption re-centered refit + MATAU dose — both negative, family calibrated closed
 
 Re-centered solve (run_v9.bin, c0 = adopted razor coefs, λ=3e7,
