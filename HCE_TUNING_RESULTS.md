@@ -799,6 +799,18 @@ gates at bullet select NPS-favoring changes. All SPRT-era adoptions
 LTC-confirmed before being treated as ladder progress. V21 LTC leg
 re-running (binary was on the wrong instance).
 
+**V21 LTC verdict: 58-216-26 (0.237) ≈ −181 Elo (n=300).** LTC ladder
+under the (sharp, low-draw ~10%) old book: V20 −88, V21 −181 —
+LTC-equivalent ≈2420 by the local V20 anchor. Cross-check tension:
+through us, V21−V20 ≈ 112 vs the ladder's 205 (inside combined noise
+at n=300 each, sharp-book caveat). The knowledge-vs-speed split still
+needs the per-FEN fixed-node duel (both engines driven by `go nodes`
+— cutechess's NodesPerMove option was the failure, NOT go-nodes which
+every UCI engine honors; referee methodology from the gap analysis
+applies). NOTE: fixed-node via cutechess option is INVALID for
+Stash (no such option advertised — it played 60s/move in that
+configuration; that match was killed, its 0-4 partial discarded).
+
 ## Rung E4 — post-adoption re-centered refit + MATAU dose — both negative, family calibrated closed
 
 Re-centered solve (run_v9.bin, c0 = adopted razor coefs, λ=3e7,
