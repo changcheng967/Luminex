@@ -767,6 +767,20 @@ decisive positions; 516-position eval-diff = provably alive): 373-374-
 253 (0.499) — neutral, rejected; the razor family's ±500 coverage
 limitation costs nothing. Transplant base rate 0/8.
 
+**Pins-in-mobility (ray-accurate: pinned pieces count only king-sniper-
+line squares; 608-position eval-diff, mirror 0/0): 368-398-234 (0.485)
+at 1000g — REJECTED.** Chess-correct, but the per-side pin scan's NPS
+cost outweighs the precision at bullet. Note: the first A/B of this
+probe was INVALID (stale binary — the build failed with venv-cmake
+missing and the pipeline masked it AGAIN); hard gate added: matches
+only launch when candidate/base md5s DIFFER. Base rate 0/9.
+
+**Box incident closure (2026-08-30):** the "volume wipe" was a
+mis-routed port — port 30616 was someone else's instance (foreign
+project data); the real box (new port) has the original volume intact
+(adopted binary, fens22m, run_v9.bin, all tooling). All my artifacts
+removed from the foreign instance; their data untouched.
+
 ## Rung E4 — post-adoption re-centered refit + MATAU dose — both negative, family calibrated closed
 
 Re-centered solve (run_v9.bin, c0 = adopted razor coefs, λ=3e7,
