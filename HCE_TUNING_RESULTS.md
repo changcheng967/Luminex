@@ -724,3 +724,16 @@ LLR −2.96) — REJECTED, reverted both ends.** The +36.8 opening and
 +4.2 screen dissolved to exact zero over the full run. Transplant
 base rate 0/7. The raw zone change carries no play value here; the
 Stash +19.95 was in THEIR feature geometry, tuned.
+
+## Rung E4 — post-adoption re-centered refit + MATAU dose — both negative, family calibrated closed
+
+Re-centered solve (run_v9.bin, c0 = adopted razor coefs, λ=3e7,
+gates pass, drift mean 5.02): the fit wants MORE MATAU (−15.47 →
+−20.81) with the usual global wobble. **Whole-refit A/B: 176-208-116
+(0.468), −22.2 — rejected at screen, era-2 law holds on the new
+baseline too.** Targeted follow-up: MATAU-only at the refit value
+(−20.8, all else adopted): **186-201-113 (0.485), −9.8 — the adopted
+−15.5 dose is the play-optimum; escalation loses.** The razor family
+is now fully calibrated: values adopted, dose confirmed, direction
+closed. Ledger state: 1 adoption (+5.1 razor), 3 rejections this
+batch (LMP P2 H0@5K, mobzone H0@31K, re-center −22.2@500g).
