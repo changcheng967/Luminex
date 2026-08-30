@@ -781,6 +781,24 @@ project data); the real box (new port) has the original volume intact
 (adopted binary, fens22m, run_v9.bin, all tooling). All my artifacts
 removed from the foreign instance; their data untouched.
 
+## Rung E6 — THE LTC INVERSION (2026-08-30): bullet parity is a bullet number
+
+The autonomous LTC ladder (tc=10+0.1, 300g, old book): **V20 beats us
+97-172-31 (0.375) ≈ −88 Elo.** The bullet parity (0.504-0.509 at
+1+0.01, three eras) INVERTS at LTC. Every ladder estimate in this
+ledger ("≈2512", "bullet-parity with V21") is a bullet-convention
+number; on the LTC clock we sit ≈ V20 −88 (ladder-equivalent ≈2420).
+Mechanism question (fixed-node 100K/move match vs V20 in flight):
+if we also lose at equal nodes → knowledge/search-quality gap (eval
+rungs, and our bullet-tuned search constants may be mis-tuned for
+LTC); if even at equal nodes → the deficit is depth-per-second (NPS)
+and time-allocation, i.e. speed rungs. STRATEGIC COROLLARY: the 3300
+target must name its clock — CCRL-style blitz/LTC is the standard;
+gates at bullet select NPS-favoring changes. All SPRT-era adoptions
+(razor +5.1, TT256 +16.7) are bullet-verified; they should be
+LTC-confirmed before being treated as ladder progress. V21 LTC leg
+re-running (binary was on the wrong instance).
+
 ## Rung E4 — post-adoption re-centered refit + MATAU dose — both negative, family calibrated closed
 
 Re-centered solve (run_v9.bin, c0 = adopted razor coefs, λ=3e7,
