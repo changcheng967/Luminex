@@ -718,3 +718,9 @@ tuned, not raw). Box incident note: the first A/B launch after the
 12h restart silently ran razor-vs-razor (venv cmake missing, pipeline
 exit masked the failed build) — killed, cmake reinstalled, md5
 verified before relaunch; add pip-cmake to the restart checklist.
+
+**VERDICT: ACCEPT H0 at n=31,250 (11,710-11,692-7,848, 0.500, +0.2,
+LLR −2.96) — REJECTED, reverted both ends.** The +36.8 opening and
++4.2 screen dissolved to exact zero over the full run. Transplant
+base rate 0/7. The raw zone change carries no play value here; the
+Stash +19.95 was in THEIR feature geometry, tuned.
