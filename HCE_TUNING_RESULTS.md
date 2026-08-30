@@ -758,6 +758,15 @@ match. Note also: matches on this hardware/book draw at 23-24%
 (vs 8.6% on the old book) — book sensitivity is real; all future
 ladder numbers quote the book.
 
+**Fast-harness era + two more probes (same day):** the rebuilt setup
+runs 500 bullet games in ~70s (vs ~8 min before) — screens are now
+1000g, SPRTs ~90 min at conc 7. Aspiration-disable at |score|>2000
+(Stash V30 idea): 379-378-243 (0.500) at 1000g — neutral, rejected.
+Early-exit threshold 500→650 (extends KS/razor coverage into more
+decisive positions; 516-position eval-diff = provably alive): 373-374-
+253 (0.499) — neutral, rejected; the razor family's ±500 coverage
+limitation costs nothing. Transplant base rate 0/8.
+
 ## Rung E4 — post-adoption re-centered refit + MATAU dose — both negative, family calibrated closed
 
 Re-centered solve (run_v9.bin, c0 = adopted razor coefs, λ=3e7,
