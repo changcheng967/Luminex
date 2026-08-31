@@ -873,3 +873,29 @@ interleaved measurement and tree-identity proofs (fixed-depth node
 counts — now a standard gate; it caught every divergence perft
 missed). Speed rung suspended pending a methodology that fits the
 hardware's variance floor.
+
+## Rung E8 — the verified gap decomposition (2026-08-31): where the ~800 lives
+
+E1 time-handicap ladder (Stash V20 fixed at 10+0.1, us at 10/15/20s,
+300g LTC each): **0.642 / 0.560 / 0.505 — Stash's 10 seconds equals
+our 20.** Linear in log-time (+53, +50 per ×1.5). E2 equal-nodes duel
+(800 positions, both engines exactly 300K nodes, SF18-d24 referee):
+truth-agreement **lux 39.5% vs stash 41.7%**, head-to-head 45.3%.
+
+**Decomposition of the −98 LTC vs V20 (both methods agree):**
+- SPEED FAMILY ≈ 53 Elo: raw NPS 1.47x deficit (~30) PLUS
+  nodes-to-depth efficiency 1.36x (~23) — their tree extracts more
+  depth per node (selectivity/pruning/ordering), on top of raw speed.
+  (Time-equivalence 2.0x ÷ NPS ratio 1.47x = 1.36x per-node
+  efficiency gap.)
+- KNOWLEDGE/eval-at-depth ≈ 45 Elo: the E1 residual at speed parity
+  matches the E2 referee gap (2.2pp bestmove agreement ≈ 33-45 Elo).
+- Scaling to V21 (−181): ≈ 100 speed-family + ≈ 80 knowledge.
+
+**Closure priorities by measured size: (1) NPS grind (~30) — many
+small verified wins, needs interleaved measurement; (2) per-node
+selectivity (~23) — LMR/ordering quality at deep plies, the LTC
+counterpart of our bullet-tuned constants; (3) knowledge (~45 vs V20)
+— razor-style interaction rungs at ~+5 each, or a bigger eval
+structure. Rough full-gap projection to 3300: ~350-400 speed-family,
+~350-400 knowledge, remainder beyond-V21 extrapolation.**
