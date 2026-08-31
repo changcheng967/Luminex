@@ -376,9 +376,6 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
         end = generate<GEN_CAPTURE>(pos, moves);  // Only captures when not in check
     }
 
-    // Pin-mask legality input (qsearch is not in check here)
-    Bitboard qs_blockers = in_check ? Bitboard(0) : pos.blockers_for_king(pos.side_to_move());
-
     int moves_searched = 0;
 
     // Score captures in qsearch by MVV-LVA for better ordering
@@ -415,7 +412,7 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
 
         if (in_check) {
             // For evasions, legal() check already done by GEN_LEGAL
-        } else if (!pos.legal_quick(it->move, qs_blockers)) {
+        } else if (!pos.legal(it->move, true)) {
             continue;
         }
 

@@ -274,19 +274,12 @@ ExtMove* generate(const Position& pos, ExtMove* moveList) {
             end = generate_moves<GEN_NON_EVASION>(pos, moveList);
         }
 
-        // Filter for legal moves. Not in check: pin-mask fast path — only
-        // king moves, en passant, and pieces on a king-slider line need the
-        // exact test (blockers is the same conservative set legal()'s own
-        // fast path uses). In check: full legality on every evasion.
+        // Filter for legal moves (evasion moves should already be legal, but verify anyway)
         ExtMove* legal_end = start;
-        if (pos.is_check()) {
-            for (ExtMove* it = start; it != end; ++it) {
-                if (pos.legal(it->move)) *(legal_end++) = *it;
-            }
-        } else {
-            Bitboard blockers = pos.blockers_for_king(pos.side_to_move());
-            for (ExtMove* it = start; it != end; ++it) {
-                if (pos.legal_quick(it->move, blockers)) *(legal_end++) = *it;
+        for (ExtMove* it = start; it != end; ++it) {
+            bool is_legal = pos.legal(it->move);
+            if (is_legal) {
+                *(legal_end++) = *it;
             }
         }
         return legal_end;
