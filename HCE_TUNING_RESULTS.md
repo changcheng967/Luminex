@@ -823,3 +823,33 @@ baseline too.** Targeted follow-up: MATAU-only at the refit value
 is now fully calibrated: values adopted, dose confirmed, direction
 closed. Ledger state: 1 adoption (+5.1 razor), 3 rejections this
 batch (LMP P2 H0@5K, mobzone H0@31K, re-center −22.2@500g).
+
+## Rung E7 — the NPS gap, measured and mapped (2026-08-31): the LTC deficit is 32-35% engine speed
+
+Depth bench (10s/move, 10 positions, same box): **luminex 2.18M NPS
+vs stash-v20 3.18M / v21 3.37M** — we are 32-35% slower; per-position
+depths lag 0-5 plies (worst: rook endings, quiet openings). At bullet
+the stronger-per-node eval compensates; at LTC the depth deficit
+compounds — this IS the −88/−181 inversion. Speed math: +1.5x NPS ≈
++40-60 Elo at LTC; closing to 3.2M+ is the single biggest measured
+lever on the board.
+
+Profile map (callgrind breaks on this engine; gprof at -O2 has
+LTO-mushy attribution — and profiling builds MUST pass -DNDEBUG or
+asserts dominate and lie: a 30% fake assert cost burned an hour).
+True release spread: generate<LEGAL> + legal() + attackers_to + see
+≈ 14-18% (pseudo-legal generation + pin-mask legality would cut most
+of it); **set_check_info runs PER MOVE, not per node** (12.9M calls
+≈ 8% — pinned/checkers need computing once per node, ~10x fewer);
+122 g_stats counter sites ≈ 2-4%; evaluate 7.4% self at 27% of nodes
+(fine); do/undo ≈ 5% (fine). No single smoking gun — the gap is many
+structural overheads. The NNUE-accumulator-destructor 22% reading was
+an LTO attribution ghost; all NNUE guards verified correct in code.
+
+**Attack plan (NPS rung): N1 = set_check_info per-node (+~8%
+target), N2 = pseudo-legal staged movegen + pin-mask legality
+(+10-15%), N3 = stats-counter gating (+2-4%). Each gated by: bench
+NPS delta + depth-bench + 1000g bullet A/B + 300g LTC confirm.
+Validated en route: our `go nodes` works (fixed-node duel methodology
+available for knowledge-vs-speed splits); valgrind/callgrind fail on
+this engine — use gprof -DNDEBUG or differential builds.**
