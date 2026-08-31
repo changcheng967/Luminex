@@ -18,6 +18,8 @@ struct StateInfo {
     Bitboard checkers = 0;
     Bitboard pinned = 0;
     Bitboard block_checkers = 0;
+    bool pins_valid = true;       // Lazy pin info: set by full set_check_info,
+                                  // invalidated by do_move's cheap checkers-only update
     Square ep_square = SQUARE_NONE;
     int castling_rights = 0;
     int ply = 0;
@@ -79,7 +81,9 @@ public:
     Color color_of_piece(Piece p) const;
     Color side_to_move() const;
 
-    Bitboard checkers() const;
+    bool legal_quick(Move m, Bitboard blockers) const;  // pin-mask fast legality (stm not in check)
+
+        Bitboard checkers() const;
     Bitboard pinned() const;
     Bitboard blockers_for_king(Color c) const;
 
@@ -130,7 +134,10 @@ private:
     void move_piece(Square from, Square to);
 
     void set_castling_right(Color c, Square rfrom);
+
     void set_check_info(StateInfo* st);
+    void set_checkers(StateInfo* st);        // cheap half only; invalidates pin info
+    void refresh_pins() const;               // lazy: recompute pinned/blockers on first use
     bool validate_move(Move m, Square from, Square to, Piece moved_pc, PieceType captured) const;
 
     bool see_gen(Bitboard stmAttackers, Bitboard occupied) const;
@@ -177,8 +184,8 @@ inline Color Position::color_of_piece(Piece p) const { return p == NO_PIECE ? NO
 inline Color Position::side_to_move() const { return side_to_move_; }
 
 inline Bitboard Position::checkers() const { return st_->checkers; }
-inline Bitboard Position::pinned() const { return st_->pinned; }
-inline Bitboard Position::blockers_for_king(Color) const { return st_->block_checkers; }
+inline Bitboard Position::pinned() const { refresh_pins(); return st_->pinned; }
+inline Bitboard Position::blockers_for_king(Color) const { refresh_pins(); return st_->block_checkers; }
 
 inline Square Position::ep_square() const { return st_->ep_square; }
 inline Square Position::king_sq(Color c) const { return king_square[c]; }

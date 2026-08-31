@@ -495,6 +495,7 @@ void Position::set_check_info(StateInfo* si) {
 
     Square ksq = king_square[side_to_move_];
     si->block_checkers = slider_blockers(pieces(Color(side_to_move_ ^ 1)), si->pinned);
+    si->pins_valid = true;
 
     // Pawn checks
     Bitboard pawns = pieces(Color(side_to_move_ ^ 1), PAWN);
@@ -526,6 +527,50 @@ void Position::set_check_info(StateInfo* si) {
     }
 
     // King checks (adjacent kings not possible in legal chess)
+}
+
+// Cheap half of set_check_info: direct checker detection only. Pin/blocker
+// info is left stale (pins_valid=false) and recomputed lazily on first
+// pinned()/blockers_for_king() access — do_move runs this per move, while
+// pin info is typically consumed once per node.
+void Position::set_checkers(StateInfo* si) {
+    si->checkers = 0;
+    si->pins_valid = false;
+
+    Square ksq = king_square[side_to_move_];
+    Color them = Color(side_to_move_ ^ 1);
+
+    Bitboard pawns = pieces(them, PAWN);
+    if (pawns) si->checkers |= pawn_attacks_bb(side_to_move_, ksq) & pawns;
+
+    Bitboard knights = pieces(them, KNIGHT);
+    if (knights) si->checkers |= knight_attacks_bb(ksq) & knights;
+
+    Bitboard bishop_queens = pieces(them, BISHOP, QUEEN);
+    if (bishop_queens) si->checkers |= bishop_attacks_bb(ksq, pieces()) & bishop_queens;
+
+    Bitboard rook_queens = pieces(them, ROOK, QUEEN);
+    if (rook_queens) si->checkers |= rook_attacks_bb(ksq, pieces()) & rook_queens;
+}
+
+// Pin-mask fast legality for a pseudo-legally generated move while the
+// side to move is NOT in check: pieces not on a king-slider line are legal
+// as generated; king moves, possible pins, and en passant fall back to the
+// exact legal() (blockers = blockers_for_king(us), king-relative like
+// legal()'s own fast path uses).
+bool Position::legal_quick(Move m, Bitboard blockers) const {
+    Square from = m.from();
+    if (from == king_square[side_to_move_]) return legal(m, true);
+    if (m.is_en_passant()) return legal(m, true);
+    if (blockers & square_bb(from)) return legal(m, true);
+    return true;
+}
+
+void Position::refresh_pins() const {
+    if (st_->pins_valid) return;
+    st_->pinned = 0;
+    st_->block_checkers = slider_blockers(pieces(Color(side_to_move_ ^ 1)), st_->pinned);
+    st_->pins_valid = true;
 }
 
 bool Position::do_move(Move m) {
@@ -804,8 +849,8 @@ bool Position::do_move(Move m) {
     }
 #endif
 
-    // Update check info
-    set_check_info(st_);
+    // Update check info (cheap half; pins go lazy)
+    set_checkers(st_);
 
     // NNUE: apply the move's feature deltas to the child accumulator. Board is now
     // mutated; `pc` is the pre-move piece, st_->captured_piece the victim (if any).
@@ -986,6 +1031,7 @@ void Position::do_null_move() {
     next_st.checkers = st_->checkers;
     next_st.pinned = st_->pinned;
     next_st.block_checkers = st_->block_checkers;
+    next_st.pins_valid = st_->pins_valid;
     next_st.ep_square = st_->ep_square;
     next_st.castling_rights = st_->castling_rights;
     next_st.ply = st_->ply;
@@ -1256,6 +1302,7 @@ bool Position::legal(Move m, bool skip_pseudo) const {
     // Fast path: if not in check and piece is not on a pin ray, move is always legal
     // st_->block_checkers holds pieces that are pinned (between king and enemy sniper)
     // When in check, all moves must be validated — only block/capture/king evade
+    refresh_pins();
     if (!st_->checkers && !(st_->block_checkers & square_bb(from))) {
         // Not pinned and not in check — only EP can create a discovered check
         // by removing the captured pawn from a rank pin (horizontal pin through EP capture)
