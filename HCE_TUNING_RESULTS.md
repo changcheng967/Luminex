@@ -853,3 +853,23 @@ NPS delta + depth-bench + 1000g bullet A/B + 300g LTC confirm.
 Validated en route: our `go nodes` works (fixed-node duel methodology
 available for knowledge-vs-speed splits); valgrind/callgrind fail on
 this engine — use gprof -DNDEBUG or differential builds.**
+
+## Rung E7 outcome — N1/N2 speed complex REVERTED; measurement-precision lesson
+
+The NPS attack's first two candidates failed verification and are
+reverted (9933905): (1) lazy pins (+3.1% in one session) screened
++11.2 at 1000g but read −6.7 at SPRT n=6,000 — the null-pins "fix"
+costs more than the speed buys; (2) the preserved-semantics variant
+and pin-mask-legality-alone BOTH still produce depth-16 trees that
+differ from baseline (unexplained; perft blind to it) — disqualified
+under the verification discipline regardless of measured speed.
+**Critical methodology discovery: the box is a noisy-neighbor VM —
+the SAME baseline binary measured 1.66M/1.69M/2.18M/2.23M NPS across
+sessions (±30%). Small NPS deltas are UNMEASURABLE on this hardware
+without interleaved A/B/A discipline; only the original interleaved
+depth-bench (us 2.18M vs Stash 3.18-3.37M, one session) stands.**
+The 32-35% speed gap vs Stash is real but must be attacked with
+interleaved measurement and tree-identity proofs (fixed-depth node
+counts — now a standard gate; it caught every divergence perft
+missed). Speed rung suspended pending a methodology that fits the
+hardware's variance floor.
