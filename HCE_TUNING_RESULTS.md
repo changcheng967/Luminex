@@ -926,3 +926,28 @@ Attack order: (1) eval cost on dense positions (attack tables per
 call), (2) per-move legality/check-info, (3) stats counters, (4)
 movegen staging. Each verified by: identical depth-16 node counts +
 interleaved midgame NPS gain.**
+
+## Rung E9 — eval cost measured: 60 percent of node time (2026-09-01)
+
+Differential build (evaluate() replaced by popcount-material blend,
+everything else untouched), interleaved A/B/A/B middlegame NPS:
+**baseline 1.68M vs eval-free 4.15M = the eval costs 60% of node
+time.** Eval-free we would be FASTER than Stash's 3.28M — the search
+machinery is fine; evaluate() at ~480ns/call (0.74 calls/node) is
+2x Stash's ENTIRE node budget. Eval-cache hit rates: main 18%,
+qsearch 3% (6.1M full evals per 10.4M nodes — the full-position
+cache cannot see qsearch capture chains; pawn hash already exists and
+works). gprof/LTO attributions proven FICTIONAL on this codebase
+(Book 5.5M calls impossible, vector 34% = merged symbols) —
+differential builds are the only trusted instrument; the D1 harness
+(/tmp/lxd1 pattern) is the template.
+
+**Eval-cost campaign (each step output-identical + tree-identity
+gated, cumulative target 2-3x cheaper eval = 2.4-3.3M NPS = the full
+speed half of the gap): (a) king-safety second pass reuses
+attacks_by instead of recomputing per-piece attacks; (b) threat
+loops: piece_type_on loads per target replaced by extract-from-
+bitboard iteration; (c) eval cache 64K -> 1M (main-path locality);
+(d) misc: shared subexpression hoisting, branchless term selects.
+No knowledge risk; the 5M-node referee duel already proved output
+quality is at parity — speed here converts 1:1 into LTC Elo.**
