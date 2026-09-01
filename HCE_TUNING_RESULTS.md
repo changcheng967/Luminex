@@ -951,3 +951,16 @@ bitboard iteration; (c) eval cache 64K -> 1M (main-path locality);
 (d) misc: shared subexpression hoisting, branchless term selects.
 No knowledge risk; the 5M-node referee duel already proved output
 quality is at parity — speed here converts 1:1 into LTC Elo.**
+
+**Campaign step (a) TESTED: atk_of[64] attack reuse in KS — NEGATIVE
+(−1.6% interleaved), reverted.** Falsification: the KS second pass is
+already gated by the enemy-pieces-near pre-check (most sides never
+reach the recompute), while the per-piece atk_of stores taxed every
+eval call. The eval's 480ns lives in the ALWAYS-ON body (per-piece
+PST/mobility/threat work, the threat section's pin-scan with its
+slider-ray loop, threat-target piece_type_on loads), not in the
+conditional sections. Campaign discipline holding: each hypothesis
+dies or lives by interleaved differential in ~30 min, no games spent.
+Next steps: (b) threat-section pin-scan hoisting/cheapening, (c) eval
+cache 64K→1M, (d) threat-target iteration via bitboard extract
+instead of per-square piece_type_on loads.
