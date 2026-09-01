@@ -899,3 +899,30 @@ counterpart of our bullet-tuned constants; (3) knowledge (~45 vs V20)
 — razor-style interaction rungs at ~+5 each, or a bigger eval
 structure. Rough full-gap projection to 3300: ~350-400 speed-family,
 ~350-400 knowledge, remainder beyond-V21 extrapolation.**
+
+## Rung E8b — FINAL decomposition: the entire LTC gap is middlegame NPS
+
+Follow-ups that closed the system: (1) nodes-to-depth curves are
+EQUAL (lux/stash 0.74-1.05x; we are 2x LEANER to depth 14) — the
+per-node selectivity hypothesis is DEAD; (2) referee duel at 5M nodes:
+truth-agreement 43.8% vs 43.8% — the knowledge gap measured at 300K
+(2.2pp) vanishes at real depth: ZERO knowledge deficit at equal
+nodes; (3) interleaved NPS by regime: MIDDLEGAME 1.62M vs 3.28M
+(ratio 0.49) but endgame 2.64M vs 3.44M (0.77).
+
+**The middlegame NPS ratio (0.49) exactly equals E1's time
+equivalence (their 10s = our 20s). All measurements now cohere:
+THE ENTIRE −98 LTC GAP vs V20 IS MIDDLEGAME PER-NODE COST.**
+Knowledge: zero (measured). Selectivity: zero (measured). Endgame
+speed: near-parity. Our per-node overhead explodes with board density
+— the profile's generate/legality/attackers/check-info/stats bundle
+(~30%+) plus eval-path cost on dense positions vs Stash's leaner
+scaling.
+
+**The road to closing the hundreds: 2x middlegame NPS = ~+98 Elo at
+LTC, pure engineering with provable tree identity (no knowledge risk,
+no SPRT needed — node-identity + interleaved midgame-NPS gates).
+Attack order: (1) eval cost on dense positions (attack tables per
+call), (2) per-move legality/check-info, (3) stats counters, (4)
+movegen staging. Each verified by: identical depth-16 node counts +
+interleaved midgame NPS gain.**
