@@ -964,3 +964,26 @@ dies or lives by interleaved differential in ~30 min, no games spent.
 Next steps: (b) threat-section pin-scan hoisting/cheapening, (c) eval
 cache 64K→1M, (d) threat-target iteration via bitboard extract
 instead of per-square piece_type_on loads.
+
+## bf16 forensic verdict (2026-09-12, C500/metax torch 2.10): autocast SAFE, pure-bf16 state is the v6 killer
+
+Controlled 3-arm experiment (identical seed/init/data/clip; NNUE-shaped
+EmbeddingBag→L1→out learning a fixed teacher, 400 steps): **autocast
+bf16 (fp32 weights + fp32 Adam) = bit-identical training to fp32**
+(best loss 0.2467 vs 0.2466, same grad norms); **pure bf16 (weights +
+optimizer state in bf16) plateaus at 3.15x worse** (0.778) — small
+Adam updates round to zero in 8-bit mantissa. This IS the v6
+"instability": trainer code that cast the model to bf16. **Training
+recipe fixed forever: autocast bf16 compute + fp32 master weights +
+fp32 Adam + grad-clip + wd=1e-4 + ft_mode='gather' verified.** Script
+(bf16_forensic.py) ran end-to-end on both C500/CUDA and Lightning/CPU
+after verification discipline caught 3 bugs (2D-idx bag call, layer
+width mismatch, offsets rebase) — ship-only-verified is now standing
+policy.
+
+**Data build status (Lightning 4-core):** encoder built and validated
+on real fishtest data (9995 games → 1.36M pos, bad_san=0); 14,054
+source files listed. Compression matrix interrupted mid-run (zstd-19:
+1.148 B/pos measured; xz-9e + pb=0/lc=0 variants + 64-file-batch
+context test pending) — target: beat the old 1.03 B/pos (18.5B pos in
+20GB) before committing the pack format. All-new data (old box dead).
