@@ -67,6 +67,16 @@ total_bytes = sum(os.path.getsize(f) for f in FRAMES)
 print(f"per-frame train (OOM-safe): {len(FRAMES)} frames, {total_bytes/1e9:.2f}GB, L1={L1} bs={BS} cap={CAP:,} feat_threads={NTH} grad-clip={_gc} device={device}", flush=True)
 
 model = LNNUE(L1=L1).to(device)
+# Multi-block resume: upload the previous block's luminex_v8.pt next to the code;
+# weights + global step are restored (optimizer state rebuilds in ~1K steps).
+_resume = os.environ.get("NNUE_RESUME") or os.path.join(os.path.dirname(__file__) or ".", OUT_BASE + ".pt")
+if os.path.exists(_resume) and os.environ.get("NNUE_RESUME", "1") != "0":
+    try:
+        _ck = torch.load(_resume, map_location=device, weights_only=False)
+        model.load_state_dict(_ck["model"]); gstep = _ck.get("gstep", 0)
+        print(f"[RESUME] loaded {_resume} at gstep={gstep}", flush=True)
+    except Exception as _e:
+        print(f"[RESUME] FAILED ({_e}) - training from scratch", flush=True)
 model.probe_ft(device)   # EmbeddingBag FT
 print(f"  [LNNUE] ft_mode={model.ft_mode} (compile OFF)", flush=True)
 # Phase 0 root-cause L2 fix: decay ONLY the tail (where L2/SCReLU feedback grows weights),
@@ -90,7 +100,7 @@ def _budget_hit(gstep, total_pos):
     upload_output(); print(f"DONE (budget) - {OUT}: {gstep} steps, {total_pos:,} pos", flush=True)
     sys.exit(0)
 
-gstep = 0; t0 = time.time(); total_pos = 0
+gstep = globals().get('gstep', 0); t0 = time.time(); total_pos = 0   # keeps resumed gstep
 for epoch in range(EPOCHS):
     for fi, frame_path in enumerate(FRAMES):
         if BUDGET and time.time() - t0 >= BUDGET:
@@ -178,6 +188,7 @@ for epoch in range(EPOCHS):
             print(f"  [HEALTH f{fi+1}] unavailable ({_e})", flush=True)
         print(f"  [frame {fi+1} done: cum {total_pos:,} ({total_pos/1e9:.2f}B), {time.time()-t0:.0f}s]", flush=True)
         save_nnue(model, os.path.join(out_dir, OUT))   # incremental save after each frame
+        torch.save({"model": model.state_dict(), "gstep": gstep}, os.path.join(out_dir, OUT_BASE + ".pt"))
     else:
         continue
     break
