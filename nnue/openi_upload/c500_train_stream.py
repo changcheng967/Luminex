@@ -161,6 +161,21 @@ for epoch in range(EPOCHS):
             del w, b, s, t, perm; torch.cuda.empty_cache()
         try: p.stdout.close(); p.wait()
         except Exception: pass
+        # v8 health line: catches failure-archive signatures that loss alone missed
+        # (v7-run4 weight-growth saturation, eval-scale compression, stall).
+        try:
+            import random as _rnd
+            _m = min(200000, int(w.shape[0]) if w.shape[0] else 0)
+            with torch.no_grad():
+                _pv = model(w[:_m].long(), b[:_m].long(), s[:_m]).float()
+                _tv = t[:_m].float()
+                _mae = (_pv - _tv).abs().mean().item()
+                _ps, _ts = _pv.std().item(), _tv.std().item()
+                _wn = " ".join(f"{_nm}={float(getattr(model, _nm).weight.detach().norm().item()):.0f}"
+                               for _nm in ("ft", "emb", "l1", "l2", "out") if hasattr(model, _nm))
+            print(f"  [HEALTH f{fi+1}] MAE={_mae:.1f}cp predSTD={_ps:.0f} tgtSTD={_ts:.0f} | {_wn}", flush=True)
+        except Exception as _e:
+            print(f"  [HEALTH f{fi+1}] unavailable ({_e})", flush=True)
         print(f"  [frame {fi+1} done: cum {total_pos:,} ({total_pos/1e9:.2f}B), {time.time()-t0:.0f}s]", flush=True)
         save_nnue(model, os.path.join(out_dir, OUT))   # incremental save after each frame
     else:
