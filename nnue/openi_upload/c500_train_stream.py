@@ -72,7 +72,7 @@ _CONV_PATIENCE = int(os.environ.get("NNUE_CONV_PATIENCE", "1200"))  # steps with
 _CONV_MIN_EPOCHS = int(os.environ.get("NNUE_CONV_MIN_EPOCHS", "1")) # minimum passes before early-stop is armed
 # Single-pass mode: disable convergence detector entirely — it keeps killing
 # training prematurely because per-part loss varies (harder positions = higher loss)
-if _CONV_TARGET_PASSES <= 1:
+if float(os.environ.get("NNUE_CONV_PASSES", "6")) <= 1:
     _CONV_PATIENCE = 999999999  # effectively disabled
 _CONV_TARGET_PASSES = float(os.environ.get("NNUE_CONV_PASSES", "6")) # expected passes for subset sizing
 _CAL_STEPS = 60   # calibration steps to measure throughput
