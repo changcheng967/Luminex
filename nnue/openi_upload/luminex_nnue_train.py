@@ -78,6 +78,12 @@ def active_features(board):
 # ============================================================================
 class LNNUE(nn.Module):
     def __init__(self, L1=256, L2=16, L3=32, ft_mode='embbag'):
+        # L2 is now configurable via env: NNUE_L2=64 gives 4x wider hidden layer
+        # (v8's L2=16 was the information bottleneck — 1024-dim FT compressed
+        # to 16 dims before any interaction could be modeled)
+        import os as _os
+        L2 = int(_os.environ.get("NNUE_L2", str(L2)))
+        L3 = int(_os.environ.get("NNUE_L3", str(L3)))
         super().__init__()
         # FT mode: 'embbag' = fused EmbeddingBag (FAST on CUDA, ~28x over gather; == gather
         # numerically — verified +74.7 startpos both — and == engine). 'gather' = nn.Linear
@@ -98,6 +104,24 @@ class LNNUE(nn.Module):
         nn.init.normal_(self.ft.weight, mean=0.0, std=0.2)
         if ft_mode != 'gather':
             self.ft.weight.data[NUM_INPUTS].zero_()    # padding row (idx NUM_INPUTS) stays zero
+
+    def probe_ft(self, device):
+        """v7-postmortem guard (embbag/gather drift): the active FT path must equal a
+        manual per-bag sum of the same embedding rows. Any drift here poisoned a full
+        training era (v7 garbage); fail loudly instead."""
+        import torch as _t
+        _t.manual_seed(0)
+        N, F = 4096, 24
+        idx = _t.randint(0, self.ft.weight.shape[0], (N * F,), device=device)
+        offs = _t.arange(0, N * F, F, device=device)
+        with _t.no_grad():
+            got = self.ft(idx, offs)
+            ref = _t.zeros(N, self.ft.weight.shape[1], device=device)
+            bag = _t.repeat_interleave(_t.arange(N, device=device), F)
+            ref.index_add_(0, bag, self.ft.weight[idx])
+        d = (got - ref).abs().max().item()
+        assert d < 1e-4, f"FT PROBE FAILED: bag-sum drift {d}"
+        print(f"  [probe_ft] OK (max|bag-sum - manual|={d:.2e}, mode={self.ft_mode})", flush=True)
 
     def forward(self, w_idx, b_idx, stm):  # idx: (B, MAX=32) padded with NUM_INPUTS; stm: (B,)
         if self.ft_mode == 'gather':
