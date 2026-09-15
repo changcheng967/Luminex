@@ -166,6 +166,7 @@ def _budget_hit(gstep, total_pos):
 gstep = globals().get('gstep', 0); t0 = time.time(); total_pos = 0   # keeps resumed gstep
 for epoch in range(EPOCHS):
     for fi, frame_path in enumerate(FRAMES):
+        _stale_steps = 0   # reset per frame: old frames must not trigger convergence exit before new frames are seen
         if BUDGET and time.time() - t0 >= BUDGET:
             save_nnue(model, os.path.join(out_dir, OUT)); break
         # FEATURIZE CACHE: first epoch featurizes and caches to /tmp; later
