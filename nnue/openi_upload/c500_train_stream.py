@@ -151,7 +151,7 @@ EPOCHS = max(_CONV_MIN_EPOCHS, int(_total_visits / max(1, est_pos)))
 T_MAX = min(_total_steps, EPOCHS * est_pos // BS)  # cap so LR completes
 sched = torch.optim.lr_scheduler.CosineAnnealingLR(opt, T_max=max(1, T_MAX))
 print(f"  [auto-conv] subset={len(FRAMES)} frames (~{est_pos/1e9:.1f}B pos) | epochs={EPOCHS} | "
-      f"T_max={T_max} steps | est total visits={EPOCHS*est_pos/1e9:.1f}B | budget {_avail_sec}s @ {_sps:.1f} st/s", flush=True)
+      f"T_max={T_MAX} steps | est total visits={EPOCHS*est_pos/1e9:.1f}B | budget {_avail_sec}s @ {_sps:.1f} st/s", flush=True)
 
 # convergence state
 _best_loss = float("inf"); _stale_steps = 0
