@@ -12,8 +12,15 @@ import os, sys, subprocess, time, glob
 os.environ.setdefault("PYTORCH_DEFAULT_NCHW", "1")
 os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")   # anti-fragmentation
 import numpy as np, torch
-from c2net.context import prepare, upload_output
-ctx = prepare(); out_dir = ctx.output_path
+try:
+    from c2net.context import prepare, upload_output
+    ctx = prepare(); out_dir = ctx.output_path
+except Exception:   # non-OpenI environment (smoke test / local box)
+    import tempfile
+    class _Ctx: output_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "out")
+    ctx = _Ctx(); out_dir = ctx.output_path
+    os.makedirs(out_dir, exist_ok=True)
+    upload_output = lambda *a, **k: None
 
 SEARCH_ROOTS = ["/tmp/code", "/tmp/dataset", "/tmp/frames", "/tmp"]
 def _walk():
@@ -51,7 +58,6 @@ assert os.path.exists(FEAT), f"featurizer missing: {FEAT}"
 from luminex_nnue_train import LNNUE, save_nnue
 
 L1   = int(os.environ.get("NNUE_L1", "512"))
-EPOCHS = int(os.environ.get("NNUE_EPOCHS", "1"))
 BS   = int(os.environ.get("NNUE_BS", "131072"))
 LR   = float(os.environ.get("NNUE_LR", "1e-3"))
 NTH  = int(os.environ.get("NNUE_FEAT_THREADS", "14"))
@@ -60,6 +66,12 @@ BUF  = int(os.environ.get("NNUE_BUF", "2000000"))
 CAP  = int(os.environ.get("NNUE_VRAM_POS", "180000000"))   # max pos per VRAM load (big frames split)
 _gc = float(os.environ.get("NNUE_GRAD_CLIP", "1.0"))   # v6 fix (prevents gradient spikes)
 _wc = float(os.environ.get("NNUE_WCLAMP", "0"))          # OFF (fallback only; root cause = tail wd + amsgrad)
+# Auto-convergence: pick the largest data subset that converges (loss plateaus +
+# cosine LR reaches zero) inside the time budget. No manual epoch count needed.
+_CONV_PATIENCE = int(os.environ.get("NNUE_CONV_PATIENCE", "2000"))  # steps without improvement to declare convergence
+_CONV_MIN_EPOCHS = int(os.environ.get("NNUE_CONV_MIN_EPOCHS", "3")) # minimum passes before early-stop is armed
+_CONV_TARGET_PASSES = float(os.environ.get("NNUE_CONV_PASSES", "6")) # expected passes for subset sizing
+_CAL_STEPS = 60   # calibration steps to measure throughput
 REC  = 136; SCALE = 400.0
 device = "cuda" if torch.cuda.is_available() else "cpu"
 OUT = os.environ.get("NNUE_OUT_NAME", "luminex_v6.nnue"); OUT_BASE = OUT[:-5] if OUT.endswith(".nnue") else OUT
@@ -90,9 +102,59 @@ opt = torch.optim.AdamW([
     {"params": _tail_params, "weight_decay": _tail_wd},  # tail decay (fixes L2 SCReLU feedback)
 ], lr=LR, amsgrad=True)
 print(f"  [opt] FT params={sum(p.numel() for p in _ft_params):,} (wd=0) | tail params={sum(p.numel() for p in _tail_params):,} (wd={_tail_wd}) | amsgrad=True", flush=True)
-est_pos = int(total_bytes / 1.05)
-sched = torch.optim.lr_scheduler.CosineAnnealingLR(opt, T_max=max(1, EPOCHS * est_pos // BS))
-print(f"  cosine T_max={max(1, EPOCHS * est_pos // BS)} steps", flush=True)
+
+# ---- AUTO-CONVERGENCE SIZING ------------------------------------------------
+# Calibrate throughput, then pick the largest data subset that can be trained
+# to convergence (loss plateaus + cosine LR reaches zero) inside the budget.
+_OVERHEAD_SEC = 300   # startup, model init, first featurize warm-up
+_SPS_FALLBACK = 4.0   # conservative steps/sec if calibration unavailable (resume blocks skip calib)
+
+_sps = _SPS_FALLBACK
+if gstep == 0:  # fresh run: calibrate with a tiny forward+backward
+    import time as _t
+    _cal_t0 = _t.time()
+    _dummy_w = torch.randint(0, 24576, (BS, 32), device=device, dtype=torch.long)
+    _dummy_b = torch.randint(0, 24576, (BS, 32), device=device, dtype=torch.long)
+    _dummy_s = torch.ones(BS, device=device)
+    _dummy_t = torch.zeros(BS, device=device)
+    for _ in range(_CAL_STEPS):
+        opt.zero_grad()
+        with torch.autocast(device_type=device, dtype=torch.bfloat16):
+            _p = model(_dummy_w, _dummy_b, _dummy_s)
+            _l = ((_p - _dummy_t).abs().mean())
+        _l.backward()
+        torch.nn.utils.clip_grad_norm_(model.parameters(), _gc)
+        opt.step()
+    _sps = _CAL_STEPS / (_t.time() - _cal_t0)
+    print(f"  [calibrate] {_sps:.1f} steps/s (BS={BS})", flush=True)
+    model = LNNUE(L1=L1).to(device)  # reset — calibration dirtied the weights
+    # re-init optimizer (fresh model params)
+    opt = torch.optim.AdamW([
+        {"params": [p for p in model.parameters() if p.numel() > 100000], "weight_decay": 0.0},
+        {"params": [p for p in model.parameters() if p.numel() <= 100000], "weight_decay": _tail_wd},
+    ], lr=LR, amsgrad=True)
+
+_avail_sec = max(600, BUDGET - _OVERHEAD_SEC)
+_total_steps = int(_avail_sec * _sps)
+_total_visits = _total_steps * BS
+_subset_pos = int(_total_visits / _CONV_TARGET_PASSES)
+# select frames until subset is filled
+_subset_frames = []; _subset_bytes = 0
+for f in FRAMES:
+    fb = os.path.getsize(f)
+    if _subset_bytes + fb / 1.05 > _subset_pos:
+        break
+    _subset_frames.append(f); _subset_bytes += int(fb / 1.05)
+FRAMES = _subset_frames if _subset_frames else FRAMES[:1]  # at least 1 frame
+est_pos = sum(os.path.getsize(f) for f in FRAMES) // 1.05
+EPOCHS = max(_CONV_MIN_EPOCHS, int(_total_visits / max(1, est_pos)))
+T_MAX = min(_total_steps, EPOCHS * est_pos // BS)  # cap so LR completes
+sched = torch.optim.lr_scheduler.CosineAnnealingLR(opt, T_max=max(1, T_MAX))
+print(f"  [auto-conv] subset={len(FRAMES)} frames (~{est_pos/1e9:.1f}B pos) | epochs={EPOCHS} | "
+      f"T_max={T_max} steps | est total visits={EPOCHS*est_pos/1e9:.1f}B | budget {_avail_sec}s @ {_sps:.1f} st/s", flush=True)
+
+# convergence state
+_best_loss = float("inf"); _stale_steps = 0
 
 def _budget_hit(gstep, total_pos):
     print(f">>> BUDGET hit at step {gstep} - saving & stopping", flush=True)
@@ -109,6 +171,7 @@ for epoch in range(EPOCHS):
         cmd = f"{dec} {frame_path} | {FEAT} --stream --input /dev/stdin --threads {NTH}"
         p = subprocess.Popen(["bash", "-c", cmd], stdout=subprocess.PIPE, bufsize=0)
         part = 0
+        _health = None   # set by the parts loop; stays None if the frame yields nothing
         while True:   # process frame in <=CAP-position VRAM loads (big frames -> multiple parts)
             ws, bs, ss, ts = [], [], [], []
             got = 0
@@ -157,35 +220,66 @@ for epoch in range(EPOCHS):
                         for p in model.parameters():
                             p.clamp_(-_wc, _wc)
                 sched.step(); gstep += 1
+                # convergence tracking: best loss + stale counter
+                _cur = loss.item()
+                if _cur < _best_loss - 1e-6:
+                    _best_loss = _cur; _stale_steps = 0
+                else:
+                    _stale_steps += 1
                 if gstep % 50 == 0:
                     try: _l2 = f" L2|max|={float(model.l2.weight.detach().abs().max().item()):.2f}"
                     except Exception: _l2 = ""
+                    _conv = f" conv_stale={_stale_steps}" if _stale_steps > _CONV_PATIENCE // 4 else ""
                     dt = time.time() - t0
-                    print(f"  e{epoch} f{fi+1}p{part} step {gstep} loss={loss.item():.5f}{_l2} | {total_pos/1e6:.0f}M+{i/1e6:.0f}M | {gstep/max(dt,1):.1f} steps/s", flush=True)
+                    print(f"  e{epoch} f{fi+1}p{part} step {gstep} loss={_cur:.5f}{_l2}{_conv} | {total_pos/1e6:.0f}M+{i/1e6:.0f}M | {gstep/max(dt,1):.1f} steps/s", flush=True)
+                # AUTO-CONVERGENCE early stop: after minimum passes, if loss has been flat
+                # for _CONV_PATIENCE steps, the model has converged — save and exit
+                if (epoch >= _CONV_MIN_EPOCHS - 1 and _stale_steps >= _CONV_PATIENCE
+                        and gstep >= T_MAX * 0.8):
+                    del w, b, s, t, perm; torch.cuda.empty_cache()
+                    try: p.stdout.close(); p.terminate()
+                    except Exception: pass
+                    print(f">>> CONVERGED at step {gstep} (loss flat {_CONV_PATIENCE} steps, "
+                          f"best={_best_loss:.5f}) — saving & stopping", flush=True)
+                    save_nnue(model, os.path.join(out_dir, OUT))
+                    torch.save({"model": model.state_dict(), "gstep": gstep},
+                               os.path.join(out_dir, OUT_BASE + ".pt"))
+                    upload_output()
+                    print(f"DONE (converged) - {OUT}: {gstep} steps, {total_pos:,} pos", flush=True)
+                    sys.exit(0)
                 if BUDGET and time.time() - t0 >= BUDGET:
                     del w, b, s, t, perm; torch.cuda.empty_cache()
                     try: p.stdout.close(); p.terminate()
                     except Exception: pass
                     _budget_hit(gstep, total_pos)
             total_pos += N
+            # v8 health line: computed BEFORE the tensors are freed below.
+            # Catches failure-archive signatures loss alone missed (v7-run4
+            # weight-growth saturation, eval-scale compression, silent stall).
+            _health = None
+            try:
+                _m = min(200000, int(w.shape[0]))
+                if _m > 0:
+                    with torch.no_grad():
+                        _pv = model(w[:_m].long(), b[:_m].long(), s[:_m]).float()
+                        _tv = t[:_m].float()
+                        _mae = (_pv - _tv).abs().mean().item()
+                        _ps, _ts = _pv.std().item(), _tv.std().item()
+                        _wn = " ".join(f"{_nm}={float(getattr(model, _nm).weight.detach().norm().item()):.0f}"
+                                       for _nm in ("ft", "emb", "l1", "l2", "out") if hasattr(model, _nm))
+                    _health = f"MAE={_mae:.1f}cp predSTD={_ps:.0f} tgtSTD={_ts:.0f} | {_wn}"
+            except Exception as _e:
+                _health = f"unavailable ({_e})"
             del w, b, s, t, perm; torch.cuda.empty_cache()
         try: p.stdout.close(); p.wait()
         except Exception: pass
-        # v8 health line: catches failure-archive signatures that loss alone missed
-        # (v7-run4 weight-growth saturation, eval-scale compression, stall).
-        try:
-            import random as _rnd
-            _m = min(200000, int(w.shape[0]) if w.shape[0] else 0)
-            with torch.no_grad():
-                _pv = model(w[:_m].long(), b[:_m].long(), s[:_m]).float()
-                _tv = t[:_m].float()
-                _mae = (_pv - _tv).abs().mean().item()
-                _ps, _ts = _pv.std().item(), _tv.std().item()
-                _wn = " ".join(f"{_nm}={float(getattr(model, _nm).weight.detach().norm().item()):.0f}"
-                               for _nm in ("ft", "emb", "l1", "l2", "out") if hasattr(model, _nm))
-            print(f"  [HEALTH f{fi+1}] MAE={_mae:.1f}cp predSTD={_ps:.0f} tgtSTD={_ts:.0f} | {_wn}", flush=True)
-        except Exception as _e:
-            print(f"  [HEALTH f{fi+1}] unavailable ({_e})", flush=True)
+        if _health:
+            print(f"  [HEALTH f{fi+1}] {_health}", flush=True)
+        else:
+            # A frame that yields ZERO positions means the featurizer crashed
+            # (e.g. binary/glibc mismatch) — an empty epoch must never "succeed".
+            raise SystemExit(f"FATAL: frame {fi+1} produced 0 positions — featurizer "
+                             f"broken? Check GLIBC/exec-bit on {FEAT}.")
         print(f"  [frame {fi+1} done: cum {total_pos:,} ({total_pos/1e9:.2f}B), {time.time()-t0:.0f}s]", flush=True)
         save_nnue(model, os.path.join(out_dir, OUT))   # incremental save after each frame
         torch.save({"model": model.state_dict(), "gstep": gstep}, os.path.join(out_dir, OUT_BASE + ".pt"))
