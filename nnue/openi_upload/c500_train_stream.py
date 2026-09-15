@@ -83,10 +83,13 @@ model = LNNUE(L1=L1).to(device)
 # Multi-block resume: upload the previous block's luminex_v8.pt next to the code;
 # weights + global step are restored (optimizer state rebuilds in ~1K steps).
 _resume = os.environ.get("NNUE_RESUME") or os.path.join(os.path.dirname(__file__) or ".", OUT_BASE + ".pt")
+_opt_state = None  # deferred: optimizer doesn't exist yet at resume time
 if os.path.exists(_resume) and os.environ.get("NNUE_RESUME", "1") != "0":
     try:
         _ck = torch.load(_resume, map_location=device, weights_only=False)
         model.load_state_dict(_ck["model"]); gstep = _ck.get("gstep", 0)
+        _opt_state = _ck.get("opt")  # Adam/AdamW moments — the key to cross-block continuity
+        if _opt_state: print(f"[RESUME] + optimizer state ({len(_opt_state['state'])} params) — no warm-up loss", flush=True)
         print(f"[RESUME] loaded {_resume} at gstep={gstep}", flush=True)
     except Exception as _e:
         print(f"[RESUME] FAILED ({_e}) - training from scratch", flush=True)
@@ -102,6 +105,12 @@ opt = torch.optim.AdamW([
     {"params": _ft_params,  "weight_decay": 0.0},        # NO decay on FT (rare-bucket protection)
     {"params": _tail_params, "weight_decay": _tail_wd},  # tail decay (fixes L2 SCReLU feedback)
 ], lr=LR, amsgrad=True)
+if _opt_state:
+    try:
+        opt.load_state_dict(_opt_state)
+        print("  [opt] AdamW moments restored — zero warm-up penalty", flush=True)
+    except Exception as _e:
+        print(f"  [opt] state restore FAILED ({_e}) — rebuilding (1K-step warm-up)", flush=True)
 print(f"  [opt] FT params={sum(p.numel() for p in _ft_params):,} (wd=0) | tail params={sum(p.numel() for p in _tail_params):,} (wd={_tail_wd}) | amsgrad=True", flush=True)
 
 # ---- AUTO-CONVERGENCE SIZING ------------------------------------------------
@@ -259,7 +268,7 @@ for epoch in range(EPOCHS):
                     print(f">>> CONVERGED at step {gstep} (loss flat {_CONV_PATIENCE} steps, "
                           f"best={_best_loss:.5f}) — saving & stopping", flush=True)
                     save_nnue(model, os.path.join(out_dir, OUT))
-                    torch.save({"model": model.state_dict(), "gstep": gstep},
+                    torch.save({"model": model.state_dict(), "gstep": gstep, "opt": opt.state_dict()},
                                os.path.join(out_dir, OUT_BASE + ".pt"))
                     upload_output()
                     print(f"DONE (converged) - {OUT}: {gstep} steps, {total_pos:,} pos", flush=True)
@@ -299,7 +308,7 @@ for epoch in range(EPOCHS):
                              f"broken? Check GLIBC/exec-bit on {FEAT}.")
         print(f"  [frame {fi+1} done: cum {total_pos:,} ({total_pos/1e9:.2f}B), {time.time()-t0:.0f}s]", flush=True)
         save_nnue(model, os.path.join(out_dir, OUT))   # incremental save after each frame
-        torch.save({"model": model.state_dict(), "gstep": gstep}, os.path.join(out_dir, OUT_BASE + ".pt"))
+        torch.save({"model": model.state_dict(), "gstep": gstep, "opt": opt.state_dict()}, os.path.join(out_dir, OUT_BASE + ".pt"))
     else:
         continue
     break
