@@ -69,7 +69,7 @@ _wc = float(os.environ.get("NNUE_WCLAMP", "0"))          # OFF (fallback only; r
 # Auto-convergence: pick the largest data subset that converges (loss plateaus +
 # cosine LR reaches zero) inside the time budget. No manual epoch count needed.
 _CONV_PATIENCE = int(os.environ.get("NNUE_CONV_PATIENCE", "1200"))  # steps without improvement to declare convergence
-_CONV_MIN_EPOCHS = int(os.environ.get("NNUE_CONV_MIN_EPOCHS", "2")) # minimum passes before early-stop is armed
+_CONV_MIN_EPOCHS = int(os.environ.get("NNUE_CONV_MIN_EPOCHS", "1")) # minimum passes before early-stop is armed
 _CONV_TARGET_PASSES = float(os.environ.get("NNUE_CONV_PASSES", "6")) # expected passes for subset sizing
 _CAL_STEPS = 60   # calibration steps to measure throughput
 _FEAT_CACHE = os.environ.get("NNUE_FEAT_CACHE", "1") != "0"  # cache featurized frames across epochs
