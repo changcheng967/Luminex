@@ -8,7 +8,7 @@ RUN (no args):
   NNUE_L1=512 NNUE_EPOCHS=1 NNUE_BS=131072 NNUE_LR=1e-3 NNUE_FEAT_THREADS=14 NNUE_GRAD_CLIP=1.0
   NNUE_VRAM_POS=180000000   # max positions per VRAM load (big frames split into parts)
 """
-import os, sys, subprocess, time, glob
+import os, sys, subprocess, time, glob, copy
 os.environ.setdefault("PYTORCH_DEFAULT_NCHW", "1")
 os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")   # anti-fragmentation
 import numpy as np, torch
@@ -161,8 +161,28 @@ if _FRAMES_SKIP > 0:
     FRAMES = FRAMES[_FRAMES_SKIP:] if _FRAMES_SKIP < len(FRAMES) else FRAMES[-1:]
 est_pos = sum(os.path.getsize(f) for f in FRAMES) // 1.05
 EPOCHS = max(_CONV_MIN_EPOCHS, int(_total_visits / max(1, est_pos)))
-T_MAX = min(_total_steps, EPOCHS * est_pos // BS)  # cap so LR completes
-sched = torch.optim.lr_scheduler.CosineAnnealingLR(opt, T_max=max(1, T_MAX))
+T_MAX = min(_total_steps, EPOCHS * est_pos // BS)
+# LR schedule: exponential decay (gamma=0.992/epoch, SF's proven schedule)
+# NOT cosine — cosine anneals to zero too fast; exponential preserves signal longer
+_LR_GAMMA = float(os.environ.get("NNUE_LR_GAMMA", "0.992"))
+sched = torch.optim.lr_scheduler.ExponentialLR(opt, gamma=_LR_GAMMA)
+print(f"  [sched] exponential gamma={_LR_GAMMA} (initial lr={LR})", flush=True)
+
+# SWA: average weights from the last 25% of training (free quality boost)
+_SWA_START = int(os.environ.get("NNUE_SWA_START", "0"))  # 0=disabled; set to epoch number to enable
+_swa_model = None; _swa_n = 0
+if _SWA_START > 0:
+    _swa_model = copy.deepcopy(model)
+    for p in _swa_model.parameters(): p.data.zero_()
+    print(f"  [swa] enabled from epoch {_SWA_START}", flush=True)
+
+def _swa_update():
+    global _swa_n
+    if _swa_model is None: return
+    _swa_n += 1
+    with torch.no_grad():
+        for swa_p, model_p in zip(_swa_model.parameters(), model.parameters()):
+            swa_p.data += (model_p.data - swa_p.data) / _swa_n
 print(f"  [auto-conv] subset={len(FRAMES)} frames (~{est_pos/1e9:.1f}B pos) | epochs={EPOCHS} | "
       f"T_max={T_MAX} steps | est total visits={EPOCHS*est_pos/1e9:.1f}B | budget {_avail_sec}s @ {_sps:.1f} st/s", flush=True)
 
@@ -227,9 +247,18 @@ for epoch in range(EPOCHS):
             N = got
             print(f"  [frame {fi+1} part {part}: {N:,} pos -> train]", flush=True)
             perm = torch.randperm(N, device=device)
+            _POWER = float(os.environ.get("NNUE_LOSS_POWER", "2.6"))  # 0 = old sigmoid-MSE
+            _FEN_SKIP = float(os.environ.get("NNUE_FEN_SKIP", "0.3"))  # skip prob for noisy positions
             for i in range(0, N, BS):
                 idx = perm[i:i + BS]
                 wi = w[idx].long(); bi = b[idx].long(); si = s[idx]; ti = t[idx]
+                # Smart FEN skip: drop positions where |target| is extreme (>800cp)
+                # — these are usually won/lost positions where eval adds noise
+                if _FEN_SKIP > 0:
+                    _keep = ti.abs() < 800.0
+                    if _keep.sum() < BS // 4: continue  # skip batch if too few survive
+                    wi = wi[_keep]; bi = bi[_keep]; si = si[_keep]; ti = ti[_keep]
+                    if len(ti) < BS // 8: continue
                 opt.zero_grad()
                 if os.environ.get("NNUE_AUTOCAST", "1") != "0":
                     ctx_ac = torch.autocast(device_type=device, dtype=torch.bfloat16)
@@ -237,7 +266,13 @@ for epoch in range(EPOCHS):
                     ctx_ac = torch.autocast(device_type=device, enabled=False)   # fp32 (no bf16 drift)
                 with ctx_ac:
                     pred = model(wi, bi, si)
-                    loss = ((torch.sigmoid(pred / SCALE) - torch.sigmoid(ti / SCALE)) ** 2).mean()
+                    if _POWER > 0:
+                        # Power-2.6 loss: emphasizes large errors without cubic instability
+                        # (SF's proven exponent — sigmoid-MSE compresses sharp positions)
+                        _diff = (pred - ti).abs()
+                        loss = (_diff ** _POWER).mean()
+                    else:
+                        loss = ((torch.sigmoid(pred / SCALE) - torch.sigmoid(ti / SCALE)) ** 2).mean()
                 loss.backward()
                 if _gc > 0:
                     torch.nn.utils.clip_grad_norm_(model.parameters(), _gc)   # v6 fix
@@ -247,6 +282,8 @@ for epoch in range(EPOCHS):
                         for p in model.parameters():
                             p.clamp_(-_wc, _wc)
                 sched.step(); gstep += 1
+                if _swa_model is not None and epoch >= _SWA_START:
+                    _swa_update()
                 # convergence tracking: best loss + stale counter
                 _cur = loss.item()
                 if _cur < _best_loss - 1e-6:
@@ -312,6 +349,11 @@ for epoch in range(EPOCHS):
     else:
         continue
     break
+
+# SWA swap: if SWA was active, use the averaged weights for the final save
+if _swa_model is not None and _swa_n > 0:
+    print(f"  [swa] swapping in averaged weights ({_swa_n} updates)", flush=True)
+    model.load_state_dict(_swa_model.state_dict())
 
 save_nnue(model, os.path.join(out_dir, OUT))
 print(f"DONE - {OUT}: {gstep} steps, {total_pos:,} pos in {time.time()-t0:.0f}s. uploading...", flush=True)
