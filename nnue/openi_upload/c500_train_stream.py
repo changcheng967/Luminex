@@ -68,10 +68,11 @@ _gc = float(os.environ.get("NNUE_GRAD_CLIP", "1.0"))   # v6 fix (prevents gradie
 _wc = float(os.environ.get("NNUE_WCLAMP", "0"))          # OFF (fallback only; root cause = tail wd + amsgrad)
 # Auto-convergence: pick the largest data subset that converges (loss plateaus +
 # cosine LR reaches zero) inside the time budget. No manual epoch count needed.
-_CONV_PATIENCE = int(os.environ.get("NNUE_CONV_PATIENCE", "2000"))  # steps without improvement to declare convergence
-_CONV_MIN_EPOCHS = int(os.environ.get("NNUE_CONV_MIN_EPOCHS", "3")) # minimum passes before early-stop is armed
+_CONV_PATIENCE = int(os.environ.get("NNUE_CONV_PATIENCE", "1200"))  # steps without improvement to declare convergence
+_CONV_MIN_EPOCHS = int(os.environ.get("NNUE_CONV_MIN_EPOCHS", "2")) # minimum passes before early-stop is armed
 _CONV_TARGET_PASSES = float(os.environ.get("NNUE_CONV_PASSES", "6")) # expected passes for subset sizing
 _CAL_STEPS = 60   # calibration steps to measure throughput
+_FEAT_CACHE = os.environ.get("NNUE_FEAT_CACHE", "1") != "0"  # cache featurized frames across epochs
 REC  = 136; SCALE = 400.0
 device = "cuda" if torch.cuda.is_available() else "cpu"
 OUT = os.environ.get("NNUE_OUT_NAME", "luminex_v6.nnue"); OUT_BASE = OUT[:-5] if OUT.endswith(".nnue") else OUT
@@ -167,9 +168,20 @@ for epoch in range(EPOCHS):
     for fi, frame_path in enumerate(FRAMES):
         if BUDGET and time.time() - t0 >= BUDGET:
             save_nnue(model, os.path.join(out_dir, OUT)); break
-        dec = "zstd -dc" if frame_path.endswith(".zst") else "xz -dc"
-        cmd = f"{dec} {frame_path} | {FEAT} --stream --input /dev/stdin --threads {NTH}"
-        p = subprocess.Popen(["bash", "-c", cmd], stdout=subprocess.PIPE, bufsize=0)
+        # FEATURIZE CACHE: first epoch featurizes and caches to /tmp; later
+        # epochs read the cache (saves ~70s/frame — 25%+ of multi-epoch budget).
+        _fc = f"/tmp/featcache_{os.path.basename(frame_path)}.raw"
+        if _FEAT_CACHE and epoch == 0:
+            dec = "zstd -dc" if frame_path.endswith(".zst") else "xz -dc"
+            cmd = f"{dec} {frame_path} | {FEAT} --stream --input /dev/stdin --threads {NTH} | tee {_fc}"
+            p = subprocess.Popen(["bash", "-c", cmd], stdout=subprocess.PIPE, bufsize=0)
+        elif _FEAT_CACHE and os.path.exists(_fc) and os.path.getsize(_fc) > REC * 1000:
+            print(f"  [cache] reading {os.path.basename(_fc)} ({os.path.getsize(_fc)/1e6:.0f}MB)", flush=True)
+            p = subprocess.Popen(["cat", _fc], stdout=subprocess.PIPE, bufsize=0)
+        else:
+            dec = "zstd -dc" if frame_path.endswith(".zst") else "xz -dc"
+            cmd = f"{dec} {frame_path} | {FEAT} --stream --input /dev/stdin --threads {NTH}"
+            p = subprocess.Popen(["bash", "-c", cmd], stdout=subprocess.PIPE, bufsize=0)
         part = 0
         _health = None   # set by the parts loop; stays None if the frame yields nothing
         while True:   # process frame in <=CAP-position VRAM loads (big frames -> multiple parts)
@@ -234,8 +246,7 @@ for epoch in range(EPOCHS):
                     print(f"  e{epoch} f{fi+1}p{part} step {gstep} loss={_cur:.5f}{_l2}{_conv} | {total_pos/1e6:.0f}M+{i/1e6:.0f}M | {gstep/max(dt,1):.1f} steps/s", flush=True)
                 # AUTO-CONVERGENCE early stop: after minimum passes, if loss has been flat
                 # for _CONV_PATIENCE steps, the model has converged — save and exit
-                if (epoch >= _CONV_MIN_EPOCHS - 1 and _stale_steps >= _CONV_PATIENCE
-                        and gstep >= T_MAX * 0.8):
+                if (epoch >= _CONV_MIN_EPOCHS - 1 and _stale_steps >= _CONV_PATIENCE):
                     del w, b, s, t, perm; torch.cuda.empty_cache()
                     try: p.stdout.close(); p.terminate()
                     except Exception: pass
