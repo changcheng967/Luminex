@@ -155,10 +155,18 @@ for f in FRAMES:
     if _subset_bytes + fb / 1.05 > _subset_pos:
         break
     _subset_frames.append(f); _subset_bytes += int(fb / 1.05)
+# FRAME SKIP must be applied BEFORE subset selection, not after
 _FRAMES_SKIP = int(os.environ.get("NNUE_FRAME_SKIP", "0"))  # skip first N frames (fresh-data mode)
+if _FRAMES_SKIP > 0 and _FRAMES_SKIP < len(FRAMES):
+    FRAMES = FRAMES[_FRAMES_SKIP:]
+    # re-run subset selection on the remaining (fresh) frames
+    _subset_frames = []; _subset_bytes = 0
+    for f in FRAMES:
+        fb = os.path.getsize(f)
+        if _subset_bytes + fb / 1.05 > _subset_pos:
+            break
+        _subset_frames.append(f); _subset_bytes += int(fb / 1.05)
 FRAMES = _subset_frames if _subset_frames else FRAMES[:1]  # at least 1 frame
-if _FRAMES_SKIP > 0:
-    FRAMES = FRAMES[_FRAMES_SKIP:] if _FRAMES_SKIP < len(FRAMES) else FRAMES[-1:]
 est_pos = sum(os.path.getsize(f) for f in FRAMES) // 1.05
 EPOCHS = max(_CONV_MIN_EPOCHS, int(_total_visits / max(1, est_pos)))
 T_MAX = min(_total_steps, EPOCHS * est_pos // BS)
