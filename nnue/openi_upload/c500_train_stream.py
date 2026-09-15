@@ -70,6 +70,10 @@ _wc = float(os.environ.get("NNUE_WCLAMP", "0"))          # OFF (fallback only; r
 # cosine LR reaches zero) inside the time budget. No manual epoch count needed.
 _CONV_PATIENCE = int(os.environ.get("NNUE_CONV_PATIENCE", "1200"))  # steps without improvement to declare convergence
 _CONV_MIN_EPOCHS = int(os.environ.get("NNUE_CONV_MIN_EPOCHS", "1")) # minimum passes before early-stop is armed
+# Single-pass mode: disable convergence detector entirely — it keeps killing
+# training prematurely because per-part loss varies (harder positions = higher loss)
+if _CONV_TARGET_PASSES <= 1:
+    _CONV_PATIENCE = 999999999  # effectively disabled
 _CONV_TARGET_PASSES = float(os.environ.get("NNUE_CONV_PASSES", "6")) # expected passes for subset sizing
 _CAL_STEPS = 60   # calibration steps to measure throughput
 _FEAT_CACHE = os.environ.get("NNUE_FEAT_CACHE", "1") != "0"  # cache featurized frames across epochs
@@ -275,10 +279,13 @@ for epoch in range(EPOCHS):
                 with ctx_ac:
                     pred = model(wi, bi, si)
                     if _POWER > 0:
-                        # Power-2.6 loss: emphasizes large errors without cubic instability
-                        # (SF's proven exponent — sigmoid-MSE compresses sharp positions)
-                        _diff = (pred - ti).abs()
-                        loss = (_diff ** _POWER).mean()
+                        # Power-2.6 loss in SIGMOID space (SF's proven formula):
+                        # diff = |σ(pred/SCALE) - σ(target/SCALE)|, loss = diff^2.6
+                        # NOT raw cp space — raw cp gradients are ~6500x larger and
+                        # get annihilated by gradient clipping (the bug that caused
+                        # loss to flatline at ~230K with zero effective learning)
+                        _sdiff = (torch.sigmoid(pred / SCALE) - torch.sigmoid(ti / SCALE)).abs()
+                        loss = (_sdiff ** _POWER).mean()
                     else:
                         loss = ((torch.sigmoid(pred / SCALE) - torch.sigmoid(ti / SCALE)) ** 2).mean()
                 loss.backward()
