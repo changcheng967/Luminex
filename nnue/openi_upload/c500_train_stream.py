@@ -55,7 +55,7 @@ CODE_DIR = os.environ.get("CODE_DIR") or (os.path.dirname(train_mod) if train_mo
 sys.path.insert(0, CODE_DIR)
 FEAT = os.environ.get("FEAT") or _find_file("luminex-featurize") or os.path.join(CODE_DIR, "luminex-featurize")
 assert os.path.exists(FEAT), f"featurizer missing: {FEAT}"
-from luminex_nnue_train import LNNUE, save_nnue
+from luminex_nnue_train import LNNUE, save_nnue, NUM_INPUTS
 
 L1   = int(os.environ.get("NNUE_L1", "512"))
 BS   = int(os.environ.get("NNUE_BS", "131072"))
@@ -68,13 +68,18 @@ _gc = float(os.environ.get("NNUE_GRAD_CLIP", "1.0"))   # v6 fix (prevents gradie
 _wc = float(os.environ.get("NNUE_WCLAMP", "0"))          # OFF (fallback only; root cause = tail wd + amsgrad)
 # Auto-convergence: pick the largest data subset that converges (loss plateaus +
 # cosine LR reaches zero) inside the time budget. No manual epoch count needed.
-_CONV_PATIENCE = int(os.environ.get("NNUE_CONV_PATIENCE", "1200"))  # steps without improvement to declare convergence
-_CONV_MIN_EPOCHS = int(os.environ.get("NNUE_CONV_MIN_EPOCHS", "1")) # minimum passes before early-stop is armed
-# Single-pass mode: disable convergence detector entirely — it keeps killing
-# training prematurely because per-part loss varies (harder positions = higher loss)
-if float(os.environ.get("NNUE_CONV_PASSES", "6")) <= 1:
+# ONE read of NNUE_CONV_PASSES (default 1 = single pass, max data). The old code read
+# it TWICE with different defaults ("6" for the early-stop check, "1" for sizing), so
+# an unset env var meant single-pass DATA with the 1200-stale-step early-stop ARMED.
+_conv_passes = float(os.environ.get("NNUE_CONV_PASSES", "1"))
+if _conv_passes <= 1:
+    # Single-pass mode: disable convergence detector entirely — it keeps killing
+    # training prematurely because per-part loss varies (harder positions = higher loss)
     _CONV_PATIENCE = 999999999  # effectively disabled
-_CONV_TARGET_PASSES = float(os.environ.get("NNUE_CONV_PASSES", "1")) # 1 = single pass, max data
+else:
+    _CONV_PATIENCE = int(os.environ.get("NNUE_CONV_PATIENCE", "1200"))  # steps without improvement
+_CONV_MIN_EPOCHS = int(os.environ.get("NNUE_CONV_MIN_EPOCHS", "1")) # minimum passes before early-stop is armed
+_CONV_TARGET_PASSES = max(1.0, _conv_passes)  # 0 must not ZeroDivision the subset sizing
 _CAL_STEPS = 60   # calibration steps to measure throughput
 _FEAT_CACHE = os.environ.get("NNUE_FEAT_CACHE", "1") != "0"  # cache featurized frames across epochs
 REC  = 136; SCALE = 400.0
@@ -91,6 +96,15 @@ if os.path.exists(_resume) and os.environ.get("NNUE_RESUME", "1") != "0":
     try:
         _ck = torch.load(_resume, map_location=device, weights_only=False)
         model.load_state_dict(_ck["model"]); gstep = _ck.get("gstep", 0)
+        # Checkpoints from the pre-padding_idx era may carry a NON-ZERO pad row:
+        # export drops that row, so training it = silent Python/engine mismatch.
+        try:
+            _pad_max = float(model.ft.weight.data[NUM_INPUTS].abs().max().item())
+            if _pad_max > 1e-6:
+                print(f"[RESUME] pad row non-zero ({_pad_max:.3e}) — forcing zero", flush=True)
+                model.ft.weight.data[NUM_INPUTS].zero_()
+        except Exception:
+            pass
         _opt_state = _ck.get("opt")  # Adam/AdamW moments — the key to cross-block continuity
         if _opt_state: print(f"[RESUME] + optimizer state ({len(_opt_state['state'])} params) — no warm-up loss", flush=True)
         print(f"[RESUME] loaded {_resume} at gstep={gstep}", flush=True)
@@ -98,15 +112,20 @@ if os.path.exists(_resume) and os.environ.get("NNUE_RESUME", "1") != "0":
         print(f"[RESUME] FAILED ({_e}) - training from scratch", flush=True)
 model.probe_ft(device)   # EmbeddingBag FT
 print(f"  [LNNUE] ft_mode={model.ft_mode} (compile OFF)", flush=True)
-# Phase 0 root-cause L2 fix: decay ONLY the tail (where L2/SCReLU feedback grows weights),
-# NOT the FT (protects rare king/piece/square buckets from uniform-decay undertraining, #45).
+# Phase 0 root-cause L2 fix: decay ONLY the tail WEIGHTS (where L2/SCReLU feedback
+# grows weights), NOT the FT (protects rare king/piece/square buckets from uniform-decay
+# undertraining, #45) and NOT any bias (biases are activation operating points).
+# Group by NAME: the old numel()>100K split put ft_bias in the decayed tail group and
+# would flip l2.weight into the no-decay FT group at L2>=128.
 # + AMSGrad (bounds effective LR per-param, prevents any single weight running away).
-_ft_params  = [p for p in model.parameters() if p.numel() > 100000]   # FT embedding (12.6M elements)
-_tail_params = [p for p in model.parameters() if p.numel() <= 100000]  # L2/L3/out (<10K each)
+_ft_params = [model.ft.weight, model.ft_bias]
+_tail_w    = [model.l2.weight, model.l3.weight, model.out.weight]
+_tail_b    = [model.l2.bias, model.l3.bias, model.out.bias]
 _tail_wd = float(os.environ.get("NNUE_TAIL_WD", "1e-2"))
 opt = torch.optim.AdamW([
-    {"params": _ft_params,  "weight_decay": 0.0},        # NO decay on FT (rare-bucket protection)
-    {"params": _tail_params, "weight_decay": _tail_wd},  # tail decay (fixes L2 SCReLU feedback)
+    {"params": _ft_params, "weight_decay": 0.0},       # NO decay on FT (rare-bucket protection)
+    {"params": _tail_w,    "weight_decay": _tail_wd},  # tail weight decay (fixes L2 SCReLU feedback)
+    {"params": _tail_b,    "weight_decay": 0.0},       # biases are operating points — never decay
 ], lr=LR, amsgrad=True)
 if _opt_state:
     try:
@@ -119,7 +138,7 @@ if _opt_state:
         print("  [opt] AdamW moments restored, LR reset to base", flush=True)
     except Exception as _e:
         print(f"  [opt] state restore FAILED ({_e}) — rebuilding (1K-step warm-up)", flush=True)
-print(f"  [opt] FT params={sum(p.numel() for p in _ft_params):,} (wd=0) | tail params={sum(p.numel() for p in _tail_params):,} (wd={_tail_wd}) | amsgrad=True", flush=True)
+print(f"  [opt] FT params={sum(p.numel() for p in _ft_params):,} (wd=0) | tail params={sum(p.numel() for p in _tail_w + _tail_b):,} (w wd={_tail_wd}, b wd=0) | amsgrad=True", flush=True)
 
 # ---- AUTO-CONVERGENCE SIZING ------------------------------------------------
 # Calibrate throughput, then pick the largest data subset that can be trained
@@ -146,13 +165,20 @@ if gstep == 0:  # fresh run: calibrate with a tiny forward+backward
     _sps = _CAL_STEPS / (_t.time() - _cal_t0)
     print(f"  [calibrate] {_sps:.1f} steps/s (BS={BS})", flush=True)
     model = LNNUE(L1=L1).to(device)  # reset — calibration dirtied the weights
-    # re-init optimizer (fresh model params)
+    # re-init optimizer (fresh model params) — same name-based groups as above
     opt = torch.optim.AdamW([
-        {"params": [p for p in model.parameters() if p.numel() > 100000], "weight_decay": 0.0},
-        {"params": [p for p in model.parameters() if p.numel() <= 100000], "weight_decay": _tail_wd},
+        {"params": [model.ft.weight, model.ft_bias], "weight_decay": 0.0},
+        {"params": [model.l2.weight, model.l3.weight, model.out.weight], "weight_decay": _tail_wd},
+        {"params": [model.l2.bias, model.l3.bias, model.out.bias], "weight_decay": 0.0},
     ], lr=LR, amsgrad=True)
 
-_avail_sec = max(600, BUDGET - _OVERHEAD_SEC)
+# BUDGET<=0 means "no time limit": size the LR schedule for effectively-unlimited
+# time — the max(600,...) fallback silently turned that into a 600s schedule
+# (LR dead after 10 min while training ran on for hours)
+if BUDGET <= 0:
+    _avail_sec = 365 * 24 * 3600
+else:
+    _avail_sec = max(600, BUDGET - _OVERHEAD_SEC)
 _total_steps = int(_avail_sec * _sps)
 _total_visits = _total_steps * BS
 _subset_pos = int(_total_visits / _CONV_TARGET_PASSES)
@@ -210,14 +236,19 @@ print(f"  [auto-conv] subset={len(FRAMES)} frames (~{est_pos/1e9:.1f}B pos) | ep
 # convergence state
 _best_loss = float("inf"); _stale_steps = 0
 
-def _budget_hit(gstep, total_pos):
-    print(f">>> BUDGET hit at step {gstep} - saving & stopping", flush=True)
+def _save_final(reason):
+    """Unified exit save. .nnue comes from the BEST weights (SWA average if active);
+    .pt keeps the RAW model + its own Adam moments — SWA-averaged weights paired
+    with pre-average moments would desync the next resume block."""
     if _swa_model is not None and _swa_n > 0:
-        model.load_state_dict(_swa_model.state_dict())
-    save_nnue(model, os.path.join(out_dir, OUT))
+        print(f"  [swa] exporting averaged weights ({_swa_n} updates)", flush=True)
+        save_nnue(_swa_model, os.path.join(out_dir, OUT))
+    else:
+        save_nnue(model, os.path.join(out_dir, OUT))
     torch.save({"model": model.state_dict(), "gstep": gstep, "opt": opt.state_dict()},
                os.path.join(out_dir, OUT_BASE + ".pt"))
-    upload_output(); print(f"DONE (budget) - {OUT}: {gstep} steps, {total_pos:,} pos", flush=True)
+    upload_output()
+    print(f"DONE ({reason}) - {OUT}: {gstep} steps, {total_pos:,} pos in {time.time()-t0:.0f}s", flush=True)
     sys.exit(0)
 
 gstep = globals().get('gstep', 0); t0 = time.time(); total_pos = 0   # keeps resumed gstep
@@ -277,10 +308,22 @@ for epoch in range(EPOCHS):
             for i in range(0, N, BS):
                 idx = perm[i:i + BS]
                 wi = w[idx].long(); bi = b[idx].long(); si = s[idx]; ti = t[idx]
-                # Safety: clamp extreme targets (mate scores, binary parse glitches)
-                # instead of dropping (dropping loses decisive positions) or letting
-                # them saturate sigmoid gradients
+                # Safety: sanitize non-finite targets FIRST (NaN survives clamp and one
+                # backward pass would poison every weight in the net), then clamp
+                # extremes (mate scores, parse glitches) instead of dropping them
+                # (dropping loses decisive positions) or letting them saturate sigmoid
+                if not torch.isfinite(ti).all():
+                    ti = torch.nan_to_num(ti, nan=0.0, posinf=1500.0, neginf=-1500.0)
                 ti = ti.clamp(-1500.0, 1500.0)
+                if part == 1 and i == 0:
+                    # One-time data gate per frame: an endian/padding/viewpoint bug in
+                    # the C featurizer would otherwise train SILENTLY on garbage
+                    print(f"  [DATA] w {wi.min().item()}..{wi.max().item()} | b {bi.min().item()}..{bi.max().item()} | "
+                          f"stm {si.unique().tolist()[:4]} | tgt {ti.min().item():.0f}..{ti.max().item():.0f} "
+                          f"std={ti.std().item():.0f}", flush=True)
+                    assert 0 <= int(wi.min().item()) and int(wi.max().item()) <= NUM_INPUTS, "bad white feature idx"
+                    assert 0 <= int(bi.min().item()) and int(bi.max().item()) <= NUM_INPUTS, "bad black feature idx"
+                    assert bool(((si == 0.0) | (si == 1.0)).all()), "bad stm values (not 0/1)"
                 # Smart FEN skip: drop positions where |target| is extreme (>800cp)
                 # — these are usually won/lost positions where eval adds noise
                 if _FEN_SKIP > 0:
@@ -305,6 +348,10 @@ for epoch in range(EPOCHS):
                         loss = (_sdiff ** _POWER).mean()
                     else:
                         loss = ((torch.sigmoid(pred / SCALE) - torch.sigmoid(ti / SCALE)) ** 2).mean()
+                if not torch.isfinite(loss):
+                    print(f"  WARN: non-finite loss at step {gstep} — skipping batch "
+                          f"(if this repeats, weights are already poisoned — restart)", flush=True)
+                    continue
                 loss.backward()
                 if _gc > 0:
                     torch.nn.utils.clip_grad_norm_(model.parameters(), _gc)   # v6 fix
@@ -336,17 +383,13 @@ for epoch in range(EPOCHS):
                     except Exception: pass
                     print(f">>> CONVERGED at step {gstep} (loss flat {_CONV_PATIENCE} steps, "
                           f"best={_best_loss:.5f}) — saving & stopping", flush=True)
-                    save_nnue(model, os.path.join(out_dir, OUT))
-                    torch.save({"model": model.state_dict(), "gstep": gstep, "opt": opt.state_dict()},
-                               os.path.join(out_dir, OUT_BASE + ".pt"))
-                    upload_output()
-                    print(f"DONE (converged) - {OUT}: {gstep} steps, {total_pos:,} pos", flush=True)
-                    sys.exit(0)
+                    _save_final("converged")
                 if BUDGET and time.time() - t0 >= BUDGET:
                     del w, b, s, t, perm; torch.cuda.empty_cache()
                     try: p.stdout.close(); p.terminate()
                     except Exception: pass
-                    _budget_hit(gstep, total_pos)
+                    print(f">>> BUDGET hit at step {gstep} - saving & stopping", flush=True)
+                    _save_final("budget")
             total_pos += N
             # v8 health line: computed BEFORE the tensors are freed below.
             # Catches failure-archive signatures loss alone missed (v7-run4
@@ -357,12 +400,15 @@ for epoch in range(EPOCHS):
                 if _m > 0:
                     with torch.no_grad():
                         _pv = model(w[:_m].long(), b[:_m].long(), s[:_m]).float()
-                        _tv = t[:_m].float()
+                        _tv = t[:_m].clamp(-1500.0, 1500.0).float()   # same view as the loss
                         _mae = (_pv - _tv).abs().mean().item()
                         _ps, _ts = _pv.std().item(), _tv.std().item()
                         _wn = " ".join(f"{_nm}={float(getattr(model, _nm).weight.detach().norm().item()):.0f}"
                                        for _nm in ("ft", "emb", "l1", "l2", "out") if hasattr(model, _nm))
-                    _health = f"MAE={_mae:.1f}cp predSTD={_ps:.0f} tgtSTD={_ts:.0f} | {_wn}"
+                        _pad = ""
+                        try: _pad = f" pad|max|={float(model.ft.weight[NUM_INPUTS].abs().max().item()):.1e}"
+                        except Exception: pass   # gather mode has no pad row
+                    _health = f"MAE={_mae:.1f}cp predSTD={_ps:.0f} tgtSTD={_ts:.0f}{_pad} | {_wn}"
             except Exception as _e:
                 _health = f"unavailable ({_e})"
             del w, b, s, t, perm; torch.cuda.empty_cache()
@@ -382,12 +428,7 @@ for epoch in range(EPOCHS):
         continue
     break
 
-# SWA swap: if SWA was active, use the averaged weights for the final save
-if _swa_model is not None and _swa_n > 0:
-    print(f"  [swa] swapping in averaged weights ({_swa_n} updates)", flush=True)
-    model.load_state_dict(_swa_model.state_dict())
-
-save_nnue(model, os.path.join(out_dir, OUT))
-print(f"DONE - {OUT}: {gstep} steps, {total_pos:,} pos in {time.time()-t0:.0f}s. uploading...", flush=True)
-upload_output()
+# SWA never leaks into the .pt here: _save_final exports .nnue from the SWA average
+# (if active) and keeps the raw model + matching moments for cross-block resume
 print(f"Quantize locally: python quantize_i8.py {OUT} {OUT_BASE}_i8.nnue", flush=True)
+_save_final("finished")
