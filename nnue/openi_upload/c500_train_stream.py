@@ -174,11 +174,12 @@ FRAMES = _subset_frames if _subset_frames else FRAMES[:1]  # at least 1 frame
 est_pos = sum(os.path.getsize(f) for f in FRAMES) // 1.05
 EPOCHS = max(_CONV_MIN_EPOCHS, int(_total_visits / max(1, est_pos)))
 T_MAX = min(_total_steps, EPOCHS * est_pos // BS)
-# LR schedule: exponential decay (gamma=0.992/epoch, SF's proven schedule)
-# NOT cosine — cosine anneals to zero too fast; exponential preserves signal longer
-_LR_GAMMA = float(os.environ.get("NNUE_LR_GAMMA", "0.992"))
-sched = torch.optim.lr_scheduler.ExponentialLR(opt, gamma=_LR_GAMMA)
-print(f"  [sched] exponential gamma={_LR_GAMMA} (initial lr={LR})", flush=True)
+# LR schedule: cosine annealing over T_MAX total steps (proven in v8 block 1).
+# The previous ExponentialLR(gamma=0.992) was called every STEP (not epoch),
+# killing the LR to ~0 after 500 steps — the model only truly learned for the
+# first ~65M positions of each block. Cosine with T_MAX is the correct schedule.
+sched = torch.optim.lr_scheduler.CosineAnnealingLR(opt, T_max=max(1, T_MAX))
+print(f"  [sched] cosine T_max={T_MAX} steps (initial lr={LR})", flush=True)
 
 # SWA: average weights from the last 25% of training (free quality boost)
 _SWA_START = int(os.environ.get("NNUE_SWA_START", "0"))  # 0=disabled; set to epoch number to enable
@@ -260,7 +261,7 @@ for epoch in range(EPOCHS):
             print(f"  [frame {fi+1} part {part}: {N:,} pos -> train]", flush=True)
             perm = torch.randperm(N, device=device)
             _POWER = float(os.environ.get("NNUE_LOSS_POWER", "2.6"))  # 0 = old sigmoid-MSE
-            _FEN_SKIP = float(os.environ.get("NNUE_FEN_SKIP", "0.3"))  # skip prob for noisy positions
+            _FEN_SKIP = float(os.environ.get("NNUE_FEN_SKIP", "0"))  # 0=disabled; hard-drop was losing decisive positions
             for i in range(0, N, BS):
                 idx = perm[i:i + BS]
                 wi = w[idx].long(); bi = b[idx].long(); si = s[idx]; ti = t[idx]
