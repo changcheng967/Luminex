@@ -93,7 +93,7 @@ class LNNUE(nn.Module):
         if ft_mode == 'gather':
             self.ft = nn.Linear(NUM_INPUTS, L1, bias=False)
         else:
-            self.ft = nn.EmbeddingBag(NUM_INPUTS + 1, L1, mode='sum')  # +1 zero padding row
+            self.ft = nn.EmbeddingBag(NUM_INPUTS + 1, L1, mode='sum', padding_idx=NUM_INPUTS)  # padding row frozen at zero
         self.ft_bias = nn.Parameter(torch.zeros(L1))
         self.l2 = nn.Linear(2 * L1, L2)                # stm + nstm concatenated
         self.l3 = nn.Linear(L2, L3)
