@@ -84,8 +84,7 @@ total_bytes = sum(os.path.getsize(f) for f in FRAMES)
 print(f"per-frame train (OOM-safe): {len(FRAMES)} frames, {total_bytes/1e9:.2f}GB, L1={L1} bs={BS} cap={CAP:,} feat_threads={NTH} grad-clip={_gc} device={device}", flush=True)
 
 model = LNNUE(L1=L1).to(device)
-# Multi-block resume: upload the previous block's luminex_v8.pt next to the code;
-# weights + global step are restored (optimizer state rebuilds in ~1K steps).
+gstep = 0  # must exist before resume check (fresh runs would NameError otherwise)
 _resume = os.environ.get("NNUE_RESUME") or os.path.join(os.path.dirname(__file__) or ".", OUT_BASE + ".pt")
 _opt_state = None  # deferred: optimizer doesn't exist yet at resume time
 if os.path.exists(_resume) and os.environ.get("NNUE_RESUME", "1") != "0":
@@ -112,7 +111,12 @@ opt = torch.optim.AdamW([
 if _opt_state:
     try:
         opt.load_state_dict(_opt_state)
-        print("  [opt] AdamW moments restored — zero warm-up penalty", flush=True)
+        # Reset LR to base: the restored opt state carries the OLD block's annealed
+        # LR (potentially near-zero from cosine end), which would kill all learning
+        for pg in opt.param_groups:
+            pg["lr"] = LR
+            pg.pop("initial_lr", None)
+        print("  [opt] AdamW moments restored, LR reset to base", flush=True)
     except Exception as _e:
         print(f"  [opt] state restore FAILED ({_e}) — rebuilding (1K-step warm-up)", flush=True)
 print(f"  [opt] FT params={sum(p.numel() for p in _ft_params):,} (wd=0) | tail params={sum(p.numel() for p in _tail_params):,} (wd={_tail_wd}) | amsgrad=True", flush=True)
@@ -174,12 +178,16 @@ FRAMES = _subset_frames if _subset_frames else FRAMES[:1]  # at least 1 frame
 est_pos = sum(os.path.getsize(f) for f in FRAMES) // 1.05
 EPOCHS = max(_CONV_MIN_EPOCHS, int(_total_visits / max(1, est_pos)))
 T_MAX = min(_total_steps, EPOCHS * est_pos // BS)
-# LR schedule: cosine annealing over T_MAX total steps (proven in v8 block 1).
-# The previous ExponentialLR(gamma=0.992) was called every STEP (not epoch),
-# killing the LR to ~0 after 500 steps — the model only truly learned for the
-# first ~65M positions of each block. Cosine with T_MAX is the correct schedule.
-sched = torch.optim.lr_scheduler.CosineAnnealingLR(opt, T_max=max(1, T_MAX))
-print(f"  [sched] cosine T_max={T_MAX} steps (initial lr={LR})", flush=True)
+# LR schedule: clamped cosine (LambdaLR, never rebounds past T_MAX).
+# CosineAnnealingLR rebounds after T_MAX (PyTorch behavior); LambdaLR with
+# min(1.0, step/T_MAX) clamps at zero permanently.
+import math as _math
+def _lr_lambda(step):
+    if T_MAX <= 0: return 1.0
+    p = min(1.0, step / float(T_MAX))
+    return 0.5 * (1.0 + _math.cos(_math.pi * p))
+sched = torch.optim.lr_scheduler.LambdaLR(opt, _lr_lambda)
+print(f"  [sched] clamped cosine T_max={T_MAX} steps (initial lr={LR})", flush=True)
 
 # SWA: average weights from the last 25% of training (free quality boost)
 _SWA_START = int(os.environ.get("NNUE_SWA_START", "0"))  # 0=disabled; set to epoch number to enable
@@ -204,7 +212,11 @@ _best_loss = float("inf"); _stale_steps = 0
 
 def _budget_hit(gstep, total_pos):
     print(f">>> BUDGET hit at step {gstep} - saving & stopping", flush=True)
+    if _swa_model is not None and _swa_n > 0:
+        model.load_state_dict(_swa_model.state_dict())
     save_nnue(model, os.path.join(out_dir, OUT))
+    torch.save({"model": model.state_dict(), "gstep": gstep, "opt": opt.state_dict()},
+               os.path.join(out_dir, OUT_BASE + ".pt"))
     upload_output(); print(f"DONE (budget) - {OUT}: {gstep} steps, {total_pos:,} pos", flush=True)
     sys.exit(0)
 
@@ -265,6 +277,10 @@ for epoch in range(EPOCHS):
             for i in range(0, N, BS):
                 idx = perm[i:i + BS]
                 wi = w[idx].long(); bi = b[idx].long(); si = s[idx]; ti = t[idx]
+                # Safety: clamp extreme targets (mate scores, binary parse glitches)
+                # instead of dropping (dropping loses decisive positions) or letting
+                # them saturate sigmoid gradients
+                ti = ti.clamp(-1500.0, 1500.0)
                 # Smart FEN skip: drop positions where |target| is extreme (>800cp)
                 # — these are usually won/lost positions where eval adds noise
                 if _FEN_SKIP > 0:
