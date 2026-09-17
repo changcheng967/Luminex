@@ -104,11 +104,22 @@ class LNNUE(nn.Module):
         nn.init.normal_(self.ft.weight, mean=0.0, std=0.2)
         if ft_mode != 'gather':
             self.ft.weight.data[NUM_INPUTS].zero_()    # padding row (idx NUM_INPUTS) stays zero
+            # padding_idx freezes the row in standard PyTorch, but mcPyTorch's
+            # EmbeddingBag backward is a reimplementation — enforce it at grad level
+            # too. If the pad row ever trains, export (which drops it) silently
+            # splits the training model from the engine.
+            def _freeze_pad(grad):
+                grad[NUM_INPUTS].zero_()
+                return grad
+            self.ft.weight.register_hook(_freeze_pad)
 
     def probe_ft(self, device):
         """v7-postmortem guard (embbag/gather drift): the active FT path must equal a
         manual per-bag sum of the same embedding rows. Any drift here poisoned a full
         training era (v7 garbage); fail loudly instead."""
+        if self.ft_mode != 'embbag':
+            print(f"  [probe_ft] skipped (mode={self.ft_mode}: explicit-sum path, no bag to verify)", flush=True)
+            return
         import torch as _t
         _t.manual_seed(0)
         N, F = 4096, 24
