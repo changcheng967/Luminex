@@ -74,7 +74,7 @@ _CONV_MIN_EPOCHS = int(os.environ.get("NNUE_CONV_MIN_EPOCHS", "1")) # minimum pa
 # training prematurely because per-part loss varies (harder positions = higher loss)
 if float(os.environ.get("NNUE_CONV_PASSES", "6")) <= 1:
     _CONV_PATIENCE = 999999999  # effectively disabled
-_CONV_TARGET_PASSES = float(os.environ.get("NNUE_CONV_PASSES", "6")) # expected passes for subset sizing
+_CONV_TARGET_PASSES = float(os.environ.get("NNUE_CONV_PASSES", "1")) # 1 = single pass, max data
 _CAL_STEPS = 60   # calibration steps to measure throughput
 _FEAT_CACHE = os.environ.get("NNUE_FEAT_CACHE", "1") != "0"  # cache featurized frames across epochs
 REC  = 136; SCALE = 400.0
