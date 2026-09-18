@@ -57,3 +57,4 @@ build_ninja/
 .claude/
 .git-rewrite/
 __pycache__/
+nnue/sample_fens.txt
