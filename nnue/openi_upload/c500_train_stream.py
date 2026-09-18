@@ -66,20 +66,6 @@ BUF  = int(os.environ.get("NNUE_BUF", "2000000"))
 CAP  = int(os.environ.get("NNUE_VRAM_POS", "180000000"))   # max pos per VRAM load (big frames split)
 _gc = float(os.environ.get("NNUE_GRAD_CLIP", "1.0"))   # v6 fix (prevents gradient spikes)
 _wc = float(os.environ.get("NNUE_WCLAMP", "0"))          # OFF (fallback only; root cause = tail wd + amsgrad)
-# Auto-convergence: pick the largest data subset that converges (loss plateaus +
-# cosine LR reaches zero) inside the time budget. No manual epoch count needed.
-# ONE read of NNUE_CONV_PASSES (default 1 = single pass, max data). The old code read
-# it TWICE with different defaults ("6" for the early-stop check, "1" for sizing), so
-# an unset env var meant single-pass DATA with the 1200-stale-step early-stop ARMED.
-_conv_passes = float(os.environ.get("NNUE_CONV_PASSES", "1"))
-if _conv_passes <= 1:
-    # Single-pass mode: disable convergence detector entirely — it keeps killing
-    # training prematurely because per-part loss varies (harder positions = higher loss)
-    _CONV_PATIENCE = 999999999  # effectively disabled
-else:
-    _CONV_PATIENCE = int(os.environ.get("NNUE_CONV_PATIENCE", "1200"))  # steps without improvement
-_CONV_MIN_EPOCHS = int(os.environ.get("NNUE_CONV_MIN_EPOCHS", "1")) # minimum passes before early-stop is armed
-_CONV_TARGET_PASSES = max(1.0, _conv_passes)  # 0 must not ZeroDivision the subset sizing
 _CAL_STEPS = 60   # calibration steps to measure throughput
 _FEAT_CACHE = os.environ.get("NNUE_FEAT_CACHE", "0") == "1"  # OFF by default: single-pass
 # never re-reads a frame, and full-data caching would need ~2.2TB of /tmp. Opt-in
@@ -189,7 +175,7 @@ else:
     _avail_sec = max(600, BUDGET - _OVERHEAD_SEC)
 _total_steps = int(_avail_sec * _sps)
 _total_visits = _total_steps * BS
-_subset_pos = int(_total_visits / _CONV_TARGET_PASSES)
+_subset_pos = _total_visits   # single pass: every frame the budget could plausibly cover
 # select frames until subset is filled
 _subset_frames = []; _subset_bytes = 0
 for f in FRAMES:
@@ -210,7 +196,7 @@ if _FRAMES_SKIP > 0 and _FRAMES_SKIP < len(FRAMES):
         _subset_frames.append(f); _subset_bytes += int(fb / 1.05)
 FRAMES = _subset_frames if _subset_frames else FRAMES[:1]  # at least 1 frame
 est_pos = sum(os.path.getsize(f) for f in FRAMES) // 1.05
-EPOCHS = max(_CONV_MIN_EPOCHS, int(_total_visits / max(1, est_pos)))
+EPOCHS = max(1, int(_total_visits / max(1, est_pos)))
 _max_ep = int(os.environ.get("NNUE_MAX_EPOCHS", "0"))  # optional hard cap (0 = budget-limited)
 if _max_ep > 0: EPOCHS = min(EPOCHS, _max_ep)
 # Featurize-cache disk guard: caching every selected frame needs est_pos*REC bytes on
@@ -263,9 +249,6 @@ print(f"  [sizing] subset={len(FRAMES)} frames (~{est_pos/1e9:.1f}B pos) | epoch
       f"budget-hit + per-frame T_max refinement govern) | T_max={T_MAX} steps (initial) | "
       f"budget {_avail_sec}s @ {_sps:.1f} st/s", flush=True)
 
-# convergence state
-_best_loss = float("inf"); _stale_steps = 0
-
 def _save_final(reason):
     """Unified exit save. .nnue comes from the BEST weights (SWA average if active);
     .pt keeps the RAW model + its own Adam moments — SWA-averaged weights paired
@@ -285,9 +268,6 @@ gstep = globals().get('gstep', 0); t0 = time.time(); total_pos = 0   # keeps res
 for epoch in range(EPOCHS):
     for fi, frame_path in enumerate(FRAMES):
         _f0_step, _f0_t = gstep, time.time()   # per-frame rate measurement (T_max refinement)
-        _stale_steps = 0; _best_loss = float("inf")   # reset BOTH per frame: new frames start
-        # with higher loss (unknown patterns); stale must mean "flat on THIS frame", not
-        # "not beating a global best set on a different, easier frame"
         if BUDGET and time.time() - t0 >= BUDGET:
             save_nnue(model, os.path.join(out_dir, OUT)); break
         # FEATURIZE CACHE: first epoch featurizes and caches to /tmp; later
@@ -394,27 +374,13 @@ for epoch in range(EPOCHS):
                 sched.step(); gstep += 1
                 if _swa_model is not None and epoch >= _SWA_START:
                     _swa_update()
-                # convergence tracking: best loss + stale counter
-                _cur = loss.item()
-                if _cur < _best_loss - 1e-6:
-                    _best_loss = _cur; _stale_steps = 0
-                else:
-                    _stale_steps += 1
                 if gstep % 50 == 0:
+                    # loss.item() ONLY here — a per-step .item() syncs the GPU queue
+                    # every step and costs ~10-20% throughput
                     try: _l2 = f" L2|max|={float(model.l2.weight.detach().abs().max().item()):.2f}"
                     except Exception: _l2 = ""
-                    _conv = f" conv_stale={_stale_steps}" if _stale_steps > _CONV_PATIENCE // 4 else ""
                     dt = time.time() - t0
-                    print(f"  e{epoch} f{fi+1}p{part} step {gstep} loss={_cur:.5f}{_l2}{_conv} | {total_pos/1e6:.0f}M+{i/1e6:.0f}M | {gstep/max(dt,1):.1f} steps/s", flush=True)
-                # AUTO-CONVERGENCE early stop: after minimum passes, if loss has been flat
-                # for _CONV_PATIENCE steps, the model has converged — save and exit
-                if (epoch >= _CONV_MIN_EPOCHS - 1 and _stale_steps >= _CONV_PATIENCE):
-                    del w, b, s, t, perm; torch.cuda.empty_cache()
-                    try: p.stdout.close(); p.terminate()
-                    except Exception: pass
-                    print(f">>> CONVERGED at step {gstep} (loss flat {_CONV_PATIENCE} steps, "
-                          f"best={_best_loss:.5f}) — saving & stopping", flush=True)
-                    _save_final("converged")
+                    print(f"  e{epoch} f{fi+1}p{part} step {gstep} loss={loss.item():.5f}{_l2} | {total_pos/1e6:.0f}M+{i/1e6:.0f}M | {gstep/max(dt,1):.1f} steps/s", flush=True)
                 if BUDGET and time.time() - t0 >= BUDGET:
                     del w, b, s, t, perm; torch.cuda.empty_cache()
                     try: p.stdout.close(); p.terminate()
