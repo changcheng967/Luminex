@@ -203,17 +203,38 @@ if _FRAMES_SKIP > 0 and _FRAMES_SKIP < len(FRAMES):
 FRAMES = _subset_frames if _subset_frames else FRAMES[:1]  # at least 1 frame
 est_pos = sum(os.path.getsize(f) for f in FRAMES) // 1.05
 EPOCHS = max(_CONV_MIN_EPOCHS, int(_total_visits / max(1, est_pos)))
+_max_ep = int(os.environ.get("NNUE_MAX_EPOCHS", "0"))  # optional hard cap (0 = budget-limited)
+if _max_ep > 0: EPOCHS = min(EPOCHS, _max_ep)
+# Featurize-cache disk guard: caching every selected frame needs est_pos*REC bytes on
+# /tmp (~1.5TB for a full 74-frame run). If that doesn't fit, tee hits ENOSPC
+# mid-frame, the featurizer dies on SIGPIPE, and a full /tmp can also kill the
+# checkpoint saves. Auto-disable instead of dying at frame N.
+if _FEAT_CACHE:
+    import shutil as _sh
+    try:
+        _free = _sh.disk_usage("/tmp").free
+        _need = int(est_pos * REC)
+        if _need > 0.9 * _free:
+            _FEAT_CACHE = False
+            print(f"  [cache] OFF: would need {_need/1e9:.0f}GB, /tmp has {_free/1e9:.0f}GB free "
+                  f"(ENOSPC mid-frame would kill the run)", flush=True)
+    except Exception:
+        pass
 T_MAX = min(_total_steps, EPOCHS * est_pos // BS)
 # LR schedule: clamped cosine (LambdaLR, never rebounds past T_MAX).
 # CosineAnnealingLR rebounds after T_MAX (PyTorch behavior); LambdaLR with
 # min(1.0, step/T_MAX) clamps at zero permanently.
 import math as _math
+_T_MAX_LIVE = T_MAX   # mutable: refined per frame from the MEASURED pipeline rate.
+                      # The upfront estimate assumes pure-GPU steps/s; a featurize-bound
+                      # run achieves ~1/3 of that — without refinement the cosine never
+                      # completes and the net gets saved at >50% base LR.
 def _lr_lambda(step):
-    if T_MAX <= 0: return 1.0
-    p = min(1.0, step / float(T_MAX))
+    if _T_MAX_LIVE <= 0: return 1.0
+    p = min(1.0, step / float(_T_MAX_LIVE))
     return 0.5 * (1.0 + _math.cos(_math.pi * p))
 sched = torch.optim.lr_scheduler.LambdaLR(opt, _lr_lambda)
-print(f"  [sched] clamped cosine T_max={T_MAX} steps (initial lr={LR})", flush=True)
+print(f"  [sched] clamped cosine T_max={T_MAX} steps, refined per frame (initial lr={LR})", flush=True)
 
 # SWA: average weights from the last 25% of training (free quality boost)
 _SWA_START = int(os.environ.get("NNUE_SWA_START", "0"))  # 0=disabled; set to epoch number to enable
@@ -254,6 +275,7 @@ def _save_final(reason):
 gstep = globals().get('gstep', 0); t0 = time.time(); total_pos = 0   # keeps resumed gstep
 for epoch in range(EPOCHS):
     for fi, frame_path in enumerate(FRAMES):
+        _f0_step, _f0_t = gstep, time.time()   # per-frame rate measurement (T_max refinement)
         _stale_steps = 0; _best_loss = float("inf")   # reset BOTH per frame: new frames start
         # with higher loss (unknown patterns); stale must mean "flat on THIS frame", not
         # "not beating a global best set on a different, easier frame"
@@ -422,6 +444,16 @@ for epoch in range(EPOCHS):
             raise SystemExit(f"FATAL: frame {fi+1} produced 0 positions — featurizer "
                              f"broken? Check GLIBC/exec-bit on {FEAT}.")
         print(f"  [frame {fi+1} done: cum {total_pos:,} ({total_pos/1e9:.2f}B), {time.time()-t0:.0f}s]", flush=True)
+        # Refine the schedule denominator from THIS frame's marginal rate (excludes the
+        # slow startup, which would skew the projection low and kill the LR early), so
+        # the cosine completes exactly at budget-hit instead of saving at high LR.
+        if BUDGET > 0:
+            _mrate = (gstep - _f0_step) / max(time.time() - _f0_t, 1.0)
+            _proj = int(gstep + _mrate * max(0.0, BUDGET - (time.time() - t0) - 60))
+            _proj = max(gstep + 50, min(_proj, _total_steps))
+            if abs(_proj - _T_MAX_LIVE) > _T_MAX_LIVE // 20:
+                print(f"  [sched] T_max -> {_proj:,} steps (measured {_mrate:.1f} st/s)", flush=True)
+            _T_MAX_LIVE = _proj
         save_nnue(model, os.path.join(out_dir, OUT))   # incremental save after each frame
         torch.save({"model": model.state_dict(), "gstep": gstep, "opt": opt.state_dict()}, os.path.join(out_dir, OUT_BASE + ".pt"))
     else:
