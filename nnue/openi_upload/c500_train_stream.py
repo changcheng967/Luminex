@@ -151,12 +151,11 @@ _SPS_FALLBACK = 4.0   # conservative steps/sec if calibration unavailable (resum
 _sps = _SPS_FALLBACK
 if gstep == 0:  # fresh run: calibrate with a tiny forward+backward
     import time as _t
-    _cal_t0 = _t.time()
     _dummy_w = torch.randint(0, 24576, (BS, 32), device=device, dtype=torch.long)
     _dummy_b = torch.randint(0, 24576, (BS, 32), device=device, dtype=torch.long)
     _dummy_s = torch.ones(BS, device=device)
     _dummy_t = torch.zeros(BS, device=device)
-    for _ in range(_CAL_STEPS):
+    def _cal_step():
         opt.zero_grad()
         with torch.autocast(device_type=device, dtype=torch.bfloat16):
             _p = model(_dummy_w, _dummy_b, _dummy_s)
@@ -164,6 +163,13 @@ if gstep == 0:  # fresh run: calibrate with a tiny forward+backward
         _l.backward()
         torch.nn.utils.clip_grad_norm_(model.parameters(), _gc)
         opt.step()
+    for _ in range(10):
+        _cal_step()   # warmup: kernel selection, allocator growth
+    if device == "cuda": torch.cuda.synchronize()   # WITHOUT the syncs we measure the CPU
+    _cal_t0 = _t.time()                             # LAUNCH rate (~60/s), not the GPU — the
+    for _ in range(_CAL_STEPS):                     # "61.4 st/s" v10 calibration was exactly
+        _cal_step()                                 # this illusion (true pipelined rate 6.6)
+    if device == "cuda": torch.cuda.synchronize()
     _sps = _CAL_STEPS / (_t.time() - _cal_t0)
     print(f"  [calibrate] {_sps:.1f} steps/s (BS={BS})", flush=True)
     model = LNNUE(L1=L1).to(device)  # reset — calibration dirtied the weights
