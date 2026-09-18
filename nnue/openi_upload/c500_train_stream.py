@@ -259,8 +259,9 @@ def _swa_update():
     with torch.no_grad():
         for swa_p, model_p in zip(_swa_model.parameters(), model.parameters()):
             swa_p.data += (model_p.data - swa_p.data) / _swa_n
-print(f"  [auto-conv] subset={len(FRAMES)} frames (~{est_pos/1e9:.1f}B pos) | epochs={EPOCHS} | "
-      f"T_max={T_MAX} steps | est total visits={EPOCHS*est_pos/1e9:.1f}B | budget {_avail_sec}s @ {_sps:.1f} st/s", flush=True)
+print(f"  [sizing] subset={len(FRAMES)} frames (~{est_pos/1e9:.1f}B pos) | epochs={EPOCHS} (loop CAP only — "
+      f"budget-hit + per-frame T_max refinement govern) | T_max={T_MAX} steps (initial) | "
+      f"budget {_avail_sec}s @ {_sps:.1f} st/s", flush=True)
 
 # convergence state
 _best_loss = float("inf"); _stale_steps = 0
