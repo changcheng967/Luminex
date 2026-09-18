@@ -84,13 +84,11 @@ class LNNUE(nn.Module):
         import os as _os
         L2 = int(_os.environ.get("NNUE_L2", str(L2)))
         L3 = int(_os.environ.get("NNUE_L3", str(L3)))
-        ft_mode = _os.environ.get("NNUE_FT_MODE", ft_mode)   # embbag | manual | gather
         super().__init__()
-        # FT mode: 'embbag' = fused EmbeddingBag (default); 'manual' = index_select+sum —
-        # grad-identical math, but on mcPyTorch the fused embedding_bag FORWARD kernel
-        # runs ~340 GB/s while raw index_select runs 1427 GB/s (measured, diag3 D1/D4:
-        # 152.6ms -> 135.1ms per step). 'gather' = nn.Linear (NPU compat).
-        # All three share the SAME weight table and export byte-identically.
+        # FT mode: 'embbag' = fused EmbeddingBag (FAST on CUDA, ~28x over gather; == gather
+        # numerically — verified +74.7 startpos both — and == engine). 'gather' = nn.Linear
+        # (NPU-compatible; EmbeddingBag may be unsupported on Ascend). Both compute the same
+        # accumulator. Use embbag on CUDA (speed), gather on NPU (compat).
         self.ft_mode = ft_mode
         if ft_mode == 'gather':
             self.ft = nn.Linear(NUM_INPUTS, L1, bias=False)
@@ -143,12 +141,6 @@ class LNNUE(nn.Module):
             bi = b_idx.clamp(max=NUM_INPUTS - 1); bm = (b_idx < NUM_INPUTS).unsqueeze(-1).to(wt.dtype)
             acc_w = (wt[wi] * wm).sum(dim=1) + self.ft_bias   # (B, L1)
             acc_b = (wt[bi] * bm).sum(dim=1) + self.ft_bias
-        elif self.ft_mode == 'manual':
-            # manual bag: index_select hits full memory bandwidth on mcPyTorch; the pad row
-            # sums to zero (it IS zero) and its grad is frozen by the _freeze_pad hook.
-            wt = self.ft.weight
-            acc_w = wt[w_idx].sum(dim=1) + self.ft_bias
-            acc_b = wt[b_idx].sum(dim=1) + self.ft_bias
         else:  # embbag: fused gather+sum (padding idx NUM_INPUTS -> zero row, contributes nothing)
             acc_w = self.ft(w_idx) + self.ft_bias
             acc_b = self.ft(b_idx) + self.ft_bias
