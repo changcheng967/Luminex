@@ -81,7 +81,9 @@ else:
 _CONV_MIN_EPOCHS = int(os.environ.get("NNUE_CONV_MIN_EPOCHS", "1")) # minimum passes before early-stop is armed
 _CONV_TARGET_PASSES = max(1.0, _conv_passes)  # 0 must not ZeroDivision the subset sizing
 _CAL_STEPS = 60   # calibration steps to measure throughput
-_FEAT_CACHE = os.environ.get("NNUE_FEAT_CACHE", "1") != "0"  # cache featurized frames across epochs
+_FEAT_CACHE = os.environ.get("NNUE_FEAT_CACHE", "0") == "1"  # OFF by default: single-pass
+# never re-reads a frame, and full-data caching would need ~2.2TB of /tmp. Opt-in
+# (still disk-guarded below) only makes sense for small-subset multi-epoch runs.
 REC  = 136; SCALE = 400.0
 device = "cuda" if torch.cuda.is_available() else "cpu"
 OUT = os.environ.get("NNUE_OUT_NAME", "luminex_v6.nnue"); OUT_BASE = OUT[:-5] if OUT.endswith(".nnue") else OUT
