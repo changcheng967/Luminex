@@ -22,8 +22,8 @@
 #include <fstream>
 #include <string>
 #include <vector>
-#if defined(__AVX2__)
-#include <immintrin.h>
+#if defined(__x86_64__) || defined(__i386__) || defined(_M_X64) || defined(_M_IX86)
+#include <immintrin.h>   // _mm_prefetch needs xmmintrin even without AVX2 (Debug builds)
 #endif
 
 namespace luminex::nnue {
@@ -338,7 +338,7 @@ static void refresh_perspective(const Position& pos, Accumulator& a, int p) {
         if (pc == NO_PIECE) continue;
         int idx = halfka_idx(white_pov, ksq, sq, pc);
         const int16_t* w = &ft_w[static_cast<size_t>(idx) * g_L1];
-        for (int l = 0; l < g_L1; ++l) acc[l] += w[l];
+        for (int l = 0; l < g_L1; ++l) acc[l] += w[l] * FT_WINV;   // WINV was missing here — scalar (non-AVX2) builds fed raw int16-scaled weights into the accumulator
     }
 #endif
 }
@@ -444,9 +444,10 @@ Value evaluate(const Position& pos) {
     bool pr = profile_on();
     long long t0 = pr ? rdtsc() : 0;
     Accumulator* const acc_stack = nnue_acc_stack();
-#ifndef NDEBUG
-    // Self-check (debug only): recompute the accumulator from scratch and compare to the
-    // incrementally-maintained one. Catches any bug in update()'s feature deltas immediately.
+#if !defined(NDEBUG) || defined(NNUE_FORCE_SELFCHECK)
+    // Self-check (debug builds, or release with -DNNUE_FORCE_SELFCHECK): recompute the
+    // accumulator from scratch and compare to the incrementally-maintained one. Catches
+    // any bug in update()'s feature deltas immediately.
     if (g_loaded) {
         const Accumulator& inc = acc_stack[pos.state_ply()];
         for (int p = 0; p < 2; ++p) {
