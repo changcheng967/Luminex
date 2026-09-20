@@ -4,6 +4,12 @@ loads straight to VRAM -> train -> free -> next load (big frames auto-split into
 bf16 + grad-clip (v6 fix). Clean per-frame output. No whole-frame VRAM spike (cat frees
 each list immediately; PYTORCH_CUDA_ALLOC_CONF=expandable_segments kills fragmentation).
 
+LOSS (v12, cross-checked against SF nnue-pytorch / Berserk / Seer / Leela source):
+  |sigma(pred/400) - sigma(target/400)|^NNUE_LOSS_POWER   (default power 2.6)
+  + optional SF position weighting via NNUE_POS_W1/NNUE_POS_W2 (default OFF = SF default)
+  + lambda is implicitly 1.0 (pure eval): our gamepack stores no game results, and SF's
+    own schedule ends at end-lambda 0.75-1.0 with much noisier shallow-search data.
+
 RUN (no args):
   NNUE_L1=512 NNUE_EPOCHS=1 NNUE_BS=131072 NNUE_LR=1e-3 NNUE_FEAT_THREADS=14 NNUE_GRAD_CLIP=1.0
   NNUE_VRAM_POS=180000000   # max positions per VRAM load (big frames split into parts)
@@ -66,6 +72,14 @@ BUF  = int(os.environ.get("NNUE_BUF", "2000000"))
 CAP  = int(os.environ.get("NNUE_VRAM_POS", "180000000"))   # max pos per VRAM load (big frames split)
 _gc = float(os.environ.get("NNUE_GRAD_CLIP", "1.0"))   # v6 fix (prevents gradient spikes)
 _wc = float(os.environ.get("NNUE_WCLAMP", "0"))          # OFF (fallback only; root cause = tail wd + amsgrad)
+# SF position weighting (nnue-pytorch model/nnue.py calculate_sf_loss):
+#   w = 1 + (2^w1 - 1) * ((pf-0.5)^2 * pf*(1-pf))^w2, pf = target win probability
+# Zero boost at dead-drawn (pf~0.5) and dead-won (pf~0/1); peaks (~1.1-1.4x) at
+# decisive-but-uncertain positions — the positions that actually decide games.
+# SF's own default is w1=0 (OFF), w2=0.5 (model/config.py LossParams). Kept OFF by
+# default here too: only enable with values you intend to A/B.
+_POS_W1 = float(os.environ.get("NNUE_POS_W1", "0"))    # 0 = OFF (SF default)
+_POS_W2 = float(os.environ.get("NNUE_POS_W2", "0.5"))  # SF default
 _CAL_STEPS = 60   # calibration steps to measure throughput
 _FEAT_CACHE = os.environ.get("NNUE_FEAT_CACHE", "0") == "1"  # OFF by default: single-pass
 # never re-reads a frame, and full-data caching would need ~2.2TB of /tmp. Opt-in
@@ -75,6 +89,7 @@ device = "cuda" if torch.cuda.is_available() else "cpu"
 OUT = os.environ.get("NNUE_OUT_NAME", "luminex_v6.nnue"); OUT_BASE = OUT[:-5] if OUT.endswith(".nnue") else OUT
 total_bytes = sum(os.path.getsize(f) for f in FRAMES)
 print(f"per-frame train (OOM-safe): {len(FRAMES)} frames, {total_bytes/1e9:.2f}GB, L1={L1} bs={BS} cap={CAP:,} feat_threads={NTH} grad-clip={_gc} device={device}", flush=True)
+print(f"loss: power={os.environ.get('NNUE_LOSS_POWER', '2.6')} in sigmoid(cp/{SCALE:.0f}) space, pos-weight w1={_POS_W1} w2={_POS_W2}{' (OFF)' if _POS_W1 == 0 else ''}, lambda=1.0 (pure eval — gamepack has no game results; SF end-lambda practice)", flush=True)
 
 model = LNNUE(L1=L1).to(device)
 gstep = 0  # must exist before resume check (fresh runs would NameError otherwise)
@@ -356,7 +371,16 @@ for epoch in range(EPOCHS):
                         # get annihilated by gradient clipping (the bug that caused
                         # loss to flatline at ~230K with zero effective learning)
                         _sdiff = (torch.sigmoid(pred / SCALE) - torch.sigmoid(ti / SCALE)).abs()
-                        loss = (_sdiff ** _POWER).mean()
+                        _pterms = _sdiff ** _POWER
+                        if _POS_W1 > 0:
+                            # SF position weighting, weight-normalized exactly like
+                            # SF: loss = (terms*w).sum()/w.sum() — not w*mean(), so
+                            # the loss scale stays comparable to the unweighted run.
+                            _pf = torch.sigmoid(ti / SCALE)
+                            _pw = 1.0 + (2.0 ** _POS_W1 - 1.0) * ((_pf - 0.5) ** 2 * _pf * (1.0 - _pf)) ** _POS_W2
+                            loss = (_pterms * _pw).sum() / _pw.sum()
+                        else:
+                            loss = _pterms.mean()
                     else:
                         loss = ((torch.sigmoid(pred / SCALE) - torch.sigmoid(ti / SCALE)) ** 2).mean()
                 if not torch.isfinite(loss):
