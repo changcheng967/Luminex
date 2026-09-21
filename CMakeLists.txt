@@ -125,7 +125,10 @@ if(BUILD_FEATURIZER)
         src/transposition.cpp
     )
     target_include_directories(luminex-featurize PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
-    target_compile_definitions(luminex-featurize PRIVATE _CRT_SECURE_NO_WARNINGS)
+    # RAW_MOVES: gamepack frames store u16 raw moves (lc0pack format, the only
+    # live data path). Without this the featurizer would read u8 move indices
+    # and silently misparse every frame.
+    target_compile_definitions(luminex-featurize PRIVATE RAW_MOVES _CRT_SECURE_NO_WARNINGS)
 endif()
 
 if(BUILD_EVALTRACE)
