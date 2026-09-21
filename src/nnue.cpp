@@ -76,12 +76,21 @@ static inline int32_t dot_i8(const int8_t* w, const uint8_t* a, int n) {
 // VPDPBUSD: 64 uint8 × int8 → 16 int32 accumulate in ONE instruction.
 // ~6x throughput vs AVX2 (2x width + 3x fewer instructions per MAC chunk).
 static inline int32_t dot_i8_vnni(const int8_t* w, const uint8_t* a, int n) {
-    __m512i acc = _mm512_setzero_si512();
+    // 4 independent accumulator chains: a single chain serializes on vpdpbusd
+    // latency (~4-5 cyc), so a 1024-byte L2 dot alone costs ~70+ cycles of pure
+    // stalls. Integer adds are associative -> the result is bit-identical.
+    __m512i acc0 = _mm512_setzero_si512(), acc1 = _mm512_setzero_si512(),
+            acc2 = _mm512_setzero_si512(), acc3 = _mm512_setzero_si512();
     int i = 0;
+    for (; i + 256 <= n; i += 256) {
+        acc0 = _mm512_dpbusd_epi32(acc0, _mm512_loadu_si512((const __m512i*)(a + i)),       _mm512_loadu_si512((const __m512i*)(w + i)));
+        acc1 = _mm512_dpbusd_epi32(acc1, _mm512_loadu_si512((const __m512i*)(a + i + 64)),  _mm512_loadu_si512((const __m512i*)(w + i + 64)));
+        acc2 = _mm512_dpbusd_epi32(acc2, _mm512_loadu_si512((const __m512i*)(a + i + 128)), _mm512_loadu_si512((const __m512i*)(w + i + 128)));
+        acc3 = _mm512_dpbusd_epi32(acc3, _mm512_loadu_si512((const __m512i*)(a + i + 192)), _mm512_loadu_si512((const __m512i*)(w + i + 192)));
+    }
     for (; i + 64 <= n; i += 64)
-        acc = _mm512_dpbusd_epi32(acc,
-            _mm512_loadu_si512((const __m512i*)(a + i)),
-            _mm512_loadu_si512((const __m512i*)(w + i)));
+        acc0 = _mm512_dpbusd_epi32(acc0, _mm512_loadu_si512((const __m512i*)(a + i)), _mm512_loadu_si512((const __m512i*)(w + i)));
+    __m512i acc = _mm512_add_epi32(_mm512_add_epi32(acc0, acc1), _mm512_add_epi32(acc2, acc3));
     int32_t sum = _mm512_reduce_add_epi32(acc);
     for (; i < n; ++i) sum += (int32_t)w[i] * (int32_t)a[i];
     return sum;
@@ -285,7 +294,14 @@ static inline void add_feature(Accumulator& a, int p, int ksq, int sq, Piece pie
     int idx = halfka_idx(p == 0, ksq, sq, piece);
     const int16_t* w = &ft_w[static_cast<size_t>(idx) * g_L1];
     float* acc = a.v[p];
-#if defined(__AVX2__)
+#if defined(__AVX512F__)
+    const __m512 winv = _mm512_set1_ps(FT_WINV);
+    for (int l = 0; l < g_L1; l += 16) {
+        __m256i w16 = _mm256_loadu_si256((const __m256i*)(w + l)); // 16 int16
+        __m512 wf = _mm512_mul_ps(_mm512_cvtepi32_ps(_mm512_cvtepi16_epi32(w16)), winv);
+        _mm512_storeu_ps(acc + l, _mm512_add_ps(_mm512_loadu_ps(acc + l), wf));
+    }
+#elif defined(__AVX2__)
     const __m256 winv = _mm256_set1_ps(FT_WINV);
     for (int l = 0; l < g_L1; l += 8) {
         __m128i w8 = _mm_loadu_si128((const __m128i*)(w + l));   // 8 int16
@@ -301,7 +317,14 @@ static inline void remove_feature(Accumulator& a, int p, int ksq, int sq, Piece 
     int idx = halfka_idx(p == 0, ksq, sq, piece);
     const int16_t* w = &ft_w[static_cast<size_t>(idx) * g_L1];
     float* acc = a.v[p];
-#if defined(__AVX2__)
+#if defined(__AVX512F__)
+    const __m512 winv = _mm512_set1_ps(FT_WINV);
+    for (int l = 0; l < g_L1; l += 16) {
+        __m256i w16 = _mm256_loadu_si256((const __m256i*)(w + l)); // 16 int16
+        __m512 wf = _mm512_mul_ps(_mm512_cvtepi32_ps(_mm512_cvtepi16_epi32(w16)), winv);
+        _mm512_storeu_ps(acc + l, _mm512_sub_ps(_mm512_loadu_ps(acc + l), wf));
+    }
+#elif defined(__AVX2__)
     const __m256 winv = _mm256_set1_ps(FT_WINV);
     for (int l = 0; l < g_L1; l += 8) {
         __m128i w8 = _mm_loadu_si128((const __m128i*)(w + l));
@@ -318,7 +341,20 @@ static void refresh_perspective(const Position& pos, Accumulator& a, int p) {
     bool white_pov = (p == 0);
     int ksq = static_cast<int>(pos.king_sq(white_pov ? WHITE : BLACK));
     float* acc = a.v[p];
-#if defined(__AVX2__)
+#if defined(__AVX512F__)
+    const __m512 winv = _mm512_set1_ps(FT_WINV);
+    for (int l = 0; l < g_L1; l += 16) _mm512_storeu_ps(acc + l, _mm512_loadu_ps(&ft_b[l]));
+    for (int sq = 0; sq < NUM_SQ; ++sq) {
+        Piece pc = pos.piece_on(Square(sq));
+        if (pc == NO_PIECE) continue;
+        const int16_t* w = &ft_w[static_cast<size_t>(halfka_idx(white_pov, ksq, sq, pc)) * g_L1];
+        for (int l = 0; l < g_L1; l += 16) {
+            __m256i w16 = _mm256_loadu_si256((const __m256i*)(w + l));
+            __m512 wf = _mm512_mul_ps(_mm512_cvtepi32_ps(_mm512_cvtepi16_epi32(w16)), winv);
+            _mm512_storeu_ps(acc + l, _mm512_add_ps(_mm512_loadu_ps(acc + l), wf));
+        }
+    }
+#elif defined(__AVX2__)
     const __m256 winv = _mm256_set1_ps(FT_WINV);
     for (int l = 0; l < g_L1; l += 8) _mm256_storeu_ps(acc + l, _mm256_loadu_ps(&ft_b[l]));
     for (int sq = 0; sq < NUM_SQ; ++sq) {
