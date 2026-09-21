@@ -53,6 +53,13 @@ if not FRAMES:
         subprocess.run(f"tar xf '{tar}' -C '{FRAMES_DIR}'", shell=True)
         FRAMES = sorted(glob.glob(os.path.join(FRAMES_DIR, "frame_*.zst")) + glob.glob(os.path.join(FRAMES_DIR, "frame_*.xz")))
 assert FRAMES, "no frame_*.zst/.xz found and no gamepack.tar"
+# Pass-2+ (warm restart): shuffle frame order to break the temporal bias of the
+# newest-first dataset (with cosine annealing, the LAST frames dominate the
+# low-LR consolidation phase). Deterministic seed => reproducible order.
+if os.environ.get("NNUE_FRAME_SHUFFLE", "0") == "1":
+    import random as _rnd
+    _rnd.Random(42).shuffle(FRAMES)
+    print(f"[shuffle] frame order shuffled (seed 42): first={os.path.basename(FRAMES[0])} last={os.path.basename(FRAMES[-1])}", flush=True)
 if any(f.endswith(".zst") for f in FRAMES) and not os.path.exists("/usr/bin/zstd"):
     subprocess.run("apt-get install -y zstd >/dev/null 2>&1 || pip install -q zstandard", shell=True)
 
@@ -229,7 +236,14 @@ if _FEAT_CACHE:
                   f"(ENOSPC mid-frame would kill the run)", flush=True)
     except Exception:
         pass
-T_MAX = min(_total_steps, EPOCHS * est_pos // BS)
+# Warm-restart (pass 2+) knobs:
+#   NNUE_T_MAX_STEPS — fix the cosine horizon explicitly. Recommended for pass 2:
+#     set ~= one full pass in steps (~34K here) so LR anneals NNUE_LR -> 0 exactly
+#     at data end (the budget-based refinement under-anneals when data < budget).
+_T_MAX_FIXED = int(os.environ["NNUE_T_MAX_STEPS"]) if os.environ.get("NNUE_T_MAX_STEPS") else 0
+T_MAX = _T_MAX_FIXED if _T_MAX_FIXED > 0 else min(_total_steps, EPOCHS * est_pos // BS)
+_SEG0 = gstep   # resumed runs: the cosine segment is THIS session's steps (the
+                # LambdaLR counter restarts at 0 each process), not global gstep.
 # LR schedule: clamped cosine (LambdaLR, never rebounds past T_MAX).
 # CosineAnnealingLR rebounds after T_MAX (PyTorch behavior); LambdaLR with
 # min(1.0, step/T_MAX) clamps at zero permanently.
@@ -446,10 +460,11 @@ for epoch in range(EPOCHS):
         # Refine the schedule denominator from THIS frame's marginal rate (excludes the
         # slow startup, which would skew the projection low and kill the LR early), so
         # the cosine completes exactly at budget-hit instead of saving at high LR.
-        if BUDGET > 0:
+        if BUDGET > 0 and not _T_MAX_FIXED:
             _mrate = (gstep - _f0_step) / max(time.time() - _f0_t, 1.0)
-            _proj = int(gstep + _mrate * max(0.0, BUDGET - (time.time() - t0) - 60))
-            _proj = max(gstep + 50, min(_proj, _total_steps))
+            _sess = gstep - _SEG0   # session-local steps (warm-restart segment)
+            _proj = int(_sess + _mrate * max(0.0, BUDGET - (time.time() - t0) - 60))
+            _proj = max(_sess + 50, min(_proj, _total_steps))
             if abs(_proj - _T_MAX_LIVE) > _T_MAX_LIVE // 20:
                 print(f"  [sched] T_max -> {_proj:,} steps (measured {_mrate:.1f} st/s)", flush=True)
             _T_MAX_LIVE = _proj
