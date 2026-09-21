@@ -20,41 +20,25 @@
 *.out
 *.app
 
-# NNUE files (not used)
+# Neural-net artifacts (kept out of git; ships via releases/datasets)
 *.bin
 *.pt
+*.nnue
 
 # Build directories
 build/
-build_debug/
-build_debug2/
-build_release/
+build_*/
+build-*/
 
 # IDE and tooling
 .cache/
 .vs/
 .vscode/
 .idea/
-
-# Claude Code
 .claude/
 CLAUDE.md
-
-# Test games and logs
-*.pgn
-*.txt
-!README.md
-!src/*.txt
-*.sh
-*.bat
-*.py
-*.cpp
-!src/*.cpp
-build-check/
-build-check/
-build_check/
-build_ninja/
-.claude/
-.git-rewrite/
 __pycache__/
-nnue/sample_fens.txt
+
+# Local test artifacts
+*.pgn
+*.log
