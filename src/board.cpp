@@ -598,20 +598,27 @@ bool Position::do_move(Move m) {
     ++game_ply_;
 
     // Debug-only validation: check move flags match board state
-    // In release builds, moves from generator + legal() guarantee correctness
+    // In release builds, moves from generator + legal() guarantee correctness.
+    // NOTE: the featurizer's data path DEPENDS on the return-false behavior to
+    // skip the ~0.006% of anomalously-encoded games — compile with care. The
+    // stderr banners are noise for production runs, so they're gated behind
+    // NNUE_VERBOSE_MOVE_ERR=1 (skips still happen and are counted downstream).
 #ifndef NDEBUG
+    static const bool verbose_move_err = std::getenv("NNUE_VERBOSE_MOVE_ERR") != nullptr;
     PieceType piece_at_to = piece_type_on(to);
     bool piece_at_to_is_enemy = (board[to] != NO_PIECE && color_of_piece(board[to]) == them);
     bool move_flag_says_capture = m.is_capture();
 
     if (piece_at_to_is_enemy && !move_flag_says_capture && !m.is_promotion()) {
-        std::cerr << "\n=== MOVE FLAG ERROR in do_move ===\n";
-        std::cerr << "Move: " << m << " (" << from << " to " << to << ")\n";
-        std::cerr << "Enemy piece at destination but not flagged as capture!\n";
-        std::cerr << "Piece at " << to << ": " << int(board[to]) << "\n";
-        std::cerr << "Move flags: 0x" << std::hex << m.flags() << std::dec << "\n";
-        std::cerr << "Undoing state advance and aborting.\n";
-        std::cerr << "====================================\n";
+        if (verbose_move_err) {
+            std::cerr << "\n=== MOVE FLAG ERROR in do_move ===\n";
+            std::cerr << "Move: " << m << " (" << from << " to " << to << ")\n";
+            std::cerr << "Enemy piece at destination but not flagged as capture!\n";
+            std::cerr << "Piece at " << to << ": " << int(board[to]) << "\n";
+            std::cerr << "Move flags: 0x" << std::hex << m.flags() << std::dec << "\n";
+            std::cerr << "Undoing state advance and aborting.\n";
+            std::cerr << "====================================\n";
+        }
         st_ply--;
         st_ = &state_stack[st_ply];
         game_ply_--;
@@ -619,11 +626,13 @@ bool Position::do_move(Move m) {
     }
 
     if (!piece_at_to_is_enemy && piece_at_to != PT_NONE && color_of_piece(board[to]) == us) {
-        std::cerr << "\n=== CAPTURING OWN PIECE in do_move ===\n";
-        std::cerr << "Move: " << m << " (" << from << " to " << to << ")\n";
-        std::cerr << "Friendly piece at destination!\n";
-        std::cerr << "Undoing state advance and aborting.\n";
-        std::cerr << "====================================\n";
+        if (verbose_move_err) {
+            std::cerr << "\n=== CAPTURING OWN PIECE in do_move ===\n";
+            std::cerr << "Move: " << m << " (" << from << " to " << to << ")\n";
+            std::cerr << "Friendly piece at destination!\n";
+            std::cerr << "Undoing state advance and aborting.\n";
+            std::cerr << "====================================\n";
+        }
         st_ply--;
         st_ = &state_stack[st_ply];
         game_ply_--;
