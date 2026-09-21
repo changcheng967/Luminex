@@ -47,13 +47,28 @@ Luminex has two interchangeable evaluation functions, selected at runtime via `U
 - **NNUE (optional)** — a HalfKAv2_hg feature transformer (L1=512) feeding SCReLU
   activations through int8-quantized L2/L3/output layers (L2=16, L3=32), inferred with
   AVX-512 VNNI (`VPDPBUSD`). The accumulator is maintained incrementally on make/unmake,
-  so only moved-piece feature deltas are applied per node. Trained on 280M positions
-  labeled by a strong evaluator.
+  so only moved-piece feature deltas are applied per node.
 
 On AVX-512/VNNI hardware the NNUE path reaches ~990K single-threaded nodes/sec and is
 strength-even with HCE at bullet time controls while being substantially stronger at
 equal search depth. If no network is loaded (or the CPU lacks AVX2), the engine
 transparently falls back to HCE.
+
+## NNUE Training Pipeline
+
+The nets are trained on a self-built dataset derived from Leela Chess Zero's test91
+self-play data: 4.29B positions / ~36.8M games / 132 gamepack frames (8.0 GB),
+converted by `src/lc0pack.cpp` (Leela v6 training chunks → compact gamepack frames
+with raw moves and delta-encoded evals). Leela's deep-search Q values keep the
+natural fat-tail eval distribution (13.5% of positions beyond ±1000cp) — the property
+that made fishtest-style thin-tail data fail for this engine.
+
+Training uses a power-2.6 loss in sigmoid (win-probability) space — the same family
+as Stockfish's `nnue-pytorch` and Berserk's trainer — with optional SF-style position
+weighting. One trainer pass featurizes frames on the fly through `luminex-featurize`
+(no intermediate tensor storage). Scripts live in `nnue/openi_upload/`;
+`src/verify_frames.c` validates every frame (all 132 pass byte-exact closure).
+Data acquisition used the overlapped download+pack pipeline in `nnue/pipeline5.sh`.
 
 ## Build
 
@@ -72,7 +87,7 @@ engine builds and runs using the AVX2 int8 path (or falls back to HCE if AVX2 is
 ```
 src/
   luminex.h          # Core types and constants
-  types.h            # Value types, enums
+  types.h            # Value types, enums, MoveFlag encoding
   bitboard.h         # Bitboard operations
   magic.cpp          # Magic bitboard generation
   board.h / cpp      # Position representation, make/unmake
@@ -81,8 +96,20 @@ src/
   nnue.h / cpp       # Optional NNUE evaluation + incremental accumulator
   search.h / cpp     # PVS search with LMR, phased move generation
   transposition.h / cpp # Transposition table
+  book.h / cpp       # Polyglot opening book
   uci.h / cpp        # UCI protocol
   main.cpp           # Entry point
+
+  # NNUE data pipeline (optional CMake targets)
+  lc0pack.cpp        # Leela v6 training chunks -> gamepack frames (BUILD_LC0PACK)
+  featurize.cpp      # gamepack frames -> training tensors, on the fly (BUILD_FEATURIZER)
+  verify_frames.c    # exhaustive frame integrity verifier (BUILD_VERIFY)
+  eval_trace.cpp     # HCE eval tracing for tuning (BUILD_EVALTRACE)
+
+nnue/
+  pipeline5.sh       # overlapped download+pack pipeline for the test91 dataset
+  mae_probe.py       # net evaluation probe (cross-era MAE comparison)
+  openi_upload/      # training scripts (per-frame streaming trainer, model, quantizer)
 ```
 
 ## License

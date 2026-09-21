@@ -13,6 +13,11 @@
 #include <string.h>
 #include <stdint.h>
 
+#ifdef _WIN32
+  #define popen  _popen   // MSVC POSIX names
+  #define pclose _pclose
+#endif
+
 typedef struct {
     uint64_t games, positions, evals;
     uint64_t h[5];        // <=100, <=300, <=1000, >1000, zero
