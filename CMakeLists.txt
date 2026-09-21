@@ -108,30 +108,10 @@ if(WIN32)
 endif()
 
 # === Tuner target ===
-option(BUILD_TUNER "Build texel tuner" OFF)
-option(BUILD_DATASET_GEN "Build dataset generator" OFF)
 option(BUILD_FEATURIZER "Build Game-Pack NNUE featurizer" OFF)
-option(BUILD_ENCODER "Build Game-Pack PGN encoder" OFF)
 option(BUILD_EVALTRACE "Build HCE eval trace tool" OFF)
-
-add_executable(luminex-merge src/merge_frames.cpp)
-target_include_directories(luminex-merge PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
-target_compile_definitions(luminex-merge PRIVATE _CRT_SECURE_NO_WARNINGS)
-
-if(BUILD_ENCODER)
-    add_executable(luminex-encode
-        src/encode.cpp
-        src/tuner_params.cpp
-        src/board.cpp
-        src/movegen.cpp
-        src/evaluation.cpp
-        src/nnue.cpp
-        src/magic.cpp
-        src/transposition.cpp
-    )
-    target_include_directories(luminex-encode PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
-    target_compile_definitions(luminex-encode PRIVATE _CRT_SECURE_NO_WARNINGS)
-endif()
+option(BUILD_LC0PACK "Build Leela-chunk -> gamepack converter (needs zlib)" OFF)
+option(BUILD_VERIFY "Build gamepack frame verifier" OFF)
 
 if(BUILD_FEATURIZER)
     add_executable(luminex-featurize
@@ -163,54 +143,20 @@ if(BUILD_EVALTRACE)
     target_compile_definitions(luminex-evaltrace PRIVATE _CRT_SECURE_NO_WARNINGS)
 endif()
 
-if(BUILD_DATASET_GEN)
-    add_executable(luminex-dataset-gen
-        src/dataset_gen.cpp
-        src/tuner_params.cpp
-        src/board.cpp
-        src/movegen.cpp
-        src/evaluation.cpp
-        src/nnue.cpp
-        src/magic.cpp
-        src/transposition.cpp
+
+
+if(BUILD_LC0PACK)
+    find_package(ZLIB REQUIRED)
+    add_executable(luminex-lc0pack
+        src/lc0pack.cpp
     )
-    target_include_directories(luminex-dataset-gen PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
-    target_compile_definitions(luminex-dataset-gen PRIVATE _CRT_SECURE_NO_WARNINGS)
+    target_include_directories(luminex-lc0pack PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
+    target_link_libraries(luminex-lc0pack PRIVATE ZLIB::ZLIB)
+    target_compile_definitions(luminex-lc0pack PRIVATE _CRT_SECURE_NO_WARNINGS)
 endif()
 
-if(BUILD_TUNER)
-    find_package(OpenMP)
-    add_executable(luminex-tuner
-        src/tuner.cpp
-        src/tuner_params.cpp
-        src/board.cpp
-        src/movegen.cpp
-        src/evaluation.cpp
-        src/nnue.cpp
-        src/magic.cpp
-        src/transposition.cpp
-    )
-    target_include_directories(luminex-tuner PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
-    target_compile_definitions(luminex-tuner PRIVATE _CRT_SECURE_NO_WARNINGS)
-    if(OpenMP_CXX_FOUND)
-        target_link_libraries(luminex-tuner PRIVATE OpenMP::OpenMP_CXX)
-    endif()
-
-    # v4 joint Adam tuner (PST + mobility + bonuses, analytic gradients)
-    add_executable(tuner_v4
-        src/tuner_v4.cpp
-        src/tuner_params.cpp
-        src/board.cpp
-        src/movegen.cpp
-        src/evaluation.cpp
-        src/nnue.cpp
-        src/magic.cpp
-        src/transposition.cpp
-    )
-    target_include_directories(tuner_v4 PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
-    target_compile_definitions(tuner_v4 PRIVATE _CRT_SECURE_NO_WARNINGS)
-    if(OpenMP_CXX_FOUND)
-        target_link_libraries(tuner_v4 PRIVATE OpenMP::OpenMP_CXX)
-    endif()
+if(BUILD_VERIFY)
+    enable_language(C)
+    add_executable(verify_frames src/verify_frames.c)
+    target_compile_definitions(verify_frames PRIVATE _CRT_SECURE_NO_WARNINGS)
 endif()
-
