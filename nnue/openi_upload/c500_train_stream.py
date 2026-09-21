@@ -198,6 +198,11 @@ else:
 _total_steps = int(_avail_sec * _sps)
 _total_visits = _total_steps * BS
 _subset_pos = _total_visits   # single pass: every frame the budget could plausibly cover
+# An explicitly pinned horizon (NNUE_T_MAX_STEPS) means the user pinned the PASS —
+# the budget-based trim must not silently drop frames from it. The wall-clock
+# BUDGET break still guards the run.
+if _T_MAX_FIXED > 0:
+    _subset_pos = int(8e9)  # effectively unlimited: est is ~1.9x real positions anyway
 # select frames until subset is filled
 _subset_frames = []; _subset_bytes = 0
 for f in FRAMES:
