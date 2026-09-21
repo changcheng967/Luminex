@@ -102,6 +102,13 @@ add_executable(luminex ${SOURCES} ${HEADERS})
 
 target_include_directories(luminex PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
 
+# Optimize for the BUILD machine. The NNUE AVX-512/VNNI paths only compile in
+# with the right -march level; measured +12% nps on Xeon 2.6GHz (688K -> 770K).
+option(LUMINEX_NATIVE "Optimize for the build machine (-march=native)" OFF)
+if(LUMINEX_NATIVE)
+    target_compile_options(luminex PRIVATE -march=native)
+endif()
+
 # Platform specific libraries
 if(WIN32)
     target_link_libraries(luminex PRIVATE)
