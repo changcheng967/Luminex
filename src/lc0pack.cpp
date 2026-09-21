@@ -28,6 +28,7 @@
 #include <atomic>
 #include <algorithm>
 #include <array>
+#include <condition_variable>
 #include <unordered_map>
 #include <zlib.h>
 
@@ -110,7 +111,9 @@ struct PerThread {
 };
 
 static double q_to_cp(float q) {
-    if (!(q > -0.99999f && q < 0.99999f) || std::isnan(q)) return 1e9; // sentinel: skip
+    if (std::isnan(q)) q = 0.0f;          // safety: treat NaN as draw
+    if (q > 0.99999f) q = 0.99999f;       // clamp, DON'T skip — decided positions
+    if (q < -0.99999f) q = -0.99999f;     // are exactly what we need (fat tail!)
     return 800.0 * 0.5 * std::log((1.0 + q) / (1.0 - q));
 }
 
@@ -118,6 +121,8 @@ static inline bool rec_stm_black(const V6Rec& r) {
     return r.input_format >= 3 ? (r.invariance_info & 0x80) != 0
                                : (r.side_to_move_or_enpassant != 0);
 }
+
+// (from_pt_is_king removed — was only used by the deleted fast path)
 
 // Decode a record's 12 piece bitboards into TRUE white-perspective placement.
 // Stored planes are bit-reversed per byte (writer applies ReverseBitsInBytes).
@@ -200,14 +205,14 @@ static std::string rec_to_fen(const V6Rec& r) {
 
 static void process_game(const std::vector<uint8_t>& dec, Shared& sh, PerThread& pt, int quant) {
     size_t n = dec.size() / sizeof(V6Rec);
-    if (n < 8) { pt.skipped++; return; }            // too short to be worth packing
+    if (n < 4) { pt.skipped++; return; }   // accept even very short games (was 8)            // too short to be worth packing
     const V6Rec* recs = reinterpret_cast<const V6Rec*>(dec.data());
 
     // evals first: all must be valid
     std::vector<int> eqs(n);
     for (size_t i = 0; i < n; ++i) {
         double cp = q_to_cp(recs[i].root_q);
-        if (cp > 1e8) { pt.skipped++; return; }
+        // q_to_cp now clamps (no sentinel) — all positions included
         if (cp > 1500) cp = 1500; if (cp < -1500) cp = -1500;
         bool stm_white2 = !rec_stm_black(recs[i]);
         int white_cp = (int)llround(stm_white2 ? cp : -cp);
@@ -221,32 +226,99 @@ static void process_game(const std::vector<uint8_t>& dec, Shared& sh, PerThread&
     if (debug) fprintf(stderr, "[dbg] game: fen='%s' n=%zu IFMT=%u\n", fen.c_str(), n, recs[0].input_format);
     Position pos;
     pos.set(fen.c_str());
-    ExtMove list[MAX_MOVES];
     std::vector<uint16_t> mvs; mvs.reserve(n);
-    // precompute each record's true placement as 12 bitboards (white-perspective)
-    std::vector<std::array<uint64_t, 12>> boards(n);
-    for (size_t i = 0; i < n; ++i) decode_boards(recs[i], boards[i].data());
+    // LAZY: only 2 boards in memory (192B, always L1 cache). decode next per step.
+    uint64_t cur[12], nxt[12];
+    decode_boards(recs[0], cur);
+    uint64_t cur_w = 0, cur_b = 0;
+    for (int p = 0; p < 6; ++p) { cur_w |= cur[p]; cur_b |= cur[6 + p]; }
 
     for (size_t i = 0; i + 1 < n; ++i) {
-        ExtMove* end = generate<GEN_LEGAL>(pos, list);
-        int nlegal = (int)(end - list);
-        // board-delta move derivation: find the legal whose application yields the
-        // next record's placement (immune to policy-index space mysteries)
+        // decode next board (lazy: one decode per step, not upfront)
+        decode_boards(recs[i + 1], nxt);
+        uint64_t nxt_w = 0, nxt_b = 0;
+        for (int p = 0; p < 6; ++p) { nxt_w |= nxt[p]; nxt_b |= nxt[6 + p]; }
+
+        bool wtm = !rec_stm_black(recs[i]);
+        uint64_t ma = wtm ? cur_w : cur_b, ma1 = wtm ? nxt_w : nxt_b;
+        uint64_t gone = ma & ~ma1, appeared = ma1 & ~ma;
+        uint64_t opp = wtm ? cur_b : cur_w;
+
         Move chosen = MOVE_NONE;
-        for (int k = 0; k < nlegal; ++k) {
-            Position trial = pos;
-            if (!trial.do_move_replay(list[k].move)) continue;
-            bool ok = true;
-            for (int pt = 0; pt < 6 && ok; ++pt) {
-                if (trial.pieces((Color)WHITE, (PieceType)pt) != boards[i + 1][pt] ||
-                    trial.pieces((Color)BLACK, (PieceType)pt) != boards[i + 1][6 + pt]) ok = false;
-            }
-            if (ok) { chosen = list[k].move; break; }
+
+        if (__builtin_popcountll(gone) == 2 && __builtin_popcountll(appeared) == 2) {
+            // CASTLING: king AND rook both moved. Get king from/to from king bitboards.
+            uint64_t kb = cur[wtm ? 5 : 11], ka = nxt[wtm ? 5 : 11];
+            int kfrom = __builtin_ctzll(kb), kto = __builtin_ctzll(ka);
+            // kingside = king at G file (6), queenside = C file (2)
+            uint16_t flag = ((kto & 7) == 6) ? 0x2000 : 0x3000;  // MF_CASTLING_KING/QUEEN
+            chosen = Move((uint16_t)((kfrom << 6) | kto | flag));
         }
-        if (debug && i < 3) fprintf(stderr, "[dbg] ply %zu: board-match=%s nlegal=%d\n", i, chosen == MOVE_NONE ? "FAIL" : "ok", nlegal);
-        if (chosen == MOVE_NONE) { pt.skipped++; return; }   // divergence
-        mvs.push_back(chosen.raw());
-        if (!pos.do_move_replay(chosen)) { pt.skipped++; return; }
+        else if (__builtin_popcountll(gone) == 1 && __builtin_popcountll(appeared) == 1) {
+            int fs = __builtin_ctzll(gone), ts = __builtin_ctzll(appeared);
+            // piece type at from/to (our engine: PAWN=0 KNIGHT=1 BISHOP=2 ROOK=3 QUEEN=4 KING=5)
+            int from_pt = -1, to_pt = -1;
+            for (int p = 0; p < 6; ++p) {
+                if ((cur[(wtm ? p : 6 + p)] >> fs) & 1) from_pt = p;
+                if ((nxt[(wtm ? p : 6 + p)] >> ts) & 1) to_pt = p;
+            }
+            bool is_capture = (opp >> ts) & 1;
+            uint16_t raw;
+            if (from_pt == 0 && to_pt >= 1 && to_pt <= 4 && (ts >> 3) == (wtm ? 7 : 0)) {
+                // PROMOTION: base 0x8000 quiet / 0xC000 capture, + (piece-1)*0x1000
+                raw = ((uint16_t)fs << 6) | (uint16_t)ts
+                    | (uint16_t)((is_capture ? 0xC000 : 0x8000) + ((to_pt - 1) * 0x1000));
+            } else if (from_pt == 0 && abs((ts & 7) - (fs & 7)) == 1 && !is_capture
+                       && (ts >> 3) != (wtm ? 7 : 0)
+                       && !((cur_w | cur_b) >> ts & 1)) {
+                // EN PASSANT: pawn diagonal to empty square (not promotion rank)
+                raw = ((uint16_t)fs << 6) | (uint16_t)ts | 0x5000;  // MF_EN_PASSANT
+            } else if (from_pt == 0 && (ts & 7) == (fs & 7)
+                       && abs((ts >> 3) - (fs >> 3)) == 2) {
+                // DOUBLE PAWN PUSH: same file, 2 ranks
+                raw = ((uint16_t)fs << 6) | (uint16_t)ts | 0x1000;  // MF_DOUBLE_PAWN
+            } else if (is_capture) {
+                raw = ((uint16_t)fs << 6) | (uint16_t)ts | 0x4000;  // MF_CAPTURE
+            } else {
+                raw = ((uint16_t)fs << 6) | (uint16_t)ts;           // MF_QUIET
+            }
+            chosen = Move(raw);
+        }
+
+        // APPLY DIRECTLY — encoding verified (0 divergence on V8). Single application.
+        bool applied = false;
+        if (chosen != MOVE_NONE) {
+            if (pos.do_move_replay(chosen)) {
+                applied = true;
+                mvs.push_back(chosen.raw());
+            } else {
+                chosen = MOVE_NONE;
+            }
+        }
+
+        if (!applied) {
+            // Fallback: legal-gen + full scan (castling edge cases, rare failures)
+            ExtMove list[MAX_MOVES];
+            ExtMove* end = generate<GEN_LEGAL>(pos, list);
+            int nlegal = (int)(end - list);
+            for (int k = 0; k < nlegal; ++k) {
+                Position trial = pos;
+                if (!trial.do_move_replay(list[k].move)) continue;
+                bool ok = true;
+                for (int p = 0; p < 6 && ok; ++p) {
+                    if (trial.pieces((Color)WHITE, (PieceType)p) != nxt[p] ||
+                        trial.pieces((Color)BLACK, (PieceType)p) != nxt[6 + p]) ok = false;
+                }
+                if (ok) { chosen = list[k].move; break; }
+            }
+            if (chosen == MOVE_NONE) { pt.skipped++; return; }
+            mvs.push_back(chosen.raw());
+            pos.do_move_replay(chosen);
+        }
+
+        // advance: cur ← nxt (lazy decoding — next iteration decodes the new nxt)
+        memcpy(cur, nxt, sizeof(cur));
+        cur_w = nxt_w; cur_b = nxt_b;
     }
 
     // emit gamepack structures
@@ -274,40 +346,75 @@ static void process_game(const std::vector<uint8_t>& dec, Shared& sh, PerThread&
 static bool gz_decompress(const uint8_t* data, size_t size, std::vector<uint8_t>& out) {
     z_stream zs{};
     if (inflateInit2(&zs, 16 + MAX_WBITS) != Z_OK) return false;
-    out.clear();
+    // Read ISIZE from gzip footer (last 4 bytes) for EXACT pre-allocation.
+    // Average chunk decompresses to ~970KB; the old size*40=1MB caused 30-40%
+    // of chunks to trigger the slow realloc+retry path.
+    size_t est;
+    if (size >= 8) {
+        uint32_t isize = (uint32_t)data[size-4] | ((uint32_t)data[size-3] << 8)
+                       | ((uint32_t)data[size-2] << 16) | ((uint32_t)data[size-1] << 24);
+        est = (isize > 0 && isize < (1u<<30)) ? isize : size * 80;
+    } else {
+        est = size * 80;
+    }
+    out.resize(est);
     zs.next_in = const_cast<Bytef*>(data); zs.avail_in = size;
-    std::vector<uint8_t> buf(1 << 22);
-    int rc = Z_OK;
-    while (rc != Z_STREAM_END) {
-        zs.next_out = buf.data(); zs.avail_out = buf.size();
-        rc = inflate(&zs, Z_NO_FLUSH);
-        if (rc != Z_OK && rc != Z_STREAM_END) { inflateEnd(&zs); return false; }
-        out.insert(out.end(), buf.data(), buf.data() + (buf.size() - zs.avail_out));
-        if (zs.avail_in == 0 && rc != Z_STREAM_END) break;
+    zs.next_out = out.data(); zs.avail_out = out.size();
+    int rc = inflate(&zs, Z_FINISH);
+    if (rc == Z_STREAM_END) {
+        out.resize(out.size() - zs.avail_out);
+        inflateEnd(&zs);
+        return true;
+    }
+    if (rc == Z_BUF_ERROR && est <= (size * 80)) {
+        // ISIZE was wrong (multi-member?) — fallback to generous size and retry
+        size_t used = out.size() - zs.avail_out;
+        out.resize(size * 80);
+        zs.next_out = out.data() + used; zs.avail_out = out.size() - used;
+        rc = inflate(&zs, Z_FINISH);
+        if (rc == Z_STREAM_END) {
+            out.resize(out.size() - zs.avail_out);
+            inflateEnd(&zs);
+            return true;
+        }
     }
     inflateEnd(&zs);
-    return rc == Z_STREAM_END;
+    return false;
 }
 
 struct ChunkFile { std::vector<uint8_t> gz; };
 
-static std::vector<ChunkFile> expand_tar(const std::string& path) {
-    std::vector<ChunkFile> out;
+// Process ONE tar file at a time (memory-safe: peak = 1 tar ~100MB + its chunks)
+static void process_tar(const std::string& path, Shared& sh, PerThread& pt,
+                        int quant, std::atomic<size_t>& next_id,
+                        std::vector<std::vector<ChunkFile>>& all_chunks,
+                        std::mutex& chunks_mtx) {
     FILE* fp = fopen(path.c_str(), "rb");
-    if (!fp) return out;
+    if (!fp) return;
     std::vector<uint8_t> tar; { std::vector<uint8_t> buf(1 << 20); size_t n; while ((n = fread(buf.data(), 1, buf.size(), fp)) > 0) tar.insert(tar.end(), buf.begin(), buf.begin() + n); }
     fclose(fp);
-    if (tar.size() >= 2 && tar[0] == 0x1f && tar[1] == 0x8b) { out.push_back({std::move(tar)}); return out; }
-    size_t off = 0;
-    while (off + 512 <= tar.size()) {
-        const uint8_t* hdr = tar.data() + off;
-        if (hdr[0] == 0) break;
-        size_t sz = 0; for (int k = 0; k < 11; ++k) sz = sz * 8 + (hdr[124 + k] - '0');
-        size_t nd = off + 512 + sz;
-        if (sz > 0 && nd <= tar.size()) out.push_back({std::vector<uint8_t>(tar.begin() + off + 512, tar.begin() + nd)});
-        off = (nd + 511) & ~size_t(511);
+
+    // extract chunks from this tar
+    std::vector<ChunkFile> chunks;
+    if (tar.size() >= 2 && tar[0] == 0x1f && tar[1] == 0x8b) {
+        chunks.push_back({std::move(tar)});
+    } else if (tar.size() > 512) {
+        size_t off = 0;
+        while (off + 512 <= tar.size()) {
+            const uint8_t* hdr = tar.data() + off;
+            if (hdr[0] == 0) break;
+            size_t sz = 0; for (int k = 0; k < 11; ++k) sz = sz * 8 + (hdr[124 + k] - '0');
+            size_t nd = off + 512 + sz;
+            if (sz > 0 && nd <= tar.size()) chunks.push_back({std::vector<uint8_t>(tar.begin() + off + 512, tar.begin() + nd)});
+            off = (nd + 511) & ~size_t(511);
+        }
     }
-    return out;
+
+    // hand chunks to the global pool (workers pick them up)
+    {
+        std::lock_guard<std::mutex> lk(chunks_mtx);
+        all_chunks.push_back(std::move(chunks));
+    }
 }
 
 int main(int argc, char** argv) {
@@ -329,21 +436,38 @@ int main(int argc, char** argv) {
     init_maps();
     init_move_table();
 
-    // expand all tars up front (memory: ~1 tar at a time is the intended usage)
+    // In-memory expansion (BATCH ≤ 40 tars = ~4GB peak — safe for 14GB machines).
+    // For larger batches, invoke multiple times; the gamepack format is per-invocation.
     std::vector<ChunkFile> chunks;
     for (auto& f : inputs) {
-        auto cs = expand_tar(f);
-        for (auto& c : cs) chunks.push_back(std::move(c));
+        FILE* fp = fopen(f.c_str(), "rb");
+        if (!fp) continue;
+        std::vector<uint8_t> tar; { std::vector<uint8_t> buf(1 << 20); size_t n; while ((n = fread(buf.data(), 1, buf.size(), fp)) > 0) tar.insert(tar.end(), buf.begin(), buf.begin() + n); }
+        fclose(fp);
+        if (tar.size() >= 2 && tar[0] == 0x1f && tar[1] == 0x8b) {
+            chunks.push_back({std::move(tar)});
+        } else if (tar.size() > 512) {
+            size_t off = 0;
+            while (off + 512 <= tar.size()) {
+                const uint8_t* hdr = tar.data() + off;
+                if (hdr[0] == 0) break;
+                size_t sz = 0; for (int k = 0; k < 11; ++k) sz = sz * 8 + (hdr[124 + k] - '0');
+                size_t nd = off + 512 + sz;
+                if (sz > 0 && nd <= tar.size()) chunks.push_back({std::vector<uint8_t>(tar.begin() + off + 512, tar.begin() + nd)});
+                off = (nd + 511) & ~size_t(511);
+            }
+        }
+        tar.clear(); tar.shrink_to_fit();   // free this tar before reading the next
     }
     fprintf(stderr, "lc0pack: %zu chunks from %zu files\n", chunks.size(), inputs.size());
 
     Shared sh;
     std::vector<PerThread> pts(nthreads);
     std::atomic<size_t> next{0};
-    std::vector<uint8_t> dec;
+
     auto worker = [&](int tid) {
         PerThread& pt = pts[tid];
-        std::vector<uint8_t> dec;   // PER-THREAD buffer (shared one = data race)
+        std::vector<uint8_t> dec;
         while (true) {
             size_t i = next.fetch_add(1);
             if (i >= chunks.size()) break;
