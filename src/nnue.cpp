@@ -635,7 +635,7 @@ Value evaluate(const Position& pos) {
         const float cs2 = g_s2 * 127.0f, cs3 = g_s3 * 127.0f, cso = g_so * 127.0f;
         // 49 float divisions per eval -> 3 + 46 multiplies (sub-ULP diff, far below
         // the 1/127 activation quantization step; fingerprint-verified).
-        const float ics2 = 1.0f / cs2, ics3 = 1.0f / cs3, icso = 1.0f * icso;
+        const float ics2 = 1.0f / cs2, ics3 = 1.0f / cs3, icso = 1.0f / cso;
         float h2[NNUE_L1_MAX];
 #if defined(__AVX512VNNI__)
         // VPDPBUSD: 64 MACs/instruction. Per-output dot (output-major weights, no reorder).
