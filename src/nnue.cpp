@@ -460,8 +460,8 @@ static void refresh_perspective(const Position& pos, Accumulator& a, int p) {
         for (int l = 0; l < g_L1; l += 32) {
             __m512i b0 = _mm512_min_epi32(hi32, _mm512_max_epi32(lo32, _mm512_loadu_si512((const __m512i*)&ft_b_i32[l])));
             __m512i b1 = _mm512_min_epi32(hi32, _mm512_max_epi32(lo32, _mm512_loadu_si512((const __m512i*)&ft_b_i32[l + 16])));
-            _mm512_storeu_si512((__m512i*)(acc + l),      _mm512_cvtsepi32_epi16(b0));
-            _mm512_storeu_si512((__m512i*)(acc + l + 16), _mm512_cvtsepi32_epi16(b1));
+            _mm256_storeu_si256((__m256i*)(acc + l),      _mm512_cvtsepi32_epi16(b0));
+            _mm256_storeu_si256((__m256i*)(acc + l + 16), _mm512_cvtsepi32_epi16(b1));
         }
     }
 #else
