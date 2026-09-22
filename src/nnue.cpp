@@ -117,6 +117,7 @@ static inline int32_t dot_i8_vnni_small(const int8_t* w, const uint8_t* a, int n
 
 // ---- profiling counters (data-driven: find the NPS bottleneck from numbers) ----
 namespace { struct Stat { long long n = 0, cyc = 0; }; }
+static long long g_kcache_hits = 0, g_kcache_misses = 0;   // Finny-light king cache stats
 static Stat st_eval, st_update, st_refresh, st_king_refresh, st_incremental;
 static long long g_act_nz = 0, g_act_tot = 0;   // activation sparsity (non-zero L1 outputs after SCReLU)
 static bool g_profile = false;
@@ -226,7 +227,6 @@ struct KingCacheEntry {
     bool valid = false;
 };
 static KingCacheEntry g_kcache[2][64];
-static long long g_kcache_hits = 0, g_kcache_misses = 0;
 // Heap-allocated per thread, NOT a thread_local C-array: an 8MB thread_local array
 // reserves 8MB of *static TLS* for every thread and overflows the stack at creation.
 // The vector object is ~24 bytes of TLS; its 8MB buffer lives on the heap and is freed
