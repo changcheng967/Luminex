@@ -620,11 +620,14 @@ Value evaluate(const Position& pos) {
 #endif
         if (pr) { for (int i = 0; i < 2*L1; ++i) g_act_nz += (h_i8[i] != 0); g_act_tot += 2*L1; }
         const float cs2 = g_s2 * 127.0f, cs3 = g_s3 * 127.0f, cso = g_so * 127.0f;
+        // 49 float divisions per eval -> 3 + 46 multiplies (sub-ULP diff, far below
+        // the 1/127 activation quantization step; fingerprint-verified).
+        const float ics2 = 1.0f / cs2, ics3 = 1.0f / cs3, icso = 1.0f * icso;
         float h2[NNUE_L1_MAX];
 #if defined(__AVX512VNNI__)
         // VPDPBUSD: 64 MACs/instruction. Per-output dot (output-major weights, no reorder).
         for (int o = 0; o < L2; ++o)
-            h2[o] = clip01(l2_b[o] + dot_i8_vnni(&l2_w_i8[static_cast<size_t>(o) * 2 * L1], h_i8, 2 * L1) / cs2);
+            h2[o] = clip01(l2_b[o] + dot_i8_vnni(&l2_w_i8[static_cast<size_t>(o) * 2 * L1], h_i8, 2 * L1) * ics2);
 #else
         // AVX2 SF-style chunk L2 (chunk-major weights, reordered at load).
         const __m256i ones = _mm256_set1_epi16(1);
@@ -649,7 +652,7 @@ Value evaluate(const Position& pos) {
                 __m128i hi = _mm256_extracti128_si256(acc8[o], 1);
                 __m128i sv = _mm_hadd_epi32(_mm_add_epi32(lo, hi), _mm_setzero_si128());
                 int32_t d = _mm_cvtsi128_si32(_mm_hadd_epi32(sv, sv));
-                h2[base_o + o] = clip01(l2_b[base_o + o] + d / cs2);
+                h2[base_o + o] = clip01(l2_b[base_o + o] + d * ics2);
             }
         }
 #endif // AVX2 SF-L2 vs AVX512 VNNI L2
@@ -659,16 +662,16 @@ Value evaluate(const Position& pos) {
         float h3[NNUE_L1_MAX];
 #if defined(__AVX512VNNI__)
         for (int o = 0; o < L3; ++o)
-            h3[o] = clip01(l3_b[o] + dot_i8_vnni_small(&l3_w_i8[static_cast<size_t>(o) * L2], h2_i8, L2) / cs3);
+            h3[o] = clip01(l3_b[o] + dot_i8_vnni_small(&l3_w_i8[static_cast<size_t>(o) * L2], h2_i8, L2) * ics3);
         uint8_t h3_i8[NNUE_L1_MAX];
         for (int l = 0; l < L3; l += 8) quant8(h3 + l, h3_i8 + l, sc127);
-        float ov = out_b + dot_i8_vnni_small(out_w_i8.data(), h3_i8, L3) / cso;
+        float ov = out_b + dot_i8_vnni_small(out_w_i8.data(), h3_i8, L3) * icso;
 #else
         for (int o = 0; o < L3; ++o)
-            h3[o] = clip01(l3_b[o] + dot_i8(&l3_w_i8[static_cast<size_t>(o) * L2], h2_i8, L2) / cs3);
+            h3[o] = clip01(l3_b[o] + dot_i8(&l3_w_i8[static_cast<size_t>(o) * L2], h2_i8, L2) * ics3);
         uint8_t h3_i8[NNUE_L1_MAX];
         for (int l = 0; l < L3; l += 8) quant8(h3 + l, h3_i8 + l, sc127);
-        float ov = out_b + dot_i8(out_w_i8.data(), h3_i8, L3) / cso;
+        float ov = out_b + dot_i8(out_w_i8.data(), h3_i8, L3) * icso;
 #endif
         Value v = static_cast<Value>(std::llround(ov * OUT_SCALE));
         if (pr) { st_eval.cyc += rdtsc() - t0; st_eval.n++; }
