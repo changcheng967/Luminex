@@ -26,6 +26,8 @@ void set_enabled(bool on);
 // Reads the incremental accumulator (must be current — see refresh/update).
 // Only valid when enabled() is true.
 Value evaluate(const Position& pos);
+bool linear_available();          // DOSL linear head present and loaded
+Value linear_eval(const Position& pos);   // O(1) stm-relative stand-pat
 
 // Whether a net is currently loaded (independent of the enabled flag).
 bool loaded();

@@ -87,6 +87,12 @@ _wc = float(os.environ.get("NNUE_WCLAMP", "0"))          # OFF (fallback only; r
 # default here too: only enable with values you intend to A/B.
 _POS_W1 = float(os.environ.get("NNUE_POS_W1", "0"))    # 0 = OFF (SF default)
 _POS_W2 = float(os.environ.get("NNUE_POS_W2", "0.5"))  # SF default
+# DOSL dual-head (Step-0): aux linear head trained alongside the full net so it is
+# a standalone-usable qsearch stand-pat. Warmup at lam=1.0 (head alone must be a
+# competent eval), then joint lam=0.25 persists as the anchor loss throughout.
+_DUAL = os.environ.get("NNUE_DUAL_HEAD", "0") == "1"
+_LIN_WARM = int(os.environ.get("NNUE_LIN_WARMUP", "2000"))
+_LIN_LAM  = float(os.environ.get("NNUE_LIN_LAMBDA", "0.25"))
 _CAL_STEPS = 60   # calibration steps to measure throughput
 _FEAT_CACHE = os.environ.get("NNUE_FEAT_CACHE", "0") == "1"  # OFF by default: single-pass
 # never re-reads a frame, and full-data caching would need ~2.2TB of /tmp. Opt-in
@@ -105,7 +111,10 @@ _opt_state = None  # deferred: optimizer doesn't exist yet at resume time
 if os.path.exists(_resume) and os.environ.get("NNUE_RESUME", "1") != "0":
     try:
         _ck = torch.load(_resume, map_location=device, weights_only=False)
-        model.load_state_dict(_ck["model"]); gstep = _ck.get("gstep", 0)
+        _miss = model.load_state_dict(_ck["model"], strict=False)
+        if _miss.missing_keys:
+            print(f"[RESUME] new params init fresh: {_miss.missing_keys}", flush=True)
+        gstep = _ck.get("gstep", 0)
         # Checkpoints from the pre-padding_idx era may carry a NON-ZERO pad row:
         # export drops that row, so training it = silent Python/engine mismatch.
         try:
@@ -383,6 +392,10 @@ for epoch in range(EPOCHS):
                     ctx_ac = torch.autocast(device_type=device, enabled=False)   # fp32 (no bf16 drift)
                 with ctx_ac:
                     pred = model(wi, bi, si)
+                    _lin_t = None
+                    if _DUAL and _POWER > 0:
+                        _lv = model.linear(wi, bi, si)
+                        _lin_t = ((torch.sigmoid(_lv / SCALE) - torch.sigmoid(ti / SCALE)).abs()) ** _POWER
                     if _POWER > 0:
                         # Power-2.6 loss in SIGMOID space (SF's proven formula):
                         # diff = |σ(pred/SCALE) - σ(target/SCALE)|, loss = diff^2.6
@@ -402,6 +415,9 @@ for epoch in range(EPOCHS):
                             loss = _pterms.mean()
                     else:
                         loss = ((torch.sigmoid(pred / SCALE) - torch.sigmoid(ti / SCALE)) ** 2).mean()
+                if _lin_t is not None:
+                    _lam = 1.0 if gstep < _LIN_WARM else _LIN_LAM
+                    loss = _lam * _lin_t.mean() + (1.0 - _lam) * loss
                 if not torch.isfinite(loss):
                     print(f"  WARN: non-finite loss at step {gstep} — skipping batch "
                           f"(if this repeats, weights are already poisoned — restart)", flush=True)
@@ -442,13 +458,17 @@ for epoch in range(EPOCHS):
                         _pv = model(w[:_m].long(), b[:_m].long(), s[:_m]).float()
                         _tv = t[:_m].clamp(-1500.0, 1500.0).float()   # same view as the loss
                         _mae = (_pv - _tv).abs().mean().item()
+                        _lmae = ""
+                        if _DUAL:
+                            _lvh = model.linear(w[:_m].long(), b[:_m].long(), s[:_m]).float()
+                            _lmae = f" linMAE={(_lvh - _tv).abs().mean().item():.1f}cp"
                         _ps, _ts = _pv.std().item(), _tv.std().item()
                         _wn = " ".join(f"{_nm}={float(getattr(model, _nm).weight.detach().norm().item()):.0f}"
                                        for _nm in ("ft", "emb", "l1", "l2", "out") if hasattr(model, _nm))
                         _pad = ""
                         try: _pad = f" pad|max|={float(model.ft.weight[NUM_INPUTS].abs().max().item()):.1e}"
                         except Exception: pass   # gather mode has no pad row
-                    _health = f"MAE={_mae:.1f}cp predSTD={_ps:.0f} tgtSTD={_ts:.0f}{_pad} | {_wn}"
+                    _health = f"MAE={_mae:.1f}cp{_lmae} predSTD={_ps:.0f} tgtSTD={_ts:.0f}{_pad} | {_wn}"
             except Exception as _e:
                 _health = f"unavailable ({_e})"
             del w, b, s, t, perm; torch.cuda.empty_cache()

@@ -29,6 +29,13 @@ def main(src, dst):
         l2_w = rt(f).reshape(L2, 2 * L1q); l2_b = rt(f)
         l3_w = rt(f).reshape(L3, L2);       l3_b = rt(f)
         out_w = rt(f).reshape(1, L3);       out_b = rt(f)[0]
+        # DOSL linear head: pass through verbatim (independent of int8 conversion)
+        linh = None
+        tag = f.read(4)
+        if tag == b'LINH':
+            (n,) = struct.unpack('i', f.read(4))
+            linh = np.frombuffer(f.read(n * 4), dtype=np.float32).copy()
+            assert n == NI
     l2w, s2 = q(l2_w); l3w, s3 = q(l3_w); outw, so = q(out_w)
     with open(dst, 'wb') as f:
         f.write(b'LNI8'); f.write(struct.pack('iiii', L1q, L2, L3, NI))
@@ -38,7 +45,9 @@ def main(src, dst):
             f.write(struct.pack('i', w8.size)); f.write(w8.tobytes())
             f.write(struct.pack('i', b.size)); f.write(b.astype(np.float32).tobytes())
             f.write(struct.pack('f', float(s2 if w8 is l2w else s3 if w8 is l3w else so)))
-    print(f"wrote {dst}: L1={L1q} L2={L2} L3={L3}  (FT float, L2/L3/out int8)")
+        if linh is not None:
+            f.write(b'LINH'); f.write(struct.pack('i', linh.size)); f.write(linh.astype(np.float32).tobytes())
+    print(f"wrote {dst}: L1={L1q} L2={L2} L3={L3}  (FT float, L2/L3/out int8){' +lin' if linh is not None else ''}")
 
 
 if __name__ == "__main__":

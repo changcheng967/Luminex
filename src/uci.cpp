@@ -29,6 +29,7 @@ extern volatile bool g_stop_requested;
 static Position pos;
 int g_search_depth = 0;
 int g_nodes_per_move = 0;  // NodesPerMove: >0 = fixed-node search (SPSA tuning, no clock forfeits)
+bool g_qsearch_linear = true;   // qsearch stand-pat via DOSL linear head when available
 
 // Search thread management
 static std::thread search_thread;
@@ -209,6 +210,7 @@ void handle_uci() {
     safe_output("option name UCI_ShowWDL type check default false\n");
     safe_output("option name SearchDepth type spin default 0 min 0 max 30\n");
     safe_output("option name NodesPerMove type spin default 0 min 0 max 100000000\n");
+    safe_output("option name QsearchLinear type check default true\n");
     safe_output("option name UCI_Elo type spin default 1320 min 1320 max 3190\n");
     safe_output("option name UCI_LimitStrength type check default false\n");
     safe_output("option name UCI_Chess960 type check default false\n");
@@ -424,6 +426,7 @@ void handle_setoption(const std::string& cmd) {
     else if (name == "NNUEFile") { if (!value.empty()) nnue::load(value); }
     else if (name == "SearchDepth") { g_search_depth = std::stoi(value); }
     else if (name == "NodesPerMove") { g_nodes_per_move = std::stoi(value); }
+    else if (name == "QsearchLinear") { g_qsearch_linear = (value == "true"); }
     else if (name == "Contempt" || name == "UCI_AnalyseMode") {
         if (name == "Contempt") {
             params.contempt = std::stoi(value);
