@@ -681,6 +681,9 @@ Value evaluate(const Position& pos) {
             const __m512i av = _mm512_broadcast_i32x4(h2_128);   // replicate 16B into each lane group
             const __m512i pairswap = _mm512_setr_epi32(1,0,3,2, 5,4,7,6, 9,8,11,10, 13,12,15,14);
             const __m512i groupswap = _mm512_setr_epi32(2,3,0,1, 6,7,4,5, 10,11,8,9, 14,15,12,13);
+            // Butterfly leaves each group's sum in ALL its lanes; the four output
+            // dots sit at lanes {0,4,8,12} — gather them into 0..3 before extract.
+            const __m512i pick0408 = _mm512_setr_epi32(0,4,8,12, 0,4,8,12, 0,4,8,12, 0,4,8,12);
             int o = 0;
             for (int v = 0; v < L3 / 4; ++v, o += 4) {
                 __m512i acc = _mm512_dpbusd_epi32(_mm512_setzero_si512(), av,
