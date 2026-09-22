@@ -180,7 +180,13 @@ static int g_L1 = 0, g_L2 = 0, g_L3 = 0;
 static constexpr float FT_WSCALE = 8192.0f;
 static constexpr float FT_WINV = 1.0f / FT_WSCALE;
 static std::vector<int16_t> ft_w;
-static std::vector<int32_t> ft_b_i32;   // integer-domain FT bias (b*FT_WSCALE)   // (NUM_INPUTS, L1) int16, transposed
+static std::vector<int32_t> ft_b_i32;   // integer-domain FT bias (b*FT_WSCALE)
+// DOSL linear head (Step-0): per-feature scalar weights over the SAME HalfKAv2_hg
+// indices; accumulator keeps one int32 per perspective (O(1) qsearch stand-pat).
+// Weights stored in 1/32 cp units: a queen feature (~900cp) still fits int16.
+static constexpr float LIN_SCALE = 32.0f;
+static std::vector<int16_t> lin_w;       // NUM_INPUTS, 1/32 cp per unit
+static bool g_lin_head = false;   // (NUM_INPUTS, L1) int16, transposed
 static std::vector<float> ft_b;   // (L1,)
 static std::vector<float> l2_w, l2_b, l3_w, l3_b, out_w;
 static float out_b = 0.0f;
@@ -197,7 +203,7 @@ static bool g_enabled = false;
 // int32 integer accumulator: iacc[l] = round(b[l]*FT_WSCALE) + sum(w_int16[l]) — EXACT
 // integer sums (the old float accumulator rounded on every add and burned
 // int16->int32->float conversions inside every feature update).
-struct alignas(64) Accumulator { int32_t v[2][NNUE_L1_MAX]; };
+struct alignas(64) Accumulator { int32_t v[2][NNUE_L1_MAX]; int32_t lin[2]; };
 // Heap-allocated per thread, NOT a thread_local C-array: an 8MB thread_local array
 // reserves 8MB of *static TLS* for every thread and overflows the stack at creation.
 // The vector object is ~24 bytes of TLS; its 8MB buffer lives on the heap and is freed
@@ -289,8 +295,27 @@ bool load(const std::string& path) {
         if (ob_n != 1) { std::fprintf(stderr, "nnue: out.bias size %d\n", ob_n); return false; }
         f.read(reinterpret_cast<char*>(&out_b), sizeof(float));
     }
+    // Optional DOSL linear head (older nets simply end here).
+    {
+        char tag[4] = {0,0,0,0};
+        std::streampos save = f.tellg();
+        f.read(tag, 4);
+        if (f.gcount() == 4 && tag[0]=='L' && tag[1]=='I' && tag[2]=='N' && tag[3]=='H') {
+            int32_t n = 0; f.read(reinterpret_cast<char*>(&n), 4);
+            if (n == NUM_INPUTS) {
+                lin_w.resize(NUM_INPUTS);
+                for (int i = 0; i < NUM_INPUTS; ++i) {
+                    float v; f.read(reinterpret_cast<char*>(&v), sizeof(float));
+                    lin_w[i] = (int16_t)std::lround(v * LIN_SCALE);
+                }
+                g_lin_head = true;
+            } else { std::fprintf(stderr, "nnue: LINH size mismatch — head ignored\n"); }
+        } else {
+            f.seekg(save);   // not a LINH section — rewind (older net format)
+        }
+    }
     g_loaded = true;
-    std::printf("nnue: loaded %s (%s L1=%d L2=%d L3=%d)\n", path.c_str(), g_int8 ? "int8" : "float", L1, L2, L3);
+    std::printf("nnue: loaded %s (%s L1=%d L2=%d L3=%d)%s\n", path.c_str(), g_int8 ? "int8" : "float", L1, L2, L3, g_lin_head ? " +lin" : "");
     return true;
 }
 
@@ -300,6 +325,7 @@ static inline void add_feature(Accumulator& a, int p, int ksq, int sq, Piece pie
     int idx = halfka_idx(p == 0, ksq, sq, piece);
     const int16_t* w = &ft_w[static_cast<size_t>(idx) * g_L1];
     int32_t* acc = a.v[p];
+    if (g_lin_head) a.lin[p] += lin_w[idx];
 #if defined(__AVX512F__)
     for (int l = 0; l < g_L1; l += 16) {
         __m512i w32 = _mm512_cvtepi16_epi32(_mm256_loadu_si256((const __m256i*)(w + l)));
@@ -318,6 +344,7 @@ static inline void remove_feature(Accumulator& a, int p, int ksq, int sq, Piece 
     int idx = halfka_idx(p == 0, ksq, sq, piece);
     const int16_t* w = &ft_w[static_cast<size_t>(idx) * g_L1];
     int32_t* acc = a.v[p];
+    if (g_lin_head) a.lin[p] -= lin_w[idx];
 #if defined(__AVX512F__)
     for (int l = 0; l < g_L1; l += 16) {
         __m512i w32 = _mm512_cvtepi16_epi32(_mm256_loadu_si256((const __m256i*)(w + l)));
@@ -338,10 +365,13 @@ static void refresh_perspective(const Position& pos, Accumulator& a, int p) {
     int ksq = static_cast<int>(pos.king_sq(white_pov ? WHITE : BLACK));
     int32_t* acc = a.v[p];
     for (int l = 0; l < g_L1; ++l) acc[l] = ft_b_i32[l];   // (unvectorized init: 1 store per 4B; refreshes are rare)
+    if (g_lin_head) a.lin[p] = 0;
     for (int sq = 0; sq < NUM_SQ; ++sq) {
         Piece pc = pos.piece_on(Square(sq));
         if (pc == NO_PIECE) continue;
-        const int16_t* w = &ft_w[static_cast<size_t>(halfka_idx(white_pov, ksq, sq, pc)) * g_L1];
+        size_t fidx = static_cast<size_t>(halfka_idx(white_pov, ksq, sq, pc));
+        if (g_lin_head) a.lin[p] += lin_w[fidx];
+        const int16_t* w = &ft_w[fidx * g_L1];
 #if defined(__AVX512F__)
         for (int l = 0; l < g_L1; l += 16) {
             __m512i w32 = _mm512_cvtepi16_epi32(_mm256_loadu_si256((const __m256i*)(w + l)));
@@ -453,6 +483,16 @@ void update(Position& pos, Move m, Piece moved, PieceType captured) {
         if (pr) { st_incremental.cyc += rdtsc() - inc_t0; st_incremental.n++; }
     }
     if (pr) { st_update.cyc += rdtsc() - t0; st_update.n++; }
+}
+
+bool linear_available() { return g_loaded && g_lin_head; }
+// O(1) stm-relative linear-head score. Bypasses the eval cache on purpose:
+// the value must be a pure function of the position (search-stability gate —
+// no mixing of cached full evals with fresh linear reads for the same node).
+Value linear_eval(const Position& pos) {
+    const Accumulator& a = nnue_acc_stack()[pos.state_ply()];
+    int32_t raw = a.lin[pos.side_to_move() == WHITE ? 0 : 1];
+    return Value(int(std::lround(raw / LIN_SCALE)));
 }
 
 Value evaluate(const Position& pos) {

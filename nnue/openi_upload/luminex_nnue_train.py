@@ -98,6 +98,13 @@ class LNNUE(nn.Module):
         self.l2 = nn.Linear(2 * L1, L2)                # stm + nstm concatenated
         self.l3 = nn.Linear(L2, L3)
         self.out = nn.Linear(L3, 1)
+        # DOSL linear head (Step-0): independent O(1)-read eval over the SAME sparse
+        # features — a learned, king-bucket-aware PST. Trained with an auxiliary
+        # loss (dual-loss, see trainer) so it is a STANDALONE-usable evaluator for
+        # qsearch stand-pat. The full nonlinear path is unchanged in Step 0;
+        # the additive (lin + residual) form comes with the UB net (Step 2).
+        self.lin = nn.Embedding(NUM_INPUTS + 1, 1, padding_idx=NUM_INPUTS)
+        nn.init.zeros_(self.lin.weight)
         self.L1, self.L2, self.L3 = L1, L2, L3
         # FT init: effective fan-in ~32 active features/half (not NUM_INPUTS=24576).
         # std=1/sqrt(32) -> accumulator std ~1 (active SCReLU range).
@@ -133,6 +140,13 @@ class LNNUE(nn.Module):
         d = (got - ref).abs().max().item()
         assert d < 1e-4, f"FT PROBE FAILED: bag-sum drift {d}"
         print(f"  [probe_ft] OK (max|bag-sum - manual|={d:.2e}, mode={self.ft_mode})", flush=True)
+
+    def linear(self, w_idx, b_idx, stm):
+        """Stm-relative linear-head score (cp). Each perspective sums its own
+        feature rows; the mover's sum is that side's score from its own viewpoint."""
+        lw = self.lin(w_idx).squeeze(-1).sum(dim=1)   # white-perspective score
+        lb = self.lin(b_idx).squeeze(-1).sum(dim=1)   # black-perspective score
+        return stm * lw + (1.0 - stm) * lb
 
     def forward(self, w_idx, b_idx, stm):  # idx: (B, MAX=32) padded with NUM_INPUTS; stm: (B,)
         if self.ft_mode == 'gather':
@@ -366,6 +380,15 @@ def save_nnue(model, path):
             t = dict(model.named_parameters())[name].detach().cpu().numpy().astype(np.float32)
             f.write(struct.pack('i', t.size))
             f.write(t.tobytes())
+        # DOSL linear head (optional section "LINH"; older loaders stop cleanly at EOF).
+        # Per-feature scalar weight + bias, both float32, white-perspective layout
+        # (sum over a perspective's active features = that side's score from its
+        # own viewpoint; engine negates for stm-relativity).
+        if hasattr(model, 'lin'):
+            f.write(b'LINH')
+            lin_w = model.lin.weight.detach().cpu().numpy().astype(np.float32)[:NUM_INPUTS]  # drop pad row
+            f.write(struct.pack('i', lin_w.size))
+            f.write(lin_w.tobytes())
 
 
 if __name__ == '__main__':
