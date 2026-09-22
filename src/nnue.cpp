@@ -135,7 +135,9 @@ static inline long long rdtsc() {
 }
 void print_stats() {
     if (!profile_on()) return;
-    std::fprintf(stderr, "NNUE profile: evals=%lld (%.1fM cyc, %.0f cyc/eval) | updates=%lld (%.1fM cyc, %.0f cyc/upd) | king-refreshes=%lld (%.0f cyc/kr) | incrementals=%lld (%.0f cyc/inc) | refreshes=%lld (%.1fM cyc) | L1-act density=%.1f%%\n",
+    std::fprintf(stderr, "NNUE profile: king-cache %lld/%lld (%.0f%%) | evals=%lld (%.1fM cyc, %.0f cyc/eval) | updates=%lld (%.1fM cyc, %.0f cyc/upd) | king-refreshes=%lld (%.0f cyc/kr) | incrementals=%lld (%.0f cyc/inc) | refreshes=%lld (%.1fM cyc) | L1-act density=%.1f%%\n",
+                 g_kcache_hits, g_kcache_misses,
+                 (g_kcache_hits+g_kcache_misses) ? 100.0*g_kcache_hits/(g_kcache_hits+g_kcache_misses) : 0.0,
                  st_eval.n, st_eval.cyc/1000000.0, st_eval.n ? double(st_eval.cyc)/st_eval.n : 0.0,
                  st_update.n, st_update.cyc/1000000.0, st_update.n ? double(st_update.cyc)/st_update.n : 0.0,
                  st_king_refresh.n, st_king_refresh.n ? double(st_king_refresh.cyc)/st_king_refresh.n : 0.0,
