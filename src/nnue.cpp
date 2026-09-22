@@ -688,10 +688,11 @@ Value evaluate(const Position& pos) {
                 __m512i t1 = _mm512_add_epi32(acc, _mm512_permutexvar_epi32(pairswap, acc));
                 __m512i t2 = _mm512_add_epi32(t1, _mm512_permutexvar_epi32(groupswap, t1));
                 // t2 lane 4k = dot for output (v*4 + k)
-                h3[o+0] = clip01(l3_b[o+0] + _mm_extract_epi32(_mm512_castsi512_si128(t2), 0) * ics3);
-                h3[o+1] = clip01(l3_b[o+1] + _mm_extract_epi32(_mm512_castsi512_si128(t2), 1) * ics3);
-                h3[o+2] = clip01(l3_b[o+2] + _mm_extract_epi32(_mm512_castsi512_si128(t2), 2) * ics3);
-                h3[o+3] = clip01(l3_b[o+3] + _mm_extract_epi32(_mm512_castsi512_si128(t2), 3) * ics3);
+                __m128i sums = _mm512_castsi512_si128(_mm512_permutexvar_epi32(pick0408, t2));
+                h3[o+0] = clip01(l3_b[o+0] + _mm_extract_epi32(sums, 0) * ics3);
+                h3[o+1] = clip01(l3_b[o+1] + _mm_extract_epi32(sums, 1) * ics3);
+                h3[o+2] = clip01(l3_b[o+2] + _mm_extract_epi32(sums, 2) * ics3);
+                h3[o+3] = clip01(l3_b[o+3] + _mm_extract_epi32(sums, 3) * ics3);
             }
         } else
         for (int o = 0; o < L3; ++o)
