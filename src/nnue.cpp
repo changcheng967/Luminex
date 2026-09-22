@@ -678,7 +678,7 @@ Value evaluate(const Position& pos) {
             // All L3 dots via 8 dpbusd + lane-group reduction (bit-exact: integer
             // adds associate). a512: every 4-lane group holds all 16 h2 bytes.
             const __m128i h2_128 = _mm_loadu_si128((const __m128i*)h2_i8);
-            const __m512i av = _mm512_broadcast_i32x4(_mm512_castsi128_si512(h2_128));
+            const __m512i av = _mm512_broadcast_i32x4(h2_128);   // replicate 16B into each lane group
             const __m512i pairswap = _mm512_setr_epi32(1,0,3,2, 5,4,7,6, 9,8,11,10, 13,12,15,14);
             const __m512i groupswap = _mm512_setr_epi32(2,3,0,1, 6,7,4,5, 10,11,8,9, 14,15,12,13);
             int o = 0;
