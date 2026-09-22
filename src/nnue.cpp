@@ -179,7 +179,8 @@ static int g_L1 = 0, g_L2 = 0, g_L3 = 0;
 // feature delta). The accumulator stays full float32 (no SCReLU precision loss).
 static constexpr float FT_WSCALE = 8192.0f;
 static constexpr float FT_WINV = 1.0f / FT_WSCALE;
-static std::vector<int16_t> ft_w;   // (NUM_INPUTS, L1) int16, transposed
+static std::vector<int16_t> ft_w;
+static std::vector<int32_t> ft_b_i32;   // integer-domain FT bias (b*FT_WSCALE)   // (NUM_INPUTS, L1) int16, transposed
 static std::vector<float> ft_b;   // (L1,)
 static std::vector<float> l2_w, l2_b, l3_w, l3_b, out_w;
 static float out_b = 0.0f;
@@ -193,7 +194,10 @@ static bool g_enabled = false;
 // Per-thread accumulator stack, indexed by Position::st_ply(). v[perspective][neuron].
 // Cache-line aligned so each 4KB accumulator starts on a 64B boundary (cleaner loads
 // during the SCReLU/quant8 pass and the feature-delta add).
-struct alignas(64) Accumulator { float v[2][NNUE_L1_MAX]; };
+// int32 integer accumulator: iacc[l] = round(b[l]*FT_WSCALE) + sum(w_int16[l]) — EXACT
+// integer sums (the old float accumulator rounded on every add and burned
+// int16->int32->float conversions inside every feature update).
+struct alignas(64) Accumulator { int32_t v[2][NNUE_L1_MAX]; };
 // Heap-allocated per thread, NOT a thread_local C-array: an 8MB thread_local array
 // reserves 8MB of *static TLS* for every thread and overflows the stack at creation.
 // The vector object is ~24 bytes of TLS; its 8MB buffer lives on the heap and is freed
@@ -238,6 +242,8 @@ bool load(const std::string& path) {
         for (int l = 0; l < L1; ++l)
             ft_w[i * L1 + l] = (int16_t)std::lround(ft_w_raw[l * NUM_INPUTS + i] * FT_WSCALE);
     if (!read_tensor(f, ft_b, L1)) return false;
+    ft_b_i32.resize(L1);
+    for (int l = 0; l < L1; ++l) ft_b_i32[l] = std::lround(ft_b[l] * FT_WSCALE);
     if (g_int8) {
         // LNI8: int8 weights + float bias + float scale, per layer.
         auto read_i8 = [&](std::vector<int8_t>& v, int expected) -> bool {
@@ -293,90 +299,63 @@ static inline float clip01(float x) { float c = x < 0.0f ? 0.0f : (x > 1.0f ? 1.
 static inline void add_feature(Accumulator& a, int p, int ksq, int sq, Piece piece) {
     int idx = halfka_idx(p == 0, ksq, sq, piece);
     const int16_t* w = &ft_w[static_cast<size_t>(idx) * g_L1];
-    float* acc = a.v[p];
+    int32_t* acc = a.v[p];
 #if defined(__AVX512F__)
-    const __m512 winv = _mm512_set1_ps(FT_WINV);
     for (int l = 0; l < g_L1; l += 16) {
-        __m256i w16 = _mm256_loadu_si256((const __m256i*)(w + l)); // 16 int16
-        __m512 wf = _mm512_mul_ps(_mm512_cvtepi32_ps(_mm512_cvtepi16_epi32(w16)), winv);
-        _mm512_storeu_ps(acc + l, _mm512_add_ps(_mm512_loadu_ps(acc + l), wf));
+        __m512i w32 = _mm512_cvtepi16_epi32(_mm256_loadu_si256((const __m256i*)(w + l)));
+        _mm512_storeu_epi32(acc + l, _mm512_add_epi32(_mm512_loadu_epi32(acc + l), w32));
     }
 #elif defined(__AVX2__)
-    const __m256 winv = _mm256_set1_ps(FT_WINV);
-    for (int l = 0; l < g_L1; l += 8) {
-        __m128i w8 = _mm_loadu_si128((const __m128i*)(w + l));   // 8 int16
-        __m256i w32 = _mm256_cvtepi16_epi32(w8);                  // 8 int32
-        __m256 wf = _mm256_mul_ps(_mm256_cvtepi32_ps(w32), winv); // 8 float (scaled)
-        _mm256_storeu_ps(acc + l, _mm256_add_ps(_mm256_loadu_ps(acc + l), wf));
-    }
+    for (int l = 0; l < g_L1; l += 8)
+        _mm256_storeu_si256((__m256i*)(acc + l), _mm256_add_epi32(
+            _mm256_loadu_si256((const __m256i*)(acc + l)),
+            _mm256_cvtepi16_epi32(_mm_loadu_si128((const __m128i*)(w + l)))));
 #else
-    for (int l = 0; l < g_L1; ++l) acc[l] += w[l] * FT_WINV;
+    for (int l = 0; l < g_L1; ++l) acc[l] += w[l];
 #endif
 }
 static inline void remove_feature(Accumulator& a, int p, int ksq, int sq, Piece piece) {
     int idx = halfka_idx(p == 0, ksq, sq, piece);
     const int16_t* w = &ft_w[static_cast<size_t>(idx) * g_L1];
-    float* acc = a.v[p];
+    int32_t* acc = a.v[p];
 #if defined(__AVX512F__)
-    const __m512 winv = _mm512_set1_ps(FT_WINV);
     for (int l = 0; l < g_L1; l += 16) {
-        __m256i w16 = _mm256_loadu_si256((const __m256i*)(w + l)); // 16 int16
-        __m512 wf = _mm512_mul_ps(_mm512_cvtepi32_ps(_mm512_cvtepi16_epi32(w16)), winv);
-        _mm512_storeu_ps(acc + l, _mm512_sub_ps(_mm512_loadu_ps(acc + l), wf));
+        __m512i w32 = _mm512_cvtepi16_epi32(_mm256_loadu_si256((const __m256i*)(w + l)));
+        _mm512_storeu_epi32(acc + l, _mm512_sub_epi32(_mm512_loadu_epi32(acc + l), w32));
     }
 #elif defined(__AVX2__)
-    const __m256 winv = _mm256_set1_ps(FT_WINV);
-    for (int l = 0; l < g_L1; l += 8) {
-        __m128i w8 = _mm_loadu_si128((const __m128i*)(w + l));
-        __m256i w32 = _mm256_cvtepi16_epi32(w8);
-        __m256 wf = _mm256_mul_ps(_mm256_cvtepi32_ps(w32), winv);
-        _mm256_storeu_ps(acc + l, _mm256_sub_ps(_mm256_loadu_ps(acc + l), wf));
-    }
+    for (int l = 0; l < g_L1; l += 8)
+        _mm256_storeu_si256((__m256i*)(acc + l), _mm256_sub_epi32(
+            _mm256_loadu_si256((const __m256i*)(acc + l)),
+            _mm256_cvtepi16_epi32(_mm_loadu_si128((const __m128i*)(w + l)))));
 #else
-    for (int l = 0; l < g_L1; ++l) acc[l] -= w[l] * FT_WINV;
+    for (int l = 0; l < g_L1; ++l) acc[l] -= w[l];
 #endif
 }
 
 static void refresh_perspective(const Position& pos, Accumulator& a, int p) {
     bool white_pov = (p == 0);
     int ksq = static_cast<int>(pos.king_sq(white_pov ? WHITE : BLACK));
-    float* acc = a.v[p];
+    int32_t* acc = a.v[p];
+    for (int l = 0; l < g_L1; ++l) acc[l] = ft_b_i32[l];   // (unvectorized init: 1 store per 4B; refreshes are rare)
+    for (int sq = 0; sq < NUM_SQ; ++sq) {
+        Piece pc = pos.piece_on(Square(sq));
+        if (pc == NO_PIECE) continue;
+        const int16_t* w = &ft_w[static_cast<size_t>(halfka_idx(white_pov, ksq, sq, pc)) * g_L1];
 #if defined(__AVX512F__)
-    const __m512 winv = _mm512_set1_ps(FT_WINV);
-    for (int l = 0; l < g_L1; l += 16) _mm512_storeu_ps(acc + l, _mm512_loadu_ps(&ft_b[l]));
-    for (int sq = 0; sq < NUM_SQ; ++sq) {
-        Piece pc = pos.piece_on(Square(sq));
-        if (pc == NO_PIECE) continue;
-        const int16_t* w = &ft_w[static_cast<size_t>(halfka_idx(white_pov, ksq, sq, pc)) * g_L1];
         for (int l = 0; l < g_L1; l += 16) {
-            __m256i w16 = _mm256_loadu_si256((const __m256i*)(w + l));
-            __m512 wf = _mm512_mul_ps(_mm512_cvtepi32_ps(_mm512_cvtepi16_epi32(w16)), winv);
-            _mm512_storeu_ps(acc + l, _mm512_add_ps(_mm512_loadu_ps(acc + l), wf));
+            __m512i w32 = _mm512_cvtepi16_epi32(_mm256_loadu_si256((const __m256i*)(w + l)));
+            _mm512_storeu_epi32(acc + l, _mm512_add_epi32(_mm512_loadu_epi32(acc + l), w32));
         }
-    }
 #elif defined(__AVX2__)
-    const __m256 winv = _mm256_set1_ps(FT_WINV);
-    for (int l = 0; l < g_L1; l += 8) _mm256_storeu_ps(acc + l, _mm256_loadu_ps(&ft_b[l]));
-    for (int sq = 0; sq < NUM_SQ; ++sq) {
-        Piece pc = pos.piece_on(Square(sq));
-        if (pc == NO_PIECE) continue;
-        const int16_t* w = &ft_w[static_cast<size_t>(halfka_idx(white_pov, ksq, sq, pc)) * g_L1];
-        for (int l = 0; l < g_L1; l += 8) {
-            __m128i w8 = _mm_loadu_si128((const __m128i*)(w + l));
-            __m256 wf = _mm256_mul_ps(_mm256_cvtepi32_ps(_mm256_cvtepi16_epi32(w8)), winv);
-            _mm256_storeu_ps(acc + l, _mm256_add_ps(_mm256_loadu_ps(acc + l), wf));
-        }
-    }
+        for (int l = 0; l < g_L1; l += 8)
+            _mm256_storeu_si256((__m256i*)(acc + l), _mm256_add_epi32(
+                _mm256_loadu_si256((const __m256i*)(acc + l)),
+                _mm256_cvtepi16_epi32(_mm_loadu_si128((const __m128i*)(w + l)))));
 #else
-    for (int l = 0; l < g_L1; ++l) acc[l] = ft_b[l];
-    for (int sq = 0; sq < NUM_SQ; ++sq) {
-        Piece pc = pos.piece_on(Square(sq));
-        if (pc == NO_PIECE) continue;
-        int idx = halfka_idx(white_pov, ksq, sq, pc);
-        const int16_t* w = &ft_w[static_cast<size_t>(idx) * g_L1];
-        for (int l = 0; l < g_L1; ++l) acc[l] += w[l] * FT_WINV;   // WINV was missing here — scalar (non-AVX2) builds fed raw int16-scaled weights into the accumulator
-    }
+        for (int l = 0; l < g_L1; ++l) acc[l] += w[l];
 #endif
+    }
 }
 
 void refresh(Position& pos) {
@@ -490,13 +469,13 @@ Value evaluate(const Position& pos) {
             bool white_pov = (p == 0);
             int ksq = static_cast<int>(pos.king_sq(white_pov ? WHITE : BLACK));
             for (int l = 0; l < g_L1; ++l) {
-                float ref = ft_b[l];
+                int32_t ref = ft_b_i32[l];
                 for (int sq = 0; sq < NUM_SQ; ++sq) {
                     Piece pc = pos.piece_on(Square(sq));
                     if (pc == NO_PIECE) continue;
-                    ref += ft_w[static_cast<size_t>(halfka_idx(white_pov, ksq, sq, pc)) * g_L1 + l] * FT_WINV;
+                    ref += ft_w[static_cast<size_t>(halfka_idx(white_pov, ksq, sq, pc)) * g_L1 + l];
                 }
-                if (std::fabs(ref - inc.v[p][l]) > 1e-3) {
+                if (ref != inc.v[p][l]) {
                     std::fprintf(stderr, "NNUE ACC MISMATCH ply=%d p=%d l=%d ref=%.4f inc=%.4f\n",
                                  pos.state_ply(), p, l, ref, inc.v[p][l]);
                     std::abort();
@@ -508,8 +487,8 @@ Value evaluate(const Position& pos) {
     const Accumulator& a = acc_stack[pos.state_ply()];
     int L1 = g_L1, L2 = g_L2, L3 = g_L3;
     bool stm_white = (pos.side_to_move() == WHITE);
-    const float* acc_stm  = stm_white ? a.v[0] : a.v[1];
-    const float* acc_nstm = stm_white ? a.v[1] : a.v[0];
+    const int32_t* acc_stm  = stm_white ? a.v[0] : a.v[1];
+    const int32_t* acc_nstm = stm_white ? a.v[1] : a.v[0];
 
 #if defined(__AVX2__)
     // ---- int8 path: FUSED SCReLU+quant8 (no intermediate h[] — saves 8KB L1 traffic/eval) ----
@@ -519,8 +498,9 @@ Value evaluate(const Position& pos) {
 #if defined(__AVX512F__)
         // AVX-512: 16 floats/instruction → 2x throughput over AVX2
         const __m512 z16 = _mm512_setzero_ps(), one16 = _mm512_set1_ps(1.0f), sc16 = _mm512_set1_ps(127.0f);
+        const __m512 winv16 = _mm512_set1_ps(FT_WINV);
         for (int l = 0; l < L1; l += 16) {
-            __m512 s = _mm512_loadu_ps(acc_stm + l);
+            __m512 s = _mm512_mul_ps(_mm512_cvtepi32_ps(_mm512_loadu_epi32(acc_stm + l)), winv16);
             __m512 c = _mm512_min_ps(_mm512_max_ps(s, z16), one16);
             __m512 sq = _mm512_mul_ps(c, c);
             __m512i i32 = _mm512_cvtps_epi32(_mm512_mul_ps(sq, sc16));
@@ -530,7 +510,7 @@ Value evaluate(const Position& pos) {
             // c=clip(s,0,1) -> c² in [0,1] -> ×127 -> [0,127] exactly: no clamp needed.
             _mm_storeu_si128((__m128i*)(h_i8 + l), i8);
             // nstm
-            s = _mm512_loadu_ps(acc_nstm + l);
+            s = _mm512_mul_ps(_mm512_cvtepi32_ps(_mm512_loadu_epi32(acc_nstm + l)), winv16);
             c = _mm512_min_ps(_mm512_max_ps(s, z16), one16);
             sq = _mm512_mul_ps(c, c);
             i32 = _mm512_cvtps_epi32(_mm512_mul_ps(sq, sc16));
@@ -539,15 +519,15 @@ Value evaluate(const Position& pos) {
             _mm_storeu_si128((__m128i*)(h_i8 + L1 + l), i8);
         }
 #else
-        const __m256 z = _mm256_setzero_ps(), one = _mm256_set1_ps(1.0f);
+        const __m256 z = _mm256_setzero_ps(), one = _mm256_set1_ps(1.0f), winv8 = _mm256_set1_ps(FT_WINV);
         for (int l = 0; l < L1; l += 8) {
-            __m256 s = _mm256_loadu_ps(acc_stm + l);
+            __m256 s = _mm256_mul_ps(_mm256_cvtepi32_ps(_mm256_loadu_si256((const __m256i*)(acc_stm + l))), winv8);
             __m256 c = _mm256_min_ps(_mm256_max_ps(s, z), one);
             __m256 sq = _mm256_mul_ps(c, c);
             __m256i i32 = _mm256_cvtps_epi32(_mm256_mul_ps(sq, sc127));
             __m128i lo = _mm256_castsi256_si128(i32), hi = _mm256_extracti128_si256(i32, 1);
             _mm_storel_epi64((__m128i*)(h_i8 + l), _mm_packus_epi16(_mm_packs_epi32(lo, hi), _mm_setzero_si128()));
-            s = _mm256_loadu_ps(acc_nstm + l);
+            s = _mm256_mul_ps(_mm256_cvtepi32_ps(_mm256_loadu_si256((const __m256i*)(acc_nstm + l))), winv8);
             c = _mm256_min_ps(_mm256_max_ps(s, z), one);
             sq = _mm256_mul_ps(c, c);
             i32 = _mm256_cvtps_epi32(_mm256_mul_ps(sq, sc127));
@@ -613,10 +593,10 @@ Value evaluate(const Position& pos) {
     }
     // ---- float L2/L3/out path (LNN1 nets) ----
     float h[2 * NNUE_L1_MAX];
-    const __m256 z = _mm256_setzero_ps(), one = _mm256_set1_ps(1.0f);
+    const __m256 z = _mm256_setzero_ps(), one = _mm256_set1_ps(1.0f), winv8 = _mm256_set1_ps(FT_WINV);
     for (int l = 0; l < L1; l += 8) {
-        _mm256_storeu_ps(h + l,      screlu8(_mm256_loadu_ps(acc_stm + l), z, one));
-        _mm256_storeu_ps(h + L1 + l, screlu8(_mm256_loadu_ps(acc_nstm + l), z, one));
+        _mm256_storeu_ps(h + l,      screlu8(_mm256_mul_ps(_mm256_cvtepi32_ps(_mm256_loadu_si256((const __m256i*)(acc_stm + l))), winv8), z, one));
+        _mm256_storeu_ps(h + L1 + l, screlu8(_mm256_mul_ps(_mm256_cvtepi32_ps(_mm256_loadu_si256((const __m256i*)(acc_nstm + l))), winv8), z, one));
     }
     float h2[NNUE_L1_MAX];
     for (int o = 0; o < L2; ++o) {
@@ -641,7 +621,7 @@ Value evaluate(const Position& pos) {
 #else
     float h[2 * NNUE_L1_MAX];
     float h2[NNUE_L1_MAX];
-    for (int l = 0; l < L1; ++l) { h[l] = clip01(acc_stm[l]); h[L1 + l] = clip01(acc_nstm[l]); }
+    for (int l = 0; l < L1; ++l) { h[l] = clip01(acc_stm[l] * FT_WINV); h[L1 + l] = clip01(acc_nstm[l] * FT_WINV); }
     for (int o = 0; o < L2; ++o) {
         float s = l2_b[o]; const float* w = &l2_w[o * 2 * L1];
         for (int i = 0; i < 2 * L1; ++i) s += w[i] * h[i];
