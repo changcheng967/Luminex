@@ -365,6 +365,39 @@ static inline void remove_feature(Accumulator& a, int p, int ksq, int sq, Piece 
 #endif
 }
 
+// FUSED single-pass delta for the dominant quiet-move pattern remove(from)+add(to):
+// one accumulator read-modify-write instead of two (Campaign C). Net lane delta
+// is (w_to - w_from); saturating semantics identical to the sequential pair.
+static inline void move_feature(Accumulator& a, int p, int ksq, Square from, Square to, Piece pf, Piece pt) {
+    bool white_pov = (p == 0);
+    size_t fi = static_cast<size_t>(halfka_idx(white_pov, ksq, from, pf)) * g_L1;
+    size_t ti = static_cast<size_t>(halfka_idx(white_pov, ksq, to, pt)) * g_L1;
+    const int16_t* wf = &ft_w[fi];
+    const int16_t* wt = &ft_w[ti];
+    int16_t* acc = a.v[p];
+    if (g_lin_head) a.lin[p] += lin_w[ti / g_L1] - lin_w[fi / g_L1];
+#if defined(__AVX512F__)
+    for (int l = 0; l < g_L1; l += 32) {
+        __m512i av = _mm512_loadu_si512((const __m512i*)(acc + l));
+        av = _mm512_adds_epi16(av, _mm512_loadu_si512((const __m512i*)(wt + l)));
+        av = _mm512_subs_epi16(av, _mm512_loadu_si512((const __m512i*)(wf + l)));
+        _mm512_storeu_si512((__m512i*)(acc + l), av);
+    }
+#elif defined(__AVX2__)
+    for (int l = 0; l < g_L1; l += 16) {
+        __m256i av = _mm256_loadu_si256((const __m256i*)(acc + l));
+        av = _mm256_adds_epi16(av, _mm256_loadu_si256((const __m256i*)(wt + l)));
+        av = _mm256_subs_epi16(av, _mm256_loadu_si256((const __m256i*)(wf + l)));
+        _mm256_storeu_si256((__m256i*)(acc + l), av);
+    }
+#else
+    for (int l = 0; l < g_L1; ++l) {
+        int v = int(acc[l]) + int(wt[l]) - int(wf[l]);
+        acc[l] = int16_t(std::max(-32768, std::min(32767, v)));
+    }
+#endif
+}
+
 static void refresh_perspective(const Position& pos, Accumulator& a, int p) {
     bool white_pov = (p == 0);
     int ksq = static_cast<int>(pos.king_sq(white_pov ? WHITE : BLACK));
@@ -466,8 +499,7 @@ void update(Position& pos, Move m, Piece moved, PieceType captured) {
         }
         long long inc_t0 = pr ? rdtsc() : 0;   // #51: independent incremental cost (closes last derived number)
         int ksq = static_cast<int>(pos.king_sq(white_pov ? WHITE : BLACK));
-        remove_feature(a, p, ksq, from, make_piece(us, from_pt));
-        add_feature(a, p, ksq, to,   make_piece(us, to_pt));
+        move_feature(a, p, ksq, from, to, make_piece(us, from_pt), make_piece(us, to_pt));
         if (captured != PT_NONE && !ep)
             remove_feature(a, p, ksq, to, make_piece(them, captured));
         if (ep) {
