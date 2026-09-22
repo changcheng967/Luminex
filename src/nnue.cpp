@@ -195,6 +195,7 @@ static bool g_int8 = false;
 static std::vector<int8_t> l2_w_i8, l3_w_i8, out_w_i8;
 static float g_s2 = 1.0f, g_s3 = 1.0f, g_so = 1.0f;  // weight quant scales
 static bool g_loaded = false;
+static bool g_l3_batched = false;   // l3_w_i8 interleaved for batched VNNI L3
 static bool g_enabled = false;
 
 // Per-thread accumulator stack, indexed by Position::st_ply(). v[perspective][neuron].
@@ -265,6 +266,18 @@ bool load(const std::string& path) {
         if (!read_tensor(f, l2_b, L2)) return false;
         f.read(reinterpret_cast<char*>(&g_s2), 4);
         if (!read_i8(l3_w_i8, L3 * L2)) return false;
+#if defined(__AVX512VNNI__)
+        // Batched-L3 layout: dpbusd lane (o*4+j) accumulates h2-slice j against
+        // l3_w[o] slice j — one interleaved row per 4 outputs, 2 dpbusd for all 32.
+        if (L2 == 16 && (L3 % 4) == 0) {
+            std::vector<int8_t> tmp(static_cast<size_t>(L3) * L2);
+            for (int o = 0; o < L3; ++o)
+                for (int j = 0; j < 4; ++j)
+                    std::memcpy(&tmp[(static_cast<size_t>(o) * 4 + j) * 4], &l3_w_i8[static_cast<size_t>(o) * L2 + j * 4], 4);
+            l3_w_i8 = std::move(tmp);
+            g_l3_batched = true;
+        }
+#endif
         if (!read_tensor(f, l3_b, L3)) return false;
         f.read(reinterpret_cast<char*>(&g_s3), 4);
         if (!read_i8(out_w_i8, L3)) return false;
@@ -661,6 +674,26 @@ Value evaluate(const Position& pos) {
         for (int l = 0; l < L2; l += 8) quant8(h2 + l, h2_i8 + l, sc127);
         float h3[NNUE_L1_MAX];
 #if defined(__AVX512VNNI__)
+        if (g_l3_batched) {
+            // All L3 dots via 8 dpbusd + lane-group reduction (bit-exact: integer
+            // adds associate). a512: every 4-lane group holds all 16 h2 bytes.
+            const __m128i h2_128 = _mm_loadu_si128((const __m128i*)h2_i8);
+            const __m512i av = _mm512_broadcast_i32x4(_mm512_castsi128_si512(h2_128));
+            const __m512i pairswap = _mm512_setr_epi32(1,0,3,2, 5,4,7,6, 9,8,11,10, 13,12,15,14);
+            const __m512i groupswap = _mm512_setr_epi32(2,3,0,1, 6,7,4,5, 10,11,8,9, 14,15,12,13);
+            int o = 0;
+            for (int v = 0; v < L3 / 4; ++v, o += 4) {
+                __m512i acc = _mm512_dpbusd_epi32(_mm512_setzero_si512(), av,
+                                _mm512_loadu_si512((const __m512i*)&l3_w_i8[v * 64]));
+                __m512i t1 = _mm512_add_epi32(acc, _mm512_permutexvar_epi32(pairswap, acc));
+                __m512i t2 = _mm512_add_epi32(t1, _mm512_permutexvar_epi32(groupswap, t1));
+                // t2 lane 4k = dot for output (v*4 + k)
+                h3[o+0] = clip01(l3_b[o+0] + _mm_extract_epi32(_mm512_castsi512_si128(t2), 0) * ics3);
+                h3[o+1] = clip01(l3_b[o+1] + _mm_extract_epi32(_mm512_castsi512_si128(t2), 1) * ics3);
+                h3[o+2] = clip01(l3_b[o+2] + _mm_extract_epi32(_mm512_castsi512_si128(t2), 2) * ics3);
+                h3[o+3] = clip01(l3_b[o+3] + _mm_extract_epi32(_mm512_castsi512_si128(t2), 3) * ics3);
+            }
+        } else
         for (int o = 0; o < L3; ++o)
             h3[o] = clip01(l3_b[o] + dot_i8_vnni_small(&l3_w_i8[static_cast<size_t>(o) * L2], h2_i8, L2) * ics3);
         uint8_t h3_i8[NNUE_L1_MAX];
