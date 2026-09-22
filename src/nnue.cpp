@@ -210,6 +210,21 @@ static bool g_enabled = false;
 // 2 single-lane activation-quant diffs out of 3.07M lanes (0.03% of perspectives).
 // Halves copy/update/eval traffic vs the int32 accumulator.
 struct alignas(64) Accumulator { int16_t v[2][NNUE_L1_MAX]; int32_t lin[2]; };
+
+// Finny-light king cache: the last (perspective, king-square) full refresh
+// snapshot. A king move to a square whose CACHED piece placement still matches
+// the current board reuses the cached accumulator verbatim (exact — the
+// accumulator is a pure function of (king_sq, piece placement)). One entry per
+// (perspective, square): 2*64*1KB = 128KB, L2-resident. Shuffling king moves
+// between two squares (the dominant king-move pattern in search) always hit.
+struct KingCacheEntry {
+    uint64_t occ[12];         // piece placement snapshot (both colors, all types)
+    int32_t lin;
+    int16_t v[NNUE_L1_MAX];
+    bool valid = false;
+};
+static KingCacheEntry g_kcache[2][64];
+static long long g_kcache_hits = 0, g_kcache_misses = 0;
 // Heap-allocated per thread, NOT a thread_local C-array: an 8MB thread_local array
 // reserves 8MB of *static TLS* for every thread and overflows the stack at creation.
 // The vector object is ~24 bytes of TLS; its 8MB buffer lives on the heap and is freed
@@ -414,9 +429,43 @@ static inline void move_feature(Accumulator& a, int p, int ksq, Square from, Squ
 static void refresh_perspective(const Position& pos, Accumulator& a, int p) {
     bool white_pov = (p == 0);
     int ksq = static_cast<int>(pos.king_sq(white_pov ? WHITE : BLACK));
+    // probe: exact reuse when the piece placement matches the cached snapshot
+    {
+        KingCacheEntry& e = g_kcache[p][ksq];
+        uint64_t cur[12];
+        {   // both colors x 6 piece types via the board's real accessors
+            int i = 0;
+            for (int c = 0; c < 2; ++c)
+                for (int pt = 0; pt < 6; ++pt)
+                    cur[i++] = pos.pieces(static_cast<Color>(c), static_cast<PieceType>(pt));
+        }
+        if (e.valid && std::memcmp(e.occ, cur, sizeof cur) == 0) {
+            std::memcpy(a.v[p], e.v, sizeof(int16_t) * g_L1);
+            a.lin[p] = e.lin;
+            g_kcache_hits++;
+            return;
+        }
+        std::memcpy(e.occ, cur, sizeof cur);
+        e.valid = true;
+        e.lin = g_lin_head ? 0 : a.lin[p];   // filled below when head present
+        g_kcache_misses++;
+    }
     int16_t* acc = a.v[p];
+#if defined(__AVX512F__)
+    {   // vectorized clamped bias init (was 512 scalar stores per refresh);
+        // inputs pre-clamped to int16 range so signed saturation == exact
+        const __m512i lo32 = _mm512_set1_epi32(-32768), hi32 = _mm512_set1_epi32(32767);
+        for (int l = 0; l < g_L1; l += 32) {
+            __m512i b0 = _mm512_min_epi32(hi32, _mm512_max_epi32(lo32, _mm512_loadu_si512((const __m512i*)&ft_b_i32[l])));
+            __m512i b1 = _mm512_min_epi32(hi32, _mm512_max_epi32(lo32, _mm512_loadu_si512((const __m512i*)&ft_b_i32[l + 16])));
+            _mm512_storeu_si512((__m512i*)(acc + l),      _mm512_cvtsepi32_epi16(b0));
+            _mm512_storeu_si512((__m512i*)(acc + l + 16), _mm512_cvtsepi32_epi16(b1));
+        }
+    }
+#else
     for (int l = 0; l < g_L1; ++l)
         acc[l] = int16_t(std::max(-32768, std::min(32767, ft_b_i32[l])));
+#endif
     if (g_lin_head) a.lin[p] = 0;
     for (int sq = 0; sq < NUM_SQ; ++sq) {
         Piece pc = pos.piece_on(Square(sq));
@@ -437,6 +486,12 @@ static void refresh_perspective(const Position& pos, Accumulator& a, int p) {
 #else
         for (int l = 0; l < g_L1; ++l) acc[l] = int16_t(std::max(-32768, std::min(32767, int(acc[l]) + int(w[l]))));
 #endif
+    }
+    // fill the cache with the completed refresh result
+    {
+        KingCacheEntry& e = g_kcache[p][ksq];
+        std::memcpy(e.v, a.v[p], sizeof(int16_t) * g_L1);
+        e.lin = a.lin[p];
     }
 }
 
