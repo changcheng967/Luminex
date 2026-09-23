@@ -93,6 +93,8 @@ _POS_W2 = float(os.environ.get("NNUE_POS_W2", "0.5"))  # SF default
 _DUAL = os.environ.get("NNUE_DUAL_HEAD", "0") == "1"
 _LIN_WARM = int(os.environ.get("NNUE_LIN_WARMUP", "2000"))
 _LIN_LAM  = float(os.environ.get("NNUE_LIN_LAMBDA", "0.25"))
+# Pinned cosine horizon (must be defined before the subset-trim below)
+_T_MAX_FIXED = int(os.environ["NNUE_T_MAX_STEPS"]) if os.environ.get("NNUE_T_MAX_STEPS") else 0
 _CAL_STEPS = 60   # calibration steps to measure throughput
 _FEAT_CACHE = os.environ.get("NNUE_FEAT_CACHE", "0") == "1"  # OFF by default: single-pass
 # never re-reads a frame, and full-data caching would need ~2.2TB of /tmp. Opt-in
@@ -259,10 +261,8 @@ if _FEAT_CACHE:
     except Exception:
         pass
 # Warm-restart (pass 2+) knobs:
-#   NNUE_T_MAX_STEPS — fix the cosine horizon explicitly. Recommended for pass 2:
-#     set ~= one full pass in steps (~34K here) so LR anneals NNUE_LR -> 0 exactly
-#     at data end (the budget-based refinement under-anneals when data < budget).
-_T_MAX_FIXED = int(os.environ["NNUE_T_MAX_STEPS"]) if os.environ.get("NNUE_T_MAX_STEPS") else 0
+#   NNUE_T_MAX_STEPS — fix the cosine horizon explicitly (defined earlier with
+#   the other env vars; the budget-based refinement under-anneals when data < budget).
 T_MAX = _T_MAX_FIXED if _T_MAX_FIXED > 0 else min(_total_steps, EPOCHS * est_pos // BS)
 _SEG0 = gstep   # resumed runs: the cosine segment is THIS session's steps (the
                 # LambdaLR counter restarts at 0 each process), not global gstep.
