@@ -1,5 +1,13 @@
 # SFNNv16-class (Stockfish 19, 2026)
-> Confidence: cross-validated (session benchmarks + 3-agent proposal agreement)
+> Confidence: cross-validated + SOURCE-VERIFIED 2026-09-23 (nnue-pytorch master read)
+
+## Source-verified details (2026-09-23)
+- ComposedFeatureTransformer: per-block SEPARATE weight tables (rows l1_size+psqt wide),
+  SUMMED into one accumulator via shared bias. Threat flips pay full-L1-width rows.
+- HalfKAv2_hm KingBuckets: a 32-entry remap table in the feature index — currently 1:1
+  in master, but the MECHANISM permits king-square collapsing (within-bucket king moves
+  would be index-stable = no refresh). An untapped knob for engines without Finny hit-rate.
+- PSQT bypass = extra FT output columns (num_psqt_buckets), not a separate layer.
 
 ## Architecture Graph
 ```
