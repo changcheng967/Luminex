@@ -119,7 +119,8 @@ if os.path.exists(_resume) and os.environ.get("NNUE_RESUME", "1") != "0":
             from luminex_nnue_train import LNNUE
             LNNUE.net2net_widen(model, _ck["model"], _ck_L1)
             gstep = _ck.get("gstep", 0)
-            print(f"[NET2NET] widened {_ck_L1} -> {L1} from {_resume} at gstep={gstep}", flush=True)
+            _opt_state = None  # old moments are shape-incompatible — fresh optimizer
+            print(f"[NET2NET] widened {_ck_L1} -> {L1} from {_resume} at gstep={gstep} (optimizer fresh)", flush=True)
         else:
             _miss = model.load_state_dict(_ck["model"], strict=False)
             if _miss.missing_keys:
@@ -134,7 +135,7 @@ if os.path.exists(_resume) and os.environ.get("NNUE_RESUME", "1") != "0":
                 model.ft.weight.data[NUM_INPUTS].zero_()
         except Exception:
             pass
-        _opt_state = _ck.get("opt")  # Adam/AdamW moments — the key to cross-block continuity
+        _opt_state = _ck.get("opt") if _ck_L1 == L1 else None  # only same-width resumes carry moments
         if _opt_state: print(f"[RESUME] + optimizer state ({len(_opt_state['state'])} params) — no warm-up loss", flush=True)
         print(f"[RESUME] loaded {_resume} at gstep={gstep}", flush=True)
     except Exception as _e:
