@@ -106,6 +106,59 @@ class LNNUE(nn.Module):
         self.lin = nn.Embedding(NUM_INPUTS + 1, 1, padding_idx=NUM_INPUTS)
         nn.init.zeros_(self.lin.weight)
         self.L1, self.L2, self.L3 = L1, L2, L3
+
+    # ---------------------------------------------------------------
+    # Net2Net widening (Gen v1.3 Step 0): expand L1 from old_L1 to
+    # self.L1. Function-preserving by construction:
+    #   - FT weight: old columns copied; new columns get small random
+    #     (breaks the all-zero fixed point so input-side gradients flow)
+    #   - FT bias:   old copied; new = EPS (>0) so SCReLU activations
+    #     are nonzero from step 0 (SCReLU'(0)=0 would freeze zero-bias
+    #     dims forever)
+    #   - L2 weight: old columns copied at the right concat positions;
+    #     new columns ZERO (output preserved exactly — new activations
+    #     don't affect output until L2 weights move off zero)
+    # Gradients: ∂L/∂w_L2_new = grad·h_new ≠ 0 because h_new = ε² > 0.
+    # Once w_L2_new ≠ 0, ∂L/∂w_FT_new also becomes nonzero.
+    # ---------------------------------------------------------------
+    EPS = 0.01  # new-dim bias: SCReLU(0.01) = 1e-4, perturbs output < 1cp
+    @staticmethod
+    def net2net_widen(model, ckpt_state, old_L1):
+        """Load a old_L1-wide checkpoint into a wider model (model.L1 > old_L1)."""
+        new_L1 = model.L1
+        assert new_L1 > old_L1, f"net2net: {new_L1} <= {old_L1}"
+        D = new_L1 - old_L1  # number of new dims
+        sd = {k: v.clone() for k, v in ckpt_state.items()}
+
+        # --- FT weight [NUM_INPUTS+1, L1] ---
+        old_w = sd['ft.weight']  # [NI+1, old_L1]
+        new_w = torch.randn(old_w.shape[0], D, device=old_w.device) * 0.02
+        new_w[-1, :] = 0.0  # padding row stays zero
+        sd['ft.weight'] = torch.cat([old_w, new_w], dim=1)
+
+        # --- FT bias [L1] ---
+        old_b = sd['ft_bias']  # [old_L1]
+        sd['ft_bias'] = torch.cat([old_b, torch.full((D,), LNNUE.EPS, device=old_b.device)])
+
+        # --- L2 weight [L2, 2*L1] — concat is [stm(L1), nstm(L1)] ---
+        # Old layout: [stm(old_L1), nstm(old_L1)] = [0..old-1, old..2*old-1]
+        # New layout: [stm(new_L1), nstm(new_L1)]  = [0..new-1, new..2*new-1]
+        # Copy old stm at positions [0:old], old nstm at [new_L1:new_L1+old],
+        # zeros everywhere else (the new dims contribute zero → function preserved).
+        old_l2w = sd['l2.weight']  # [L2, 2*old_L1]
+        L2_dim = old_l2w.shape[0]
+        new_l2w = torch.zeros(L2_dim, 2 * new_L1, device=old_l2w.device)
+        new_l2w[:, :old_L1] = old_l2w[:, :old_L1]              # old stm
+        new_l2w[:, new_L1:new_L1 + old_L1] = old_l2w[:, old_L1:]  # old nstm
+        sd['l2.weight'] = new_l2w
+
+        # --- Everything else (l2.bias, l3, out, lin) unchanged ---
+        missing = model.load_state_dict(sd, strict=False)
+        if missing.missing_keys:
+            print(f"  [net2net] unexpected missing keys: {missing.missing_keys}", flush=True)
+        print(f"  [net2net] widened {old_L1} -> {new_L1} (+{D} dims, "
+              f"FT randn*0.02, bias={LNNUE.EPS}, L2 new cols=0)", flush=True)
+        return model
         # FT init: effective fan-in ~32 active features/half (not NUM_INPUTS=24576).
         # std=1/sqrt(32) -> accumulator std ~1 (active SCReLU range).
         nn.init.normal_(self.ft.weight, mean=0.0, std=0.2)

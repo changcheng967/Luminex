@@ -111,10 +111,18 @@ _opt_state = None  # deferred: optimizer doesn't exist yet at resume time
 if os.path.exists(_resume) and os.environ.get("NNUE_RESUME", "1") != "0":
     try:
         _ck = torch.load(_resume, map_location=device, weights_only=False)
-        _miss = model.load_state_dict(_ck["model"], strict=False)
-        if _miss.missing_keys:
-            print(f"[RESUME] new params init fresh: {_miss.missing_keys}", flush=True)
-        gstep = _ck.get("gstep", 0)
+        _ck_L1 = _ck["model"]["ft_bias"].shape[0]
+        if _ck_L1 != L1:
+            # Net2Net widening (Gen v1.3 Step 0): load old-width ckpt into wider model
+            from luminex_nnue_train import LNNUE
+            LNNUE.net2net_widen(model, _ck["model"], _ck_L1)
+            gstep = _ck.get("gstep", 0)
+            print(f"[NET2NET] widened {_ck_L1} -> {L1} from {_resume} at gstep={gstep}", flush=True)
+        else:
+            _miss = model.load_state_dict(_ck["model"], strict=False)
+            if _miss.missing_keys:
+                print(f"[RESUME] new params init fresh: {_miss.missing_keys}", flush=True)
+            gstep = _ck.get("gstep", 0)
         # Checkpoints from the pre-padding_idx era may carry a NON-ZERO pad row:
         # export drops that row, so training it = silent Python/engine mismatch.
         try:
