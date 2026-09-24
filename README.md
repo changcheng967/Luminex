@@ -6,17 +6,6 @@ widening of the 512-wide predecessor) — and ships with a self-engineered
 hand-crafted evaluation (HCE) as an always-available fallback and tuning
 testbed.
 
-**Current strength: ~2820 Elo (blitz)** — measured by a 3-point external
-calibration ladder plus direct head-to-head (see [v6.1.0 release
-notes](https://github.com/changcheng967/Luminex/releases/tag/v6.1.0) for the
-full evidence table).
-
-| Version | Eval | Est. blitz Elo |
-|---------|------|----------------|
-| v6.1.0 | NNUE Gen768 (L1=768) | **~2820** |
-| v6.0.0 | NNUE v12p2 (L1=512) | ~2760 |
-| v5.16.0 | HCE | 2512 |
-
 ## Download
 
 Latest release: [github.com/changcheng967/Luminex/releases](https://github.com/changcheng967/Luminex/releases)
