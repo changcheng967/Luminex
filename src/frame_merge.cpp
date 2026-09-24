@@ -130,13 +130,14 @@ int main(int argc, char** argv) {
         fens_so_far += fr.nfens; nfens_total += fr.nfens; games_total += g; np_total += fr.total_np;
     }
 
-    // ---- write merged frame: patch nfens at hdr[0..4), then the 3 sections ----
+    // ---- write merged frame: [nfens][concatenated hdr bodies][mv][ev] ----
     uint32_t nf = (uint32_t)nfens_total;
-    memcpy(hdr.data(), &nf, 4);
     FILE* o = fopen(out_path.c_str(), "wb");
     if (!o) { fprintf(stderr, "frame_merge: cannot write %s\n", out_path.c_str()); return 1; }
-    uint64_t hl = hdr.size(), ml = mv.size(), el = ev.size();
-    fwrite(&hl, 8, 1, o); fwrite(hdr.data(), 1, hdr.size(), o);
+    uint64_t hl = 4 + (uint64_t)hdr.size(), ml = mv.size(), el = ev.size();
+    fwrite(&hl, 8, 1, o);
+    fwrite(&nf, 4, 1, o);                       // single nfens, ahead of the fen table
+    fwrite(hdr.data(), 1, hdr.size(), o);       // bodies already prefix-stripped above
     fwrite(&ml, 8, 1, o); fwrite(mv.data(), 1, mv.size(), o);
     fwrite(&el, 8, 1, o); fwrite(ev.data(), 1, ev.size(), o);
     fclose(o);
