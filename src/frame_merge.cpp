@@ -122,7 +122,9 @@ int main(int argc, char** argv) {
             uint32_t nf = fidx + fens_so_far;   // both < 2^32: nfens total stays tiny
             memcpy(ent + 3, &nf, 4);
         }
-        hdr.insert(hdr.end(), fr.hdr.begin(), fr.hdr.end());
+        // append this frame's hdr SKIPPING its own 4-byte nfens prefix — the
+        // merged frame carries exactly one nfens field, patched after the loop
+        hdr.insert(hdr.end(), fr.hdr.begin() + 4, fr.hdr.end());
         mv.insert(mv.end(), fr.mv.begin(), fr.mv.end());
         ev.insert(ev.end(), fr.ev.begin(), fr.ev.end());
         fens_so_far += fr.nfens; nfens_total += fr.nfens; games_total += g; np_total += fr.total_np;
