@@ -13,6 +13,15 @@ LOSS (v12, cross-checked against SF nnue-pytorch / Berserk / Seer / Leela source
 RUN (no args):
   NNUE_L1=512 NNUE_EPOCHS=1 NNUE_BS=131072 NNUE_LR=1e-3 NNUE_FEAT_THREADS=14 NNUE_GRAD_CLIP=1.0
   NNUE_VRAM_POS=180000000   # max positions per VRAM load (big frames split into parts)
+
+PASS-4 COMMAND (Gen768 warm restart on the same 4.29B pack, DOSL trained):
+  NNUE_L1=768 NNUE_OUT_NAME=luminex_gen768p4.nnue NNUE_RESUME=/tmp/code/luminex_gen768.pt \
+  NNUE_LR=1e-4 NNUE_BS=131072 NNUE_EPOCHS=1 NNUE_T_MAX_STEPS=33000 \
+  NNUE_FRAME_SHUFFLE=1 NNUE_SHUFFLE_SEED=43 NNUE_DUAL_HEAD=1 \
+  NNUE_LIN_WARMUP=2000 NNUE_LIN_LAMBDA=0.15 NNUE_LIN_LR_MULT=5 NNUE_TAIL_LR_MULT=3 \
+  NNUE_SWA_START_STEP=24750 NNUE_LOSS_POWER=2.6 python c500_train_stream.py
+  # first session prints "optimizer rebuild" (3-group ckpt vs new 4-group opt) — expected
+  # after: python quantize_i8.py luminex_gen768p4.nnue luminex_gen768p4_i8.nnue
 """
 import os, sys, subprocess, time, glob, copy
 os.environ.setdefault("PYTORCH_DEFAULT_NCHW", "1")
