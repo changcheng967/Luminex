@@ -1,5 +1,7 @@
 # Luminex
 
+<p align="center"><img src="luminex.jpg" alt="Luminex" width="280"></p>
+
 A UCI chess engine written in C++23. Luminex plays with an NNUE evaluation by
 default — a 768-wide HalfKAv2_hg network (Gen768, function-preserving Net2Net
 widening of the 512-wide predecessor) — and ships with a self-engineered
