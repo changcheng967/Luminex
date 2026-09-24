@@ -117,6 +117,7 @@ print(f"loss: power={os.environ.get('NNUE_LOSS_POWER', '2.6')} in sigmoid(cp/{SC
 
 model = LNNUE(L1=L1).to(device)
 gstep = 0  # must exist before resume check (fresh runs would NameError otherwise)
+_ck = None  # resume checkpoint dict (kept for SWA state restore further below)
 _resume = os.environ.get("NNUE_RESUME") or os.path.join(os.path.dirname(__file__) or ".", OUT_BASE + ".pt")
 _opt_state = None  # deferred: optimizer doesn't exist yet at resume time
 if os.path.exists(_resume) and os.environ.get("NNUE_RESUME", "1") != "0":
@@ -168,23 +169,33 @@ _ft_params = [model.ft.weight, model.ft_bias]
 _tail_w    = [model.l2.weight, model.l3.weight, model.out.weight]
 _tail_b    = [model.l2.bias, model.l3.bias, model.out.bias]
 _tail_wd = float(os.environ.get("NNUE_TAIL_WD", "1e-2"))
+# Per-group LR multipliers (pass-4 levers): the FT is converged after 3 passes,
+# the tiny tail can still move (tail mult), and a FRESH DOSL head needs to train
+# fast within its warmup window (lin mult). Group order below MUST match _group_lrs.
+_TAIL_LR_MULT = float(os.environ.get("NNUE_TAIL_LR_MULT", "1.0"))
+_LIN_LR_MULT  = float(os.environ.get("NNUE_LIN_LR_MULT", "5.0"))
 opt = torch.optim.AdamW([
-    {"params": _ft_params, "weight_decay": 0.0},       # NO decay on FT (rare-bucket protection)
-    {"params": _tail_w,    "weight_decay": _tail_wd},  # tail weight decay (fixes L2 SCReLU feedback)
-    {"params": _tail_b,    "weight_decay": 0.0},       # biases are operating points — never decay
+    {"params": _ft_params, "weight_decay": 0.0},        # NO decay on FT (rare-bucket protection)
+    {"params": _tail_w,    "weight_decay": _tail_wd,    # tail weight decay (fixes L2 SCReLU feedback)
+                         "lr": LR * _TAIL_LR_MULT},
+    {"params": _tail_b,    "weight_decay": 0.0},        # biases are operating points — never decay
+    {"params": [model.lin.weight], "weight_decay": 0.0, # DOSL head — WITHOUT this group the dual
+                         "lr": LR * _LIN_LR_MULT},      # head gets grads but NEVER updates (pass-3 bug class)
 ], lr=LR, amsgrad=True)
+_group_lrs = [1.0, _TAIL_LR_MULT, 1.0, _LIN_LR_MULT]
 if _opt_state:
     try:
         opt.load_state_dict(_opt_state)
         # Reset LR to base: the restored opt state carries the OLD block's annealed
-        # LR (potentially near-zero from cosine end), which would kill all learning
-        for pg in opt.param_groups:
-            pg["lr"] = LR
+        # LR (potentially near-zero from cosine end), which would kill all learning.
+        # Per-group multipliers must survive the reset (group order == _group_lrs).
+        for pg, _m in zip(opt.param_groups, _group_lrs):
+            pg["lr"] = LR * _m
             pg.pop("initial_lr", None)
-        print("  [opt] AdamW moments restored, LR reset to base", flush=True)
+        print("  [opt] AdamW moments restored, LR reset to base (per-group mults kept)", flush=True)
     except Exception as _e:
         print(f"  [opt] state restore FAILED ({_e}) — rebuilding (1K-step warm-up)", flush=True)
-print(f"  [opt] FT params={sum(p.numel() for p in _ft_params):,} (wd=0) | tail params={sum(p.numel() for p in _tail_w + _tail_b):,} (w wd={_tail_wd}, b wd=0) | amsgrad=True", flush=True)
+print(f"  [opt] FT params={sum(p.numel() for p in _ft_params):,} (wd=0, lr=x1) | tail params={sum(p.numel() for p in _tail_w + _tail_b):,} (wd={_tail_wd}, lr=x{_TAIL_LR_MULT}) | lin lr=x{_LIN_LR_MULT} | amsgrad=True", flush=True)
 
 # ---- AUTO-CONVERGENCE SIZING ------------------------------------------------
 # Calibrate throughput, then pick the largest data subset that can be trained
@@ -298,13 +309,30 @@ def _lr_lambda(step):
 sched = torch.optim.lr_scheduler.LambdaLR(opt, _lr_lambda)
 print(f"  [sched] clamped cosine T_max={T_MAX} steps, refined per frame (initial lr={LR})", flush=True)
 
-# SWA: average weights from the last 25% of training (free quality boost)
+# SWA: average weights from the last 25% of training (free quality boost).
+# Two triggers: NNUE_SWA_START (epoch number) or NNUE_SWA_START_STEP (global step) —
+# the step form exists because a warm-restart PASS is a single epoch over the
+# frames, so "start at epoch N" cannot express "average the last quarter".
+# The running average is checkpointed in the .pt ("swa"), so a pass split across
+# multiple budget sessions averages over the PASS tail, not just the last session.
 _SWA_START = int(os.environ.get("NNUE_SWA_START", "0"))  # 0=disabled; set to epoch number to enable
+_SWA_STEP  = int(os.environ.get("NNUE_SWA_START_STEP", "0"))  # 0=disabled; global-step trigger
 _swa_model = None; _swa_n = 0
-if _SWA_START > 0:
+if _SWA_START > 0 or _SWA_STEP > 0:
     _swa_model = copy.deepcopy(model)
     for p in _swa_model.parameters(): p.data.zero_()
-    print(f"  [swa] enabled from epoch {_SWA_START}", flush=True)
+    _swa_trig = f"epoch {_SWA_START}" if _SWA_START > 0 else f"step {_SWA_STEP}"
+    print(f"  [swa] enabled from {_swa_trig}", flush=True)
+    _swa_saved = _ck.get("swa") if _ck is not None else None
+    if _swa_saved:
+        _swa_model.load_state_dict(_swa_saved["model"]); _swa_n = int(_swa_saved.get("n", 0))
+        print(f"  [swa] resumed running average ({_swa_n} updates)", flush=True)
+
+def _swa_active():
+    if _swa_model is None: return False
+    if _SWA_START > 0 and epoch >= _SWA_START: return True
+    if _SWA_STEP > 0 and gstep >= _SWA_STEP: return True
+    return False
 
 def _swa_update():
     global _swa_n
@@ -326,7 +354,8 @@ def _save_final(reason):
         save_nnue(_swa_model, os.path.join(out_dir, OUT))
     else:
         save_nnue(model, os.path.join(out_dir, OUT))
-    torch.save({"model": model.state_dict(), "gstep": gstep, "opt": opt.state_dict()},
+    torch.save({"model": model.state_dict(), "gstep": gstep, "opt": opt.state_dict(),
+                "swa": ({"model": _swa_model.state_dict(), "n": _swa_n} if _swa_model is not None else None)},
                os.path.join(out_dir, OUT_BASE + ".pt"))
     upload_output()
     print(f"DONE ({reason}) - {OUT}: {gstep} steps, {total_pos:,} pos in {time.time()-t0:.0f}s", flush=True)
@@ -456,7 +485,7 @@ for epoch in range(EPOCHS):
                         for p in model.parameters():
                             p.clamp_(-_wc, _wc)
                 sched.step(); gstep += 1
-                if _swa_model is not None and epoch >= _SWA_START:
+                if _swa_model is not None and _swa_active():
                     _swa_update()
                 if gstep % 50 == 0:
                     # loss.item() ONLY here — a per-step .item() syncs the GPU queue
@@ -519,7 +548,9 @@ for epoch in range(EPOCHS):
                 print(f"  [sched] T_max -> {_proj:,} steps (measured {_mrate:.1f} st/s)", flush=True)
             _T_MAX_LIVE = _proj
         save_nnue(model, os.path.join(out_dir, OUT))   # incremental save after each frame
-        torch.save({"model": model.state_dict(), "gstep": gstep, "opt": opt.state_dict()}, os.path.join(out_dir, OUT_BASE + ".pt"))
+        torch.save({"model": model.state_dict(), "gstep": gstep, "opt": opt.state_dict(),
+                    "swa": ({"model": _swa_model.state_dict(), "n": _swa_n} if _swa_model is not None else None)},
+                   os.path.join(out_dir, OUT_BASE + ".pt"))
     else:
         continue
     break
