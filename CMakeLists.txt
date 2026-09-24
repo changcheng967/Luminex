@@ -170,6 +170,7 @@ if(BUILD_LC0PACK)
     target_include_directories(luminex-lc0pack PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
     target_link_libraries(luminex-lc0pack PRIVATE ZLIB::ZLIB)
     target_compile_definitions(luminex-lc0pack PRIVATE _CRT_SECURE_NO_WARNINGS)
+    add_executable(frame_merge src/frame_merge.cpp)
 endif()
 
 if(BUILD_VERIFY)
