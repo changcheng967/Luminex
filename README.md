@@ -1,8 +1,21 @@
 # Luminex
 
-A UCI chess engine written in C++23. Luminex ships with a self-engineered hand-crafted
-evaluation (HCE) built from chess first principles, and an optional NNUE evaluation
-(an efficiently-updatable neural network) for stronger play on AVX-512/VNNI hardware.
+A UCI chess engine written in C++23. Luminex plays with an NNUE evaluation by
+default — a 768-wide HalfKAv2_hg network (Gen768, function-preserving Net2Net
+widening of the 512-wide predecessor) — and ships with a self-engineered
+hand-crafted evaluation (HCE) as an always-available fallback and tuning
+testbed.
+
+**Current strength: ~2820 Elo (blitz)** — measured by a 3-point external
+calibration ladder plus direct head-to-head (see [v6.1.0 release
+notes](https://github.com/changcheng967/Luminex/releases/tag/v6.1.0) for the
+full evidence table).
+
+| Version | Eval | Est. blitz Elo |
+|---------|------|----------------|
+| v6.1.0 | NNUE Gen768 (L1=768) | **~2820** |
+| v6.0.0 | NNUE v12p2 (L1=512) | ~2760 |
+| v5.16.0 | HCE | 2512 |
 
 ## Download
 
@@ -15,6 +28,10 @@ Latest release: [github.com/changcheng967/Luminex/releases](https://github.com/c
 | Windows (ClangCL) | `luminex-windows-x86-64-modern.exe` |
 | Windows (MSVC) | `luminex-windows-x86-64.exe` |
 | macOS (Apple Silicon) | `luminex-macos-arm64` |
+
+Each release also attaches the current network (`luminex_gen768_i8.nnue`).
+Place it next to the binary — NNUE then loads automatically. Without the file
+(or on hardware without AVX2) the engine transparently falls back to HCE.
 
 ## Usage
 
@@ -29,38 +46,46 @@ go movetime 1000
 
 | Option | Default | Description |
 |--------|---------|-------------|
-| `Hash` | 128 | Transposition-table size in MB |
+| `Hash` | 256 | Transposition-table size in MB |
 | `Threads` | 1 | Search threads (lazy SMP; each thread owns its NNUE accumulator) |
-| `UseNNUE` | true | Use the NNUE evaluation (falls back to HCE if no net/AVX2) |
+| `UseNNUE` | true | NNUE evaluation (automatic HCE fallback if unavailable) |
 | `NNUEFile` | `luminex_gen768_i8.nnue` | Path to the `.nnue` network file |
-| `SearchDepth` | 0 | If >0, search every node to a fixed depth (overrides time control) |
+| `Ponder` | false | pondering |
 | `Contempt` | 0 | Draw avoidance (centipawns) |
+| `Move Overhead` | 10 | Time-management safety margin (ms) |
 | `BookFile` | `<empty>` | Polyglot opening-book path |
+| `SyzygyPath` | `<empty>` | Syzygy tablebase path |
+| `Skill Level` | 20 | 0–20 strength handicap |
+| `UCI_LimitStrength` / `UCI_Elo` | false / 1320 | Elo-capped play (1320–3190) |
+| `UCI_Chess960` | false | Chess960 / FRC mode |
+| `UCI_ShowWDL` | false | Report win/draw/loss in search output |
+| `SearchDepth` | 0 | If >0, fixed-depth search (overrides time control) |
+| `NodesPerMove` | 0 | If >0, fixed node budget per move |
+| `QsearchLinear` | true | Qsearch stand-pat via the net's linear head (inert unless the loaded net carries a trained one) |
+
+The engine also exposes ~40 hand-tunable HCE parameters (`BishopPairMG`,
+`RookOpenMG`, `PawnShieldCenter`, …) for evaluation experiments; see `uci.cpp`.
 
 ## Evaluation
 
-Luminex has two interchangeable evaluation functions, selected at runtime via `UseNNUE`:
+Luminex has two interchangeable evaluation functions, selected at runtime via
+`UseNNUE`:
 
-- **HCE (default)** — a hand-crafted evaluation: material, piece-square tables, mobility,
-  passed-pawn path decomposition, king safety, and a multi-table correction history. No
+- **NNUE (default)** — HalfKAv2_hg feature transformer (L1=768, two int16
+  saturating accumulator perspectives) feeding SCReLU activations through
+  int8-quantized L2/L3/output layers (16→32→1). The accumulator is maintained
+  incrementally on make/unmake with fused single-pass move deltas; the tail
+  runs AVX-512 VNNI (`VPDPBUSD`) with a batched L3 GEMM. Measured up to ~1.2M
+  single-threaded nodes/sec on AVX-512/VNNI hardware with the 768-wide net.
+- **HCE (fallback)** — material, piece-square tables, mobility, passed-pawn
+  path decomposition, king safety, and a multi-table correction history. No
   network file required.
-- **NNUE (default since v6.1.0)** — a HalfKAv2_hg feature transformer (L1=768, widened
-  from 512 via function-preserving Net2Net) feeding SCReLU
-  activations through int8-quantized L2/L3/output layers (L2=16, L3=32), inferred with
-  AVX-512 VNNI (`VPDPBUSD`). The accumulator is maintained incrementally on make/unmake,
-  so only moved-piece feature deltas are applied per node.
-
-On AVX-512/VNNI hardware the NNUE path sustains high hundreds of thousands of
-single-threaded nodes/sec (861K measured with the 512-wide net before the +25% kernel
-optimization round) and decisively outplays HCE at every standard time control. If no
-network is loaded (or the CPU lacks AVX2), the engine
-transparently falls back to HCE.
 
 ## NNUE Training
 
-The current net (`luminex_gen768_i8.nnue`, default since v6.1.0) is a 768-wide
-HalfKAv2_hg network obtained by function-preserving Net2Net widening of the
-512-wide predecessor. Training and data tooling live under `nnue/` and `src/lc0pack.cpp`.
+The current net is a 768-wide HalfKAv2_hg network obtained by
+function-preserving Net2Net widening of the 512-wide predecessor. Training and
+data tooling live under `nnue/` and `src/lc0pack.cpp`.
 
 ## Build
 
@@ -85,7 +110,7 @@ src/
   board.h / cpp      # Position representation, make/unmake
   movegen.h / cpp    # Legal move generation
   evaluation.h / cpp # Hand-crafted evaluation (HCE)
-  nnue.h / cpp       # Optional NNUE evaluation + incremental accumulator
+  nnue.h / cpp       # NNUE evaluation + incremental accumulator
   search.h / cpp     # PVS search with LMR, phased move generation
   transposition.h / cpp # Transposition table
   book.h / cpp       # Polyglot opening book
@@ -99,7 +124,6 @@ src/
   eval_trace.cpp     # HCE eval tracing for tuning (BUILD_EVALTRACE)
 
 nnue/
-  pipeline5.sh       # overlapped download+pack pipeline for the test91 dataset
   mae_probe.py       # net evaluation probe (cross-era MAE comparison)
   openi_upload/      # training scripts (per-frame streaming trainer, model, quantizer)
 ```
@@ -110,4 +134,4 @@ Luminex is licensed under the [GNU General Public License v3.0](LICENSE).
 
 Some foundational code derives from [Stockfish](https://github.com/official-stockfish/Stockfish),
 which is also GPL-3.0 licensed. All original contributions to Luminex are released under
-the same license.
+the same license. Training data from [Leela Chess Zero](https://lczero.org/) self-play.
