@@ -1,0 +1,78 @@
+# THUNDER — the stacked same-data run
+
+Goal: the next training cycle after pass 4, stacking every orthogonal lever that
+uses only the existing 4.29B pack. Evidence base (fishtest, ±1.3 Elo precision):
+SFNNv10 threat inputs = +32.9/+44.8; no non-paradigm change in SF history
+exceeded ~45; the HCE->NNUE paradigm shift (+80-100) is already spent here
+(v12p2 vs HCE +241). Stacked expectation: +40-80 central, not guaranteed.
+
+## Stack (in one training cycle, ablation debt accepted)
+
+1. Threat features via zero-init input extension (the SFNNv10 lever)  [+30-60]
+2. Pass-4/5 density warm restarts (descending LR ladder, SWA)         [+8-20]
+3. DOSL linear head (trained since pass 4) + QsearchLinear A/B        [0-5]
+4. WDL outcome blend — ONLY when a re-harvest happens (lc0pack dropped
+   WDL when packing; gamepack has no results. Fresh tars carry it)    [deferred]
+5. Better int8 quantization (per-channel scales): measured tax is
+   mean 16.3cp / p90 34cp                                            [+5-15]
+
+## Threat feature design (v1, bounded)
+
+Current index space: NUM_INPUTS = 24576 per perspective (HalfKAv2_hg,
+(our king bucket, piece, square) triples).
+
+Extension block THREAT (own-perspective, zero-init):
+  For each perspective p and each OWN piece x that is attacked by an enemy
+  piece with insufficient defense (SEE-ish sign, single attacker cheapest):
+    index = THREAT_BASE + ksq_bucket(p) * T_STRIDE
+            + own_piece(x) * 64 * THREAT_KINDS
+            + sq(x) * THREAT_KINDS
+            + attacker_kind(attacker type, capture-or-threat)
+  THREAT_KINDS = 6 (P N B R Q + "hanging")  -> block size = 64*6*64*6 = 147456
+  Per-node active extras: 0-4 typical (only genuinely attacked pieces).
+  nps cost: attack-map queries at make/unmake; budget <= 10% (measure first
+  with a build before training anything).
+
+  Total NUM_INPUTS: 24576 + 147456 = 172032 rows/side (FT table grows to
+  172032 x 768 int16 = 250MB in engine — TOO BIG for release; v1 shrinks:
+  drop king dimension for threats (SF does not condition threat inputs on
+  king square in v10; conditioning adds little): block = 6*64*6 = 2304/side
+  with own-piece/square/attacker only. NUM_INPUTS = 26880. FT stays ~40MB.
+
+## Function preservation (the safety property)
+
+New rows init EXACTLY zero in FT; L2 untouched; DOSL lin rows for new
+features init zero. Net output bit-identical before training resumes
+(E5-style test: max |eval diff| over 10k positions == 0). SCReLU is inactive
+on zero accumulca contributions, so wake-up needs the same epsilon-bias trick
+as the 512->768 widening (new FT rows get small random init instead — output
+shifts by ~0; verified in test).
+
+## Touchpoints
+
+- src/featurize.cpp: emit threat indices into w_idx/b_idx (uses attack maps
+  the featurizer already computes for pins/checks — extend, don't duplicate)
+- src/lc0pack.cpp: NO change (frames store positions, not indices)
+- src/nnue.cpp: NUM_INPUTS, add_feature for threat indices, accumulator
+  refresh + move-delta paths must add/remove threat features when attacks
+  change (the expensive part: attack deltas on make/unmake)
+- nnue/openi_upload/luminex_nnue_train.py: NUM_INPUTS, input-side zero-init
+  extension loader for the pass-4 checkpoint
+- nnue/openi_upload/c500_train_stream.py: no change (reads indices)
+- quantize_i8.py: per-channel scale search while touching it (lever 5)
+- E6 preservation test: extend test_net2net.py
+
+## Training recipe (after pass 4 lands)
+
+  NNUE_L1=768 NNUE_RESUME=luminex_gen768p4.pt NNUE_LR=2e-4 (feature wake-up
+  needs a HIGHER peak than pass 5 density alone would), warmup steps for the
+  new rows, SWA last 25%, DOSL continues, 1 full pass, then one density pass
+  at 7e-5 if the first shows continued MAE slope.
+
+## Verification protocol (non-negotiable, replaces 50-game verdicts)
+
+- Direct H2H Thunder vs pass-4 net: 1000+ games fishtest STC on the Lightning
+  box (50 games ~= 17 min at concurrency 2 -> 1000 games ~= 6 h, overnight)
+- Gate to ship: Elo > 0 with LOS >= 95%, or SPRT(h0=0, h1=+10) accept
+- MAE gate: HEALTH MAE <= 172 (from 177) AND linMAE sane
+- Never judge this run on any 50-game sample again
