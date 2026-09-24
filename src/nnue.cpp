@@ -328,7 +328,14 @@ bool load(const std::string& path) {
                     float v; f.read(reinterpret_cast<char*>(&v), sizeof(float));
                     lin_w[i] = (int16_t)std::lround(v * LIN_SCALE);
                 }
-                g_lin_head = true;
+                // All-zero LINH = untrained head (pass-3 export bug): a "valid"
+                // zero head silently made every qsearch stand-pat 0cp. Never
+                // treat it as available; QsearchLinear then falls back to the
+                // full eval via linear_available().
+                bool any = false;
+                for (int i = 0; i < NUM_INPUTS && !any; ++i) any = lin_w[i] != 0;
+                g_lin_head = any;
+                if (!any) std::fprintf(stderr, "nnue: LINH section all-zero (untrained head) — ignored\n");
             } else { std::fprintf(stderr, "nnue: LINH size mismatch — head ignored\n"); }
         } else {
             f.seekg(save);   // not a LINH section — rewind (older net format)

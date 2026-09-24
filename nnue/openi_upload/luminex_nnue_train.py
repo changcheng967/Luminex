@@ -437,11 +437,22 @@ def save_nnue(model, path):
         # Per-feature scalar weight + bias, both float32, white-perspective layout
         # (sum over a perspective's active features = that side's score from its
         # own viewpoint; engine negates for stm-relativity).
+        # GUARD: an all-zero head means dual-head training never ran (the pass-3
+        # bug: valid-format LINH full of zeros = 0cp qsearch stand-pat = 0-50
+        # match loss). Refuse to export that; skip the section when dual-head
+        # is explicitly disabled.
         if hasattr(model, 'lin'):
-            f.write(b'LINH')
             lin_w = model.lin.weight.detach().cpu().numpy().astype(np.float32)[:NUM_INPUTS]  # drop pad row
-            f.write(struct.pack('i', lin_w.size))
-            f.write(lin_w.tobytes())
+            if os.environ.get("NNUE_DUAL_HEAD", "1") != "1":
+                print("  [export] NNUE_DUAL_HEAD=0 — LINH section skipped (head untrained by request)")
+            elif float(np.abs(lin_w).max()) < 1e-9:
+                raise SystemExit("FATAL: DOSL lin head is all-zero — dual-head training never "
+                                 "ran (NNUE_DUAL_HEAD=1 but no lin loss?). Refusing to export: "
+                                 "a zero LINH poisons qsearch stand-pat with 0cp.")
+            else:
+                f.write(b'LINH')
+                f.write(struct.pack('i', lin_w.size))
+                f.write(lin_w.tobytes())
 
 
 if __name__ == '__main__':

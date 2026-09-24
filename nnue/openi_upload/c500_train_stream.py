@@ -56,10 +56,13 @@ assert FRAMES, "no frame_*.zst/.xz found and no gamepack.tar"
 # Pass-2+ (warm restart): shuffle frame order to break the temporal bias of the
 # newest-first dataset (with cosine annealing, the LAST frames dominate the
 # low-LR consolidation phase). Deterministic seed => reproducible order.
+# NNUE_SHUFFLE_SEED: vary per pass (pass3=42, pass4=43, ...) — reusing a pass's
+# seed replays the identical presentation order and weakens the epoch.
 if os.environ.get("NNUE_FRAME_SHUFFLE", "0") == "1":
     import random as _rnd
-    _rnd.Random(42).shuffle(FRAMES)
-    print(f"[shuffle] frame order shuffled (seed 42): first={os.path.basename(FRAMES[0])} last={os.path.basename(FRAMES[-1])}", flush=True)
+    _shuf_seed = int(os.environ.get("NNUE_SHUFFLE_SEED", "42"))
+    _rnd.Random(_shuf_seed).shuffle(FRAMES)
+    print(f"[shuffle] frame order shuffled (seed {_shuf_seed}): first={os.path.basename(FRAMES[0])} last={os.path.basename(FRAMES[-1])}", flush=True)
 if any(f.endswith(".zst") for f in FRAMES) and not os.path.exists("/usr/bin/zstd"):
     subprocess.run("apt-get install -y zstd >/dev/null 2>&1 || pip install -q zstandard", shell=True)
 
@@ -90,9 +93,16 @@ _POS_W2 = float(os.environ.get("NNUE_POS_W2", "0.5"))  # SF default
 # DOSL dual-head (Step-0): aux linear head trained alongside the full net so it is
 # a standalone-usable qsearch stand-pat. Warmup at lam=1.0 (head alone must be a
 # competent eval), then joint lam=0.25 persists as the anchor loss throughout.
-_DUAL = os.environ.get("NNUE_DUAL_HEAD", "0") == "1"
+# DEFAULT ON since pass-4: the Gen768 pass-3 export shipped a zero-trained LINH
+# section (valid format, all-zero weights) that the engine happily used as a 0cp
+# qsearch stand-pat — the 0-50 match loss. Export now REFUSES an all-zero head.
+_DUAL = os.environ.get("NNUE_DUAL_HEAD", "1") == "1"
 _LIN_WARM = int(os.environ.get("NNUE_LIN_WARMUP", "2000"))
 _LIN_LAM  = float(os.environ.get("NNUE_LIN_LAMBDA", "0.25"))
+if _DUAL:
+    print(f"[DOSL] dual-head training ON (warmup {_LIN_WARM} steps at lam=1.0, then lam={_LIN_LAM})", flush=True)
+else:
+    print("[DOSL] dual-head training OFF — export will SKIP the LINH section (head untrained)", flush=True)
 # Pinned cosine horizon (must be defined before the subset-trim below)
 _T_MAX_FIXED = int(os.environ["NNUE_T_MAX_STEPS"]) if os.environ.get("NNUE_T_MAX_STEPS") else 0
 _CAL_STEPS = 60   # calibration steps to measure throughput
@@ -141,6 +151,13 @@ if os.path.exists(_resume) and os.environ.get("NNUE_RESUME", "1") != "0":
     except Exception as _e:
         print(f"[RESUME] FAILED ({_e}) - training from scratch", flush=True)
 model.probe_ft(device)   # EmbeddingBag FT
+# DOSL warmup baseline: on a CONTINUATION the global gstep already exceeds the
+# warmup horizon, so warmup must count from this session's start. A checkpoint
+# whose lin head is already trained (non-zero) skips warmup entirely.
+if _DUAL:
+    _lin_trained = float(model.lin.weight.detach().abs().max().item()) > 1e-9
+    _lin_base = (gstep - _LIN_WARM) if _lin_trained else gstep
+    print(f"  [DOSL] lin head {'pre-trained (warmup skipped)' if _lin_trained else 'fresh (warmup from session start)'} at gstep={gstep}", flush=True)
 print(f"  [LNNUE] ft_mode={model.ft_mode} (compile OFF)", flush=True)
 # Phase 0 root-cause L2 fix: decay ONLY the tail WEIGHTS (where L2/SCReLU feedback
 # grows weights), NOT the FT (protects rare king/piece/square buckets from uniform-decay
@@ -425,7 +442,7 @@ for epoch in range(EPOCHS):
                     else:
                         loss = ((torch.sigmoid(pred / SCALE) - torch.sigmoid(ti / SCALE)) ** 2).mean()
                 if _lin_t is not None:
-                    _lam = 1.0 if gstep < _LIN_WARM else _LIN_LAM
+                    _lam = 1.0 if gstep - _lin_base < _LIN_WARM else _LIN_LAM
                     loss = _lam * _lin_t.mean() + (1.0 - _lam) * loss
                 if not torch.isfinite(loss):
                     print(f"  WARN: non-finite loss at step {gstep} — skipping batch "
