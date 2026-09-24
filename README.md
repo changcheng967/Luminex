@@ -56,21 +56,11 @@ optimization round) and decisively outplays HCE at every standard time control. 
 network is loaded (or the CPU lacks AVX2), the engine
 transparently falls back to HCE.
 
-## NNUE Training Pipeline
+## NNUE Training
 
-The nets are trained on a self-built dataset derived from Leela Chess Zero's test91
-self-play data: 4.29B positions / ~36.8M games / 132 gamepack frames (8.0 GB),
-converted by `src/lc0pack.cpp` (Leela v6 training chunks → compact gamepack frames
-with raw moves and delta-encoded evals). Leela's deep-search Q values keep the
-natural fat-tail eval distribution (13.5% of positions beyond ±1000cp) — the property
-that made fishtest-style thin-tail data fail for this engine.
-
-Training uses a power-2.6 loss in sigmoid (win-probability) space — the same family
-as Stockfish's `nnue-pytorch` and Berserk's trainer — with optional SF-style position
-weighting. One trainer pass featurizes frames on the fly through `luminex-featurize`
-(no intermediate tensor storage). Scripts live in `nnue/openi_upload/`;
-`src/verify_frames.c` validates every frame (all 132 pass byte-exact closure).
-Data acquisition used the overlapped download+pack pipeline in `nnue/pipeline5.sh`.
+The current net (`luminex_gen768_i8.nnue`, default since v6.1.0) is a 768-wide
+HalfKAv2_hg network obtained by function-preserving Net2Net widening of the
+512-wide predecessor. Training and data tooling live under `nnue/` and `src/lc0pack.cpp`.
 
 ## Build
 
