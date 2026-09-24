@@ -197,7 +197,9 @@ static std::vector<int8_t> l2_w_i8, l3_w_i8, out_w_i8;
 static float g_s2 = 1.0f, g_s3 = 1.0f, g_so = 1.0f;  // weight quant scales
 static bool g_loaded = false;
 static bool g_l3_batched = false;   // l3_w_i8 interleaved for batched VNNI L3
-static bool g_enabled = false;
+// true by default since v6.1.0 (matches the declared UCI default; a GUI that
+// never sends setoption gets NNUE when a net is present — HCE if not).
+static bool g_enabled = true;
 
 // Per-thread accumulator stack, indexed by Position::st_ply(). v[perspective][neuron].
 // Cache-line aligned so each 4KB accumulator starts on a 64B boundary (cleaner loads
