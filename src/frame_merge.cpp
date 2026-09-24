@@ -103,7 +103,7 @@ int main(int argc, char** argv) {
         return 2;
     }
 
-    std::vector<uint8_t> hdr, mv, ev;
+    std::vector<uint8_t> fens, entries, mv, ev;   // hdr = [nfens][fens][entries]
     uint64_t nfens_total = 0, games_total = 0, np_total = 0;
     uint32_t fens_so_far = 0;
     for (auto& path : inputs) {
@@ -122,22 +122,23 @@ int main(int argc, char** argv) {
             uint32_t nf = fidx + fens_so_far;   // both < 2^32: nfens total stays tiny
             memcpy(ent + 3, &nf, 4);
         }
-        // append this frame's hdr SKIPPING its own 4-byte nfens prefix — the
-        // merged frame carries exactly one nfens field, patched after the loop
-        hdr.insert(hdr.end(), fr.hdr.begin() + 4, fr.hdr.end());
+        // the format is [ALL fens][ALL entries] — keep the sections separate
+        fens.insert(fens.end(), fr.hdr.begin() + 4, fr.hdr.begin() + entry_off);
+        entries.insert(entries.end(), fr.hdr.begin() + entry_off, fr.hdr.end());
         mv.insert(mv.end(), fr.mv.begin(), fr.mv.end());
         ev.insert(ev.end(), fr.ev.begin(), fr.ev.end());
         fens_so_far += fr.nfens; nfens_total += fr.nfens; games_total += g; np_total += fr.total_np;
     }
 
-    // ---- write merged frame: [nfens][concatenated hdr bodies][mv][ev] ----
+    // ---- write merged frame: [nfens][fens][entries][mv][ev] ----
     uint32_t nf = (uint32_t)nfens_total;
     FILE* o = fopen(out_path.c_str(), "wb");
     if (!o) { fprintf(stderr, "frame_merge: cannot write %s\n", out_path.c_str()); return 1; }
-    uint64_t hl = 4 + (uint64_t)hdr.size(), ml = mv.size(), el = ev.size();
+    uint64_t hl = 4 + (uint64_t)fens.size() + entries.size(), ml = mv.size(), el = ev.size();
     fwrite(&hl, 8, 1, o);
-    fwrite(&nf, 4, 1, o);                       // single nfens, ahead of the fen table
-    fwrite(hdr.data(), 1, hdr.size(), o);       // bodies already prefix-stripped above
+    fwrite(&nf, 4, 1, o);
+    fwrite(fens.data(), 1, fens.size(), o);
+    fwrite(entries.data(), 1, entries.size(), o);
     fwrite(&ml, 8, 1, o); fwrite(mv.data(), 1, mv.size(), o);
     fwrite(&el, 8, 1, o); fwrite(ev.data(), 1, ev.size(), o);
     fclose(o);
