@@ -31,8 +31,8 @@ go movetime 1000
 |--------|---------|-------------|
 | `Hash` | 128 | Transposition-table size in MB |
 | `Threads` | 1 | Search threads (lazy SMP; each thread owns its NNUE accumulator) |
-| `UseNNUE` | false | Use the NNUE evaluation instead of HCE |
-| `NNUEFile` | `luminex_v1.nnue` | Path to the `.nnue` network file |
+| `UseNNUE` | true | Use the NNUE evaluation (falls back to HCE if no net/AVX2) |
+| `NNUEFile` | `luminex_gen768_i8.nnue` | Path to the `.nnue` network file |
 | `SearchDepth` | 0 | If >0, search every node to a fixed depth (overrides time control) |
 | `Contempt` | 0 | Draw avoidance (centipawns) |
 | `BookFile` | `<empty>` | Polyglot opening-book path |
@@ -44,14 +44,16 @@ Luminex has two interchangeable evaluation functions, selected at runtime via `U
 - **HCE (default)** — a hand-crafted evaluation: material, piece-square tables, mobility,
   passed-pawn path decomposition, king safety, and a multi-table correction history. No
   network file required.
-- **NNUE (optional)** — a HalfKAv2_hg feature transformer (L1=512) feeding SCReLU
+- **NNUE (default since v6.1.0)** — a HalfKAv2_hg feature transformer (L1=768, widened
+  from 512 via function-preserving Net2Net) feeding SCReLU
   activations through int8-quantized L2/L3/output layers (L2=16, L3=32), inferred with
   AVX-512 VNNI (`VPDPBUSD`). The accumulator is maintained incrementally on make/unmake,
   so only moved-piece feature deltas are applied per node.
 
-On AVX-512/VNNI hardware the NNUE path reaches ~990K single-threaded nodes/sec and is
-strength-even with HCE at bullet time controls while being substantially stronger at
-equal search depth. If no network is loaded (or the CPU lacks AVX2), the engine
+On AVX-512/VNNI hardware the NNUE path sustains high hundreds of thousands of
+single-threaded nodes/sec (861K measured with the 512-wide net before the +25% kernel
+optimization round) and decisively outplays HCE at every standard time control. If no
+network is loaded (or the CPU lacks AVX2), the engine
 transparently falls back to HCE.
 
 ## NNUE Training Pipeline

@@ -214,10 +214,10 @@ void handle_uci() {
     safe_output("option name UCI_Elo type spin default 1320 min 1320 max 3190\n");
     safe_output("option name UCI_LimitStrength type check default false\n");
     safe_output("option name UCI_Chess960 type check default false\n");
-    // Optional NNUE evaluation (defaults to pure HCE). Set NNUEFile to a .nnue
-    // produced by nnue/luminex_nnue_train.py, then UseNNUE=true to switch.
-    safe_output("option name UseNNUE type check default false\n");
-    safe_output("option name NNUEFile type string default luminex_v1.nnue\n");
+    // NNUE evaluation (default since v6.1.0: Gen768). A missing net or missing
+    // AVX2 transparently falls back to HCE.
+    safe_output("option name UseNNUE type check default true\n");
+    safe_output("option name NNUEFile type string default luminex_gen768_i8.nnue\n");
     // Eval parameters (self-engineered defaults)
     safe_output("option name BishopPairMG type spin default 40 min -100 max 200\n");
     safe_output("option name BishopPairEG type spin default 100 min -100 max 300\n");
