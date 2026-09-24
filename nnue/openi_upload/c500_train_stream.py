@@ -22,7 +22,6 @@ try:
     from c2net.context import prepare, upload_output
     ctx = prepare(); out_dir = ctx.output_path
 except Exception:   # non-OpenI environment (smoke test / local box)
-    import tempfile
     class _Ctx: output_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "out")
     ctx = _Ctx(); out_dir = ctx.output_path
     os.makedirs(out_dir, exist_ok=True)

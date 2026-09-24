@@ -81,7 +81,6 @@ public:
 
     Bitboard checkers() const;
     Bitboard pinned() const;
-    Bitboard blockers_for_king(Color c) const;
 
     Square ep_square() const;
     Square king_sq(Color c) const;
@@ -89,7 +88,6 @@ public:
     bool castling_allowed(Color c, CastlingRight cr) const;
 
     int game_ply() const;
-    void set_game_ply(int ply);
 
     Key key() const;
     Key pawn_key() const;
@@ -129,11 +127,8 @@ private:
     void remove_piece(Square s);
     void move_piece(Square from, Square to);
 
-    void set_castling_right(Color c, Square rfrom);
     void set_check_info(StateInfo* st);
     bool validate_move(Move m, Square from, Square to, Piece moved_pc, PieceType captured) const;
-
-    bool see_gen(Bitboard stmAttackers, Bitboard occupied) const;
 
     Bitboard slider_blockers(Bitboard sliders, Bitboard& pinners) const;
 
@@ -178,14 +173,12 @@ inline Color Position::side_to_move() const { return side_to_move_; }
 
 inline Bitboard Position::checkers() const { return st_->checkers; }
 inline Bitboard Position::pinned() const { return st_->pinned; }
-inline Bitboard Position::blockers_for_king(Color) const { return st_->block_checkers; }
 
 inline Square Position::ep_square() const { return st_->ep_square; }
 inline Square Position::king_sq(Color c) const { return king_square[c]; }
 inline bool Position::castling_allowed(Color c, CastlingRight cr) const { return castling_rights_[c] & cr; }
 
 inline int Position::game_ply() const { return game_ply_; }
-inline void Position::set_game_ply(int ply) { game_ply_ = ply; }
 
 inline Key Position::key() const { return st_->key; }
 inline Key Position::pawn_key() const { return st_->pawn_key; }
@@ -196,11 +189,6 @@ inline int Position::psq_mg() const { return st_->psq_mg; }
 inline int Position::psq_eg() const { return st_->psq_eg; }
 
 inline bool Position::is_check() const { return checkers() != 0; }
-
-// Sliding attack helpers
-Bitboard bb_rank_attacks(Square s, Bitboard occupied);
-Bitboard bb_file_attacks(Square s, Bitboard occupied);
-Bitboard bb_diag_attacks(Square s, Bitboard occupied);
 
 // Queen attacks now in bitboard.h using optimized tables
 

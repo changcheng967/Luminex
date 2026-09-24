@@ -1506,10 +1506,6 @@ bool Position::is_draw() const {
     return false;
 }
 
-void Position::set_castling_right([[maybe_unused]] Color c, [[maybe_unused]] Square rfrom) {
-    // TODO: Implement castling right setup
-}
-
 void init_zobrist() {
     Zobrist::init();
 }

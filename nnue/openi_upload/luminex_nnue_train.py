@@ -20,7 +20,7 @@
 #   export MACA_PATH=/opt/maca/ ; export LD_LIBRARY_PATH=...  (see mcPyTorch guide)
 #   export PYTORCH_DEFAULT_NCHW=1   (avoid .view() NCHW quirk)
 
-import sys, math, struct, time, os
+import struct, time, os
 import numpy as np
 try:
     import chess          # only needed by active_features/featurize_batch (FEN-text path);
