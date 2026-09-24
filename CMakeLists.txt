@@ -159,6 +159,13 @@ if(BUILD_LC0PACK)
     find_package(ZLIB REQUIRED)
     add_executable(luminex-lc0pack
         src/lc0pack.cpp
+        src/tuner_params.cpp
+        src/board.cpp
+        src/movegen.cpp
+        src/evaluation.cpp
+        src/nnue.cpp
+        src/magic.cpp
+        src/transposition.cpp
     )
     target_include_directories(luminex-lc0pack PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
     target_link_libraries(luminex-lc0pack PRIVATE ZLIB::ZLIB)
