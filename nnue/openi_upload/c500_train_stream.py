@@ -168,6 +168,10 @@ if _DUAL:
     _lin_base = (gstep - _LIN_WARM) if _lin_trained else gstep
     print(f"  [DOSL] lin head {'pre-trained (warmup skipped)' if _lin_trained else 'fresh (warmup from session start)'} at gstep={gstep}", flush=True)
 print(f"  [LNNUE] ft_mode={model.ft_mode} (compile OFF)", flush=True)
+# SWA step-trigger baseline: same global-vs-session trap as the DOSL warmup —
+# a resumed run's global gstep dwarfs the threshold, so the trigger must count
+# from this session's start (pass-4 averaged its whole pass by accident).
+_swa_sess0 = gstep
 # Phase 0 root-cause L2 fix: decay ONLY the tail WEIGHTS (where L2/SCReLU feedback
 # grows weights), NOT the FT (protects rare king/piece/square buckets from uniform-decay
 # undertraining, #45) and NOT any bias (biases are activation operating points).
@@ -340,7 +344,7 @@ if _SWA_START > 0 or _SWA_STEP > 0:
 def _swa_active():
     if _swa_model is None: return False
     if _SWA_START > 0 and epoch >= _SWA_START: return True
-    if _SWA_STEP > 0 and gstep >= _SWA_STEP: return True
+    if _SWA_STEP > 0 and gstep - _swa_sess0 >= _SWA_STEP: return True
     return False
 
 def _swa_update():
