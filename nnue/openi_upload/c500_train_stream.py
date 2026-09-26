@@ -337,9 +337,11 @@ if _SWA_START > 0 or _SWA_STEP > 0:
     _swa_trig = f"epoch {_SWA_START}" if _SWA_START > 0 else f"step {_SWA_STEP}"
     print(f"  [swa] enabled from {_swa_trig}", flush=True)
     _swa_saved = _ck.get("swa") if _ck is not None else None
-    if _swa_saved:
+    if _swa_saved and os.environ.get("NNUE_SWA_RESUME", "0") == "1":
         _swa_model.load_state_dict(_swa_saved["model"]); _swa_n = int(_swa_saved.get("n", 0))
         print(f"  [swa] resumed running average ({_swa_n} updates)", flush=True)
+    elif _swa_saved:
+        print("  [swa] fresh average this pass (NNUE_SWA_RESUME=1 to carry over)", flush=True)
 
 def _swa_active():
     if _swa_model is None: return False
