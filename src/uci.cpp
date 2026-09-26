@@ -544,7 +544,10 @@ void uci_loop() {
             // side-to-move-relative cp. Used to validate the NNUE inference
             // against the Python trainer's eval.
             Value v = evaluate(pos, false);
-            safe_output("eval cp " + std::to_string(int(v)) + "\n");
+            std::string out = "eval cp " + std::to_string(int(v));
+            if (nnue::linear_available())
+                out += " lin " + std::to_string(int(nnue::linear_eval(pos)));
+            safe_output(out + "\n");
         }
     }
 
