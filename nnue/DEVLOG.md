@@ -157,9 +157,12 @@ accumulator, SCReLU stack, `out × 300` output scaling.
   (dead probes traced to non-production init/loss scaling, then a synthetic-target dataset
   whose "evals" were linear-plus-noise), the bench now runs **Optuna TPE ([`arch_search.py`](arch_search.py)) over
   production-faithful LNNUE forks on real Leela evals** (1.25M samples from gamepack
-  frames): linear PST floor 327.8cp vs default NNUE 271.3cp. Study S1 winner:
-  **L1=512 + FM-16, no cross, tail (8,64) → 257.1cp at 13.0M params** — FM-16 beats plain
-  L1=768 (262.4cp) with 32% fewer parameters; the cross layer earned nothing at this budget.
+  frames): linear PST floor 327.8cp vs default NNUE 271.3cp. Two 20-trial studies plus an
+  8,000-step confirmation picked the V13 core: **L1=768 + FM rank 8 + cross layer, tail
+  (16,64) → 252.2cp** (best of four runs on the config; the FM block earns ~5–8cp over
+  no-FM at equal width; an early 512-width lead failed replication and lost the
+  head-to-head 256.9 vs 252.2). A faster trial recipe (4× batch, half steps) drifted
+  +9–12cp on FM configs and was rejected as a ranking default.
 - **Warm-start plan** — V13 initializes from the best gen768 weights function-preservingly:
   bucket rows decompose exactly into shared + delta (factorization), FM latents start at
   zero (contributes nothing at step 0), bucket tails copy the old tail. First V13 run A/Bs
