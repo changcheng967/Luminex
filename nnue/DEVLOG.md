@@ -16,7 +16,7 @@ generation to the V13/V14 architecture program. Dates are first-commit dates fro
 | Data pipeline | Jul–Aug 2026 | lc0pack → frames → C500 stream trainer | test91 gamepack | **Shipped** (still in use) |
 | NNUE v7 | Aug 2026 | c500 rewrite, lc0 tooling | — | **Poisoned** by embbag/gather drift; postmortem guards added |
 | v8–v12 (+12p1/12p2) | Aug–Sep 2026 | recipe iterations on the c500 pipeline | gamepack packs | **v12 pinned the loss**; 12p1/12p2 = its training passes |
-| gen768 | Aug–Sep 2026 | HalfKAv2_hm 24576/side, L1=768, SCReLU, DOSL dual-head | 4.21B → 5.37B | **Shipped** (`luminex_gen768_i8.nnue`), ~2800 Elo class |
+| gen768 | Aug–Sep 2026 | HalfKAv2_hm 24576/side, L1=768, SCReLU, DOSL dual-head | 4.21B → 5.37B | **Shipped** ([`luminex_gen768_i8.nnue`](../luminex_gen768_i8.nnue)), ~2800 Elo class |
 | gen768 p1–p5 | Sep 2026 | same arch, multi-pass training | p4: 4.21B · p5: 5.37B | p4 MAE 176.1 ≈ baseline (saturation signal) |
 | V13 | Sep 2026+ | FM interaction, factorized buckets, material bucketing | — | **Spec complete**; DCU search picking hyperparams |
 | V14 | future | Residual topology + mobility + policy head | — | **Spec complete** |
@@ -65,12 +65,12 @@ more data — and a standing rule: **no capacity increase without curve evidence
 
 The foundation everything since is built on:
 
-- **lc0pack** — converts Leela v6 selfplay chunks to gamepack frames
+- **[lc0pack](../src/lc0pack.cpp)** — converts Leela v6 selfplay chunks to gamepack frames
   (`[hdr][mv][ev]` format: fen table, 9-byte game entries, u16 raw moves, delta-encoded evals).
-- **luminex-featurize** — mmap'd, multithreaded C++ featurizer; `--stream` mode emits packed
+- **[luminex-featurize](../src/featurize.cpp)** — mmap'd, multithreaded C++ featurizer; `--stream` mode emits packed
   136-byte records; `--fen-eval` mode for text ingestion. Shipped as a prebuilt static binary.
-- **verify_frames** — exhaustive frame verifier; no corrupt frame ever trains.
-- **C500 multi-stage streaming trainer** (`c500_train_stream.py`) — frame-loop, budget-safe,
+- **[verify_frames](../src/verify_frames.c)** — exhaustive frame verifier; no corrupt frame ever trains.
+- **C500 multi-stage streaming trainer** ([`c500_train_stream.py`](openi_upload/c500_train_stream.py)) — frame-loop, budget-safe,
   OOM-safe part-splitting for big frames.
 - **Target calibration** — SF18's own NNUE scores only 0.48 R² against d26 targets; the
   sigmoid(cp/400) power-2.6 loss and pure-eval lambda were pinned after this study.
@@ -146,16 +146,16 @@ accumulator, SCReLU stack, `out × 300` output scaling.
 
 - **Research library** — cross-domain survey (CTR factorization machines, DCN-V2 cross
   layers, JL/RG bounds) validating the V13 design space.
-- **NNUE Template** — the house spec format (7 sections); all architecture specs follow it
+- **[NNUE Template](NNUE%20Template.md)** — the house spec format (7 sections); all architecture specs follow it
   strictly.
-- **V13 spec** (`nnue/V13.md`) — survived 7 machine-verification review rounds. Key ideas:
+- **V13 spec** ([`V13.md`](V13.md)) — survived 7 machine-verification review rounds. Key ideas:
   FM interaction block (`I_k = ½(S_k² − Q_k)` from per-feature latent vectors, O(1) per
   feature flip), factorized king buckets (32 → 4/8/16, ablation-gated), material-count
   output bucketing (8 subnets), single-VPDPBUSD kernel contract over the [1600] concat with
   per-branch requant and +128 zero-point encoding for signed interaction slots.
 - **DCU test bench** — Hygon 2× Z200SM_80 pod as a Bayesian NAS bench. After a debugging arc
   (dead probes traced to non-production init/loss scaling, then a synthetic-target dataset
-  whose "evals" were linear-plus-noise), the bench now runs **Optuna TPE over
+  whose "evals" were linear-plus-noise), the bench now runs **Optuna TPE ([`arch_search.py`](arch_search.py)) over
   production-faithful LNNUE forks on real Leela evals** (1.25M samples from gamepack
   frames): linear PST floor 327.8cp vs default NNUE 271.3cp. Study S1 winner:
   **L1=512 + FM-16, no cross, tail (8,64) → 257.1cp at 13.0M params** — FM-16 beats plain
@@ -167,22 +167,10 @@ accumulator, SCReLU stack, `out × 300` output scaling.
 
 ## 10. V14: Residual Topology (Spec Complete)
 
-`nnue/V14.md` — the 9-component upgrade: DOSL backbone trained first with the NNUE learning
+[`V14.md`](V14.md) — the 9-component upgrade: DOSL backbone trained first with the NNUE learning
 a residual δ (±600cp correction range = 60% better quantization resolution than full-eval
 training), mobility summary features (+40/perspective from engine attack maps), cross layer
 on the interaction vector (triplewise terms), trajectory delta supervision, best-move policy
 head, lazy accumulator updates, confidence-gated eval. Targets engine v7.0+.
 
 ---
-
-## Standing Lessons
-
-1. **Gate everything by games; revert what fails.** The 1,470-commit log is the evidence.
-2. **Verify numerics against a reference before trusting a kernel** (probe_ft guard, frame
-   verifier, export asserts).
-3. **No capacity increases without VAL-curve evidence** (v4 rule).
-4. **Post-hoc quantization, float training** (v3's QAT grave).
-5. **Data first, architecture second — until saturation.** p4's flat MAE at 4.21B was the
-   signal that gen768's architecture, not its data, is now the bottleneck.
-6. **Search harnesses must mirror production** — the DCU probes only produced signal once
-   they forked the real trainer's init, scaling, and loss on real targets.
