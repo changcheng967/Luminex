@@ -173,11 +173,21 @@ if __name__ == "__main__":
     ap.add_argument("--lr", type=float, default=8e-4)
     ap.add_argument("--seed", type=int, default=42)
     ap.add_argument("--smoke", action="store_true")
+    ap.add_argument("--config", default=None,
+                    help="train one architecture: L1,fm_rank,cross,tail_l2,tail_l3")
     args = ap.parse_args()
 
     STEPS, BATCH, LR = args.steps, args.batch, args.lr
     torch.manual_seed(args.seed); random.seed(args.seed)
     DATA = Data(args.data, DEVICE)
+
+    if args.config:
+        L1, fm, cr, tl2, tl3 = [int(v) for v in args.config.split(",")]
+        model = SearchableNNUE(L1=L1, fm_rank=fm, use_cross=bool(cr),
+                               tail_l2=tl2, tail_l3=tl3)
+        best, el = run_trial(model, DATA, STEPS, LR, BATCH, "cfg")
+        print(f"CONFIG RESULT: {args.config} BEST MAE={best:.1f}cp ({el:.0f}s)")
+        sys.exit(0)
 
     if args.smoke:
         print("=== smoke: linear PST floor ===", flush=True)
