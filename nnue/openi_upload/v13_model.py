@@ -143,12 +143,7 @@ def warm_start_from_gen768(v13, ckpt_path):
         ow = torch.zeros(1, TAIL[1]); ow[:, :old_ow.shape[1]] = old_ow
         v13.out.weight.copy_(ow); v13.out.bias.copy_(old_ob)
         if v13.dual_head and "lin.weight" in sd:
-            lw = sd["lin.weight"][:NUM_INPUTS].squeeze(1).numpy()  # [24576]
-            mean = lw.mean(axis=0)
-            ln_new = np.zeros((FT_ROWS + 1, 1), dtype=np.float32)
-            np.add.at(ln_new, bkt * 768 + plane, lw - mean)
-            ln_new[FT_FACTOR * 768:FT_ROWS, 0] = mean
-            v13.lin.weight.copy_(torch.from_numpy(ln_new))
+            v13.lin.weight.copy_(sd["lin.weight"])   # stays full-index-space
     return v13
 
 
