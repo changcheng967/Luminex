@@ -272,6 +272,8 @@ if __name__ == "__main__":
     ap.add_argument("--seed", type=int, default=42)
     ap.add_argument("--cost-lambda", type=float, default=20.0)
     ap.add_argument("--smoke", action="store_true")
+    ap.add_argument("--config", default=None,
+                    help="JSON dict overriding ANCHOR for a single run")
     args = ap.parse_args()
 
     STEPS, BATCH, LR, COST_LAMBDA = args.steps, args.batch, args.lr, args.cost_lambda
@@ -280,6 +282,13 @@ if __name__ == "__main__":
           flush=True)
     torch.manual_seed(args.seed); random.seed(args.seed)
     DATA = Data(args.data, DEVICE)
+
+    if args.config:
+        import json
+        p = dict(ANCHOR); p.update(json.loads(args.config))
+        m, el = run_trial(SearchableNNUE(**p), DATA, STEPS, LR, BATCH, "cfg")
+        print(f"CONFIG RESULT: {p} BEST MAE={m:.1f}cp ({el:.0f}s)", flush=True)
+        sys.exit(0)
 
     if args.smoke:
         print("=== smoke: V13 anchor (must land ~252-258cp) ===", flush=True)
