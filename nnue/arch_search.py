@@ -66,17 +66,15 @@ class SearchableNNUE(nn.Module):
         W = 2 * L1 + (2 * fm_rank if fm_rank > 0 else 0) + (32 if self.side_feats else 0)
         self.in_dim = W
         K = buckets
-        def pW(o, i):
-            t = torch.empty(K, o, i)
-            nn.init.normal_(t, std=3.0 / math.sqrt(i))
-            return nn.Parameter(t)
-        def pB(o):
-            t = torch.empty(K, o)
-            nn.init.constant_(t, 0.5)
-            return nn.Parameter(t)
-        self.l2_w, self.l2_b = pW(tail_l2, W), pB(tail_l2)
-        self.l3_w, self.l3_b = pW(tail_l3, tail_l2), pB(tail_l3)
-        self.out_w, self.out_b = pW(1, tail_l3), pB(1)
+        # tail init = plain nn.Linear defaults (production), copied to all buckets
+        def pL(i, o):
+            lin = nn.Linear(i, o)
+            w = lin.weight.data.unsqueeze(0).repeat(K, 1, 1).clone()
+            b = lin.bias.data.unsqueeze(0).repeat(K, 1).clone()
+            return nn.Parameter(w), nn.Parameter(b)
+        self.l2_w, self.l2_b = pL(W, tail_l2)
+        self.l3_w, self.l3_b = pL(tail_l2, tail_l3)
+        self.out_w, self.out_b = pL(tail_l3, 1)
 
     def _acc(self, idx):
         if not self.fact:
@@ -177,14 +175,14 @@ class Data:
         bp = (planes == 1).float() * valid
         wfiles = torch.zeros(n, 8, device=w.device).scatter_add_(1, f, wp)
         bfiles = torch.zeros(n, 8, device=w.device).scatter_add_(1, f, bp)
-        wk = ((sq * (planes == 10).float()).sum(1) /
-              (planes == 10).float().sum(1).clamp(min=1))
-        bk = ((sq * (planes == 11).float()).sum(1) /
-              (planes == 11).float().sum(1).clamp(min=1))
+        wk = (sq * (planes == 10).long()).sum(1)   # exactly one king per row
+        bk = (sq * (planes == 11).long()).sum(1)
         men = (w != NUM_INPUTS).sum(1)
         side = torch.cat([counts / 8.0, wfiles, bfiles,
-                          (wk & 7).unsqueeze(1) / 7.0, (wk >> 3).unsqueeze(1) / 7.0,
-                          (bk & 7).unsqueeze(1) / 7.0, (bk >> 3).unsqueeze(1) / 7.0,
+                          (wk & 7).unsqueeze(1).float() / 7.0,
+                          (wk >> 3).unsqueeze(1).float() / 7.0,
+                          (bk & 7).unsqueeze(1).float() / 7.0,
+                          (bk >> 3).unsqueeze(1).float() / 7.0,
                           men.unsqueeze(1).float() / 32.0], dim=1)
         assert side.shape[1] == 33
         return side, men
@@ -199,7 +197,7 @@ class Data:
         with torch.no_grad():
             for i in range(0, len(self.ev[3]), bs):
                 ch = [x[i:i + bs] for x in self.ev]
-                p = model(*ch)
+                p = model(ch[0], ch[1], ch[2], ch[4], ch[5])
                 tot += (p - ch[3]).abs().sum().item()
                 cnt += len(p)
         model.train()
