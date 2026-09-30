@@ -163,6 +163,16 @@ accumulator, SCReLU stack, `out × 300` output scaling.
   no-FM at equal width; an early 512-width lead failed replication and lost the
   head-to-head 256.9 vs 252.2). A faster trial recipe (4× batch, half steps) drifted
   +9–12cp on FM configs and was rejected as a ranking default.
+- **V14/V15 component campaign** (2x30 TPE trials + 8,000-step confirmation) searched
+  factorized FT buckets, material-bucketed tails, cross variants, activation family,
+  derived structural side features (material/pawn-file/king, from feature indices), and
+  FM rank 4-64, under a cost-penalized objective (MAE + 20cp per 100% eval cost vs
+  anchor). Confirmed winner: **L1=512, no FM block, ClippedReLU, factorized FT (8
+  buckets + shared), side features -> 235.3/243.6cp** vs the V13 anchor's 252.2 —
+  "simpler network, richer inputs". Material bucketing and the cross layer did not
+  earn their cost; SCReLU lost to ClippedReLU in the winning lineage. This amends the
+  V13 implementation target and drops the FM incremental machinery from the engine
+  design.
 - **Warm-start plan** — V13 initializes from the best gen768 weights function-preservingly:
   bucket rows decompose exactly into shared + delta (factorization), FM latents start at
   zero (contributes nothing at step 0), bucket tails copy the old tail. First V13 run A/Bs
