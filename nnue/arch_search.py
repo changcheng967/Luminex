@@ -1,8 +1,13 @@
 #!/usr/bin/env python3
-"""NNUE Architecture Search v2 — Bayesian component optimizer for DCU.
+"""NNUE Architecture Search v3 — V14/V15 component zoo on the DCU bench.
 
-Forks the production LNNUE (same init, activations, loss) and searches
-L1 width / FM interaction rank / cross layer / tail dims with Optuna TPE.
+Forks the production LNNUE (same init, activations, loss) and searches NEW
+components around the confirmed V13 core (L1=768, FM, cross, tail 16/64):
+factorized FT buckets, material-bucketed tails, cross variants, activation
+family, derived structural side features, FM rank 4..64.
+
+Scoring is cost-aware: objective = MAE + lambda * (cost/cost_anchor - 1),
+so extra eval cost must buy accuracy (accuracy-per-latency discipline).
 Data: real Leela evals packed by sample_stream.py from gamepack frames.
 """
 import sys, os, time, argparse, random, math
@@ -18,107 +23,189 @@ DEVICE = "cuda:0"
 SCALE = 400.0
 POWER = 2.6
 
-# ----------------------------------------------------------------------------
-# Model: production LNNUE + searchable dims + optional FM interaction block
-# ----------------------------------------------------------------------------
+# V13 core = confirmed anchor (252.2cp). Cost anchor derives from it.
+ANCHOR = dict(L1=768, fm_rank=8, cross="sigmoid", act="screlu", buckets=1,
+              ft_factor=32, side_feats=0, tail_l2=16, tail_l3=64)
+
+
+def _act_fn(name, h):
+    c = torch.clamp(h, 0.0, 1.0)
+    if name == "screlu":  return c * c
+    if name == "crelu":   return c
+    if name == "cube":    return c * c * c
+    raise ValueError(name)
+
+
 class SearchableNNUE(nn.Module):
-    def __init__(self, L1=768, fm_rank=16, use_cross=False, tail_l2=16, tail_l3=32):
+    def __init__(self, L1=768, fm_rank=8, cross="sigmoid", act="screlu",
+                 buckets=1, ft_factor=32, side_feats=False,
+                 tail_l2=16, tail_l3=64):
         super().__init__()
-        self.L1, self.fm_rank, self.use_cross = L1, fm_rank, use_cross
-        self.ft = nn.EmbeddingBag(NUM_INPUTS + 1, L1, mode="sum", padding_idx=NUM_INPUTS)
+        self.L1, self.fm_rank, self.cross, self.act = L1, fm_rank, cross, act
+        self.buckets, self.ft_factor = buckets, ft_factor
+        self.side_feats = bool(side_feats)
+        self.fact = ft_factor < 32
+        ft_rows = (ft_factor * 768 + 768 + 1) if self.fact else (NUM_INPUTS + 1)
+        self.pad_row = ft_rows - 1
+        self.ft = nn.EmbeddingBag(ft_rows, L1, mode="sum", padding_idx=self.pad_row)
         self.ft_bias = nn.Parameter(torch.zeros(L1))
-        nn.init.normal_(self.ft.weight, std=0.2)      # fan-in 32 -> acc std ~1 (production)
-        self.ft.weight.data[NUM_INPUTS].zero_()
+        nn.init.normal_(self.ft.weight, std=0.2)
+        self.ft.weight.data[self.pad_row].zero_()
         if fm_rank > 0:
             self.fm_v = nn.Embedding(NUM_INPUTS + 1, fm_rank, padding_idx=NUM_INPUTS)
             nn.init.normal_(self.fm_v.weight, std=0.5)
             self.fm_v.weight.data[NUM_INPUTS].zero_()
-        if use_cross and fm_rank > 0:
-            self.cross_w = nn.Linear(fm_rank, fm_rank)
-        in_dim = 2 * L1 + (2 * fm_rank if fm_rank > 0 else 0)
-        self.l2 = nn.Linear(in_dim, tail_l2)
-        self.l3 = nn.Linear(tail_l2, tail_l3)
-        self.out = nn.Linear(tail_l3, 1)
+            if cross in ("sigmoid", "double", "linear"):
+                self.cross_w = nn.Linear(fm_rank, fm_rank)
+            if cross == "double":
+                self.cross_w2 = nn.Linear(fm_rank, fm_rank)
+        if self.side_feats:
+            self.side_proj = nn.Linear(33, 32)
+            nn.init.normal_(self.side_proj.weight, std=0.05)
+            nn.init.zeros_(self.side_proj.bias)
+        W = 2 * L1 + (2 * fm_rank if fm_rank > 0 else 0) + (32 if self.side_feats else 0)
+        self.in_dim = W
+        K = buckets
+        def pW(o, i):
+            t = torch.empty(K, o, i)
+            nn.init.normal_(t, std=3.0 / math.sqrt(i))
+            return nn.Parameter(t)
+        def pB(o):
+            t = torch.empty(K, o)
+            nn.init.constant_(t, 0.5)
+            return nn.Parameter(t)
+        self.l2_w, self.l2_b = pW(tail_l2, W), pB(tail_l2)
+        self.l3_w, self.l3_b = pW(tail_l3, tail_l2), pB(tail_l3)
+        self.out_w, self.out_b = pW(1, tail_l3), pB(1)
+
+    def _acc(self, idx):
+        if not self.fact:
+            return self.ft(idx) + self.ft_bias
+        valid = idx < NUM_INPUTS
+        plane = idx % 768
+        bkt = (idx // 768).clamp(max=self.ft_factor - 1)
+        pad = self.pad_row
+        base = torch.where(valid, bkt * 768 + plane, torch.full_like(idx, pad))
+        shared = torch.where(valid, torch.full_like(idx, self.ft_factor * 768) + plane,
+                             torch.full_like(idx, pad))
+        return self.ft(base) + self.ft(shared) + self.ft_bias
 
     def _interact(self, idx):
-        v = self.fm_v(idx)                       # (B, 32, r)
-        s = v.sum(dim=1)                         # (B, r)
+        v = self.fm_v(idx)
+        s = v.sum(dim=1)
         i_raw = 0.5 * (s ** 2 - (v ** 2).sum(dim=1))
-        i_cap = torch.clamp(i_raw, -2.0, 2.0) / 2.0
-        if self.use_cross:
-            i_cap = i_cap + i_cap * torch.sigmoid(self.cross_w(i_cap))
-        return i_cap
+        h = torch.clamp(i_raw, -2.0, 2.0) / 2.0
+        if self.cross in ("sigmoid", "double"):
+            h = h + h * torch.sigmoid(self.cross_w(h))
+            if self.cross == "double":
+                h = h + h * torch.sigmoid(self.cross_w2(h))
+        elif self.cross == "linear":
+            h = h + self.cross_w(h)
+        return h
 
-    def forward(self, w_idx, b_idx, stm):
-        acc_w = self.ft(w_idx) + self.ft_bias
-        acc_b = self.ft(b_idx) + self.ft_bias
+    def _tail(self, x, bidx):
+        outs = torch.empty(x.shape[0], device=x.device)
+        for k in range(self.buckets):
+            m = bidx == k
+            if not bool(m.any()):
+                continue
+            h = torch.nn.functional.linear(x[m], self.l2_w[k], self.l2_b[k])
+            h = _act_fn(self.act, h)
+            h = torch.nn.functional.linear(h, self.l3_w[k], self.l3_b[k])
+            h = _act_fn(self.act, h)
+            outs[m] = torch.nn.functional.linear(h, self.out_w[k], self.out_b[k]).squeeze(-1)
+        return outs
+
+    def forward(self, w_idx, b_idx, stm, side, men):
+        acc_w = self._acc(w_idx)
+        acc_b = self._acc(b_idx)
         m = stm.view(-1, 1).float()
-        stm_acc = m * acc_w + (1 - m) * acc_b
-        nstm_acc = (1 - m) * acc_w + m * acc_b
-        h = torch.cat([stm_acc, nstm_acc], dim=1)
+        h = torch.cat([m * acc_w + (1 - m) * acc_b,
+                       (1 - m) * acc_w + m * acc_b], dim=1)
         if self.fm_rank > 0:
             h = torch.cat([h, self._interact(w_idx), self._interact(b_idx)], dim=1)
-        h = torch.clamp(h, 0.0, 1.0) ** 2
-        h = torch.clamp(self.l2(h), 0.0, 1.0) ** 2
-        h = torch.clamp(self.l3(h), 0.0, 1.0) ** 2
-        return self.out(h).squeeze(-1) * 300.0   # production output scale
+        if self.side_feats:
+            h = torch.cat([h, self.side_proj(side)], dim=1)
+        h = _act_fn(self.act, h)
+        bidx = torch.clamp((men - 1) // 4, 0, self.buckets - 1)
+        return self._tail(h, bidx) * 300.0
+
+    def eval_cost_bytes(self):
+        ft = 64 * self.L1 * 2 * (2 if self.fact else 1)
+        fm = 64 * self.fm_rank * 2 if self.fm_rank > 0 else 0
+        tl2 = self.l2_w.shape[1]
+        tl3 = self.l3_w.shape[1]
+        tail = self.buckets * (self.in_dim * tl2 + tl2 * tl3 + tl3 + 2 * tl2)
+        return ft + fm + tail
 
 
-class LinearPST(nn.Module):
-    """Piece-square linear floor: same features collapsed to 768 (drop king buckets)."""
-    def __init__(self):
-        super().__init__()
-        self.ft = nn.EmbeddingBag(NUM_INPUTS + 1, 1, mode="sum", padding_idx=NUM_INPUTS)
-        nn.init.normal_(self.ft.weight, std=0.2)
-        self.ft.weight.data[NUM_INPUTS].zero_()
-
-    def forward(self, w_idx, b_idx, stm):
-        w = self.ft(w_idx).squeeze(-1) + self.ft(b_idx).squeeze(-1) * 0  # white-pov sum
-        b = self.ft(b_idx).squeeze(-1)
-        m = stm.float()
-        return (m * w + (1 - m) * (-b)) * 300.0
+def anchor_cost_bytes():
+    return SearchableNNUE(**ANCHOR).eval_cost_bytes()
 
 
-# ----------------------------------------------------------------------------
-# Data: npz packed by sample_stream.py (w/b int32 padded, s/t float32)
 # ----------------------------------------------------------------------------
 class Data:
+    """npz packed by sample_stream.py + derived structural side features."""
     def __init__(self, path, device):
         z = np.load(path)
         n = len(z["t"])
         split = int(n * 0.88)
-        ev_start = split + 20000                    # gap: no train/eval adjacency
+        ev0 = split + 20000
         def mov(x, dt): return torch.from_numpy(x).to(device=device, dtype=dt)
-        self.tr_w = mov(z["w"][:split], torch.long)
-        self.tr_b = mov(z["b"][:split], torch.long)
-        self.tr_s = mov(z["s"][:split], torch.float32)
-        self.tr_t = mov(z["t"][:split], torch.float32)
-        self.ev_w = mov(z["w"][ev_start:], torch.long)
-        self.ev_b = mov(z["b"][ev_start:], torch.long)
-        self.ev_s = mov(z["s"][ev_start:], torch.float32)
-        self.ev_t = mov(z["t"][ev_start:], torch.float32)
-        print(f"data: {split:,} train / {len(self.ev_t):,} eval | "
-              f"|t| mean {self.tr_t.abs().mean():.0f}cp", flush=True)
+        w_all = mov(z["w"], torch.long); b_all = mov(z["b"], torch.long)
+        s_all = mov(z["s"], torch.float32); t_all = mov(z["t"], torch.float32)
+        side_all, men_all = self._derive(w_all)
+        self.tr = [w_all[:split], b_all[:split], s_all[:split], t_all[:split],
+                   side_all[:split], men_all[:split]]
+        self.ev = [w_all[ev0:], b_all[ev0:], s_all[ev0:], t_all[ev0:],
+                   side_all[ev0:], men_all[ev0:]]
+        print(f"data: {split:,} train / {len(self.ev[3]):,} eval | "
+              f"|t| mean {self.tr[3].abs().mean():.0f}cp", flush=True)
+
+    @staticmethod
+    def _derive(w):
+        # w rows are white-pov features; plane = (idx%768)//64:
+        # 0=wp 1=bp ... 10=wk 11=bk. Squares are orientation-frame (consistent).
+        n = w.shape[0]
+        valid = (w != NUM_INPUTS).float()
+        planes = ((w % 768) // 64).clamp(0, 11)
+        counts = torch.zeros(n, 12, device=w.device).scatter_add_(
+            1, planes, valid)
+        sq = w & 63
+        f = (sq & 7).clamp(0, 7)
+        wp = (planes == 0).float() * valid
+        bp = (planes == 1).float() * valid
+        wfiles = torch.zeros(n, 8, device=w.device).scatter_add_(1, f, wp)
+        bfiles = torch.zeros(n, 8, device=w.device).scatter_add_(1, f, bp)
+        wk = ((sq * (planes == 10).float()).sum(1) /
+              (planes == 10).float().sum(1).clamp(min=1))
+        bk = ((sq * (planes == 11).float()).sum(1) /
+              (planes == 11).float().sum(1).clamp(min=1))
+        men = (w != NUM_INPUTS).sum(1)
+        side = torch.cat([counts / 8.0, wfiles, bfiles,
+                          (wk & 7).unsqueeze(1) / 7.0, (wk >> 3).unsqueeze(1) / 7.0,
+                          (bk & 7).unsqueeze(1) / 7.0, (bk >> 3).unsqueeze(1) / 7.0,
+                          men.unsqueeze(1).float() / 32.0], dim=1)
+        assert side.shape[1] == 33
+        return side, men
 
     def train_batch(self, bs):
-        i = random.randint(0, len(self.tr_t) - bs - 1)
-        return (self.tr_w[i:i+bs], self.tr_b[i:i+bs],
-                self.tr_s[i:i+bs], self.tr_t[i:i+bs])
+        i = random.randint(0, len(self.tr[3]) - bs - 1)
+        return [x[i:i + bs] for x in self.tr]
 
     def eval_mae(self, model, bs=65536):
         model.eval()
         tot, cnt = 0.0, 0
         with torch.no_grad():
-            for i in range(0, len(self.ev_t), bs):
-                p = model(self.ev_w[i:i+bs], self.ev_b[i:i+bs], self.ev_s[i:i+bs])
-                tot += (p - self.ev_t[i:i+bs]).abs().sum().item()
+            for i in range(0, len(self.ev[3]), bs):
+                ch = [x[i:i + bs] for x in self.ev]
+                p = model(*ch)
+                tot += (p - ch[3]).abs().sum().item()
                 cnt += len(p)
         model.train()
         return tot / cnt
 
 
-# ----------------------------------------------------------------------------
-# Trial runner: production loss (sigmoid^2.6), warmup+cosine, best-along-run score
 # ----------------------------------------------------------------------------
 def run_trial(model, data, steps, lr, bs, tag):
     model = model.to(DEVICE)
@@ -131,8 +218,8 @@ def run_trial(model, data, steps, lr, bs, tag):
             1 + math.cos(math.pi * (step - warm) / max(1, steps - warm)))
         for g in opt.param_groups:
             g["lr"] = lr * frac
-        w, b, s, t = data.train_batch(bs)
-        pred = model(w, b, s)
+        w, b, s, t, side, men = data.train_batch(bs)
+        pred = model(w, b, s, side, men)
         loss = ((torch.sigmoid(pred / SCALE) - torch.sigmoid(t / SCALE)).abs() ** POWER).mean()
         opt.zero_grad(); loss.backward()
         torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
@@ -145,70 +232,68 @@ def run_trial(model, data, steps, lr, bs, tag):
     return best, time.time() - t0
 
 
+def suggest(trial):
+    p = {}
+    p["L1"] = trial.suggest_categorical("L1", [512, 768])
+    p["fm_rank"] = trial.suggest_categorical("fm_rank", [0, 4, 8, 16, 32, 64])
+    p["cross"] = (trial.suggest_categorical("cross", ["none", "sigmoid", "linear", "double"])
+                  if p["fm_rank"] > 0 else "none")
+    p["act"] = trial.suggest_categorical("act", ["screlu", "crelu", "cube"])
+    p["buckets"] = trial.suggest_categorical("buckets", [1, 4, 8])
+    p["ft_factor"] = trial.suggest_categorical("ft_factor", [4, 8, 16, 32])
+    p["side_feats"] = trial.suggest_categorical("side_feats", [0, 1])
+    p["tail_l2"], p["tail_l3"] = 16, 64   # confirmed anchor, frozen
+    return p
+
+
 def objective(trial):
-    L1 = trial.suggest_categorical("L1", [256, 384, 512, 768])
-    fm_rank = trial.suggest_categorical("fm_rank", [0, 8, 16, 32])
-    use_cross = (trial.suggest_categorical("use_cross", [False, True])
-                 if fm_rank > 0 else False)
-    tail_l2 = trial.suggest_categorical("tail_l2", [8, 16, 32])
-    tail_l3 = trial.suggest_categorical("tail_l3", [16, 32, 64])
-    model = SearchableNNUE(L1=L1, fm_rank=fm_rank, use_cross=use_cross,
-                           tail_l2=tail_l2, tail_l3=tail_l3)
-    params = sum(p.numel() for p in model.parameters())
-    print(f"trial {trial.number}: L1={L1} fm={fm_rank} cross={use_cross} "
-          f"tail=({tail_l2},{tail_l3}) params={params:,}", flush=True)
-    best, el = run_trial(model, DATA, STEPS, LR, BATCH, f"t{trial.number}")
-    print(f"trial {trial.number}: BEST MAE={best:.1f}cp ({el:.0f}s, {params:,} params)",
+    p = suggest(trial)
+    model = SearchableNNUE(**p)
+    params = sum(q.numel() for q in model.parameters())
+    cost = model.eval_cost_bytes()
+    print(f"trial {trial.number}: {p} params={params:,} cost={cost/1024:.0f}KB",
           flush=True)
+    best, el = run_trial(model, DATA, STEPS, LR, BATCH, f"t{trial.number}")
+    penalty = COST_LAMBDA * (cost / ANCHOR_COST - 1.0)
+    score = best + penalty
+    print(f"trial {trial.number}: MAE={best:.1f} penalty={penalty:+.1f} "
+          f"score={score:.1f} ({el:.0f}s)", flush=True)
     trial.set_user_attr("params", params)
-    return best
+    trial.set_user_attr("cost_kb", round(cost / 1024))
+    trial.set_user_attr("mae", round(best, 1))
+    return score
 
 
 if __name__ == "__main__":
     ap = argparse.ArgumentParser()
     ap.add_argument("--data", default="real_data.npz")
-    ap.add_argument("--trials", type=int, default=20)
+    ap.add_argument("--trials", type=int, default=30)
     ap.add_argument("--steps", type=int, default=4000)
     ap.add_argument("--batch", type=int, default=4096)
     ap.add_argument("--lr", type=float, default=8e-4)
     ap.add_argument("--seed", type=int, default=42)
+    ap.add_argument("--cost-lambda", type=float, default=20.0)
     ap.add_argument("--smoke", action="store_true")
-    ap.add_argument("--config", default=None,
-                    help="train one architecture: L1,fm_rank,cross,tail_l2,tail_l3")
     args = ap.parse_args()
 
-    STEPS, BATCH, LR = args.steps, args.batch, args.lr
+    STEPS, BATCH, LR, COST_LAMBDA = args.steps, args.batch, args.lr, args.cost_lambda
+    ANCHOR_COST = anchor_cost_bytes()
+    print(f"anchor cost: {ANCHOR_COST/1024:.0f}KB, lambda={COST_LAMBDA}cp per 100%",
+          flush=True)
     torch.manual_seed(args.seed); random.seed(args.seed)
     DATA = Data(args.data, DEVICE)
 
-    if args.config:
-        L1, fm, cr, tl2, tl3 = [int(v) for v in args.config.split(",")]
-        model = SearchableNNUE(L1=L1, fm_rank=fm, use_cross=bool(cr),
-                               tail_l2=tl2, tail_l3=tl3)
-        best, el = run_trial(model, DATA, STEPS, LR, BATCH, "cfg")
-        print(f"CONFIG RESULT: {args.config} BEST MAE={best:.1f}cp ({el:.0f}s)")
-        sys.exit(0)
-
     if args.smoke:
-        print("=== smoke: linear PST floor ===", flush=True)
-        m1, _ = run_trial(LinearPST(), DATA, STEPS, LR, BATCH, "lin")
-        print("=== smoke: default NNUE L1=768 no FM ===", flush=True)
-        m2, _ = run_trial(SearchableNNUE(L1=768, fm_rank=0), DATA, STEPS, LR, BATCH, "nnue")
-        print(f"SMOKE RESULT: linear={m1:.1f} nnue={m2:.1f} "
-              f"(nnue must beat linear)", flush=True)
+        print("=== smoke: V13 anchor (must land ~252-258cp) ===", flush=True)
+        m, el = run_trial(SearchableNNUE(**ANCHOR), DATA, STEPS, LR, BATCH, "anchor")
+        print(f"SMOKE RESULT: anchor MAE={m:.1f}cp ({el:.0f}s)", flush=True)
         sys.exit(0)
 
     optuna.logging.set_verbosity(optuna.logging.WARNING)
     study = optuna.create_study(direction="minimize",
                                 sampler=optuna.samplers.TPESampler(seed=args.seed))
     study.optimize(objective, n_trials=args.trials)
-    print("\n" + "=" * 55)
-    print("  BEST ARCHITECTURE")
-    print("=" * 55)
-    for k, v in study.best_params.items():
-        print(f"  {k}: {v}")
-    print(f"  best MAE: {study.best_value:.1f}cp")
-    print("\nTop 5:")
-    for t in sorted(study.trials, key=lambda x: x.value)[:5]:
-        print(f"  #{t.number}: MAE={t.value:.1f}  "
-              f"params={t.user_attrs.get('params', 0):,}  {t.params}")
+    print("\nTop 8 by penalized score (raw MAE in attrs):")
+    for t in sorted(study.trials, key=lambda x: x.value)[:8]:
+        print(f"  #{t.number}: score={t.value:.1f} mae={t.user_attrs.get('mae')} "
+              f"cost={t.user_attrs.get('cost_kb')}KB {t.params}")
