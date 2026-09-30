@@ -133,8 +133,15 @@ def warm_start_from_gen768(v13, ckpt_path):
         new_l2[:, L1_DIM:2 * L1_DIM] = l2w[:, half:] @ Vr
         v13.l2.weight.copy_(new_l2)
         v13.l2.bias.copy_(sd["l2.bias"])
-        v13.l3.weight.copy_(sd["l3.weight"]); v13.l3.bias.copy_(sd["l3.bias"])
-        v13.out.weight.copy_(sd["out.weight"]); v13.out.bias.copy_(sd["out.bias"])
+        # tail shape mismatch (old L3=32 vs V13 64): pad function-preservingly —
+        # new l3 rows / out columns are zero, so the extra dims contribute nothing
+        old_l3w, old_l3b = sd["l3.weight"], sd["l3.bias"]
+        l3w = torch.zeros(TAIL[1], TAIL[0]); l3w[:old_l3w.shape[0]] = old_l3w
+        l3b = torch.zeros(TAIL[1]); l3b[:old_l3b.shape[0]] = old_l3b
+        v13.l3.weight.copy_(l3w); v13.l3.bias.copy_(l3b)
+        old_ow, old_ob = sd["out.weight"], sd["out.bias"]
+        ow = torch.zeros(1, TAIL[1]); ow[:, :old_ow.shape[1]] = old_ow
+        v13.out.weight.copy_(ow); v13.out.bias.copy_(old_ob)
         if v13.dual_head and "lin.weight" in sd:
             lw = sd["lin.weight"][:NUM_INPUTS].squeeze(1).numpy()  # [24576]
             mean = lw.mean(axis=0)
