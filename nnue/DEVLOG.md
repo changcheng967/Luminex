@@ -173,6 +173,19 @@ accumulator, SCReLU stack, `out × 300` output scaling.
   earn their cost; SCReLU lost to ClippedReLU in the winning lineage. This amends the
   V13 implementation target and drops the FM incremental machinery from the engine
   design.
+- **gen768 closure (p5/p6)** — three continuation attempts after p4, all rejected by gates:
+  p5-A killed mid-cosine by the session wall (-56), p5-B damaged by an LR=1e-3 restart
+  on a converged net (-26cp stm-relative calibration offset; the sigmoid-power loss is
+  nearly blind to constant offsets, so nothing in training corrected it), p6 completed
+  with SWA and a clean +1.3cp intercept yet gated 50.0% vs p4, 42.5% vs shipped over
+  100 games, and a Stash ladder of 48/47/33% (implied 2756/2809/2757, mean 2774 vs the
+  shipped net's 2796) — the residual eval noise of the averaged weights costing most
+  against the strongest opponent. Verdict: architecture saturated, shipped net retained.
+  Countermeasures adopted for V13: eval-suite intercept check before any gate, anchor
+  regularization and export-time intercept fold in the trainer, DONE+SWA before export.
+- **Warm-start audition** — SVD 768->512 shrink of a gen768 checkpoint into V13 scored
+  290.6cp vs 240.1cp from scratch at equal budget: the projection loses too much and
+  fine-tune LR cannot rebuild it. V13 run 1 trains from scratch.
 - **Warm-start plan** — V13 initializes from the best gen768 weights function-preservingly:
   bucket rows decompose exactly into shared + delta (factorization), FM latents start at
   zero (contributes nothing at step 0), bucket tails copy the old tail. First V13 run A/Bs
