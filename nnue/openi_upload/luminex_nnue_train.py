@@ -286,6 +286,8 @@ def v13_side_features(w_idx):
 
 
 class V13NNUE(nn.Module):
+    ft_mode = "embbag"   # c500 compat attribute (always embbag: factorized two-bag path)
+
     def __init__(self, dual_head=True):
         super().__init__()
         self.dual_head = dual_head

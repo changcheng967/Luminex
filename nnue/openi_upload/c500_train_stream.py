@@ -129,7 +129,7 @@ print(f"arch: {_arch_name}{_anchor_note}", flush=True)
 print(f"per-frame train (OOM-safe): {len(FRAMES)} frames, {total_bytes/1e9:.2f}GB, L1={L1} bs={BS} cap={CAP:,} feat_threads={NTH} grad-clip={_gc} device={device}", flush=True)
 print(f"loss: power={os.environ.get('NNUE_LOSS_POWER', '2.6')} in sigmoid(cp/{SCALE:.0f}) space, pos-weight w1={_POS_W1} w2={_POS_W2}{' (OFF)' if _POS_W1 == 0 else ''}, lambda=1.0 (pure eval — gamepack has no game results; SF end-lambda practice)", flush=True)
 
-model = (V13NNUE() if _V13 else LNNUE(L1=L1)).to(device)
+model = (V13NNUE(dual_head=_DUAL) if _V13 else LNNUE(L1=L1)).to(device)
 gstep = 0  # must exist before resume check (fresh runs would NameError otherwise)
 _ck = None  # resume checkpoint dict (kept for SWA state restore further below)
 _resume = os.environ.get("NNUE_RESUME") or os.path.join(os.path.dirname(__file__) or ".", OUT_BASE + ".pt")
@@ -192,21 +192,27 @@ _swa_sess0 = gstep
 _ft_params = [model.ft.weight, model.ft_bias]
 _tail_w    = [model.l2.weight, model.l3.weight, model.out.weight]
 _tail_b    = [model.l2.bias, model.l3.bias, model.out.bias]
+if _V13:
+    # side projection trains with the tail groups — WITHOUT this it gets grads
+    # but NEVER updates (the pass-3 lin-head bug class, caught in review)
+    _tail_w += [model.side_proj.weight]
+    _tail_b += [model.side_proj.bias]
 _tail_wd = float(os.environ.get("NNUE_TAIL_WD", "1e-2"))
 # Per-group LR multipliers (pass-4 levers): the FT is converged after 3 passes,
 # the tiny tail can still move (tail mult), and a FRESH DOSL head needs to train
 # fast within its warmup window (lin mult). Group order below MUST match _group_lrs.
 _TAIL_LR_MULT = float(os.environ.get("NNUE_TAIL_LR_MULT", "1.0"))
 _LIN_LR_MULT  = float(os.environ.get("NNUE_LIN_LR_MULT", "5.0"))
+_lin_groups = ([{"params": [model.lin.weight], "weight_decay": 0.0, # DOSL head — WITHOUT this group the dual
+                 "lr": LR * _LIN_LR_MULT}]                            # head gets grads but NEVER updates (pass-3 bug class)
+               if hasattr(model, "lin") else [])
 opt = torch.optim.AdamW([
     {"params": _ft_params, "weight_decay": 0.0},        # NO decay on FT (rare-bucket protection)
     {"params": _tail_w,    "weight_decay": _tail_wd,    # tail weight decay (fixes L2 SCReLU feedback)
                          "lr": LR * _TAIL_LR_MULT},
     {"params": _tail_b,    "weight_decay": 0.0},        # biases are operating points — never decay
-    {"params": [model.lin.weight], "weight_decay": 0.0, # DOSL head — WITHOUT this group the dual
-                         "lr": LR * _LIN_LR_MULT},      # head gets grads but NEVER updates (pass-3 bug class)
-], lr=LR, amsgrad=True)
-_group_lrs = [1.0, _TAIL_LR_MULT, 1.0, _LIN_LR_MULT]
+] + _lin_groups, lr=LR, amsgrad=True)
+_group_lrs = [1.0, _TAIL_LR_MULT, 1.0] + ([_LIN_LR_MULT] if _lin_groups else [])
 if _opt_state:
     try:
         opt.load_state_dict(_opt_state)
@@ -251,12 +257,16 @@ if gstep == 0:  # fresh run: calibrate with a tiny forward+backward
     if device == "cuda": torch.cuda.synchronize()
     _sps = _CAL_STEPS / (_t.time() - _cal_t0)
     print(f"  [calibrate] {_sps:.1f} steps/s (BS={BS})", flush=True)
-    model = (V13NNUE() if _V13 else LNNUE(L1=L1)).to(device)  # reset — calibration dirtied the weights
+    model = (V13NNUE(dual_head=_DUAL) if _V13 else LNNUE(L1=L1)).to(device)  # reset — calibration dirtied the weights
     # re-init optimizer (fresh model params) — same name-based groups as above
+    _tw2 = [model.l2.weight, model.l3.weight, model.out.weight]
+    _tb2 = [model.l2.bias, model.l3.bias, model.out.bias]
+    if _V13:
+        _tw2 += [model.side_proj.weight]; _tb2 += [model.side_proj.bias]
     opt = torch.optim.AdamW([
         {"params": [model.ft.weight, model.ft_bias], "weight_decay": 0.0},
-        {"params": [model.l2.weight, model.l3.weight, model.out.weight], "weight_decay": _tail_wd},
-        {"params": [model.l2.bias, model.l3.bias, model.out.bias], "weight_decay": 0.0},
+        {"params": _tw2, "weight_decay": _tail_wd},
+        {"params": _tb2, "weight_decay": 0.0},
     ], lr=LR, amsgrad=True)
 
 # BUDGET<=0 means "no time limit": size the LR schedule for effectively-unlimited
