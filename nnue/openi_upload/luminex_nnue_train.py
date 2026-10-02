@@ -611,21 +611,23 @@ if __name__ == '__main__':
 
 def _save_nnue_v13(model, path):
     """V13 export (LXV3): magic + dims + factorized FT + side projection +
-    tail + optional LINH (lin head stays on the full index space)."""
+    tail + optional LINH (lin head stays on the full index space).
+    Per-tensor .detach().cpu() COPIES only — Module.cpu() would move the
+    live model off the GPU and kill the next frame's forward pass."""
     import struct as _struct
-    m = model.cpu()
+    m = model
     with open(path, "wb") as f:
         f.write(b"LXV3")
         f.write(_struct.pack("<iiiii", 1, V13_L1, V13_TAIL[0], V13_TAIL[1], V13_FT_FACTOR))
-        f.write(m.ft.weight.detach().numpy().astype(np.float32).tobytes())
-        f.write(m.ft_bias.detach().numpy().astype(np.float32).tobytes())
-        f.write(m.side_proj.weight.detach().numpy().astype(np.float32).tobytes())
-        f.write(m.side_proj.bias.detach().numpy().astype(np.float32).tobytes())
+        f.write(m.ft.weight.detach().cpu().numpy().astype(np.float32).tobytes())
+        f.write(m.ft_bias.detach().cpu().numpy().astype(np.float32).tobytes())
+        f.write(m.side_proj.weight.detach().cpu().numpy().astype(np.float32).tobytes())
+        f.write(m.side_proj.bias.detach().cpu().numpy().astype(np.float32).tobytes())
         for lin in (m.l2, m.l3, m.out):
-            f.write(lin.weight.detach().numpy().astype(np.float32).tobytes())
-            f.write(lin.bias.detach().numpy().astype(np.float32).tobytes())
+            f.write(lin.weight.detach().cpu().numpy().astype(np.float32).tobytes())
+            f.write(lin.bias.detach().cpu().numpy().astype(np.float32).tobytes())
         if getattr(m, "dual_head", False) and hasattr(m, "lin"):
-            lin_w = m.lin.weight.detach().numpy().astype(np.float32)[:NUM_INPUTS]
+            lin_w = m.lin.weight.detach().cpu().numpy().astype(np.float32)[:NUM_INPUTS]
             if float(np.abs(lin_w).max()) < 1e-9:
                 print("  [export] V13 lin head all-zero - LINH skipped")
             else:
