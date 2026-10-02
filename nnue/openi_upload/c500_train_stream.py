@@ -138,13 +138,12 @@ if os.path.exists(_resume) and os.environ.get("NNUE_RESUME", "1") != "0":
     try:
         _ck = torch.load(_resume, map_location=device, weights_only=False)
         _ck_L1 = _ck["model"]["ft_bias"].shape[0]
-        if _V13:
+        if _V13 and _ck["model"]["ft.weight"].shape[0] != V13NNUE().ft.weight.shape[0]:
             # V13 checkpoints carry factorized FT rows; a mismatched (gen768)
             # checkpoint cannot load shape-wise -- only same-arch resume is valid.
-            if _ck["model"]["ft.weight"].shape[0] != V13NNUE().ft.weight.shape[0]:
-                raise SystemExit("FATAL: NNUE_ARCH=v13 resume needs a V13 checkpoint "
-                                 "(got a gen768 one). Scratch run: unset NNUE_RESUME.")
-        elif _ck_L1 != L1:
+            raise SystemExit("FATAL: NNUE_ARCH=v13 resume needs a V13 checkpoint "
+                             "(got a gen768 one). Scratch run: unset NNUE_RESUME.")
+        if (not _V13) and _ck_L1 != L1:
             # Net2Net widening (Gen v1.3 Step 0): load old-width ckpt into wider model
             from luminex_nnue_train import LNNUE
             LNNUE.net2net_widen(model, _ck["model"], _ck_L1)
