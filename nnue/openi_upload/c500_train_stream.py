@@ -79,7 +79,9 @@ CODE_DIR = os.environ.get("CODE_DIR") or (os.path.dirname(train_mod) if train_mo
 sys.path.insert(0, CODE_DIR)
 FEAT = os.environ.get("FEAT") or _find_file("luminex-featurize") or os.path.join(CODE_DIR, "luminex-featurize")
 assert os.path.exists(FEAT), f"featurizer missing: {FEAT}"
-from luminex_nnue_train import LNNUE, save_nnue, NUM_INPUTS
+from luminex_nnue_train import LNNUE, save_nnue, NUM_INPUTS, V13NNUE
+_V13 = os.environ.get("NNUE_ARCH", "gen768") == "v13"
+_ANCHOR_W = float(os.environ.get("NNUE_ANCHOR_W", "0"))
 
 L1   = int(os.environ.get("NNUE_L1", "512"))
 BS   = int(os.environ.get("NNUE_BS", "131072"))
@@ -121,10 +123,13 @@ REC  = 136; SCALE = 400.0
 device = "cuda" if torch.cuda.is_available() else "cpu"
 OUT = os.environ.get("NNUE_OUT_NAME", "luminex_v6.nnue"); OUT_BASE = OUT[:-5] if OUT.endswith(".nnue") else OUT
 total_bytes = sum(os.path.getsize(f) for f in FRAMES)
+_arch_name = "V13 (factorized-8 FT, side feats, crelu)" if _V13 else "gen768"
+_anchor_note = f" anchor_w={_ANCHOR_W}" if _ANCHOR_W > 0 else ""
+print(f"arch: {_arch_name}{_anchor_note}", flush=True)
 print(f"per-frame train (OOM-safe): {len(FRAMES)} frames, {total_bytes/1e9:.2f}GB, L1={L1} bs={BS} cap={CAP:,} feat_threads={NTH} grad-clip={_gc} device={device}", flush=True)
 print(f"loss: power={os.environ.get('NNUE_LOSS_POWER', '2.6')} in sigmoid(cp/{SCALE:.0f}) space, pos-weight w1={_POS_W1} w2={_POS_W2}{' (OFF)' if _POS_W1 == 0 else ''}, lambda=1.0 (pure eval — gamepack has no game results; SF end-lambda practice)", flush=True)
 
-model = LNNUE(L1=L1).to(device)
+model = (V13NNUE() if _V13 else LNNUE(L1=L1)).to(device)
 gstep = 0  # must exist before resume check (fresh runs would NameError otherwise)
 _ck = None  # resume checkpoint dict (kept for SWA state restore further below)
 _resume = os.environ.get("NNUE_RESUME") or os.path.join(os.path.dirname(__file__) or ".", OUT_BASE + ".pt")
@@ -133,7 +138,13 @@ if os.path.exists(_resume) and os.environ.get("NNUE_RESUME", "1") != "0":
     try:
         _ck = torch.load(_resume, map_location=device, weights_only=False)
         _ck_L1 = _ck["model"]["ft_bias"].shape[0]
-        if _ck_L1 != L1:
+        if _V13:
+            # V13 checkpoints carry factorized FT rows; a mismatched (gen768)
+            # checkpoint cannot load shape-wise -- only same-arch resume is valid.
+            if _ck["model"]["ft.weight"].shape[0] != V13NNUE().ft.weight.shape[0]:
+                raise SystemExit("FATAL: NNUE_ARCH=v13 resume needs a V13 checkpoint "
+                                 "(got a gen768 one). Scratch run: unset NNUE_RESUME.")
+        elif _ck_L1 != L1:
             # Net2Net widening (Gen v1.3 Step 0): load old-width ckpt into wider model
             from luminex_nnue_train import LNNUE
             LNNUE.net2net_widen(model, _ck["model"], _ck_L1)
@@ -240,7 +251,7 @@ if gstep == 0:  # fresh run: calibrate with a tiny forward+backward
     if device == "cuda": torch.cuda.synchronize()
     _sps = _CAL_STEPS / (_t.time() - _cal_t0)
     print(f"  [calibrate] {_sps:.1f} steps/s (BS={BS})", flush=True)
-    model = LNNUE(L1=L1).to(device)  # reset — calibration dirtied the weights
+    model = (V13NNUE() if _V13 else LNNUE(L1=L1)).to(device)  # reset — calibration dirtied the weights
     # re-init optimizer (fresh model params) — same name-based groups as above
     opt = torch.optim.AdamW([
         {"params": [model.ft.weight, model.ft_bias], "weight_decay": 0.0},
@@ -484,6 +495,13 @@ for epoch in range(EPOCHS):
                             loss = _pterms.mean()
                     else:
                         loss = ((torch.sigmoid(pred / SCALE) - torch.sigmoid(ti / SCALE)) ** 2).mean()
+                if _ANCHOR_W > 0:
+                    # Anti-drift anchor (p5/p6 lesson): the power loss is nearly
+                    # blind to constant stm-relative offsets; pin the batch mean
+                    # prediction to the batch mean target in sigmoid space.
+                    _a = (torch.sigmoid(pred / SCALE).mean()
+                          - torch.sigmoid(ti / SCALE).mean()) ** 2
+                    loss = loss + _ANCHOR_W * _a
                 if _lin_t is not None:
                     _lam = 1.0 if gstep - _lin_base < _LIN_WARM else _LIN_LAM
                     loss = _lam * _lin_t.mean() + (1.0 - _lam) * loss

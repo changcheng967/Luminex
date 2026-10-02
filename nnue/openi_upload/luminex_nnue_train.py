@@ -248,6 +248,152 @@ def load_dataset(path, max_positions=None):
     return fens, evals
 
 
+# ============================================================================
+# V13 (NNUE_ARCH=v13): factorized FT (8 buckets + shared), structural side
+# features, ClippedReLU, tail 16/64, no FM block. Same feature-index space as
+# gen768 (the factorization remap lives inside the model), so the c500 stream
+# trainer drives it unchanged apart from NNUE_ARCH.
+# ============================================================================
+V13_FT_FACTOR = 8
+V13_FT_ROWS = V13_FT_FACTOR * 768 + 768        # effective buckets + shared
+V13_L1 = 512
+V13_TAIL = (16, 64)
+V13_OUT_SCALE = 300.0
+
+
+def v13_side_features(w_idx):
+    """33 structural side features from white-pov feature rows: piece counts
+    (12), pawn-file occupancy per side (8+8), king file/rank per side (4),
+    total men (1). Squares are orientation-frame (consistent, mirror-invariant)."""
+    valid = (w_idx != NUM_INPUTS).float()
+    planes = ((w_idx % 768) // 64).clamp(0, 11)
+    counts = torch.zeros(w_idx.shape[0], 12, device=w_idx.device).scatter_add_(
+        1, planes, valid)
+    sq = w_idx & 63
+    f = (sq & 7).clamp(0, 7)
+    wfiles = torch.zeros(w_idx.shape[0], 8, device=w_idx.device).scatter_add_(
+        1, f, (planes == 0).float() * valid)
+    bfiles = torch.zeros(w_idx.shape[0], 8, device=w_idx.device).scatter_add_(
+        1, f, (planes == 1).float() * valid)
+    wk = (sq * (planes == 10).long()).sum(1)   # exactly one king per row
+    bk = (sq * (planes == 11).long()).sum(1)
+    men = (w_idx != NUM_INPUTS).sum(1)
+    return torch.cat([
+        counts / 8.0, wfiles, bfiles,
+        (wk & 7).unsqueeze(1).float() / 7.0, (wk >> 3).unsqueeze(1).float() / 7.0,
+        (bk & 7).unsqueeze(1).float() / 7.0, (bk >> 3).unsqueeze(1).float() / 7.0,
+        men.unsqueeze(1).float() / 32.0], dim=1)
+
+
+class V13NNUE(nn.Module):
+    def __init__(self, dual_head=True):
+        super().__init__()
+        self.dual_head = dual_head
+        self.ft = nn.EmbeddingBag(V13_FT_ROWS + 1, V13_L1, mode="sum",
+                                  padding_idx=V13_FT_ROWS)
+        self.ft_bias = nn.Parameter(torch.zeros(V13_L1))
+        nn.init.normal_(self.ft.weight, std=0.2)
+        self.ft.weight.data[V13_FT_ROWS].zero_()
+        self.side_proj = nn.Linear(33, 32)
+        nn.init.normal_(self.side_proj.weight, std=0.05)
+        nn.init.zeros_(self.side_proj.bias)
+        self.l2 = nn.Linear(2 * V13_L1 + 32, V13_TAIL[0])
+        self.l3 = nn.Linear(V13_TAIL[0], V13_TAIL[1])
+        self.out = nn.Linear(V13_TAIL[1], 1)
+        if dual_head:
+            self.lin = nn.Embedding(NUM_INPUTS + 1, 1, padding_idx=NUM_INPUTS)
+            nn.init.zeros_(self.lin.weight)
+        self.L1, self.L2, self.L3 = V13_L1, V13_TAIL[0], V13_TAIL[1]
+
+    def _acc(self, idx):
+        valid = idx < NUM_INPUTS
+        plane = idx % 768
+        bkt = (idx // 768).clamp(max=V13_FT_FACTOR - 1)
+        pad = V13_FT_ROWS
+        base = torch.where(valid, bkt * 768 + plane, torch.full_like(idx, pad))
+        shared = torch.where(valid, torch.full_like(idx, V13_FT_FACTOR * 768) + plane,
+                             torch.full_like(idx, pad))
+        return self.ft(base) + self.ft(shared) + self.ft_bias
+
+    def linear(self, w_idx, b_idx, stm):
+        lw = self.lin(w_idx).squeeze(-1).sum(dim=1)
+        lb = self.lin(b_idx).squeeze(-1).sum(dim=1)
+        return stm * lw + (1.0 - stm) * lb
+
+    def forward(self, w_idx, b_idx, stm):
+        acc_w = self._acc(w_idx)
+        acc_b = self._acc(b_idx)
+        m = stm.view(-1, 1).float()
+        side = v13_side_features(w_idx)
+        h = torch.cat([m * acc_w + (1 - m) * acc_b,
+                       (1 - m) * acc_w + m * acc_b,
+                       torch.clamp(self.side_proj(side), 0.0, 1.0)], dim=1)
+        h = torch.clamp(h, 0.0, 1.0)
+        h = torch.clamp(self.l2(h), 0.0, 1.0)
+        h = torch.clamp(self.l3(h), 0.0, 1.0)
+        return self.out(h).squeeze(-1) * V13_OUT_SCALE
+
+    def probe_ft(self, device):
+        """v7-postmortem guard, V13 factorized form: the active two-row FT path
+        must equal a manual per-bag sum. 5e-4 threshold = float32 noise floor
+        for the two-bag sum; the guard exists to catch gross EmbeddingBag
+        divergence, not 1e-4 noise."""
+        idx = torch.randint(0, NUM_INPUTS, (64, 32), device=device)
+        idx[:, -5:] = V13_FT_ROWS
+        bag = self._acc(idx)
+        manual = (self.ft.weight[((idx // 768).clamp(max=V13_FT_FACTOR - 1) * 768
+                                  + idx % 768)].sum(1)
+                  + self.ft.weight[V13_FT_FACTOR * 768 + idx % 768].sum(1)
+                  + self.ft_bias)
+        d = (bag - manual).abs().max().item()
+        assert d < 5e-4, f"probe_ft drift {d}"
+        return d
+
+
+def v13_warm_start_from_gen768(v13, ckpt_path):
+    """Initialize V13 from a 768-wide gen768 checkpoint (best-effort,
+    function-approximate): SVD rank-512 shrink of the FT column space, tail
+    remap with function-preserving zero pads, lin head copied (stays on the
+    full index space). Audition note: scored 290.6cp vs 240.1 from scratch --
+    scratch is the default; this path exists for later full-data experiments."""
+    ck = torch.load(ckpt_path, map_location="cpu", weights_only=False)
+    sd = ck["model"] if "model" in ck else ck
+    W = sd["ft.weight"][:NUM_INPUTS]              # [24576, 768]
+    b = sd["ft_bias"]                             # [768]
+    U, S, Vh = torch.linalg.svd(W, full_matrices=False)
+    Vr = Vh[:V13_L1].T                            # [768, 512]
+    W512 = (W @ Vr).numpy()
+    b512 = (b @ Vr)
+    ft_new = np.zeros((V13_FT_ROWS + 1, V13_L1), dtype=np.float32)
+    plane = (np.arange(NUM_INPUTS) % 768)
+    bkt = np.minimum(np.arange(NUM_INPUTS) // 768, V13_FT_FACTOR - 1)
+    np.add.at(ft_new, bkt * 768 + plane, W512)
+    shared = W512.mean(axis=0)
+    np.subtract.at(ft_new, bkt * 768 + plane, shared[None, :])
+    ft_new[V13_FT_FACTOR * 768:V13_FT_ROWS] = shared
+    with torch.no_grad():
+        v13.ft.weight.copy_(torch.from_numpy(ft_new))
+        v13.ft_bias.copy_(b512)
+        l2w = sd["l2.weight"]                     # [L2, 1536]
+        half = l2w.shape[1] // 2
+        new_l2 = torch.zeros(V13_TAIL[0], 2 * V13_L1 + 32)
+        new_l2[:, :V13_L1] = l2w[:, :half] @ Vr
+        new_l2[:, V13_L1:2 * V13_L1] = l2w[:, half:] @ Vr
+        v13.l2.weight.copy_(new_l2)
+        v13.l2.bias.copy_(sd["l2.bias"])
+        # tail shape mismatch (old L3=32 vs V13 64): zero-pad function-preservingly
+        old_l3w, old_l3b = sd["l3.weight"], sd["l3.bias"]
+        l3w = torch.zeros(V13_TAIL[1], V13_TAIL[0]); l3w[:old_l3w.shape[0]] = old_l3w
+        l3b = torch.zeros(V13_TAIL[1]); l3b[:old_l3b.shape[0]] = old_l3b
+        v13.l3.weight.copy_(l3w); v13.l3.bias.copy_(l3b)
+        old_ow, old_ob = sd["out.weight"], sd["out.bias"]
+        ow = torch.zeros(1, V13_TAIL[1]); ow[:, :old_ow.shape[1]] = old_ow
+        v13.out.weight.copy_(ow); v13.out.bias.copy_(old_ob)
+        if v13.dual_head and "lin.weight" in sd:
+            v13.lin.weight.copy_(sd["lin.weight"])   # stays full-index-space
+    return v13
+
+
 def featurize_batch(fens, evals, device):
     B = len(fens)
     # Pad with NUM_INPUTS — a zero-weight row in the forward pass (no-op).
@@ -416,6 +562,8 @@ def main():
 def save_nnue(model, path):
     """Export weights as float32 binary (C++ loader reads this). Quantization
     to int8/int16 happens in the C++ inference / a separate export step."""
+    if isinstance(model, V13NNUE):
+        return _save_nnue_v13(model, path)
     with open(path, 'wb') as f:
         # header: magic + architecture dims
         f.write(b'LNN1')
@@ -457,3 +605,29 @@ def save_nnue(model, path):
 
 if __name__ == '__main__':
     main()
+
+
+def _save_nnue_v13(model, path):
+    """V13 export (LXV3): magic + dims + factorized FT + side projection +
+    tail + optional LINH (lin head stays on the full index space)."""
+    import struct as _struct
+    m = model.cpu()
+    with open(path, "wb") as f:
+        f.write(b"LXV3")
+        f.write(_struct.pack("<iiiii", 1, V13_L1, V13_TAIL[0], V13_TAIL[1], V13_FT_FACTOR))
+        f.write(m.ft.weight.detach().numpy().astype(np.float32).tobytes())
+        f.write(m.ft_bias.detach().numpy().astype(np.float32).tobytes())
+        f.write(m.side_proj.weight.detach().numpy().astype(np.float32).tobytes())
+        f.write(m.side_proj.bias.detach().numpy().astype(np.float32).tobytes())
+        for lin in (m.l2, m.l3, m.out):
+            f.write(lin.weight.detach().numpy().astype(np.float32).tobytes())
+            f.write(lin.bias.detach().numpy().astype(np.float32).tobytes())
+        if getattr(m, "dual_head", False) and hasattr(m, "lin"):
+            lin_w = m.lin.weight.detach().numpy().astype(np.float32)[:NUM_INPUTS]
+            if float(np.abs(lin_w).max()) < 1e-9:
+                print("  [export] V13 lin head all-zero - LINH skipped")
+            else:
+                f.write(b"LINH")
+                f.write(lin_w.tobytes())
+    print(f"v13 export: {path} (L1={V13_L1} tail={V13_TAIL} "
+          f"ft_factor={V13_FT_FACTOR})", flush=True)
