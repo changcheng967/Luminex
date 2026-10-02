@@ -191,12 +191,16 @@ accumulator, SCReLU stack, `out × 300` output scaling.
   zero (contributes nothing at step 0), bucket tails copy the old tail. First V13 run A/Bs
   warm-start vs scratch on a subset.
 
-## 10. V14: Residual Topology (Spec Complete)
+## 10. V14: Beyond V13 (campaign program)
 
-[`V14.md`](V14.md) — the 9-component upgrade: DOSL backbone trained first with the NNUE learning
-a residual δ (±600cp correction range = 60% better quantization resolution than full-eval
-training), mobility summary features (+40/perspective from engine attack maps), cross layer
-on the interaction vector (triplewise terms), trajectory delta supervision, best-move policy
-head, lazy accumulator updates, confidence-gated eval. Targets engine v7.0+.
+The original V14 spec (residual topology on a 768/FM/cross base, 9 components)
+is retired: the component campaigns refuted its architecture basis —
+512/factorized-8/ClippedReLU/side-features beat every 768/FM/cross shape, and
+that winner was folded into V13's amended spec instead. V14 now names the next
+generation, defined by campaign evidence as it lands: enriched derived
+features (running), trajectory delta supervision, policy multi-task, and the
+residual topology retried with a properly-trained lin head (the x500-1000 LR
+recipe). The spec forms in [V14.md](V14.md) once a campaign produces a
+confirmed winner.
 
 ---
