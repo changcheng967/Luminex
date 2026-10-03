@@ -334,7 +334,7 @@ class V13NNUE(nn.Module):
         # then needs the exact int32 accumulator). Activations are unchanged for
         # lanes inside [0,1] -- the penalty only bites where clipping already
         # destroyed information.
-        self.last_acc_reg = 0.0
+        self.last_acc_reg = None
         if self.acc_reg_w > 0:
             over_w = (acc_w.abs() - 3.5).clamp(min=0)
             over_b = (acc_b.abs() - 3.5).clamp(min=0)

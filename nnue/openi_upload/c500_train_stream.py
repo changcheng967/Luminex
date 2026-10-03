@@ -511,8 +511,8 @@ for epoch in range(EPOCHS):
                     _a = (torch.sigmoid(pred / SCALE).mean()
                           - torch.sigmoid(ti / SCALE).mean()) ** 2
                     loss = loss + _ANCHOR_W * _a
-                _v13_reg = getattr(model, "last_acc_reg", 0.0)
-                if _v13_reg is not 0.0 and torch.is_tensor(_v13_reg):
+                _v13_reg = getattr(model, "last_acc_reg", None)
+                if _v13_reg is not None and torch.is_tensor(_v13_reg):
                     # int16-accumulator compatibility (V13): see V13NNUE.forward
                     loss = loss + _v13_reg
                 if _lin_t is not None:
