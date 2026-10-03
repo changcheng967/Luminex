@@ -817,19 +817,6 @@ Value evaluate(const Position& pos) {
         float ov = v13_out_b;
         for (int i = 0; i < 64; ++i) ov += v13_out_w[i] * h3[i];
         Value v = static_cast<Value>(std::llround(ov * 300.0f));
-        if (std::getenv("NNUE_V13_DUMP")) {
-            std::fprintf(stderr, "[v13dump] side:");
-            for (int i = 0; i < 33; ++i) std::fprintf(stderr, " %.3f", side[i]);
-            std::fprintf(stderr, "\n[v13dump] stm active lanes (idx,val):\n");
-            for (int l = 0; l < V13_L1; ++l) {
-                float s = acc_stm[l] * FT_WINV;
-                if (s > 0) std::fprintf(stderr, " %d:%.4f", l, s > 1 ? 1 : s);
-            }
-            std::fprintf(stderr, "\n[v13dump] sp_out:");
-            for (int j = 0; j < 32; ++j)
-                std::fprintf(stderr, " %.3f", h[2 * V13_L1 + j]);
-            std::fprintf(stderr, "\n");
-        }
         if (pr) { st_eval.cyc += rdtsc() - t0; st_eval.n++; }
         return v;
     }
