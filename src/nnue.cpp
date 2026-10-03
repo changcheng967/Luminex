@@ -733,6 +733,36 @@ Value evaluate(const Position& pos) {
     const int16_t* acc_nstm = stm_white ? a.v[1] : a.v[0];
 
     if (g_v13) {
+        // Exact float accumulator (spec §3 fallback): V13's trained weight scale
+        // overflows the int16 accumulator mid-accumulation (26/512 lanes beyond
+        // range at startpos), distorting lanes that saturate and return. The
+        // incremental int16 path still runs for the DOSL lin head; the dense
+        // path recomputes both perspectives here in exact arithmetic.
+        static thread_local float ft_w_f[(size_t)32 * 768 * V13_L1];
+        static thread_local bool ft_f_ready = false;
+        if (!ft_f_ready) {
+            const int rows = g_v13_factor * 768 + 768;
+            for (int r = 0; r < rows; ++r)
+                for (int l = 0; l < V13_L1; ++l)
+                    ft_w_f[(size_t)r * V13_L1 + l] = ft_w[(size_t)r * V13_L1 + l] * FT_WINV;
+            ft_f_ready = true;
+        }
+        float accw[V13_L1], accb[V13_L1];
+        for (int l = 0; l < V13_L1; ++l) { accw[l] = ft_b_i32[l] * FT_WINV; accb[l] = accw[l]; }
+        for (int p = 0; p < 2; ++p) {
+            bool white_pov = (p == 0);
+            int ksq = static_cast<int>(pos.king_sq(white_pov ? WHITE : BLACK));
+            float* dst = white_pov ? accw : accb;
+            for (int sq = 0; sq < NUM_SQ; ++sq) {
+                Piece pc = pos.piece_on(Square(sq));
+                if (pc == NO_PIECE) continue;
+                int idx = halfka_idx(white_pov, ksq, sq, pc);
+                int br, sr; v13_rows(idx, br, sr);
+                const float* wb = &ft_w_f[(size_t)br * V13_L1];
+                const float* ws = &ft_w_f[(size_t)sr * V13_L1];
+                for (int l = 0; l < V13_L1; ++l) dst[l] += wb[l] + ws[l];
+            }
+        }
         // 33 side features from bitboards; plane order wp,bp,wn,bn,wb,bb,wr,br,
         // wq,bq,wk,bk; mirrors v13_side_features() in the trainer.
         float side[33];
@@ -761,7 +791,8 @@ Value evaluate(const Position& pos) {
         }
         float h[V13_IN];
         for (int l = 0; l < V13_L1; ++l) {
-            float s = acc_stm[l] * FT_WINV, n = acc_nstm[l] * FT_WINV;
+            float s = stm_white ? accw[l] : accb[l];
+            float n = stm_white ? accb[l] : accw[l];
             h[l] = s < 0 ? 0 : (s > 1 ? 1 : s);
             h[V13_L1 + l] = n < 0 ? 0 : (n > 1 ? 1 : n);
         }
