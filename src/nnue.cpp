@@ -789,11 +789,14 @@ Value evaluate(const Position& pos) {
         if (std::getenv("NNUE_V13_DUMP")) {
             std::fprintf(stderr, "[v13dump] side:");
             for (int i = 0; i < 33; ++i) std::fprintf(stderr, " %.3f", side[i]);
-            std::fprintf(stderr, "\n[v13dump] accs:");
-            for (int l = 0; l < 6; ++l)
-                std::fprintf(stderr, " %d/%d", (int)acc_stm[l], (int)acc_nstm[l]);
-            std::fprintf(stderr, "\n[v13dump] h2:");
-            for (int o = 0; o < 16; ++o) std::fprintf(stderr, " %.4f", h2[o]);
+            std::fprintf(stderr, "\n[v13dump] stm active lanes (idx,val):\n");
+            for (int l = 0; l < V13_L1; ++l) {
+                float s = acc_stm[l] * FT_WINV;
+                if (s > 0) std::fprintf(stderr, " %d:%.4f", l, s > 1 ? 1 : s);
+            }
+            std::fprintf(stderr, "\n[v13dump] sp_out:");
+            for (int j = 0; j < 32; ++j)
+                std::fprintf(stderr, " %.3f", h[2 * V13_L1 + j]);
             std::fprintf(stderr, "\n");
         }
         if (pr) { st_eval.cyc += rdtsc() - t0; st_eval.n++; }
