@@ -743,7 +743,7 @@ Value evaluate(const Position& pos) {
             while (rem) {
                 Square s = pop_lsb(rem);
                 Piece pc = pos.piece_on(s);
-                counts[(piece_type_of(pc) - 1) * 2 + (color_of_piece(pc) != WHITE ? 1 : 0)]++;
+                counts[int(piece_type_of(pc)) * 2 + (color_of_piece(pc) != WHITE ? 1 : 0)]++;
                 men++;
             }
             float* sf = side;
