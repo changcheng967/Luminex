@@ -235,6 +235,15 @@ static inline Accumulator* nnue_acc_stack() {
     return store.data();
 }
 
+// V13 exact accumulator: int32 lanes. The trained weight scale drives mid-accumulation
+// excursions beyond int16's ±4.0 (FT_WSCALE 8192 × int16 max) — saturating adds then
+// distort lanes that leave and re-enter the range (spec §3 fallback).
+struct alignas(64) V13Acc { int32_t v[2][V13_L1]; };
+static inline V13Acc* v13_acc_stack() {
+    thread_local std::vector<V13Acc> store(NNUE_MAX_PLY);
+    return store.data();
+}
+
 bool loaded() { return g_loaded; }
 bool enabled() { return g_loaded && g_enabled; }
 void set_enabled(bool on) { g_enabled = on; }
@@ -458,6 +467,18 @@ static inline void v13_acc_rows(int16_t* acc, int bucket_row, int shared_row, in
 #endif
 }
 
+// V13 exact int32 lane ops on the V13Acc stack (no saturation at any trained scale).
+static inline void v13_acc32(V13Acc& a, int p, int idx, int sign) {
+    int br, sr; v13_rows(idx, br, sr);
+    const int16_t* wb = &ft_w[(size_t)br * V13_L1];
+    const int16_t* ws = &ft_w[(size_t)sr * V13_L1];
+    int32_t* acc = a.v[p];
+    if (sign > 0)
+        for (int l = 0; l < V13_L1; ++l) acc[l] += int(wb[l]) + int(ws[l]);
+    else
+        for (int l = 0; l < V13_L1; ++l) acc[l] -= int(wb[l]) + int(ws[l]);
+}
+
 static inline void add_feature(Accumulator& a, int p, int ksq, int sq, Piece piece) {
     int idx = halfka_idx(p == 0, ksq, sq, piece);
     int16_t* acc = a.v[p];
@@ -577,6 +598,15 @@ static void refresh_perspective(const Position& pos, Accumulator& a, int p) {
         if (pc == NO_PIECE) continue;
         add_feature(a, p, ksq, Square(sq), pc);   // single tested path (v13 two-row aware)
     }
+    if (g_v13) {
+        V13Acc& va = v13_acc_stack()[pos.state_ply()];
+        for (int l = 0; l < V13_L1; ++l) va.v[p][l] = ft_b_i32[l];
+        for (int sq = 0; sq < NUM_SQ; ++sq) {
+            Piece pc = pos.piece_on(Square(sq));
+            if (pc == NO_PIECE) continue;
+            v13_acc32(va, p, halfka_idx(white_pov, ksq, sq, pc), +1);
+        }
+    }
 }
 
 void refresh(Position& pos) {
@@ -639,6 +669,8 @@ void update(Position& pos, Move m, Piece moved, PieceType captured) {
     }
 
     acc_stack[ply] = acc_stack[ply - 1];   // copy parent → child (overlaps with prefetch)
+    V13Acc* v13_stack = g_v13 ? v13_acc_stack() : nullptr;
+    if (v13_stack) v13_stack[ply] = v13_stack[ply - 1];
 
     for (int p = 0; p < 2; ++p) {
         bool white_pov = (p == 0);
@@ -669,6 +701,29 @@ void update(Position& pos, Move m, Piece moved, PieceType captured) {
             }
             remove_feature(a, p, ksq, rfrom, make_piece(us, ROOK));
             add_feature(a, p, ksq, rto,   make_piece(us, ROOK));
+        }
+        if (v13_stack) {   // exact int32 mirror of the deltas above
+            V13Acc& va = v13_stack[ply];
+            v13_acc32(va, p, halfka_idx(white_pov, ksq, from, make_piece(us, from_pt)), -1);
+            v13_acc32(va, p, halfka_idx(white_pov, ksq, to,   make_piece(us, to_pt)),   +1);
+            if (captured != PT_NONE && !ep)
+                v13_acc32(va, p, halfka_idx(white_pov, ksq, to, make_piece(them, captured)), -1);
+            if (ep) {
+                Square cap_sq = Square(to - (us == WHITE ? 8 : -8));
+                v13_acc32(va, p, halfka_idx(white_pov, ksq, cap_sq, make_piece(them, PAWN)), -1);
+            }
+            if (castling) {
+                Square rfrom, rto;
+                if (to == (us == WHITE ? Square(G1) : Square(G8))) {
+                    rfrom = us == WHITE ? Square(H1) : Square(H8);
+                    rto   = us == WHITE ? Square(F1) : Square(F8);
+                } else {
+                    rfrom = us == WHITE ? Square(A1) : Square(A8);
+                    rto   = us == WHITE ? Square(D1) : Square(D8);
+                }
+                v13_acc32(va, p, halfka_idx(white_pov, ksq, rfrom, make_piece(us, ROOK)), -1);
+                v13_acc32(va, p, halfka_idx(white_pov, ksq, rto,   make_piece(us, ROOK)), +1);
+            }
         }
         if (pr) { st_incremental.cyc += rdtsc() - inc_t0; st_incremental.n++; }
     }
@@ -733,27 +788,11 @@ Value evaluate(const Position& pos) {
     const int16_t* acc_nstm = stm_white ? a.v[1] : a.v[0];
 
     if (g_v13) {
-        // Exact float accumulator (spec §3 fallback): V13's trained weight scale
-        // overflows the int16 accumulator mid-accumulation (26/512 lanes beyond
-        // range at startpos), distorting lanes that saturate and return. The
-        // int16 rows are dequantized inline — a cached float copy as a
-        // thread_local array is 50MB of TLS and breaks thread stack mapping.
-        float accw[V13_L1], accb[V13_L1];
-        for (int l = 0; l < V13_L1; ++l) { accw[l] = ft_b_i32[l] * FT_WINV; accb[l] = accw[l]; }
-        for (int p = 0; p < 2; ++p) {
-            bool white_pov = (p == 0);
-            int ksq = static_cast<int>(pos.king_sq(white_pov ? WHITE : BLACK));
-            float* dst = white_pov ? accw : accb;
-            for (int sq = 0; sq < NUM_SQ; ++sq) {
-                Piece pc = pos.piece_on(Square(sq));
-                if (pc == NO_PIECE) continue;
-                int idx = halfka_idx(white_pov, ksq, sq, pc);
-                int br, sr; v13_rows(idx, br, sr);
-                for (int l = 0; l < V13_L1; ++l)
-                    dst[l] += (float(ft_w[(size_t)br * V13_L1 + l])
-                              + float(ft_w[(size_t)sr * V13_L1 + l])) * FT_WINV;
-            }
-        }
+        // Incremental exact int32 lanes (update() maintains them; refresh for new
+        // positions). int16 lanes on the shared stack are ignored — see V13Acc.
+        const V13Acc& va = v13_acc_stack()[pos.state_ply()];
+        const int32_t* vstm  = stm_white ? va.v[0] : va.v[1];
+        const int32_t* vnstm = stm_white ? va.v[1] : va.v[0];
         // 33 side features from bitboards; plane order wp,bp,wn,bn,wb,bb,wr,br,
         // wq,bq,wk,bk; mirrors v13_side_features() in the trainer.
         float side[33];
@@ -782,8 +821,7 @@ Value evaluate(const Position& pos) {
         }
         float h[V13_IN];
         for (int l = 0; l < V13_L1; ++l) {
-            float s = stm_white ? accw[l] : accb[l];
-            float n = stm_white ? accb[l] : accw[l];
+            float s = vstm[l] * FT_WINV, n = vnstm[l] * FT_WINV;
             h[l] = s < 0 ? 0 : (s > 1 ? 1 : s);
             h[V13_L1 + l] = n < 0 ? 0 : (n > 1 ? 1 : n);
         }
