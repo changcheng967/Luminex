@@ -511,6 +511,10 @@ for epoch in range(EPOCHS):
                     _a = (torch.sigmoid(pred / SCALE).mean()
                           - torch.sigmoid(ti / SCALE).mean()) ** 2
                     loss = loss + _ANCHOR_W * _a
+                _v13_reg = getattr(model, "last_acc_reg", 0.0)
+                if _v13_reg is not 0.0 and torch.is_tensor(_v13_reg):
+                    # int16-accumulator compatibility (V13): see V13NNUE.forward
+                    loss = loss + _v13_reg
                 if _lin_t is not None:
                     _lam = 1.0 if gstep - _lin_base < _LIN_WARM else _LIN_LAM
                     loss = _lam * _lin_t.mean() + (1.0 - _lam) * loss

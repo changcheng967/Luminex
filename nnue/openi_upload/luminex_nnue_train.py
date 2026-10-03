@@ -302,6 +302,8 @@ class V13NNUE(nn.Module):
         self.l2 = nn.Linear(2 * V13_L1 + 32, V13_TAIL[0])
         self.l3 = nn.Linear(V13_TAIL[0], V13_TAIL[1])
         self.out = nn.Linear(V13_TAIL[1], 1)
+        self.acc_reg_w = float(os.environ.get("NNUE_ACC_REG", "0.05"))
+        self.last_acc_reg = 0.0
         if dual_head:
             self.lin = nn.Embedding(NUM_INPUTS + 1, 1, padding_idx=NUM_INPUTS)
             nn.init.zeros_(self.lin.weight)
@@ -325,6 +327,18 @@ class V13NNUE(nn.Module):
     def forward(self, w_idx, b_idx, stm):
         acc_w = self._acc(w_idx)
         acc_b = self._acc(b_idx)
+        # int16-accumulator compatibility (engine saturating-add contract): lanes
+        # beyond +/-4.0 (= 32767/FT_WSCALE 8192) saturate, and MID-SUM excursions
+        # that return into range lose mass. This soft penalty keeps lanes under the
+        # window so an int16 engine accumulator stays exact; 0 disables (engine
+        # then needs the exact int32 accumulator). Activations are unchanged for
+        # lanes inside [0,1] -- the penalty only bites where clipping already
+        # destroyed information.
+        self.last_acc_reg = 0.0
+        if self.acc_reg_w > 0:
+            over_w = (acc_w.abs() - 3.5).clamp(min=0)
+            over_b = (acc_b.abs() - 3.5).clamp(min=0)
+            self.last_acc_reg = self.acc_reg_w * (over_w ** 2 + over_b ** 2).mean()
         m = stm.view(-1, 1).float()
         side = v13_side_features(w_idx)
         h = torch.cat([m * acc_w + (1 - m) * acc_b,
