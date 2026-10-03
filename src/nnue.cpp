@@ -278,11 +278,11 @@ static bool load_v13(const std::string& path, std::ifstream& f) {
     g_L1 = L1; g_L2 = L2; g_L3 = L3; g_v13_factor = fac;
     const int rows = fac * 768 + 768;
     std::vector<float> ft_raw;
-    if (!read_raw(f, ft_raw, (rows + 1) * L1)) return false;   // +1 = pad row (dropped)
+    if (!read_raw(f, ft_raw, (rows + 1) * L1)) return false;   // trailing row = pad (zeros), dropped
     ft_w.resize((size_t)rows * L1);
     for (int r = 0; r < rows; ++r)
         for (int l = 0; l < L1; ++l)
-            ft_w[(size_t)r * L1 + l] = (int16_t)std::lround(ft_raw[(size_t)(r + 1) * L1 + l] * FT_WSCALE);
+            ft_w[(size_t)r * L1 + l] = (int16_t)std::lround(ft_raw[(size_t)r * L1 + l] * FT_WSCALE);
     std::vector<float> fb;
     if (!read_raw(f, fb, L1)) return false;
     ft_b_i32.resize(L1);
@@ -575,22 +575,7 @@ static void refresh_perspective(const Position& pos, Accumulator& a, int p) {
     for (int sq = 0; sq < NUM_SQ; ++sq) {
         Piece pc = pos.piece_on(Square(sq));
         if (pc == NO_PIECE) continue;
-        size_t fidx = static_cast<size_t>(halfka_idx(white_pov, ksq, sq, pc));
-        if (g_lin_head) a.lin[p] += lin_w[fidx];
-        const int16_t* w = &ft_w[fidx * g_L1];
-#if defined(__AVX512F__)
-        for (int l = 0; l < g_L1; l += 32)
-            _mm512_storeu_si512((__m512i*)(acc + l), _mm512_adds_epi16(
-                _mm512_loadu_si512((const __m512i*)(acc + l)),
-                _mm512_loadu_si512((const __m512i*)(w + l))));
-#elif defined(__AVX2__)
-        for (int l = 0; l < g_L1; l += 16)
-        _mm256_storeu_si256((__m256i*)(acc + l), _mm256_adds_epi16(
-            _mm256_loadu_si256((const __m256i*)(acc + l)),
-            _mm256_loadu_si256((const __m256i*)(w + l))));
-#else
-        for (int l = 0; l < g_L1; ++l) acc[l] = int16_t(std::max(-32768, std::min(32767, int(acc[l]) + int(w[l]))));
-#endif
+        add_feature(a, p, ksq, Square(sq), pc);   // single tested path (v13 two-row aware)
     }
 }
 
