@@ -736,17 +736,8 @@ Value evaluate(const Position& pos) {
         // Exact float accumulator (spec §3 fallback): V13's trained weight scale
         // overflows the int16 accumulator mid-accumulation (26/512 lanes beyond
         // range at startpos), distorting lanes that saturate and return. The
-        // incremental int16 path still runs for the DOSL lin head; the dense
-        // path recomputes both perspectives here in exact arithmetic.
-        static thread_local float ft_w_f[(size_t)32 * 768 * V13_L1];
-        static thread_local bool ft_f_ready = false;
-        if (!ft_f_ready) {
-            const int rows = g_v13_factor * 768 + 768;
-            for (int r = 0; r < rows; ++r)
-                for (int l = 0; l < V13_L1; ++l)
-                    ft_w_f[(size_t)r * V13_L1 + l] = ft_w[(size_t)r * V13_L1 + l] * FT_WINV;
-            ft_f_ready = true;
-        }
+        // int16 rows are dequantized inline — a cached float copy as a
+        // thread_local array is 50MB of TLS and breaks thread stack mapping.
         float accw[V13_L1], accb[V13_L1];
         for (int l = 0; l < V13_L1; ++l) { accw[l] = ft_b_i32[l] * FT_WINV; accb[l] = accw[l]; }
         for (int p = 0; p < 2; ++p) {
@@ -758,9 +749,9 @@ Value evaluate(const Position& pos) {
                 if (pc == NO_PIECE) continue;
                 int idx = halfka_idx(white_pov, ksq, sq, pc);
                 int br, sr; v13_rows(idx, br, sr);
-                const float* wb = &ft_w_f[(size_t)br * V13_L1];
-                const float* ws = &ft_w_f[(size_t)sr * V13_L1];
-                for (int l = 0; l < V13_L1; ++l) dst[l] += wb[l] + ws[l];
+                for (int l = 0; l < V13_L1; ++l)
+                    dst[l] += (float(ft_w[(size_t)br * V13_L1 + l])
+                              + float(ft_w[(size_t)sr * V13_L1 + l])) * FT_WINV;
             }
         }
         // 33 side features from bitboards; plane order wp,bp,wn,bn,wb,bb,wr,br,
