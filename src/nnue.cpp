@@ -209,6 +209,15 @@ static std::vector<float> v13_l3_w, v13_l3_b;    // (64, 16)
 static std::vector<float> v13_out_w;             // (64,)
 static float v13_out_b = 0.0f;
 static constexpr int V13_L1 = 512, V13_IN = 2 * 512 + 32;
+// LX3Q (quantized LXV3): int8 tail. l2/l3 weights sit at the fixed scale 64
+// (=8192/128, matching the >>6 activation requant) so the dense chain stays in
+// the x8192 domain; out carries its own scale (v13_out_k). Side projection
+// stays float — its inputs are normalized scalars, not counts.
+static bool g_v13q = false;
+static std::vector<int8_t> v13_l2_q, v13_l3_q, v13_out_q;
+static std::vector<int32_t> v13_l2_bq, v13_l3_bq;   // biases x8192
+static int32_t v13_out_bq = 0;
+static float v13_out_k = 1.0f;                      // (8192/127)/s_out
 // true by default since v6.1.0 (matches the declared UCI default; a GUI that
 // never sends setoption gets NNUE when a net is present — HCE if not).
 static bool g_enabled = true;
@@ -235,14 +244,8 @@ static inline Accumulator* nnue_acc_stack() {
     return store.data();
 }
 
-// V13 exact accumulator: int32 lanes. The trained weight scale drives mid-accumulation
-// excursions beyond int16's ±4.0 (FT_WSCALE 8192 × int16 max) — saturating adds then
-// distort lanes that leave and re-enter the range (spec §3 fallback).
-struct alignas(64) V13Acc { int32_t v[2][V13_L1]; };
-static inline V13Acc* v13_acc_stack() {
-    thread_local std::vector<V13Acc> store(NNUE_MAX_PLY);
-    return store.data();
-}
+// V13 shares the saturating-int16 Accumulator above (spec §3); the NNUE_ACC_REG
+// weights keep resting lanes inside the clip window, which sits 4x below saturation.
 
 bool loaded() { return g_loaded; }
 bool enabled() { return g_loaded && g_enabled; }
@@ -275,15 +278,42 @@ static inline void v13_rows(int idx, int& bucket_row, int& shared_row) {
     shared_row = g_v13_factor * 768 + plane;
 }
 
-static bool load_v13(const std::string& path, std::ifstream& f) {
-    int32_t hdr[5];   // version, L1, L2, L3, ft_factor — raw (no size prefix)
+// Optional DOSL head tag (raw layout, no size prefix); rewinds when absent.
+static void read_optional_linh(std::ifstream& f) {
+    char tag[4] = {0,0,0,0};
+    std::streampos save = f.tellg();
+    f.read(tag, 4);
+    if (f.gcount() == 4 && tag[0]=='L' && tag[1]=='I' && tag[2]=='N' && tag[3]=='H') {
+        std::vector<float> lw;
+        if (read_raw(f, lw, NUM_INPUTS)) {
+            lin_w.resize(NUM_INPUTS);
+            for (int i = 0; i < NUM_INPUTS; ++i) lin_w[i] = (int16_t)std::lround(lw[i] * LIN_SCALE);
+            bool any = false;
+            for (int i = 0; i < NUM_INPUTS && !any; ++i) any = lin_w[i] != 0;
+            g_lin_head = any;
+        }
+    } else {
+        f.seekg(save);
+    }
+}
+
+// Map full-space magic + dims; shared by the LXV3/LX3Q loaders.
+static bool v13_header_ok(const char* magic, std::ifstream& f, int32_t (&hdr)[5],
+                          int& L1, int& L2, int& L3, int& fac) {
     f.read(reinterpret_cast<char*>(hdr), sizeof(hdr));
-    int ver = hdr[0], L1 = hdr[1], L2 = hdr[2], L3 = hdr[3], fac = hdr[4];
-    if (ver != 1) { std::fprintf(stderr, "nnue: LXV3 version %d unsupported\n", ver); return false; }
+    int ver = hdr[0]; L1 = hdr[1]; L2 = hdr[2]; L3 = hdr[3]; fac = hdr[4];
+    if (ver != 1) { std::fprintf(stderr, "nnue: %s version %d unsupported\n", magic, ver); return false; }
     if (L1 != V13_L1 || L2 != 16 || L3 != 64 || fac < 2 || fac > 32) {
-        std::fprintf(stderr, "nnue: LXV3 dims L1=%d L2=%d L3=%d factor=%d unsupported\n", L1, L2, L3, fac);
+        std::fprintf(stderr, "nnue: %s dims L1=%d L2=%d L3=%d factor=%d unsupported\n", magic, L1, L2, L3, fac);
         return false;
     }
+    return true;
+}
+
+static bool load_v13(const std::string& path, std::ifstream& f) {
+    int32_t hdr[5];   // version, L1, L2, L3, ft_factor — raw (no size prefix)
+    int L1, L2, L3, fac;
+    if (!v13_header_ok("LXV3", f, hdr, L1, L2, L3, fac)) return false;
     g_L1 = L1; g_L2 = L2; g_L3 = L3; g_v13_factor = fac;
     const int rows = fac * 768 + 768;
     std::vector<float> ft_raw;
@@ -306,24 +336,50 @@ static bool load_v13(const std::string& path, std::ifstream& f) {
     std::vector<float> ob;
     if (!read_raw(f, ob, 1)) return false;
     v13_out_b = ob[0];
-    // Optional DOSL head (full index space, raw layout — no size prefix)
-    char tag[4] = {0,0,0,0};
-    std::streampos save = f.tellg();
-    f.read(tag, 4);
-    if (f.gcount() == 4 && tag[0]=='L' && tag[1]=='I' && tag[2]=='N' && tag[3]=='H') {
-        std::vector<float> lw;
-        if (read_raw(f, lw, NUM_INPUTS)) {
-            lin_w.resize(NUM_INPUTS);
-            for (int i = 0; i < NUM_INPUTS; ++i) lin_w[i] = (int16_t)std::lround(lw[i] * LIN_SCALE);
-            bool any = false;
-            for (int i = 0; i < NUM_INPUTS && !any; ++i) any = lin_w[i] != 0;
-            g_lin_head = any;
-        }
-    } else {
-        f.seekg(save);
-    }
+    read_optional_linh(f);
     g_v13 = true; g_int8 = false; g_loaded = true;
     std::printf("nnue: loaded %s (V13 LXV3 L1=%d factor=%d)%s\n", path.c_str(), L1, fac,
+                g_lin_head ? " +lin" : "");
+    return true;
+}
+
+// LX3Q file layout (see quantize_v13q.py): ft_w(i16), ft_b(i16), sp_w/sp_b(f32),
+// l2_w(i8), l2_b(i32), l3_w(i8), l3_b(i32), out_w(i8), s_out(f32), out_b(i32).
+static bool load_v13q(const std::string& path, std::ifstream& f) {
+    int32_t hdr[5];
+    int L1, L2, L3, fac;
+    if (!v13_header_ok("LX3Q", f, hdr, L1, L2, L3, fac)) return false;
+    g_L1 = L1; g_L2 = L2; g_L3 = L3; g_v13_factor = fac;
+    const int rows = fac * 768 + 768;
+    ft_w.resize((size_t)rows * L1);
+    f.read(reinterpret_cast<char*>(ft_w.data()), (size_t)rows * L1 * sizeof(int16_t));
+    std::vector<int16_t> fb(L1);
+    f.read(reinterpret_cast<char*>(fb.data()), (size_t)L1 * sizeof(int16_t));
+    if (!f.good()) { std::fprintf(stderr, "nnue: LX3Q truncated in FT\n"); return false; }
+    ft_b_i32.resize(L1);
+    for (int l = 0; l < L1; ++l) ft_b_i32[l] = fb[l];
+    if (!read_raw(f, v13_sp_w, 32 * 33)) return false;
+    if (!read_raw(f, v13_sp_b, 32)) return false;
+    v13_l2_q.resize((size_t)L2 * V13_IN);
+    f.read(reinterpret_cast<char*>(v13_l2_q.data()), v13_l2_q.size());
+    v13_l2_bq.resize(L2);
+    f.read(reinterpret_cast<char*>(v13_l2_bq.data()), (size_t)L2 * sizeof(int32_t));
+    v13_l3_q.resize((size_t)L3 * L2);
+    f.read(reinterpret_cast<char*>(v13_l3_q.data()), v13_l3_q.size());
+    v13_l3_bq.resize(L3);
+    f.read(reinterpret_cast<char*>(v13_l3_bq.data()), (size_t)L3 * sizeof(int32_t));
+    v13_out_q.resize(L3);
+    f.read(reinterpret_cast<char*>(v13_out_q.data()), L3);
+    std::vector<float> so;
+    if (!read_raw(f, so, 1)) return false;
+    std::vector<int32_t> ob(1);
+    f.read(reinterpret_cast<char*>(ob.data()), sizeof(int32_t));
+    if (!f.good()) { std::fprintf(stderr, "nnue: LX3Q truncated in tail\n"); return false; }
+    v13_out_bq = ob[0];
+    v13_out_k = 64.0f / so[0];   // weights x s_out, activations x128: od = ov x s_out x 128
+    read_optional_linh(f);
+    g_v13 = true; g_v13q = true; g_int8 = false; g_loaded = true;
+    std::printf("nnue: loaded %s (V13 LX3Q L1=%d factor=%d)%s\n", path.c_str(), L1, fac,
                 g_lin_head ? " +lin" : "");
     return true;
 }
@@ -335,6 +391,7 @@ bool load(const std::string& path) {
     f.read(magic, 4);
     std::string mg(magic, 4);
     if (mg == "LXV3") return load_v13(path, f);
+    if (mg == "LX3Q") return load_v13q(path, f);
     if (mg != "LNN1" && mg != "LNI8") { std::fprintf(stderr, "nnue: bad magic\n"); return false; }
     g_int8 = (mg == "LNI8");
     int32_t hdr[4];
@@ -442,6 +499,13 @@ bool load(const std::string& path) {
 
 static inline float clip01(float x) { float c = x < 0.0f ? 0.0f : (x > 1.0f ? 1.0f : x); return c * c; }
 
+// ClippedReLU on a x8192-domain lane, requantized to the u8 dense input
+// (min(in>>6, 127) — 8192>>6 = 128 caps at 127).
+static inline uint8_t crelu_q8(int v) {
+    v = v < 0 ? 0 : (v > 8192 ? 8192 : v);
+    return uint8_t(std::min(v >> 6, 127));
+}
+
 // V13 factorized accumulator row ops: one feature = bucket row + shared row.
 // Saturating int16 on both rows; equivalent fused or sequential per sign.
 static inline void v13_acc_rows(int16_t* acc, int bucket_row, int shared_row, int sign) {
@@ -465,18 +529,6 @@ static inline void v13_acc_rows(int16_t* acc, int bucket_row, int shared_row, in
         acc[l] = int16_t(std::max(-32768, std::min(32767, v)));
     }
 #endif
-}
-
-// V13 exact int32 lane ops on the V13Acc stack (no saturation at any trained scale).
-static inline void v13_acc32(V13Acc& a, int p, int idx, int sign) {
-    int br, sr; v13_rows(idx, br, sr);
-    const int16_t* wb = &ft_w[(size_t)br * V13_L1];
-    const int16_t* ws = &ft_w[(size_t)sr * V13_L1];
-    int32_t* acc = a.v[p];
-    if (sign > 0)
-        for (int l = 0; l < V13_L1; ++l) acc[l] += int(wb[l]) + int(ws[l]);
-    else
-        for (int l = 0; l < V13_L1; ++l) acc[l] -= int(wb[l]) + int(ws[l]);
 }
 
 static inline void add_feature(Accumulator& a, int p, int ksq, int sq, Piece piece) {
@@ -598,15 +650,6 @@ static void refresh_perspective(const Position& pos, Accumulator& a, int p) {
         if (pc == NO_PIECE) continue;
         add_feature(a, p, ksq, Square(sq), pc);   // single tested path (v13 two-row aware)
     }
-    if (g_v13) {
-        V13Acc& va = v13_acc_stack()[pos.state_ply()];
-        for (int l = 0; l < V13_L1; ++l) va.v[p][l] = ft_b_i32[l];
-        for (int sq = 0; sq < NUM_SQ; ++sq) {
-            Piece pc = pos.piece_on(Square(sq));
-            if (pc == NO_PIECE) continue;
-            v13_acc32(va, p, halfka_idx(white_pov, ksq, sq, pc), +1);
-        }
-    }
 }
 
 void refresh(Position& pos) {
@@ -669,8 +712,6 @@ void update(Position& pos, Move m, Piece moved, PieceType captured) {
     }
 
     acc_stack[ply] = acc_stack[ply - 1];   // copy parent → child (overlaps with prefetch)
-    V13Acc* v13_stack = g_v13 ? v13_acc_stack() : nullptr;
-    if (v13_stack) v13_stack[ply] = v13_stack[ply - 1];
 
     for (int p = 0; p < 2; ++p) {
         bool white_pov = (p == 0);
@@ -701,29 +742,6 @@ void update(Position& pos, Move m, Piece moved, PieceType captured) {
             }
             remove_feature(a, p, ksq, rfrom, make_piece(us, ROOK));
             add_feature(a, p, ksq, rto,   make_piece(us, ROOK));
-        }
-        if (v13_stack) {   // exact int32 mirror of the deltas above
-            V13Acc& va = v13_stack[ply];
-            v13_acc32(va, p, halfka_idx(white_pov, ksq, from, make_piece(us, from_pt)), -1);
-            v13_acc32(va, p, halfka_idx(white_pov, ksq, to,   make_piece(us, to_pt)),   +1);
-            if (captured != PT_NONE && !ep)
-                v13_acc32(va, p, halfka_idx(white_pov, ksq, to, make_piece(them, captured)), -1);
-            if (ep) {
-                Square cap_sq = Square(to - (us == WHITE ? 8 : -8));
-                v13_acc32(va, p, halfka_idx(white_pov, ksq, cap_sq, make_piece(them, PAWN)), -1);
-            }
-            if (castling) {
-                Square rfrom, rto;
-                if (to == (us == WHITE ? Square(G1) : Square(G8))) {
-                    rfrom = us == WHITE ? Square(H1) : Square(H8);
-                    rto   = us == WHITE ? Square(F1) : Square(F8);
-                } else {
-                    rfrom = us == WHITE ? Square(A1) : Square(A8);
-                    rto   = us == WHITE ? Square(D1) : Square(D8);
-                }
-                v13_acc32(va, p, halfka_idx(white_pov, ksq, rfrom, make_piece(us, ROOK)), -1);
-                v13_acc32(va, p, halfka_idx(white_pov, ksq, rto,   make_piece(us, ROOK)), +1);
-            }
         }
         if (pr) { st_incremental.cyc += rdtsc() - inc_t0; st_incremental.n++; }
     }
@@ -788,11 +806,8 @@ Value evaluate(const Position& pos) {
     const int16_t* acc_nstm = stm_white ? a.v[1] : a.v[0];
 
     if (g_v13) {
-        // Incremental exact int32 lanes (update() maintains them; refresh for new
-        // positions). int16 lanes on the shared stack are ignored — see V13Acc.
-        const V13Acc& va = v13_acc_stack()[pos.state_ply()];
-        const int32_t* vstm  = stm_white ? va.v[0] : va.v[1];
-        const int32_t* vnstm = stm_white ? va.v[1] : va.v[0];
+        const int16_t* vstm  = acc_stm;
+        const int16_t* vnstm = acc_nstm;
         // 33 side features from bitboards; plane order wp,bp,wn,bn,wb,bb,wr,br,
         // wq,bq,wk,bk; mirrors v13_side_features() in the trainer.
         float side[33];
@@ -818,6 +833,29 @@ Value evaluate(const Position& pos) {
             *sf++ = file_of(wk) / 7.0f; *sf++ = rank_of(wk) / 7.0f;
             *sf++ = file_of(bk) / 7.0f; *sf++ = rank_of(bk) / 7.0f;
             *sf++ = men / 32.0f;
+        }
+        if (g_v13q) {
+            uint8_t h[V13_IN];
+            for (int l = 0; l < V13_L1; ++l) {
+                h[l] = crelu_q8(vstm[l]);
+                h[V13_L1 + l] = crelu_q8(vnstm[l]);
+            }
+            for (int j = 0; j < 32; ++j) {
+                float d = v13_sp_b[j];
+                for (int i = 0; i < 33; ++i) d += v13_sp_w[j * 33 + i] * side[i];
+                d = d < 0 ? 0 : (d > 1 ? 1 : d);
+                h[2 * V13_L1 + j] = uint8_t(std::min(int(d * 128.0f + 0.5f), 127));
+            }
+            uint8_t h2[16];
+            for (int o = 0; o < 16; ++o)
+                h2[o] = crelu_q8(dot_i8(&v13_l2_q[(size_t)o * V13_IN], h, V13_IN) + v13_l2_bq[o]);
+            uint8_t h3[64];
+            for (int o = 0; o < 64; ++o)
+                h3[o] = crelu_q8(dot_i8(&v13_l3_q[(size_t)o * 16], h2, 16) + v13_l3_bq[o]);
+            int od = dot_i8(v13_out_q.data(), h3, 64) + v13_out_bq;
+            Value v = static_cast<Value>(std::llround(od * (v13_out_k * 300.0f / 8192.0f)));
+            if (pr) { st_eval.cyc += rdtsc() - t0; st_eval.n++; }
+            return v;
         }
         float h[V13_IN];
         for (int l = 0; l < V13_L1; ++l) {
