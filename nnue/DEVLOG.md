@@ -203,4 +203,22 @@ residual topology retried with a properly-trained lin head (the x500-1000 LR
 recipe). The spec forms in [V14.md](V14.md) once a campaign produces a
 confirmed winner.
 
+## 11. V13 quantized inference — LX3Q (Oct 2026)
+
+p2 (first NNUE_ACC_REG run, L2|max| 0.92) unlocked the spec's primary
+inference path: the int32 V13Acc fallback was removed and v13 now runs on the
+shared saturating-int16 accumulator stack (spec §3). The "normal procedure"
+(quantize before gating) became `quantize_v13q.py`: float LXV3 → LX3Q with FT
+int16@8192 and an int8 tail at the fixed scale 64 = 8192/128 — chosen so the
+`>>6` activation requant keeps the whole dense chain in the ×8192 domain
+(min(v>>6,127)); the out layer carries its own scale (127/max|w| — its max
+weight 3.78 doesn't fit 64), folded into `v13_out_k` per spec §6. Two lessons
+baked into the exporter: the activation scale after `>>6` is ×128, not ×127
+(an 8192/127 weight scale cost a systematic +53 cp bias error), and the floor
++ 127-cap requant leaves a measured per-output bias that the exporter
+calibrates on synthetic inputs (an analytic Σw/256 correction proved
+insufficient). Numpy parity over 3k synthetic accumulator states: mean
+−1.2 cp, σ 11.9 cp, max 80 cp (worst-case inputs; the real-position engine
+suite gates any match). Net size halves: 14.2 MB → 7.1 MB.
+
 ---
