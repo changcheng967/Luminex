@@ -1,5 +1,8 @@
 // lc0pack.cpp — Leela v6 training chunks (.tar of .gz) -> Luminex GAMEPACK frame.
-// Byte-compatible with luminex-encode output (featurize --stream consumes unchanged).
+// Byte-compatible with luminex-encode output (featurize --stream consumes unchanged);
+// format v2 prepends the GP2 magic and adds a 10th entry byte: the game result
+// (white-relative int8 from result_q, taken from the final record) for WDL-mix
+// training. v1 files (no magic, 9-byte entries) still featurize — result reads 0.
 //
 // Per game (one .gz chunk = one game, records in ply order):
 //   - start FEN reconstructed from record 0 (planes + castling/ep/50 fields)
@@ -102,6 +105,10 @@ struct Shared {
         return idx;
     }
 };
+
+// v2 header magic — larger than any possible fen count, so the featurizer can
+// tell v2 (magic + 10-byte entries) from v1 (bare nfens + 9-byte entries).
+static constexpr uint32_t GP2_MAGIC = 0x47503200;
 struct PerThread {
     int tid = 0;
     std::vector<uint8_t> game_entries;
@@ -325,11 +332,14 @@ static void process_game(const std::vector<uint8_t>& dec, Shared& sh, PerThread&
     uint32_t fidx = sh.get_fen_idx(fen);
     uint16_t np = (uint16_t)(n - 1);   // evals attach to after-move boards: drop board-0's eval
     int16_t start_eval = (int16_t)eqs[1];
+    float rq = recs[n - 1].result_q;   // white-relative game result (constant per game)
+    uint8_t result = rq > 0.5f ? 1 : (rq < -0.5f ? (uint8_t)0xFF : 0);   // int8 -1/0/+1
     pt.game_entries.push_back((uint8_t)(np & 0xFF));
     pt.game_entries.push_back((uint8_t)((np >> 8) & 0xFF));
     pt.game_entries.push_back(rec_stm_black(recs[0]) ? 0 : 1);
     pt.game_entries.insert(pt.game_entries.end(), (uint8_t*)&fidx, (uint8_t*)&fidx + 4);
     pt.game_entries.insert(pt.game_entries.end(), (uint8_t*)&start_eval, (uint8_t*)&start_eval + 2);
+    pt.game_entries.push_back(result);
     pt.mv_raw.insert(pt.mv_raw.end(), mvs.begin(), mvs.end());
     for (size_t i = 2; i < n; ++i) {
         int d = eqs[i] - eqs[i - 1];
@@ -482,6 +492,7 @@ int main(int argc, char** argv) {
 
     // assemble: [u64 hdr_n][hdr][u64 mv_n][mv][u64 ev_n][ev]
     std::vector<uint8_t> hdr;
+    hdr.insert(hdr.end(), (const uint8_t*)&GP2_MAGIC, (const uint8_t*)&GP2_MAGIC + 4);
     uint32_t nfens = (uint32_t)sh.fen_list.size();
     hdr.insert(hdr.end(), (uint8_t*)&nfens, (uint8_t*)&nfens + 4);
     for (auto& f : sh.fen_list) {

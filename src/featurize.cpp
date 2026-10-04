@@ -155,12 +155,12 @@ static void crash_handler(int sig) {
 
 // --fen-eval mode: read "fen<tab>cp_white_rel" lines from stdin (one position per
 // line, e.g. from Gigafish), featurize each HalfKAv2 independently, emit the SAME
-// 136-byte records as --stream so the trainer consumes them identically. No game
+// 140-byte records as --stream so the trainer consumes them identically. No game
 // replay (positions are independent). cp is white-relative; target flipped to stm-rel.
 static void fen_eval_mode(long max_pos) {
     Position pos;
     std::string line, tbuf;
-    tbuf.reserve(136 * 4096);
+    tbuf.reserve(140 * 4096);
     long n = 0;
     auto flush = [&]() { if (!tbuf.empty()) { std::fwrite(tbuf.data(), 1, tbuf.size(), stdout); tbuf.clear(); } };
     while (std::getline(std::cin, line)) {
@@ -199,11 +199,13 @@ static void fen_eval_mode(long max_pos) {
         bool stm_white = (pos.side_to_move() == WHITE);
         float target = stm_white ? cp : -cp;
         float stm = stm_white ? 1.0f : 0.0f;
-        char buf[136];
+        float result = 0.0f;   // fen-eval input has no game result
+        char buf[140];
         std::memcpy(buf, wfeat, 64); std::memcpy(buf + 64, bfeat, 64);
         std::memcpy(buf + 128, &stm, 4); std::memcpy(buf + 132, &target, 4);
-        tbuf.insert(tbuf.end(), buf, buf + 136);
-        if (tbuf.size() >= 136 * 4096) { flush(); if ((++n) % 1000000 == 0) std::fprintf(stderr, "  %ldM\n", n/1000000); }
+        std::memcpy(buf + 136, &result, 4);
+        tbuf.insert(tbuf.end(), buf, buf + 140);
+        if (tbuf.size() >= 140 * 4096) { flush(); if ((++n) % 1000000 == 0) std::fprintf(stderr, "  %ldM\n", n/1000000); }
         else ++n;
     }
     flush();
@@ -216,8 +218,8 @@ int main(int argc, char** argv) {
     const char* out_dir = "/tmp/feat";
     const char* in_path = nullptr;          // nullptr => stdin
     long max_pos = 0;                        // 0 = no limit
-    bool stream_mode = false;                // --stream: emit 136-byte records to stdout (no .npy)
-    bool fen_eval = false;                   // --fen-eval: read "fen<tab>cp" lines, emit 136-byte records
+    bool stream_mode = false;                // --stream: emit 140-byte records to stdout (no .npy)
+    bool fen_eval = false;                   // --fen-eval: read "fen<tab>cp" lines, emit 140-byte records
     int nthreads = (int)std::thread::hardware_concurrency();
     for (int i = 1; i < argc; ++i) {
         std::string a = argv[i];
@@ -282,11 +284,21 @@ int main(int argc, char** argv) {
     uint64_t mv_n  = rd_u64(); const uint8_t* mv  = frame + p; p += mv_n;
     uint64_t ev_n  = rd_u64(); const uint8_t* ev  = frame + p; p += ev_n;
 
-    // Decode header: u32 nfens; [u16 len + bytes]*nfens; per game [u16 n_pos][u8 stm][u32 fen_idx][s16 start_eval].
+    // Decode header. v2: [u32 GP2_MAGIC][u32 nfens][fens][10-byte entries
+    // (+int8 white-rel result)]. v1: [u32 nfens][fens][9-byte entries] — the
+    // magic is larger than any fen count, so the first u32 discriminates.
     size_t hp = 0;
     auto rd_u32 = [&]() { uint32_t v=0; for(int i=0;i<4;++i) v |= (uint32_t)hdr[hp+i]<<i*8; hp+=4; return v; };
     auto rd_u16 = [&]() { uint16_t v=0; for(int i=0;i<2;++i) v |= (uint16_t)hdr[hp+i]<<i*8; hp+=2; return v; };
     auto rd_s16 = [&]() { int16_t v=(int16_t)rd_u16(); return v; };
+    constexpr uint32_t GP2_MAGIC = 0x47503200;
+    bool has_result = false;
+    if (hdr_n >= 4) {
+        uint32_t first;
+        std::memcpy(&first, hdr, 4);
+        if (first == GP2_MAGIC) { hp = 4; has_result = true; }
+    }
+    const int ent_w = has_result ? 10 : 9;
     uint32_t nfens = rd_u32();
     std::vector<std::string> fens(nfens);
     for (uint32_t i = 0; i < nfens; ++i) {
@@ -294,15 +306,16 @@ int main(int argc, char** argv) {
         fens[i].assign((const char*)hdr + hp, fl);
         hp += fl;
     }
-    struct Game { uint32_t fen_idx; uint16_t n_pos; uint8_t stm; int16_t start_eval; long mv_off; long ev_off; long out_off; };
+    struct Game { uint32_t fen_idx; uint16_t n_pos; uint8_t stm; int16_t start_eval; int8_t result; long mv_off; long ev_off; long out_off; };
     std::vector<Game> games;
     long mv_acc = 0;
-    while (hp + 9 <= hdr_n) {
+    while (hp + ent_w <= hdr_n) {
         Game g;
         g.n_pos = (uint16_t)hdr[hp] | ((uint16_t)hdr[hp+1] << 8); hp += 2;   // u16 n_pos (no 255 cap)
         g.stm   = hdr[hp++];
         g.fen_idx = rd_u32();
         g.start_eval = rd_s16();
+        g.result = has_result ? (int8_t)hdr[hp++] : 0;
         g.mv_off = mv_acc;
 #ifdef RAW_MOVES
         mv_acc += (long)g.n_pos * 2;   // raw mode stores 2 bytes/pos (Move::raw)
@@ -415,8 +428,8 @@ int main(int argc, char** argv) {
     auto worker = [&](int tid) {
         Position pos;
         ExtMove list[MAX_MOVES];
-        std::vector<char> tbuf;   // per-thread stream buffer (136 bytes/record)
-        tbuf.reserve(136 * 2048); // no reallocation; flush every 2048 records
+        std::vector<char> tbuf;   // per-thread stream buffer (140 bytes/record)
+        tbuf.reserve(140 * 2048); // no reallocation; flush every 2048 records
         long local_n = 0;         // positions buffered since last global update (batch the atomic)
         long last_emitted_m = -1; // for the periodic progress print
 #ifdef PROFILE
@@ -559,16 +572,19 @@ int main(int argc, char** argv) {
                 float target = stm_white ? (float)eq : (float)(-eq);
                 float stm = stm_white ? 1.0f : 0.0f;
                 if (stream_mode) {
-                    // Pack a 136-byte record (w[32] b[32] stm target) and batch into the thread
-                    // buffer; flush under the stdout mutex. Order across threads doesn't matter —
-                    // the trainer shuffles a chunk anyway. Backpressure: fwrite blocks when the
-                    // stdout pipe is full, throttling featurize to the trainer's consume rate.
-                    char buf[136];
+                    // Pack a 140-byte record (w[32] b[32] stm target result) and batch into
+                    // the thread buffer; flush under the stdout mutex. Order across threads
+                    // doesn't matter — the trainer shuffles a chunk anyway. Backpressure:
+                    // fwrite blocks when the stdout pipe is full, throttling featurize to
+                    // the trainer's consume rate. result is WHITE-relative (v1 frames: 0).
+                    float result = (float)g.result;
+                    char buf[140];
                     std::memcpy(buf, wfeat, 64); std::memcpy(buf + 64, bfeat, 64);
                     std::memcpy(buf + 128, &stm, 4); std::memcpy(buf + 132, &target, 4);
-                    tbuf.insert(tbuf.end(), buf, buf + 136);
+                    std::memcpy(buf + 136, &result, 4);
+                    tbuf.insert(tbuf.end(), buf, buf + 140);
                     local_n++;
-                    if (tbuf.size() >= 136 * 2048) {
+                    if (tbuf.size() >= 140 * 2048) {
                         std::lock_guard<std::mutex> lk(out_mtx);
                         std::fwrite(tbuf.data(), 1, tbuf.size(), stdout);
                         tbuf.resize(0);          // keep capacity (no realloc)

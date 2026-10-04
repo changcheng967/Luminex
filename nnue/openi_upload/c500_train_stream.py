@@ -119,7 +119,16 @@ _CAL_STEPS = 60   # calibration steps to measure throughput
 _FEAT_CACHE = os.environ.get("NNUE_FEAT_CACHE", "0") == "1"  # OFF by default: single-pass
 # never re-reads a frame, and full-data caching would need ~2.2TB of /tmp. Opt-in
 # (still disk-guarded below) only makes sense for small-subset multi-epoch runs.
-REC  = 136; SCALE = 400.0
+REC  = 140; SCALE = 400.0   # 140 = w64|b64|stm4|target4|result4 (result: white-rel -1/0/+1, 0 on v1 frames)
+# C5 WDL mixing: t' = lam*eval + (1-lam)*RESULT_CP*result_stm, lam annealed
+# linearly from NNUE_WDL_LAMBDA to NNUE_WDL_LAMBDA_END over NNUE_WDL_ANNEAL
+# steps. Default 1.0 = off (bit-identical to the pre-C5 trainer). result==0
+# means draw on labeled (GP2) frames — but ALSO "unlabeled" on v1 frames, so
+# only enable on fully-labeled corpora.
+_LAM0 = float(os.environ.get("NNUE_WDL_LAMBDA", "1.0"))
+_LAM1 = float(os.environ.get("NNUE_WDL_LAMBDA_END", os.environ.get("NNUE_WDL_LAMBDA", "1.0")))
+_WDL_ANNEAL = int(os.environ.get("NNUE_WDL_ANNEAL", "40000"))
+_RESULT_CP = float(os.environ.get("NNUE_RESULT_CP", "1000.0"))
 device = "cuda" if torch.cuda.is_available() else "cpu"
 OUT = os.environ.get("NNUE_OUT_NAME", "luminex_v6.nnue"); OUT_BASE = OUT[:-5] if OUT.endswith(".nnue") else OUT
 total_bytes = sum(os.path.getsize(f) for f in FRAMES)
@@ -404,7 +413,9 @@ for epoch in range(EPOCHS):
             save_nnue(model, os.path.join(out_dir, OUT)); break
         # FEATURIZE CACHE: first epoch featurizes and caches to /tmp; later
         # epochs read the cache (saves ~70s/frame — 25%+ of multi-epoch budget).
-        _fc = f"/tmp/featcache_{os.path.basename(frame_path)}.raw"
+        # v2 key: the featurizer now emits 140-byte records (result channel) —
+        # stale 136-byte caches from earlier runs would silently misparse.
+        _fc = f"/tmp/featcache2_{os.path.basename(frame_path)}.raw"
         if _FEAT_CACHE and epoch == 0:
             dec = "zstd -dc" if frame_path.endswith(".zst") else "xz -dc"
             cmd = f"{dec} {frame_path} | {FEAT} --stream --input /dev/stdin --threads {NTH} | tee {_fc}"
@@ -419,7 +430,7 @@ for epoch in range(EPOCHS):
         part = 0
         _health = None   # set by the parts loop; stays None if the frame yields nothing
         while True:   # process frame in <=CAP-position VRAM loads (big frames -> multiple parts)
-            ws, bs, ss, ts = [], [], [], []
+            ws, bs, ss, ts, rsl = [], [], [], [], []
             got = 0
             while got < CAP:
                 data = bytearray()
@@ -434,6 +445,7 @@ for epoch in range(EPOCHS):
                 bs.append(torch.from_numpy(a[:, 64:128].copy().view(np.int16).reshape(m, 32)).to(device))
                 ss.append(torch.from_numpy(a[:, 128:132].copy().view(np.float32).reshape(m)).to(device))
                 ts.append(torch.from_numpy(a[:, 132:136].copy().view(np.float32).reshape(m)).to(device))
+                rsl.append(torch.from_numpy(a[:, 136:140].copy().view(np.float32).reshape(m)).to(device))
                 got += m
             if got == 0: break
             part += 1
@@ -443,6 +455,7 @@ for epoch in range(EPOCHS):
             b = torch.cat(bs); del bs
             s = torch.cat(ss); del ss
             t = torch.cat(ts); del ts
+            r = torch.cat(rsl); del rsl
             N = got
             print(f"  [frame {fi+1} part {part}: {N:,} pos -> train]", flush=True)
             perm = torch.randperm(N, device=device)
@@ -450,7 +463,7 @@ for epoch in range(EPOCHS):
             _FEN_SKIP = float(os.environ.get("NNUE_FEN_SKIP", "0"))  # 0=disabled; hard-drop was losing decisive positions
             for i in range(0, N, BS):
                 idx = perm[i:i + BS]
-                wi = w[idx].long(); bi = b[idx].long(); si = s[idx]; ti = t[idx]
+                wi = w[idx].long(); bi = b[idx].long(); si = s[idx]; ti = t[idx]; ri = r[idx]
                 # Safety: sanitize non-finite targets FIRST (NaN survives clamp and one
                 # backward pass would poison every weight in the net), then clamp
                 # extremes (mate scores, parse glitches) instead of dropping them
@@ -463,17 +476,22 @@ for epoch in range(EPOCHS):
                     # the C featurizer would otherwise train SILENTLY on garbage
                     print(f"  [DATA] w {wi.min().item()}..{wi.max().item()} | b {bi.min().item()}..{bi.max().item()} | "
                           f"stm {si.unique().tolist()[:4]} | tgt {ti.min().item():.0f}..{ti.max().item():.0f} "
-                          f"std={ti.std().item():.0f}", flush=True)
+                          f"std={ti.std().item():.0f} | result {ri.unique().tolist()[:4]}", flush=True)
                     assert 0 <= int(wi.min().item()) and int(wi.max().item()) <= NUM_INPUTS, "bad white feature idx"
                     assert 0 <= int(bi.min().item()) and int(bi.max().item()) <= NUM_INPUTS, "bad black feature idx"
                     assert bool(((si == 0.0) | (si == 1.0)).all()), "bad stm values (not 0/1)"
+                    assert bool(((ri == -1.0) | (ri == 0.0) | (ri == 1.0)).all()), "bad result values (not -1/0/+1)"
                 # Smart FEN skip: drop positions where |target| is extreme (>800cp)
                 # — these are usually won/lost positions where eval adds noise
                 if _FEN_SKIP > 0:
                     _keep = ti.abs() < 800.0
                     if _keep.sum() < BS // 4: continue  # skip batch if too few survive
-                    wi = wi[_keep]; bi = bi[_keep]; si = si[_keep]; ti = ti[_keep]
+                    wi = wi[_keep]; bi = bi[_keep]; si = si[_keep]; ti = ti[_keep]; ri = ri[_keep]
                     if len(ti) < BS // 8: continue
+                if _LAM0 < 1.0 or _LAM1 < 1.0:
+                    _lam = _LAM0 + (_LAM1 - _LAM0) * min(1.0, gstep / _WDL_ANNEAL)
+                    if _lam < 1.0:
+                        ti = _lam * ti + (1.0 - _lam) * _RESULT_CP * torch.where(si == 1.0, ri, -ri)
                 opt.zero_grad()
                 if os.environ.get("NNUE_AUTOCAST", "1") != "0":
                     ctx_ac = torch.autocast(device_type=device, dtype=torch.bfloat16)
