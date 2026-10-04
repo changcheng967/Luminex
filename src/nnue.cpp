@@ -244,8 +244,15 @@ static inline Accumulator* nnue_acc_stack() {
     return store.data();
 }
 
-// V13 shares the saturating-int16 Accumulator above (spec §3); the NNUE_ACC_REG
-// weights keep resting lanes inside the clip window, which sits 4x below saturation.
+// V13 exact accumulator: int32 lanes. Measured resting range on p2 is +-5.0
+// at startpos (beyond int16's +-4.0 = 32767/8192) — the soft NNUE_ACC_REG did
+// not pull the extremes into int16 range, so saturating int16 adds corrupt
+// lanes that leave and re-enter the clip window (spec §3 fallback stands).
+struct alignas(64) V13Acc { int32_t v[2][V13_L1]; };
+static inline V13Acc* v13_acc_stack() {
+    thread_local std::vector<V13Acc> store(NNUE_MAX_PLY);
+    return store.data();
+}
 
 bool loaded() { return g_loaded; }
 bool enabled() { return g_loaded && g_enabled; }
@@ -531,6 +538,18 @@ static inline void v13_acc_rows(int16_t* acc, int bucket_row, int shared_row, in
 #endif
 }
 
+// V13 exact int32 lane ops on the V13Acc stack (no saturation at any trained scale).
+static inline void v13_acc32(V13Acc& a, int p, int idx, int sign) {
+    int br, sr; v13_rows(idx, br, sr);
+    const int16_t* wb = &ft_w[(size_t)br * V13_L1];
+    const int16_t* ws = &ft_w[(size_t)sr * V13_L1];
+    int32_t* acc = a.v[p];
+    if (sign > 0)
+        for (int l = 0; l < V13_L1; ++l) acc[l] += int(wb[l]) + int(ws[l]);
+    else
+        for (int l = 0; l < V13_L1; ++l) acc[l] -= int(wb[l]) + int(ws[l]);
+}
+
 static inline void add_feature(Accumulator& a, int p, int ksq, int sq, Piece piece) {
     int idx = halfka_idx(p == 0, ksq, sq, piece);
     int16_t* acc = a.v[p];
@@ -650,6 +669,15 @@ static void refresh_perspective(const Position& pos, Accumulator& a, int p) {
         if (pc == NO_PIECE) continue;
         add_feature(a, p, ksq, Square(sq), pc);   // single tested path (v13 two-row aware)
     }
+    if (g_v13) {
+        V13Acc& va = v13_acc_stack()[pos.state_ply()];
+        for (int l = 0; l < V13_L1; ++l) va.v[p][l] = ft_b_i32[l];
+        for (int sq = 0; sq < NUM_SQ; ++sq) {
+            Piece pc = pos.piece_on(Square(sq));
+            if (pc == NO_PIECE) continue;
+            v13_acc32(va, p, halfka_idx(white_pov, ksq, sq, pc), +1);
+        }
+    }
 }
 
 void refresh(Position& pos) {
@@ -712,6 +740,8 @@ void update(Position& pos, Move m, Piece moved, PieceType captured) {
     }
 
     acc_stack[ply] = acc_stack[ply - 1];   // copy parent → child (overlaps with prefetch)
+    V13Acc* v13_stack = g_v13 ? v13_acc_stack() : nullptr;
+    if (v13_stack) v13_stack[ply] = v13_stack[ply - 1];
 
     for (int p = 0; p < 2; ++p) {
         bool white_pov = (p == 0);
@@ -742,6 +772,29 @@ void update(Position& pos, Move m, Piece moved, PieceType captured) {
             }
             remove_feature(a, p, ksq, rfrom, make_piece(us, ROOK));
             add_feature(a, p, ksq, rto,   make_piece(us, ROOK));
+        }
+        if (v13_stack) {   // exact int32 mirror of the deltas above
+            V13Acc& va = v13_stack[ply];
+            v13_acc32(va, p, halfka_idx(white_pov, ksq, from, make_piece(us, from_pt)), -1);
+            v13_acc32(va, p, halfka_idx(white_pov, ksq, to,   make_piece(us, to_pt)),   +1);
+            if (captured != PT_NONE && !ep)
+                v13_acc32(va, p, halfka_idx(white_pov, ksq, to, make_piece(them, captured)), -1);
+            if (ep) {
+                Square cap_sq = Square(to - (us == WHITE ? 8 : -8));
+                v13_acc32(va, p, halfka_idx(white_pov, ksq, cap_sq, make_piece(them, PAWN)), -1);
+            }
+            if (castling) {
+                Square rfrom, rto;
+                if (to == (us == WHITE ? Square(G1) : Square(G8))) {
+                    rfrom = us == WHITE ? Square(H1) : Square(H8);
+                    rto   = us == WHITE ? Square(F1) : Square(F8);
+                } else {
+                    rfrom = us == WHITE ? Square(A1) : Square(A8);
+                    rto   = us == WHITE ? Square(D1) : Square(D8);
+                }
+                v13_acc32(va, p, halfka_idx(white_pov, ksq, rfrom, make_piece(us, ROOK)), -1);
+                v13_acc32(va, p, halfka_idx(white_pov, ksq, rto,   make_piece(us, ROOK)), +1);
+            }
         }
         if (pr) { st_incremental.cyc += rdtsc() - inc_t0; st_incremental.n++; }
     }
@@ -806,8 +859,10 @@ Value evaluate(const Position& pos) {
     const int16_t* acc_nstm = stm_white ? a.v[1] : a.v[0];
 
     if (g_v13) {
-        const int16_t* vstm  = acc_stm;
-        const int16_t* vnstm = acc_nstm;
+        // Exact int32 lanes (update() maintains them; refresh for new positions).
+        const V13Acc& va = v13_acc_stack()[pos.state_ply()];
+        const int32_t* vstm  = stm_white ? va.v[0] : va.v[1];
+        const int32_t* vnstm = stm_white ? va.v[1] : va.v[0];
         // 33 side features from bitboards; plane order wp,bp,wn,bn,wb,bb,wr,br,
         // wq,bq,wk,bk; mirrors v13_side_features() in the trainer.
         float side[33];

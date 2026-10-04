@@ -205,20 +205,29 @@ confirmed winner.
 
 ## 11. V13 quantized inference — LX3Q (Oct 2026)
 
-p2 (first NNUE_ACC_REG run, L2|max| 0.92) unlocked the spec's primary
-inference path: the int32 V13Acc fallback was removed and v13 now runs on the
-shared saturating-int16 accumulator stack (spec §3). The "normal procedure"
-(quantize before gating) became `quantize_v13q.py`: float LXV3 → LX3Q with FT
-int16@8192 and an int8 tail at the fixed scale 64 = 8192/128 — chosen so the
-`>>6` activation requant keeps the whole dense chain in the ×8192 domain
-(min(v>>6,127)); the out layer carries its own scale (127/max|w| — its max
-weight 3.78 doesn't fit 64), folded into `v13_out_k` per spec §6. Two lessons
-baked into the exporter: the activation scale after `>>6` is ×128, not ×127
-(an 8192/127 weight scale cost a systematic +53 cp bias error), and the floor
-+ 127-cap requant leaves a measured per-output bias that the exporter
-calibrates on synthetic inputs (an analytic Σw/256 correction proved
-insufficient). Numpy parity over 3k synthetic accumulator states: mean
-−1.2 cp, σ 11.9 cp, max 80 cp (worst-case inputs; the real-position engine
-suite gates any match). Net size halves: 14.2 MB → 7.1 MB.
+The "normal procedure" (quantize before gating) became `quantize_v13q.py`:
+float LXV3 → LX3Q with FT int16@8192 and an int8 tail at the fixed scale
+64 = 8192/128 — chosen so the `>>6` activation requant keeps the whole dense
+chain in the ×8192 domain (min(v>>6,127)); the out layer carries its own
+scale (127/max|w| — its max weight 3.78 doesn't fit 64), folded into
+`v13_out_k` per spec §6. Two lessons baked into the exporter: the activation
+scale after `>>6` is ×128, not ×127 (an 8192/127 weight scale cost a
+systematic +53 cp bias error), and the floor + 127-cap requant leaves a
+measured per-output bias that the exporter calibrates on synthetic inputs
+(an analytic Σw/256 correction proved insufficient). Numpy parity over 3k
+synthetic accumulator states: mean −1.2 cp, σ 11.9 cp. Net size halves:
+14.2 MB → 7.1 MB; engine nps 45K → 330K (above gen768's 288K on the same
+machine).
+
+The int16-accumulator switch was tried and **reverted the same day**: a numpy
+ground truth (startpos lanes rebuilt by hand from the index math) showed p2's
+resting lanes reach ±5.0 at startpos — beyond int16's ±4.0 — so the soft
+NNUE_ACC_REG did not hold the extremes ("L2|max| 0.92" is not a lane max).
+Saturating int16 adds corrupted static evals by ~−90 cp while deep-search
+evals looked healthy (out-of-window resting lanes clip to the same activation
+either way, masking the corruption); spec §3's int32 fallback stands until a
+net is trained with a hard range constraint. The verification lesson: static
+evals against a numpy ground truth, not search evals — search agreement is
+not evidence of accumulator correctness.
 
 ---
