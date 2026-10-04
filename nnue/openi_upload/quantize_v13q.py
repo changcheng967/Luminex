@@ -13,12 +13,70 @@ Every requant path is asserted.
 import sys, struct
 import numpy as np
 
+PT = {'P': 0, 'N': 1, 'B': 2, 'R': 3, 'Q': 4, 'K': 5}
+KING_BUCKETS = [
+    -1, -1, -1, -1, 31, 30, 29, 28, -1, -1, -1, -1, 27, 26, 25, 24,
+    -1, -1, -1, -1, 23, 22, 21, 20, -1, -1, -1, -1, 19, 18, 17, 16,
+    -1, -1, -1, -1, 15, 14, 13, 12, -1, -1, -1, -1, 11, 10, 9, 8,
+    -1, -1, -1, -1, 7, 6, 5, 4, -1, -1, -1, -1, 3, 2, 1, 0,
+]
+
+
+def _orient(white_pov, sq, ksq):
+    return ((7 if (ksq & 7) < 4 else 0) ^ (0 if white_pov else 56) ^ sq)
+
+
+def parse_fen(fen):
+    """Board-only parse -> (pieces [(sq, pt, is_white)], white_king, black_king)."""
+    board = fen.split()[0]
+    pieces, sq = [], 56
+    for ch in board:
+        if ch == '/':
+            sq -= 16
+        elif ch.isdigit():
+            sq += int(ch)
+        else:
+            pieces.append((sq, PT[ch.upper()], ch.isupper()))
+            sq += 1
+    wk = next(s for s, pt, w in pieces if pt == 5 and w)
+    bk = next(s for s, pt, w in pieces if pt == 5 and not w)
+    return pieces, wk, bk
+
+
+def v13_state(pieces, wk, bk, pov, ftqi, ftbi, fac, spw, spb, L1):
+    """(float h, quant qi) input vectors for one perspective — mirrors the engine."""
+    white_pov = (pov == 0)
+    ksq = wk if white_pov else bk
+    acc = ftbi.copy()
+    for sq, pt, isw in pieces:
+        pidx = pt * 2 + (1 if isw != white_pov else 0)
+        idx = _orient(white_pov, sq, ksq) + pidx * 64 + KING_BUCKETS[_orient(white_pov, ksq, ksq)] * 768
+        plane = idx % 768
+        b = min(idx // 768, fac - 1)
+        acc = acc + ftqi[b * 768 + plane] + ftqi[fac * 768 + plane]
+    counts = np.zeros(12)
+    for _, pt, w in pieces:
+        counts[pt * 2 + (0 if w else 1)] += 1
+    side = list(counts / 8.0)
+    for white in (True, False):
+        files = [0] * 8
+        for sq, pt, w in pieces:
+            if pt == 0 and w == white:
+                files[sq & 7] += 1
+        side += files
+    side += [ (wk & 7) / 7, (wk >> 3) / 7, (bk & 7) / 7, (bk >> 3) / 7, len(pieces) / 32 ]
+    return acc, np.array(side)
+
 
 def raw(f, n):
     return np.frombuffer(f.read(n * 4), dtype=np.float32).copy()
 
 
-def main(src, dst):
+def main(src, dst, fen_file=None):
+    fens = []
+    if fen_file:
+        with open(fen_file) as fh:
+            fens = [ln.strip() for ln in fh if ln.strip()]
     with open(src, 'rb') as f:
         assert f.read(4) == b'LXV3', f"{src} is not a float LXV3 net"
         ver, L1, L2, L3, fac = struct.unpack('5i', f.read(20))
@@ -51,26 +109,42 @@ def main(src, dst):
     l3bq = np.round(l3b * FT).astype(np.int64)
     obq = np.int64(round(float(ob[0]) * s_out * 128.0))
 
-    # The >>6 requant floors activations and caps them at 127, and the side
-    # slots round — each leaves a small systematic per-output bias. Measure it
-    # end-to-end over synthetic inputs (each layer fed the already-calibrated
-    # quantized previous layer) and fold the gap into the bias.
+    # The >>6 requant floors activations and caps them at 127; which lanes sit
+    # where is structurally correlated with the tail weights (real positions
+    # saturate specific lanes), so the bias must be measured on real-position
+    # accumulator ensembles — random synthetic lanes mislead by tens of cp.
+    # Each layer is calibrated fed the already-calibrated quantized layer.
     def crelu_q8(v):
         return np.minimum(np.clip(v, 0, 8192).astype(np.int64) >> 6, 127)
 
-    rng = np.random.default_rng(20261003)
-    acc_f, acc_q = [], []
-    for t in range(256):
-        if t % 2:
-            lanes = rng.uniform(0, 1, (2, L1))
-        else:
-            lanes = np.clip(rng.normal(0.35, 0.5, (2, L1)), -1.6, 1.6)
-        side = rng.uniform(0, 1, 33)
-        sp_out = np.clip(spw @ side + spb, 0, 1)
-        h = np.concatenate([np.clip(lanes[0], 0, 1), np.clip(lanes[1], 0, 1), sp_out])
-        qi = np.concatenate([crelu_q8(np.round(lanes[0] * FT)), crelu_q8(np.round(lanes[1] * FT)),
-                             np.minimum(np.round(sp_out * 128), 127)])
-        acc_f.append(h); acc_q.append(qi)
+    ftqi = np.round(ft[:rows] * FT)
+    ftbi = np.round(ftb * FT)
+    if fens:
+        acc_f, acc_q = [], []
+        for fen in fens:
+            pieces, wk, bk = parse_fen(fen)
+            stm_white = fen.split()[1] != 'b'
+            accs, sides = [], []
+            for pov in (0, 1):
+                acc, side = v13_state(pieces, wk, bk, pov, ftqi, ftbi, fac, spw, spb, L1)
+                accs.append(acc); sides.append(side)
+            a_stm = accs[0] if stm_white else accs[1]
+            a_nstm = accs[1] if stm_white else accs[0]
+            sp_out = np.clip(spw @ sides[0] + spb, 0, 1)   # side is pov-invariant
+            acc_f.append(np.concatenate([np.clip(a_stm / FT, 0, 1), np.clip(a_nstm / FT, 0, 1), sp_out]))
+            acc_q.append(np.concatenate([crelu_q8(a_stm), crelu_q8(a_nstm),
+                                         np.minimum(np.round(sp_out * 128), 127)]))
+    else:
+        rng = np.random.default_rng(20261003)
+        acc_f, acc_q = [], []
+        for t in range(256):
+            lanes = (rng.uniform(0, 1, (2, L1)) if t % 2 else
+                     np.clip(rng.normal(0.35, 0.5, (2, L1)), -1.6, 1.6))
+            side = rng.uniform(0, 1, 33)
+            sp_out = np.clip(spw @ side + spb, 0, 1)
+            acc_f.append(np.concatenate([np.clip(lanes[0], 0, 1), np.clip(lanes[1], 0, 1), sp_out]))
+            acc_q.append(np.concatenate([crelu_q8(np.round(lanes[0] * FT)), crelu_q8(np.round(lanes[1] * FT)),
+                                         np.minimum(np.round(sp_out * 128), 127)]))
     pre2_gap = np.mean([ (l2q @ qi + bq)/FT - l2w @ h - l2b
                          for h, qi, bq in zip(acc_f, acc_q, [l2bq]*len(acc_f)) ], axis=0)
     l2bq = np.round(l2bq - pre2_gap * FT)
@@ -97,12 +171,13 @@ def main(src, dst):
             f.write(b'LINH'); f.write(linh.astype('<f4').tobytes())
 
     print(f"wrote {dst}: FT int16@8192 (max {np.abs(ftq).max()}), "
-          f"l2/l3 int8@{TAIL:.3f} (max {int(max(np.abs(l2q).max(), np.abs(l3q).max()))}), "
-          f"out int8@s_out={s_out:.2f}")
+          f"l2/l3 int8@{TAIL:.0f} (max {int(max(np.abs(l2q).max(), np.abs(l3q).max()))}), "
+          f"out int8@s_out={s_out:.2f}, calibrated on {len(acc_f)} "
+          f"{'FEN' if fens else 'synthetic'} states")
 
 
 if __name__ == '__main__':
-    if len(sys.argv) != 3:
-        print("usage: python quantize_v13q.py <float_lxv3.nnue> <out_lx3q.nnue>")
+    if len(sys.argv) not in (3, 4):
+        print("usage: python quantize_v13q.py <float_lxv3.nnue> <out_lx3q.nnue> [calib.fens]")
         sys.exit(1)
-    main(sys.argv[1], sys.argv[2])
+    main(sys.argv[1], sys.argv[2], sys.argv[3] if len(sys.argv) == 4 else None)
