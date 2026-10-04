@@ -244,4 +244,11 @@ from ~800-visit lc0 search not surviving deep tactical resolution. Does not
 ship; next levers are the V14 data campaigns (C5 WDL mixing ranked #1 among
 unused lc0 signals) or search-side adaptation to V13's eval scale.
 
+**p1 vs p2 h2h (fixed nodes, both LX3Q-quantized, 100 games):** 35–45–20
+= 45.0% for p1 — p2 wins at 55% (+35 Elo, inside the ±55 noise band at 100
+games). Combined with the identical 38.0%/38.0% external scores vs gen768,
+the verdict is that the second pass bought at most a marginal internal edge
+and no measurable external strength: the lineage is plateaued at this
+recipe.
+
 ---
