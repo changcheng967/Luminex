@@ -230,4 +230,18 @@ net is trained with a hard range constraint. The verification lesson: static
 evals against a numpy ground truth, not search evals — search agreement is
 not evidence of accumulator correctness.
 
+**p2 gate verdict (Oct 2026, Lightning studio):** blitz ladder 10+0.1,
+50 games per rung — gen768 8–34–8 (24.0%, −185), Stash 22 19–22–9 (47.0%),
+Stash 23 10–33–7 (27.0%), Stash 24 11–34–5 (27.0%), Stash 21 16–31–3
+(35.0%): roughly Stash-21/22 level. Fixed-node vs gen768 (NodesPerMove
+100000, 100 games): **31–55–14 = 38.0%** — identical to run1's 38.0%, so the
+second pass (fresh Sep–Oct data + anchor + acc_reg) gained zero eval
+strength; the plateau stands. The TC-vs-nodes gap (24% at equal time vs 38%
+at equal nodes, despite p2_q being faster: 330K vs 288K nps) says deeper
+search under V13's eval *hurts* relative to gen768 — eval noise (σ≈12 cp
+quant + young net) interacting with gen768-tuned pruning margins, or labels
+from ~800-visit lc0 search not surviving deep tactical resolution. Does not
+ship; next levers are the V14 data campaigns (C5 WDL mixing ranked #1 among
+unused lc0 signals) or search-side adaptation to V13's eval scale.
+
 ---
