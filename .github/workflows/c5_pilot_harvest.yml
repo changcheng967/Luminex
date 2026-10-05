@@ -11,7 +11,7 @@ jobs:
       - name: Build lc0pack
         run: |
           sudo apt-get update -qq && sudo apt-get install -y -qq cmake g++ libz-dev xz-utils
-          cmake -S . -B build -DBUILD_FEATURIZER=OFF > /dev/null
+          cmake -S . -B build -DBUILD_LC0PACK=ON > /dev/null
           cmake --build build -j4 --target luminex-lc0pack
       - name: Harvest 15 test91 tars -> labeled frames
         run: |
