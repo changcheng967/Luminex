@@ -1,0 +1,43 @@
+name: C5 pilot harvest
+on:
+  workflow_dispatch:
+
+jobs:
+  harvest:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build lc0pack
+        run: |
+          sudo apt-get update -qq && sudo apt-get install -y -qq cmake g++ libz-dev xz-utils
+          cmake -S . -B build -DBUILD_FEATURIZER=OFF > /dev/null
+          cmake --build build -j4 --target luminex-lc0pack
+      - name: Harvest 15 test91 tars -> labeled frames
+        run: |
+          set -u
+          BASE=https://storage.lczero.org/files/training_data/test91
+          mkdir -p frames work
+          for NAME in 20261004-0817 20261004-0917 20261004-1017 20261004-1117 \
+                      20261004-1217 20261004-1317 20261004-1417 20261004-1517 \
+                      20261004-1617 20261004-1717 20261004-1817 20261004-1917 \
+                      20261004-2017 20261004-2117 20261004-2217; do
+            T=training-run2-test91-$NAME.tar
+            for A in 1 2 3; do
+              curl -4 -sL --fail --retry 2 --max-time 600 -o work/t.tar "$BASE/$T" && break
+              sleep 20
+            done
+            SZ=$(stat -c%s work/t.tar 2>/dev/null || echo 0)
+            [ "$SZ" -gt 20000000 ] || { echo "BAD $T ($SZ)"; rm -f work/t.tar; continue; }
+            ./build/luminex-lc0pack --out work/f.frame work/t.tar 2>&1 | tail -1
+            xz -T0 -1 work/f.frame && mv work/f.frame.xz "frames/frame_$T.xz"
+            rm -f work/t.tar work/f.frame
+          done
+          ls -la frames/ | tail -17
+          du -sh frames/
+      - name: Upload frames artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: c5-pilot-frames
+          path: frames/
+          retention-days: 3
