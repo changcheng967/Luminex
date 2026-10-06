@@ -113,8 +113,10 @@ static inline int32_t dot_i8_vnni_small(const int8_t* w, const uint8_t* a, int n
     __m512i acc = _mm512_dpbusd_epi32(_mm512_setzero_si512(), av, wv);
     return _mm512_reduce_add_epi32(acc);
 }
-#else
+#endif
+
 // Portable fallback (macOS ARM64, MSVC without AVX2): the V13 quantized tail.
+#if !defined(__AVX2__)
 static inline int32_t dot_i8(const int8_t* w, const uint8_t* a, int n) {
     int32_t sum = 0;
     for (int i = 0; i < n; ++i) sum += (int32_t)w[i] * (int32_t)a[i];
