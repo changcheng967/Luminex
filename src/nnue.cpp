@@ -113,6 +113,13 @@ static inline int32_t dot_i8_vnni_small(const int8_t* w, const uint8_t* a, int n
     __m512i acc = _mm512_dpbusd_epi32(_mm512_setzero_si512(), av, wv);
     return _mm512_reduce_add_epi32(acc);
 }
+#else
+// Portable fallback (macOS ARM64, MSVC without AVX2): the V13 quantized tail.
+static inline int32_t dot_i8(const int8_t* w, const uint8_t* a, int n) {
+    int32_t sum = 0;
+    for (int i = 0; i < n; ++i) sum += (int32_t)w[i] * (int32_t)a[i];
+    return sum;
+}
 #endif
 
 // ---- profiling counters (data-driven: find the NPS bottleneck from numbers) ----
@@ -885,8 +892,8 @@ Value evaluate(const Position& pos) {
                 for (int fx = 0; fx < 8; ++fx) *sf++ = files[fx];
             }
             Square wk = pos.king_sq(WHITE), bk = pos.king_sq(BLACK);
-            *sf++ = file_of(wk) / 7.0f; *sf++ = rank_of(wk) / 7.0f;
-            *sf++ = file_of(bk) / 7.0f; *sf++ = rank_of(bk) / 7.0f;
+            *sf++ = int(file_of(wk)) / 7.0f; *sf++ = int(rank_of(wk)) / 7.0f;
+            *sf++ = int(file_of(bk)) / 7.0f; *sf++ = int(rank_of(bk)) / 7.0f;
             *sf++ = men / 32.0f;
         }
         if (g_v13q) {
