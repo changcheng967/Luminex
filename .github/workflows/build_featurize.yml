@@ -1,0 +1,22 @@
+name: Build Linux featurize
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build luminex-featurize
+        run: |
+          sudo apt-get update -qq && sudo apt-get install -y -qq cmake g++ libz-dev
+          cmake -S . -B build -DBUILD_FEATURIZER=ON > /dev/null
+          cmake --build build -j4 --target luminex-featurize
+          ./build/luminex-featurize --help 2>&1 | head -3 || true
+      - name: Upload binary
+        uses: actions/upload-artifact@v4
+        with:
+          name: luminex-featurize-linux
+          path: build/luminex-featurize
+          retention-days: 30
