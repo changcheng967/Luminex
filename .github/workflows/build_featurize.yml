@@ -4,16 +4,18 @@ on:
 
 jobs:
   build:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-22.04
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
       - name: Build luminex-featurize
         run: |
           sudo apt-get update -qq && sudo apt-get install -y -qq cmake g++ libz-dev
-          cmake -S . -B build -DBUILD_FEATURIZER=ON > /dev/null
+          cmake -S . -B build -DBUILD_FEATURIZER=ON \
+                -DCMAKE_EXE_LINKER_FLAGS="-static" > /dev/null
           cmake --build build -j4 --target luminex-featurize
-          ./build/luminex-featurize --help 2>&1 | head -3 || true
+          file build/luminex-featurize
+          objdump -T build/luminex-featurize 2>/dev/null | grep -oE "GLIBCXX_[0-9.]+|GLIBC_[0-9.]+" | sort -uV | tail -4 || echo "fully static: no glibc symbol deps"
       - name: Upload binary
         uses: actions/upload-artifact@v4
         with:
