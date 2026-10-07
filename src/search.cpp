@@ -1715,7 +1715,6 @@ static void helper_thread_func(Position pos_copy, int thread_id) {
     // Flush final node count
     nodes.fetch_add(local_nodes - last_reported_nodes, std::memory_order_relaxed);
     last_reported_nodes = local_nodes;
-    std::fprintf(stderr, "[helper %d exit] local_nodes=%llu\n", thread_id, (unsigned long long)local_nodes);
 
     delete w;
     worker = nullptr;
@@ -2113,8 +2112,8 @@ Move search(Position& pos, Limits& lim) {
         auto search_end = std::chrono::steady_clock::now();
         int time_ms = static_cast<int>(std::chrono::duration_cast<std::chrono::milliseconds>(search_end - search_start).count());
 
-        // Send UCI info
-        uci_info(pos, root_depth, depth_best_value, local_nodes, time_ms);
+        // Send UCI info (global counter — helpers' nodes must be included)
+        uci_info(pos, root_depth, depth_best_value, nodes.load(std::memory_order_relaxed), time_ms);
     }
 
     // Fallback: if best_move is still MOVE_NONE, use the first legal move we found
