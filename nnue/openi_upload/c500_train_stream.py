@@ -61,6 +61,11 @@ if not FRAMES:
         subprocess.run(f"tar xf '{tar}' -C '{FRAMES_DIR}'", shell=True)
         FRAMES = sorted(glob.glob(os.path.join(FRAMES_DIR, "frame_*.zst")) + glob.glob(os.path.join(FRAMES_DIR, "frame_*.xz")))
 assert FRAMES, "no frame_*.zst/.xz found and no gamepack.tar"
+# SF-relabel binpack path: NNUE_FENEVAL_FILE points at a fen<TAB>white_cp tsv;
+# featurize --fen-eval streams 140B records exactly like the frame pipeline.
+_FENEVAL = os.environ.get("NNUE_FENEVAL_FILE")
+if _FENEVAL:
+    FRAMES = [_FENEVAL]
 # Pass-2+ (warm restart): shuffle frame order to break the temporal bias of the
 # newest-first dataset (with cosine annealing, the LAST frames dominate the
 # low-LR consolidation phase). Deterministic seed => reproducible order.
@@ -416,7 +421,10 @@ for epoch in range(EPOCHS):
         # v2 key: the featurizer now emits 140-byte records (result channel) —
         # stale 136-byte caches from earlier runs would silently misparse.
         _fc = f"/tmp/featcache2_{os.path.basename(frame_path)}.raw"
-        if _FEAT_CACHE and epoch == 0:
+        if _FENEVAL:
+            cmd = f"cat {_FENEVAL} | {FEAT} --fen-eval --threads {NTH}"
+            p = subprocess.Popen(["bash", "-c", cmd], stdout=subprocess.PIPE, bufsize=0)
+        elif _FEAT_CACHE and epoch == 0:
             dec = "zstd -dc" if frame_path.endswith(".zst") else "xz -dc"
             cmd = f"{dec} {frame_path} | {FEAT} --stream --input /dev/stdin --threads {NTH} | tee {_fc}"
             p = subprocess.Popen(["bash", "-c", cmd], stdout=subprocess.PIPE, bufsize=0)
