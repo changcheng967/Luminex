@@ -1715,6 +1715,7 @@ static void helper_thread_func(Position pos_copy, int thread_id) {
     // Flush final node count
     nodes.fetch_add(local_nodes - last_reported_nodes, std::memory_order_relaxed);
     last_reported_nodes = local_nodes;
+    std::fprintf(stderr, "[helper %d exit] local_nodes=%llu\n", thread_id, (unsigned long long)local_nodes);
 
     delete w;
     worker = nullptr;
