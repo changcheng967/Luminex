@@ -291,6 +291,19 @@ void handle_position(Position& pos, const std::string& cmd) {
         }
     }
 
+    // A FEN without both kings is illegal and would crash king-centric code
+    // (set_check_info, NNUE features); reject instead of dying.
+    {
+        std::string board = fen.substr(0, fen.find(' '));
+        size_t wk = std::count(board.begin(), board.end(), 'K');
+        size_t bk = std::count(board.begin(), board.end(), 'k');
+        if (wk != 1 || bk != 1) {
+            safe_output("info string invalid FEN (kings " + std::to_string(wk) +
+                        "/" + std::to_string(bk) + ") - position unchanged\n");
+            return;
+        }
+    }
+
     pos.set(fen);
 
     if (moves_idx != std::string::npos) {
