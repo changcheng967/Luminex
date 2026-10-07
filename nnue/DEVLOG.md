@@ -251,4 +251,23 @@ the verdict is that the second pass bought at most a marginal internal edge
 and no measurable external strength: the lineage is plateaued at this
 recipe.
 
+## 12. V14 C5 pilot — WDL/result mixing rejected (Oct 2026)
+
+The #1-ranked unused lc0 signal got its pilot: GP2 frames (lc0pack game
+result per entry → featurize 140-byte records with a result float → trainer
+λ-mix `λ·eval + (1−λ)·1000cp·result`, annealed 1.0→0.8 over 40K steps).
+Two arms, same 8M-position pilot corpus, same 3.4h budget, lin off — λ the
+only variable. Fixed-node h2h (100 games, 100K nodes, float nets): **ctrl
+65–30–5 = 67.5% — the λ arm lost by ~78 Elo**, decisive at this sample.
+Mechanism read: 86% of test91 games are eval-adjudicated (invariance bit 5)
+and 55% are draws, so the result channel mostly re-injects the net's own
+thresholded eval and compresses decisive positions toward drawishness
+(startpos eval 17→12cp). The pipeline itself is done and reusable (GP2
+frames verified end-to-end, static featurize binary in-repo); what failed
+is the signal on this corpus. Conclusion: don't spend the 72GB full-window
+re-harvest — test91's result labels carry too little independent signal at
+any λ worth training with. "Get more from the data" now rests on the
+non-result signals (best_q target swap, deblunder filters) or leaves the
+data entirely (search-side adaptation to V13's eval scale).
+
 ---
