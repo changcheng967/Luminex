@@ -422,7 +422,8 @@ for epoch in range(EPOCHS):
         # stale 136-byte caches from earlier runs would silently misparse.
         _fc = f"/tmp/featcache2_{os.path.basename(frame_path)}.raw"
         if _FENEVAL:
-            cmd = f"cat {_FENEVAL} | {FEAT} --fen-eval --threads {NTH}"
+            dec = "xz -dc" if _FENEVAL.endswith(".xz") else "cat"
+            cmd = f"{dec} {_FENEVAL} | {FEAT} --fen-eval --threads {NTH}"
             p = subprocess.Popen(["bash", "-c", cmd], stdout=subprocess.PIPE, bufsize=0)
         elif _FEAT_CACHE and epoch == 0:
             dec = "zstd -dc" if frame_path.endswith(".zst") else "xz -dc"
