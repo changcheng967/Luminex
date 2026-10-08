@@ -19,6 +19,9 @@
 #include <cstdlib>
 #include <cstring>
 #include <chrono>
+#if defined(__linux__)
+#include <sys/mman.h>
+#endif
 #include <fstream>
 #include <string>
 #include <vector>
@@ -509,6 +512,12 @@ bool load(const std::string& path) {
         }
     }
     g_loaded = true;
+#if defined(__linux__) && defined(MADV_HUGEPAGE)
+    // THP for the big weight tables: the incremental update path is
+    // memory-latency bound (random row access into ft_w); huge pages cut
+    // TLB misses. Best effort — silently ignored where disallowed.
+    madvise(ft_w.data(), (ft_w.size() * sizeof(int16_t) + 0xFFFFF) & ~0xFFFFF, MADV_HUGEPAGE);
+#endif
     std::printf("nnue: loaded %s (%s L1=%d L2=%d L3=%d)%s\n", path.c_str(), g_int8 ? "int8" : "float", L1, L2, L3, g_lin_head ? " +lin" : "");
     return true;
 }
