@@ -561,6 +561,20 @@ void uci_loop() {
             if (nnue::linear_available())
                 out += " lin " + std::to_string(int(nnue::linear_eval(pos)));
             safe_output(out + "\n");
+        } else if (cmd.rfind("evalbench", 0) == 0) {
+            // evalbench <N>: raw evaluate() throughput on the current position
+            // (roofline probe — measures the eval kernel ceiling, no search).
+            long n = atol(cmd.c_str() + 10);
+            if (n <= 0) n = 1000000;
+            auto t0 = std::chrono::steady_clock::now();
+            Value acc = VALUE_ZERO;
+            for (long i = 0; i < n; ++i) acc = Value(acc + evaluate(pos, false));
+            auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                          std::chrono::steady_clock::now() - t0).count();
+            char buf[128];
+            std::snprintf(buf, sizeof buf, "evalbench %ld in %ldms = %.0f evals/s (sink %d)\n",
+                          n, ms, ms ? n * 1000.0 / ms : 0.0, int(acc) & 1);
+            safe_output(buf);
         }
     }
 
