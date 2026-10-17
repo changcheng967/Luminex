@@ -60,12 +60,13 @@ if not FRAMES:
         print(f"  extracting {tar} -> {FRAMES_DIR}", flush=True)
         subprocess.run(f"tar xf '{tar}' -C '{FRAMES_DIR}'", shell=True)
         FRAMES = sorted(glob.glob(os.path.join(FRAMES_DIR, "frame_*.zst")) + glob.glob(os.path.join(FRAMES_DIR, "frame_*.xz")))
-assert FRAMES, "no frame_*.zst/.xz found and no gamepack.tar"
 # SF-relabel binpack path: NNUE_FENEVAL_FILE points at a fen<TAB>white_cp tsv;
 # featurize --fen-eval streams 140B records exactly like the frame pipeline.
 _FENEVAL = os.environ.get("NNUE_FENEVAL_FILE")
 if _FENEVAL:
     FRAMES = [_FENEVAL]
+else:
+    assert FRAMES, "no frame_*.zst/.xz found and no gamepack.tar"
 # Pass-2+ (warm restart): shuffle frame order to break the temporal bias of the
 # newest-first dataset (with cosine annealing, the LAST frames dominate the
 # low-LR consolidation phase). Deterministic seed => reproducible order.
