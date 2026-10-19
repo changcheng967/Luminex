@@ -104,6 +104,19 @@ class LNNUE(nn.Module):
         # qsearch stand-pat. The full nonlinear path is unchanged in Step 0;
         # the additive (lin + residual) form comes with the UB net (Step 2).
         self.L1, self.L2, self.L3 = L1, L2, L3
+        # Output buckets: separate tail weight sets per material phase.
+        # Bucket = material_count // bucket_size. Same FT, same per-eval MACs
+        # (only one tail runs), but each tail specializes for its phase.
+        self.num_buckets = int(_os.environ.get("NNUE_BUCKETS", "1"))
+        if self.num_buckets > 1:
+            bl2, bl3, bout = [], [], []
+            for _ in range(self.num_buckets):
+                bl2.append(nn.Linear(2 * L1, L2))
+                bl3.append(nn.Linear(L2, L3))
+                bout.append(nn.Linear(L3, 1))
+            self.bl2 = nn.ModuleList(bl2)
+            self.bl3 = nn.ModuleList(bl3)
+            self.bout = nn.ModuleList(bout)
 
     # ---------------------------------------------------------------
     # Net2Net widening (Gen v1.3 Step 0): expand L1 from old_L1 to
@@ -195,26 +208,35 @@ class LNNUE(nn.Module):
 
     def forward(self, w_idx, b_idx, stm):  # idx: (B, MAX=32) padded with NUM_INPUTS; stm: (B,)
         if self.ft_mode == 'gather':
-            wt = self.ft.weight.t()                       # [NUM_INPUTS, L1] per-feature rows
+            wt = self.ft.weight.t()
             wi = w_idx.clamp(max=NUM_INPUTS - 1); wm = (w_idx < NUM_INPUTS).unsqueeze(-1).to(wt.dtype)
             bi = b_idx.clamp(max=NUM_INPUTS - 1); bm = (b_idx < NUM_INPUTS).unsqueeze(-1).to(wt.dtype)
-            acc_w = (wt[wi] * wm).sum(dim=1) + self.ft_bias   # (B, L1)
+            acc_w = (wt[wi] * wm).sum(dim=1) + self.ft_bias
             acc_b = (wt[bi] * bm).sum(dim=1) + self.ft_bias
-        else:  # embbag: fused gather+sum (padding idx NUM_INPUTS -> zero row, contributes nothing)
+        else:
             acc_w = self.ft(w_idx) + self.ft_bias
             acc_b = self.ft(b_idx) + self.ft_bias
-        # Order: side-to-move first
         stm_mask = stm.view(-1, 1).float()
         stm_acc = stm_mask * acc_w + (1 - stm_mask) * acc_b
         nstm_acc = (1 - stm_mask) * acc_w + stm_mask * acc_b
         h = torch.cat([stm_acc, nstm_acc], dim=1)
-        # SCReLU: (clamp(x, 0, 1))² — proven +15-30 Elo over ClippedReLU (Seer/SF v9+)
         h = torch.clamp(h, 0.0, 1.0) ** 2
+        if self.num_buckets > 1:
+            # material count from active features (non-pad indices)
+            mat = (w_idx < NUM_INPUTS).sum(dim=1).long()  # 0..32
+            bucket = (mat * self.num_buckets // 33).clamp(0, self.num_buckets - 1)
+            # scatter per-bucket: compute each bucket's tail only for its batch rows
+            out = torch.zeros(h.shape[0], device=h.device)
+            for b in range(self.num_buckets):
+                mask = bucket == b
+                if not mask.any(): continue
+                hb = h[mask]
+                hb = torch.clamp(self.bl2[b](hb), 0.0, 1.0) ** 2
+                hb = torch.clamp(self.bl3[b](hb), 0.0, 1.0) ** 2
+                out[mask] = self.bout[b](hb).squeeze(-1) * 300.0
+            return out
         h = torch.clamp(self.l2(h), 0.0, 1.0) ** 2
         h = torch.clamp(self.l3(h), 0.0, 1.0) ** 2
-        # Output scale: raw out (~±1) -> eval-cp range so sigmoid(out/SCALE)
-        # spans the target range and gradients flow. Without this the net is
-        # stuck predicting 0.5 (sigmoid(±tiny/400)≈0.5, near-zero gradient).
         return self.out(h).squeeze(-1) * 300.0
 
 
