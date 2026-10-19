@@ -29,7 +29,6 @@ extern volatile bool g_stop_requested;
 static Position pos;
 int g_search_depth = 0;
 int g_nodes_per_move = 0;  // NodesPerMove: >0 = fixed-node search (SPSA tuning, no clock forfeits)
-bool g_qsearch_linear = true;   // qsearch stand-pat via DOSL linear head when available
 
 // Search thread management
 static std::thread search_thread;
@@ -439,7 +438,6 @@ void handle_setoption(const std::string& cmd) {
     else if (name == "NNUEFile") { if (!value.empty()) nnue::load(value); }
     else if (name == "SearchDepth") { g_search_depth = std::stoi(value); }
     else if (name == "NodesPerMove") { g_nodes_per_move = std::stoi(value); }
-    else if (name == "QsearchLinear") { g_qsearch_linear = (value == "true"); }
     else if (name == "Contempt" || name == "UCI_AnalyseMode") {
         if (name == "Contempt") {
             params.contempt = std::stoi(value);
@@ -558,8 +556,6 @@ void uci_loop() {
             // against the Python trainer's eval.
             Value v = evaluate(pos, false);
             std::string out = "eval cp " + std::to_string(int(v));
-            if (nnue::linear_available())
-                out += " lin " + std::to_string(int(nnue::linear_eval(pos)));
             safe_output(out + "\n");
         } else if (cmd.rfind("evalbench", 0) == 0) {
             // evalbench <N>: raw evaluate() throughput on the current position

@@ -17,8 +17,8 @@ RUN (no args):
 PASS-4 COMMAND (Gen768 warm restart on the same 4.29B pack, DOSL trained):
   NNUE_L1=768 NNUE_OUT_NAME=luminex_gen768p4.nnue NNUE_RESUME=/tmp/code/luminex_gen768.pt \
   NNUE_LR=1e-4 NNUE_BS=131072 NNUE_EPOCHS=1 NNUE_T_MAX_STEPS=33000 \
-  NNUE_FRAME_SHUFFLE=1 NNUE_SHUFFLE_SEED=43 NNUE_DUAL_HEAD=1 \
-  NNUE_LIN_WARMUP=2000 NNUE_LIN_LAMBDA=0.15 NNUE_LIN_LR_MULT=5 NNUE_TAIL_LR_MULT=3 \
+  NNUE_FRAME_SHUFFLE=1 NNUE_SHUFFLE_SEED=43 \
+  NNUE_TAIL_LR_MULT=3 \
   NNUE_SWA_START_STEP=24750 NNUE_LOSS_POWER=2.6 python c500_train_stream.py
   # first session prints "optimizer rebuild" (3-group ckpt vs new 4-group opt) — expected
   # after: python quantize_i8.py luminex_gen768p4.nnue luminex_gen768p4_i8.nnue
@@ -112,13 +112,7 @@ _POS_W2 = float(os.environ.get("NNUE_POS_W2", "0.5"))  # SF default
 # DEFAULT ON since pass-4: the Gen768 pass-3 export shipped a zero-trained LINH
 # section (valid format, all-zero weights) that the engine happily used as a 0cp
 # qsearch stand-pat — the 0-50 match loss. Export now REFUSES an all-zero head.
-_DUAL = os.environ.get("NNUE_DUAL_HEAD", "1") == "1"
-_LIN_WARM = int(os.environ.get("NNUE_LIN_WARMUP", "2000"))
-_LIN_LAM  = float(os.environ.get("NNUE_LIN_LAMBDA", "0.25"))
-if _DUAL:
-    print(f"[DOSL] dual-head training ON (warmup {_LIN_WARM} steps at lam=1.0, then lam={_LIN_LAM})", flush=True)
-else:
-    print("[DOSL] dual-head training OFF — export will SKIP the LINH section (head untrained)", flush=True)
+# DOSL linear head removed: designed for slow float eval, which no longer exists.
 # Pinned cosine horizon (must be defined before the subset-trim below)
 _T_MAX_FIXED = int(os.environ["NNUE_T_MAX_STEPS"]) if os.environ.get("NNUE_T_MAX_STEPS") else 0
 _CAL_STEPS = 60   # calibration steps to measure throughput
@@ -144,7 +138,7 @@ print(f"arch: {_arch_name}{_anchor_note}", flush=True)
 print(f"per-frame train (OOM-safe): {len(FRAMES)} frames, {total_bytes/1e9:.2f}GB, L1={L1} bs={BS} cap={CAP:,} feat_threads={NTH} grad-clip={_gc} device={device}", flush=True)
 print(f"loss: power={os.environ.get('NNUE_LOSS_POWER', '2.6')} in sigmoid(cp/{SCALE:.0f}) space, pos-weight w1={_POS_W1} w2={_POS_W2}{' (OFF)' if _POS_W1 == 0 else ''}, lambda=1.0 (pure eval — gamepack has no game results; SF end-lambda practice)", flush=True)
 
-model = (V13NNUE(dual_head=_DUAL) if _V13 else LNNUE(L1=L1)).to(device)
+model = (V13NNUE(dual_head=False) if _V13 else LNNUE(L1=L1)).to(device)
 gstep = 0  # must exist before resume check (fresh runs would NameError otherwise)
 _ck = None  # resume checkpoint dict (kept for SWA state restore further below)
 _resume = os.environ.get("NNUE_RESUME") or os.path.join(os.path.dirname(__file__) or ".", OUT_BASE + ".pt")
@@ -188,10 +182,6 @@ model.probe_ft(device)   # EmbeddingBag FT
 # DOSL warmup baseline: on a CONTINUATION the global gstep already exceeds the
 # warmup horizon, so warmup must count from this session's start. A checkpoint
 # whose lin head is already trained (non-zero) skips warmup entirely.
-if _DUAL:
-    _lin_trained = float(model.lin.weight.detach().abs().max().item()) > 1e-9
-    _lin_base = (gstep - _LIN_WARM) if _lin_trained else gstep
-    print(f"  [DOSL] lin head {'pre-trained (warmup skipped)' if _lin_trained else 'fresh (warmup from session start)'} at gstep={gstep}", flush=True)
 print(f"  [LNNUE] ft_mode={model.ft_mode} (compile OFF)", flush=True)
 # SWA step-trigger baseline: same global-vs-session trap as the DOSL warmup —
 # a resumed run's global gstep dwarfs the threshold, so the trigger must count
@@ -216,17 +206,13 @@ _tail_wd = float(os.environ.get("NNUE_TAIL_WD", "1e-2"))
 # the tiny tail can still move (tail mult), and a FRESH DOSL head needs to train
 # fast within its warmup window (lin mult). Group order below MUST match _group_lrs.
 _TAIL_LR_MULT = float(os.environ.get("NNUE_TAIL_LR_MULT", "1.0"))
-_LIN_LR_MULT  = float(os.environ.get("NNUE_LIN_LR_MULT", "5.0"))
-_lin_groups = ([{"params": [model.lin.weight], "weight_decay": 0.0, # DOSL head — WITHOUT this group the dual
-                 "lr": LR * _LIN_LR_MULT}]                            # head gets grads but NEVER updates (pass-3 bug class)
-               if hasattr(model, "lin") else [])
 opt = torch.optim.AdamW([
     {"params": _ft_params, "weight_decay": 0.0},        # NO decay on FT (rare-bucket protection)
     {"params": _tail_w,    "weight_decay": _tail_wd,    # tail weight decay (fixes L2 SCReLU feedback)
                          "lr": LR * _TAIL_LR_MULT},
     {"params": _tail_b,    "weight_decay": 0.0},        # biases are operating points — never decay
-] + _lin_groups, lr=LR, amsgrad=True)
-_group_lrs = [1.0, _TAIL_LR_MULT, 1.0] + ([_LIN_LR_MULT] if _lin_groups else [])
+], lr=LR, amsgrad=True)
+_group_lrs = [1.0, _TAIL_LR_MULT, 1.0]
 if _opt_state:
     try:
         opt.load_state_dict(_opt_state)
@@ -239,7 +225,7 @@ if _opt_state:
         print("  [opt] AdamW moments restored, LR reset to base (per-group mults kept)", flush=True)
     except Exception as _e:
         print(f"  [opt] state restore FAILED ({_e}) — rebuilding (1K-step warm-up)", flush=True)
-print(f"  [opt] FT params={sum(p.numel() for p in _ft_params):,} (wd=0, lr=x1) | tail params={sum(p.numel() for p in _tail_w + _tail_b):,} (wd={_tail_wd}, lr=x{_TAIL_LR_MULT}) | lin lr=x{_LIN_LR_MULT} | amsgrad=True", flush=True)
+print(f"  [opt] FT params={sum(p.numel() for p in _ft_params):,} (wd=0, lr=x1) | tail params={sum(p.numel() for p in _tail_w + _tail_b):,} (wd={_tail_wd}, lr=x{_TAIL_LR_MULT}) | amsgrad=True", flush=True)
 
 # ---- AUTO-CONVERGENCE SIZING ------------------------------------------------
 # Calibrate throughput, then pick the largest data subset that can be trained
@@ -271,7 +257,7 @@ if gstep == 0:  # fresh run: calibrate with a tiny forward+backward
     if device == "cuda": torch.cuda.synchronize()
     _sps = _CAL_STEPS / (_t.time() - _cal_t0)
     print(f"  [calibrate] {_sps:.1f} steps/s (BS={BS})", flush=True)
-    model = (V13NNUE(dual_head=_DUAL) if _V13 else LNNUE(L1=L1)).to(device)  # reset — calibration dirtied the weights
+    model = (V13NNUE(dual_head=False) if _V13 else LNNUE(L1=L1)).to(device)  # reset — calibration dirtied the weights
     # re-init optimizer (fresh model params) — same name-based groups as above
     _tw2 = [model.l2.weight, model.l3.weight, model.out.weight]
     _tb2 = [model.l2.bias, model.l3.bias, model.out.bias]
@@ -509,10 +495,6 @@ for epoch in range(EPOCHS):
                     ctx_ac = torch.autocast(device_type=device, enabled=False)   # fp32 (no bf16 drift)
                 with ctx_ac:
                     pred = model(wi, bi, si)
-                    _lin_t = None
-                    if _DUAL and _POWER > 0:
-                        _lv = model.linear(wi, bi, si)
-                        _lin_t = ((torch.sigmoid(_lv / SCALE) - torch.sigmoid(ti / SCALE)).abs()) ** _POWER
                     if _POWER > 0:
                         # Power-2.6 loss in SIGMOID space (SF's proven formula):
                         # diff = |σ(pred/SCALE) - σ(target/SCALE)|, loss = diff^2.6
@@ -543,9 +525,6 @@ for epoch in range(EPOCHS):
                 if _v13_reg is not None and torch.is_tensor(_v13_reg):
                     # int16-accumulator compatibility (V13): see V13NNUE.forward
                     loss = loss + _v13_reg
-                if _lin_t is not None:
-                    _lam = 1.0 if gstep - _lin_base < _LIN_WARM else _LIN_LAM
-                    loss = _lam * _lin_t.mean() + (1.0 - _lam) * loss
                 if not torch.isfinite(loss):
                     print(f"  WARN: non-finite loss at step {gstep} — skipping batch "
                           f"(if this repeats, weights are already poisoned — restart)", flush=True)
@@ -587,7 +566,7 @@ for epoch in range(EPOCHS):
                         _tv = t[:_m].clamp(-1500.0, 1500.0).float()   # same view as the loss
                         _mae = (_pv - _tv).abs().mean().item()
                         _lmae = ""
-                        if _DUAL:
+                        if False:
                             _lvh = model.linear(w[:_m].long(), b[:_m].long(), s[:_m]).float()
                             _lmae = f" linMAE={(_lvh - _tv).abs().mean().item():.1f}cp"
                         _ps, _ts = _pv.std().item(), _tv.std().item()

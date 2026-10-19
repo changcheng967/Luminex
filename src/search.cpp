@@ -17,7 +17,6 @@ namespace luminex {
 
 // Forward declaration - defined in uci.cpp
 extern bool check_for_stop_command();
-extern bool g_qsearch_linear;   // UCI option: DOSL linear stand-pat in qsearch
 extern void uci_debug_log(const char* format, ...);
 
 // Global volatile stop flag for immediate response
@@ -339,12 +338,6 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
         if (eval_cache[idx].key == key) {
             eval = Value(eval_cache[idx].value);
             g_stats.eval_cache_hits_qs++;
-        } else if (g_qsearch_linear && nnue::linear_available()) {
-            // DOSL O(1) stand-pat: linear head, deliberately NOT cached (position-
-            // deterministic value; mixing cached full evals with linear reads would
-            // make the same node's eval depend on visit history).
-            eval = nnue::linear_eval(pos);
-            g_stats.eval_cache_misses_qs++;
         } else {
             eval = evaluate(pos, true);
             g_stats.eval_cache_misses_qs++;

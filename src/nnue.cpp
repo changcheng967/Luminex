@@ -197,9 +197,7 @@ static std::vector<int32_t> ft_b_i32;   // integer-domain FT bias (b*FT_WSCALE)
 // DOSL linear head (Step-0): per-feature scalar weights over the SAME HalfKAv2_hg
 // indices; accumulator keeps one int32 per perspective (O(1) qsearch stand-pat).
 // Weights stored in 1/32 cp units: a queen feature (~900cp) still fits int16.
-static constexpr float LIN_SCALE = 32.0f;
-static std::vector<int16_t> lin_w;       // NUM_INPUTS, 1/32 cp per unit
-static bool g_lin_head = false;   // (NUM_INPUTS, L1) int16, transposed
+
 static std::vector<float> ft_b;   // (L1,)
 static std::vector<float> l2_w, l2_b, l3_w, l3_b, out_w;
 static float out_b = 0.0f;
@@ -299,21 +297,6 @@ static inline void v13_rows(int idx, int& bucket_row, int& shared_row) {
 
 // Optional DOSL head tag (raw layout, no size prefix); rewinds when absent.
 static void read_optional_linh(std::ifstream& f) {
-    char tag[4] = {0,0,0,0};
-    std::streampos save = f.tellg();
-    f.read(tag, 4);
-    if (f.gcount() == 4 && tag[0]=='L' && tag[1]=='I' && tag[2]=='N' && tag[3]=='H') {
-        std::vector<float> lw;
-        if (read_raw(f, lw, NUM_INPUTS)) {
-            lin_w.resize(NUM_INPUTS);
-            for (int i = 0; i < NUM_INPUTS; ++i) lin_w[i] = (int16_t)std::lround(lw[i] * LIN_SCALE);
-            bool any = false;
-            for (int i = 0; i < NUM_INPUTS && !any; ++i) any = lin_w[i] != 0;
-            g_lin_head = any;
-        }
-    } else {
-        f.seekg(save);
-    }
 }
 
 // Map full-space magic + dims; shared by the LXV3/LX3Q loaders.
@@ -357,8 +340,7 @@ static bool load_v13(const std::string& path, std::ifstream& f) {
     v13_out_b = ob[0];
     read_optional_linh(f);
     g_v13 = true; g_int8 = false; g_loaded = true;
-    std::printf("nnue: loaded %s (V13 LXV3 L1=%d factor=%d)%s\n", path.c_str(), L1, fac,
-                g_lin_head ? " +lin" : "");
+    std::printf("nnue: loaded %s (V13 LXV3 L1=%d factor=%d)\n", path.c_str(), L1, fac);
     return true;
 }
 
@@ -398,8 +380,7 @@ static bool load_v13q(const std::string& path, std::ifstream& f) {
     v13_out_k = 64.0f / so[0];   // weights x s_out, activations x128: od = ov x s_out x 128
     read_optional_linh(f);
     g_v13 = true; g_v13q = true; g_int8 = false; g_loaded = true;
-    std::printf("nnue: loaded %s (V13 LX3Q L1=%d factor=%d)%s\n", path.c_str(), L1, fac,
-                g_lin_head ? " +lin" : "");
+    std::printf("nnue: loaded %s (V13 LX3Q L1=%d factor=%d)\n", path.c_str(), L1, fac);
     return true;
 }
 
@@ -493,18 +474,6 @@ bool load(const std::string& path) {
         if (f.gcount() == 4 && tag[0]=='L' && tag[1]=='I' && tag[2]=='N' && tag[3]=='H') {
             int32_t n = 0; f.read(reinterpret_cast<char*>(&n), 4);
             if (n == NUM_INPUTS) {
-                lin_w.resize(NUM_INPUTS);
-                for (int i = 0; i < NUM_INPUTS; ++i) {
-                    float v; f.read(reinterpret_cast<char*>(&v), sizeof(float));
-                    lin_w[i] = (int16_t)std::lround(v * LIN_SCALE);
-                }
-                // All-zero LINH = untrained head (pass-3 export bug): a "valid"
-                // zero head silently made every qsearch stand-pat 0cp. Never
-                // treat it as available; QsearchLinear then falls back to the
-                // full eval via linear_available().
-                bool any = false;
-                for (int i = 0; i < NUM_INPUTS && !any; ++i) any = lin_w[i] != 0;
-                g_lin_head = any;
                 if (!any) std::fprintf(stderr, "nnue: LINH section all-zero (untrained head) — ignored\n");
             } else { std::fprintf(stderr, "nnue: LINH size mismatch — head ignored\n"); }
         } else {
@@ -518,7 +487,7 @@ bool load(const std::string& path) {
     // TLB misses. Best effort — silently ignored where disallowed.
     madvise(ft_w.data(), (ft_w.size() * sizeof(int16_t) + 0xFFFFF) & ~0xFFFFF, MADV_HUGEPAGE);
 #endif
-    std::printf("nnue: loaded %s (%s L1=%d L2=%d L3=%d)%s\n", path.c_str(), g_int8 ? "int8" : "float", L1, L2, L3, g_lin_head ? " +lin" : "");
+    std::printf("nnue: loaded %s (%s L1=%d L2=%d L3=%d)%s\n", path.c_str(), g_int8 ? "int8" : "float", L1, L2, L3);
     return true;
 }
 
@@ -571,7 +540,6 @@ static inline void v13_acc32(V13Acc& a, int p, int idx, int sign) {
 static inline void add_feature(Accumulator& a, int p, int ksq, int sq, Piece piece) {
     int idx = halfka_idx(p == 0, ksq, sq, piece);
     int16_t* acc = a.v[p];
-    if (g_lin_head) a.lin[p] += lin_w[idx];
     if (g_v13) {
         int br, sr; v13_rows(idx, br, sr);
         v13_acc_rows(acc, br, sr, +1);
@@ -595,7 +563,6 @@ static inline void add_feature(Accumulator& a, int p, int ksq, int sq, Piece pie
 static inline void remove_feature(Accumulator& a, int p, int ksq, int sq, Piece piece) {
     int idx = halfka_idx(p == 0, ksq, sq, piece);
     int16_t* acc = a.v[p];
-    if (g_lin_head) a.lin[p] -= lin_w[idx];
     if (g_v13) {
         int br, sr; v13_rows(idx, br, sr);
         v13_acc_rows(acc, br, sr, -1);
@@ -625,7 +592,6 @@ static inline void move_feature(Accumulator& a, int p, int ksq, Square from, Squ
     int f_idx = halfka_idx(white_pov, ksq, from, pf);
     int t_idx = halfka_idx(white_pov, ksq, to, pt);
     if (g_v13) {
-        if (g_lin_head) a.lin[p] += lin_w[t_idx] - lin_w[f_idx];
         int fbr, fsr, tbr, tsr;
         v13_rows(f_idx, fbr, fsr); v13_rows(t_idx, tbr, tsr);
         int16_t* acc = a.v[p];
@@ -638,7 +604,6 @@ static inline void move_feature(Accumulator& a, int p, int ksq, Square from, Squ
     const int16_t* wf = &ft_w[fi];
     const int16_t* wt = &ft_w[ti];
     int16_t* acc = a.v[p];
-    if (g_lin_head) a.lin[p] += lin_w[ti / g_L1] - lin_w[fi / g_L1];
 #if defined(__AVX512F__)
     for (int l = 0; l < g_L1; l += 32) {
         __m512i av = _mm512_loadu_si512((const __m512i*)(acc + l));
@@ -681,7 +646,6 @@ static void refresh_perspective(const Position& pos, Accumulator& a, int p) {
     for (int l = 0; l < g_L1; ++l)
         acc[l] = int16_t(std::max(-32768, std::min(32767, ft_b_i32[l])));
 #endif
-    if (g_lin_head) a.lin[p] = 0;
     for (int sq = 0; sq < NUM_SQ; ++sq) {
         Piece pc = pos.piece_on(Square(sq));
         if (pc == NO_PIECE) continue;
@@ -819,15 +783,6 @@ void update(Position& pos, Move m, Piece moved, PieceType captured) {
     if (pr) { st_update.cyc += rdtsc() - t0; st_update.n++; }
 }
 
-bool linear_available() { return g_loaded && g_lin_head; }
-// O(1) stm-relative linear-head score. Bypasses the eval cache on purpose:
-// the value must be a pure function of the position (search-stability gate —
-// no mixing of cached full evals with fresh linear reads for the same node).
-Value linear_eval(const Position& pos) {
-    const Accumulator& a = nnue_acc_stack()[pos.state_ply()];
-    int32_t raw = a.lin[pos.side_to_move() == WHITE ? 0 : 1];
-    return Value(int(std::lround(raw / LIN_SCALE)));
-}
 
 Value evaluate(const Position& pos) {
     bool pr = profile_on();

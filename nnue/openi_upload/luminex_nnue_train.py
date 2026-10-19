@@ -103,8 +103,6 @@ class LNNUE(nn.Module):
         # loss (dual-loss, see trainer) so it is a STANDALONE-usable evaluator for
         # qsearch stand-pat. The full nonlinear path is unchanged in Step 0;
         # the additive (lin + residual) form comes with the UB net (Step 2).
-        self.lin = nn.Embedding(NUM_INPUTS + 1, 1, padding_idx=NUM_INPUTS)
-        nn.init.zeros_(self.lin.weight)
         self.L1, self.L2, self.L3 = L1, L2, L3
 
     # ---------------------------------------------------------------
@@ -194,12 +192,6 @@ class LNNUE(nn.Module):
         assert d < 1e-4, f"FT PROBE FAILED: bag-sum drift {d}"
         print(f"  [probe_ft] OK (max|bag-sum - manual|={d:.2e}, mode={self.ft_mode})", flush=True)
 
-    def linear(self, w_idx, b_idx, stm):
-        """Stm-relative linear-head score (cp). Each perspective sums its own
-        feature rows; the mover's sum is that side's score from its own viewpoint."""
-        lw = self.lin(w_idx).squeeze(-1).sum(dim=1)   # white-perspective score
-        lb = self.lin(b_idx).squeeze(-1).sum(dim=1)   # black-perspective score
-        return stm * lw + (1.0 - stm) * lb
 
     def forward(self, w_idx, b_idx, stm):  # idx: (B, MAX=32) padded with NUM_INPUTS; stm: (B,)
         if self.ft_mode == 'gather':
@@ -288,9 +280,9 @@ def v13_side_features(w_idx):
 class V13NNUE(nn.Module):
     ft_mode = "embbag"   # c500 compat attribute (always embbag: factorized two-bag path)
 
-    def __init__(self, dual_head=True):
+    def __init__(self, dual_head=False):
         super().__init__()
-        self.dual_head = dual_head
+        self.dual_head = False  # removed
         self.ft = nn.EmbeddingBag(V13_FT_ROWS + 1, V13_L1, mode="sum",
                                   padding_idx=V13_FT_ROWS)
         self.ft_bias = nn.Parameter(torch.zeros(V13_L1))
@@ -304,9 +296,6 @@ class V13NNUE(nn.Module):
         self.out = nn.Linear(V13_TAIL[1], 1)
         self.acc_reg_w = float(os.environ.get("NNUE_ACC_REG", "0.05"))
         self.last_acc_reg = 0.0
-        if dual_head:
-            self.lin = nn.Embedding(NUM_INPUTS + 1, 1, padding_idx=NUM_INPUTS)
-            nn.init.zeros_(self.lin.weight)
         self.L1, self.L2, self.L3 = V13_L1, V13_TAIL[0], V13_TAIL[1]
 
     def _acc(self, idx):
@@ -319,10 +308,6 @@ class V13NNUE(nn.Module):
                              torch.full_like(idx, pad))
         return self.ft(base) + self.ft(shared) + self.ft_bias
 
-    def linear(self, w_idx, b_idx, stm):
-        lw = self.lin(w_idx).squeeze(-1).sum(dim=1)
-        lb = self.lin(b_idx).squeeze(-1).sum(dim=1)
-        return stm * lw + (1.0 - stm) * lb
 
     def forward(self, w_idx, b_idx, stm):
         acc_w = self._acc(w_idx)
@@ -405,7 +390,7 @@ def v13_warm_start_from_gen768(v13, ckpt_path):
         old_ow, old_ob = sd["out.weight"], sd["out.bias"]
         ow = torch.zeros(1, V13_TAIL[1]); ow[:, :old_ow.shape[1]] = old_ow
         v13.out.weight.copy_(ow); v13.out.bias.copy_(old_ob)
-        if v13.dual_head and "lin.weight" in sd:
+        if False and "lin.weight" in sd:
             v13.lin.weight.copy_(sd["lin.weight"])   # stays full-index-space
     return v13
 
@@ -640,7 +625,7 @@ def _save_nnue_v13(model, path):
         for lin in (m.l2, m.l3, m.out):
             f.write(lin.weight.detach().cpu().numpy().astype(np.float32).tobytes())
             f.write(lin.bias.detach().cpu().numpy().astype(np.float32).tobytes())
-        if getattr(m, "dual_head", False) and hasattr(m, "lin"):
+        if False:
             lin_w = m.lin.weight.detach().cpu().numpy().astype(np.float32)[:NUM_INPUTS]
             if float(np.abs(lin_w).max()) < 1e-9:
                 print("  [export] V13 lin head all-zero - LINH skipped")
