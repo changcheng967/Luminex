@@ -472,10 +472,11 @@ bool load(const std::string& path) {
         std::streampos save = f.tellg();
         f.read(tag, 4);
         if (f.gcount() == 4 && tag[0]=='L' && tag[1]=='I' && tag[2]=='N' && tag[3]=='H') {
+            // Skip the LINH section (removed feature): read size, skip data
             int32_t n = 0; f.read(reinterpret_cast<char*>(&n), 4);
-            if (n == NUM_INPUTS) {
-                if (!any) std::fprintf(stderr, "nnue: LINH section all-zero (untrained head) — ignored\n");
-            } else { std::fprintf(stderr, "nnue: LINH size mismatch — head ignored\n"); }
+            if (n > 0 && n <= NUM_INPUTS) {
+                f.seekg(static_cast<long>(n) * 4, std::ios::cur); // skip float weights
+            }
         } else {
             f.seekg(save);   // not a LINH section — rewind (older net format)
         }
