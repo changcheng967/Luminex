@@ -226,7 +226,7 @@ class LNNUE(nn.Module):
             mat = (w_idx < NUM_INPUTS).sum(dim=1).long()  # 0..32
             bucket = (mat * self.num_buckets // 33).clamp(0, self.num_buckets - 1)
             # scatter per-bucket: compute each bucket's tail only for its batch rows
-            out = torch.zeros(h.shape[0], device=h.device)
+            out = torch.zeros(h.shape[0], device=h.device, dtype=h.dtype)
             for b in range(self.num_buckets):
                 mask = bucket == b
                 if not mask.any(): continue
