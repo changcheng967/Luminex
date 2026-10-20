@@ -230,10 +230,10 @@ class LNNUE(nn.Module):
             for b in range(self.num_buckets):
                 mask = bucket == b
                 if not mask.any(): continue
-                hb = h[mask]
+                hb = h[mask].float()
                 hb = torch.clamp(self.bl2[b](hb), 0.0, 1.0) ** 2
                 hb = torch.clamp(self.bl3[b](hb), 0.0, 1.0) ** 2
-                out[mask] = self.bout[b](hb).squeeze(-1) * 300.0
+                out[mask] = self.bout[b](hb).squeeze(-1).float() * 300.0
             return out
         h = torch.clamp(self.l2(h), 0.0, 1.0) ** 2
         h = torch.clamp(self.l3(h), 0.0, 1.0) ** 2
