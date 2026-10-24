@@ -398,11 +398,19 @@ def _save_final(reason):
     sys.exit(0)
 
 gstep = globals().get('gstep', 0); t0 = time.time(); total_pos = 0   # keeps resumed gstep
+# VRAM-resident featurize cache, shared across epochs: keyed per frame file.
+# Filled on epoch 0 when the whole frame's tensors fit in free VRAM; later
+# epochs reuse it and skip the featurize subprocess entirely.
+_VRAM_STORE = {}
 for epoch in range(EPOCHS):
     for fi, frame_path in enumerate(FRAMES):
         _f0_step, _f0_t = gstep, time.time()   # per-frame rate measurement (T_max refinement)
         if BUDGET and time.time() - t0 >= BUDGET:
             save_nnue(model, os.path.join(out_dir, OUT)); break
+        _vram_key = os.path.basename(str(frame_path))
+        _skip_featurize = False
+        if epoch > 0 and _vram_key in _VRAM_STORE:
+            _skip_featurize = True
         # FEATURIZE CACHE: first epoch featurizes and caches to /tmp; later
         # epochs read the cache (saves ~70s/frame — 25%+ of multi-epoch budget).
         # v2 key: the featurizer now emits 140-byte records (result channel) —
@@ -426,9 +434,24 @@ for epoch in range(EPOCHS):
             dec = "zstd -dc" if frame_path.endswith(".zst") else "xz -dc"
             cmd = f"{dec} {frame_path} | {FEAT} --stream --input /dev/stdin --threads {NTH}"
             p = subprocess.Popen(["bash", "-c", cmd], stdout=subprocess.PIPE, bufsize=0, stderr=None)
+        # VRAM-resident cache: on epoch 0, if the whole frame's tensors fit in
+        # free VRAM, keep them on-device so later epochs skip re-featurizing.
+        # est bytes/pos: idx (64×i16)×2 + (stm,tgt,res)×f32 = 256+12 ≈ 268B
+        # plus ~1.5x working room for cat/perm/batch indices.
+        _vram_store_here = (epoch == 0 and _skip_featurize is False)
+        def _vram_frame_bytes(n): return int(n * 268 * 1.5)
+        try:
+            _free_vram, _ = torch.cuda.mem_get_info(device)
+        except Exception:
+            _free_vram = 0
         part = 0
         _health = None   # set by the parts loop; stays None if the frame yields nothing
-        while True:   # process frame in <=CAP-position VRAM loads (big frames -> multiple parts)
+        if _skip_featurize:
+            # VRAM cache hit: restore epoch-0 tensors, skip the featurize subprocess
+            w, b, s, t, r = _VRAM_STORE[_vram_key]
+            N = w.shape[0]
+            print(f"  [vram-cache] epoch {epoch}: reusing {N:,} pos (no re-featurize)", flush=True)
+        while not _skip_featurize:   # process frame in <=CAP-position VRAM loads (big frames -> multiple parts)
             ws, bs, ss, ts, rsl = [], [], [], [], []
             got = 0
             while got < CAP:
@@ -581,9 +604,17 @@ for epoch in range(EPOCHS):
                     _health = f"MAE={_mae:.1f}cp{_lmae} predSTD={_ps:.0f} tgtSTD={_ts:.0f}{_pad} | {_wn}"
             except Exception as _e:
                 _health = f"unavailable ({_e})"
-            del w, b, s, t, perm; torch.cuda.empty_cache()
-        try: p.stdout.close(); p.wait()
-        except Exception: pass
+            # VRAM store decision: keep this frame's tensors for later epochs
+            # only when the WHOLE frame fits with working room (single-part frames
+            # whose estimated bytes < free VRAM at epoch 0).
+            if _vram_store_here and part == 1 and _vram_frame_bytes(N) < _free_vram:
+                _VRAM_STORE[_vram_key] = (w, b, s, t, r)
+                print(f"  [vram-cache] stored {N:,} pos ({_vram_frame_bytes(N)/1e9:.1f}GB < {_free_vram/1e9:.0f}GB free)", flush=True)
+            else:
+                del w, b, s, t, perm; torch.cuda.empty_cache()
+        if not _skip_featurize:
+            try: p.stdout.close(); p.wait()
+            except Exception: pass
         if _health:
             print(f"  [HEALTH f{fi+1}] {_health}", flush=True)
         else:
