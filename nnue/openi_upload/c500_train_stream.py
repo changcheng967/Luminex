@@ -615,6 +615,8 @@ for epoch in range(EPOCHS):
         if not _skip_featurize:
             try: p.stdout.close(); p.wait()
             except Exception: pass
+        if _skip_featurize:
+            _health = "vram-cache epoch (health skipped — same data as epoch 0)"
         if _health:
             print(f"  [HEALTH f{fi+1}] {_health}", flush=True)
         else:
