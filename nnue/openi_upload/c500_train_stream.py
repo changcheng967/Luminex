@@ -408,21 +408,24 @@ for epoch in range(EPOCHS):
         # v2 key: the featurizer now emits 140-byte records (result channel) —
         # stale 136-byte caches from earlier runs would silently misparse.
         _fc = f"/tmp/featcache2_{os.path.basename(frame_path)}.raw"
+        # Featurizer progress goes to stderr; pass it through so featurize
+        # phases are visible instead of silently swallowed by the pipeline.
+        _pass_err = None if os.environ.get("NNUE_QUIET") else None
         if _FENEVAL:
             dec = "xz -dc" if _FENEVAL.endswith(".xz") else "cat"
             cmd = f"{dec} {_FENEVAL} | {FEAT} --fen-eval --threads {NTH}"
-            p = subprocess.Popen(["bash", "-c", cmd], stdout=subprocess.PIPE, bufsize=0)
+            p = subprocess.Popen(["bash", "-c", cmd], stdout=subprocess.PIPE, bufsize=0, stderr=None)
         elif _FEAT_CACHE and epoch == 0:
             dec = "zstd -dc" if frame_path.endswith(".zst") else "xz -dc"
             cmd = f"{dec} {frame_path} | {FEAT} --stream --input /dev/stdin --threads {NTH} | tee {_fc}"
-            p = subprocess.Popen(["bash", "-c", cmd], stdout=subprocess.PIPE, bufsize=0)
+            p = subprocess.Popen(["bash", "-c", cmd], stdout=subprocess.PIPE, bufsize=0, stderr=None)
         elif _FEAT_CACHE and os.path.exists(_fc) and os.path.getsize(_fc) > REC * 1000:
             print(f"  [cache] reading {os.path.basename(_fc)} ({os.path.getsize(_fc)/1e6:.0f}MB)", flush=True)
             p = subprocess.Popen(["cat", _fc], stdout=subprocess.PIPE, bufsize=0)
         else:
             dec = "zstd -dc" if frame_path.endswith(".zst") else "xz -dc"
             cmd = f"{dec} {frame_path} | {FEAT} --stream --input /dev/stdin --threads {NTH}"
-            p = subprocess.Popen(["bash", "-c", cmd], stdout=subprocess.PIPE, bufsize=0)
+            p = subprocess.Popen(["bash", "-c", cmd], stdout=subprocess.PIPE, bufsize=0, stderr=None)
         part = 0
         _health = None   # set by the parts loop; stays None if the frame yields nothing
         while True:   # process frame in <=CAP-position VRAM loads (big frames -> multiple parts)
