@@ -1,0 +1,74 @@
+token: "PASTE_TOKEN_HERE  # live token lives only on the bot host"
+url: "https://lichess.org/"
+
+engine:
+  dir: "/mnt/workspace"
+  name: "lichex-engine"
+  working_dir: "/mnt/workspace"
+  protocol: "uci"
+  ponder: false
+
+  draw_or_resign:
+    resign_enabled: true
+    resign_score: -1000
+    resign_moves: 3
+    offer_draw_enabled: false
+    offer_draw_score: 0
+    offer_draw_moves: 10
+    offer_draw_pieces: 10
+
+  online_moves:
+    max_out_of_book_moves: 0
+    chessdb_book:
+      enabled: false
+    lichess_cloud_analysis:
+      enabled: false
+
+  homemade_options:
+
+  uci_options:
+    Threads: 8
+    Hash: 4096
+    NNUEFile: "/mnt/workspace/luminex_sf1_i8.nnue"
+    Move Overhead: 100
+
+  silence_stderr: false
+
+abort_time: 30
+fake_think_time: false
+rate_limiting_delay: 0
+move_overhead: 2000
+max_takebacks_accepted: 0
+quit_after_all_games_finish: false
+
+correspondence:
+  move_time: 60
+  checkin_period: 300
+  disconnect_time: 150
+  ponder: false
+
+challenge:
+  concurrency: 1
+  sort_by: "best"
+  accept_bot: true
+  max_increment: 60
+  min_increment: 0
+  max_base: 1800
+  min_base: 0
+  variants:
+    - standard
+  time_controls:
+    - bullet
+    - blitz
+    - rapid
+    - classical
+  modes:
+    - casual
+    - rated
+
+greeting:
+  hello: "Hi! I'm Luminex 6.2.0 (github.com/changcheng967/Luminex) — C++23 engine, SF-relabel NNUE, ~2880 blitz. Good luck!"
+  hello_spectators: "Luminex 6.2.0 (github.com/changcheng967/Luminex) — SF-relabel NNUE, 8 threads."
+  goodbye: "Thanks for the game!"
+
+pgn_directory: "pgn"
