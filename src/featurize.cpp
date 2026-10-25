@@ -43,6 +43,10 @@
 #include <algorithm>   // std::sort
 #include <sys/stat.h>  // mkdir
 #include <mutex>
+#include <deque>
+#include <map>
+#include <condition_variable>
+#include <malloc.h>   // mallopt (job-buffer reuse)
 #include <signal.h>    // SIGSEGV handler
 #include <execinfo.h>  // backtrace
 #include <sys/mman.h>  // mmap (lazy file load -> fits in 16 GB RAM)
@@ -153,63 +157,202 @@ static void crash_handler(int sig) {
     _exit(1);
 }
 
+// CRC-32 (IEEE, reflected) over the FEN bytes — matches Python's zlib.crc32.
+// Used by --skip-hash-frac to hold out a validation subset at the stream level:
+// positions whose FEN hash falls below the threshold are dropped from TRAIN so
+// the same positions can serve as a leak-free validation set (visit-multiplicity
+// repeats of a held-out position are dropped together — same FEN, same hash).
+static uint32_t crc32_ieee(const char* p, size_t n) {
+    static uint32_t table[256]; static bool init = false;
+    if (!init) {
+        for (uint32_t i = 0; i < 256; ++i) {
+            uint32_t c = i;
+            for (int k = 0; k < 8; ++k) c = (c & 1) ? (0xEDB88320u ^ (c >> 1)) : (c >> 1);
+            table[i] = c;
+        }
+        init = true;
+    }
+    uint32_t c = 0xFFFFFFFFu;
+    for (size_t i = 0; i < n; ++i) c = table[(c ^ (unsigned char)p[i]) & 0xFF] ^ (c >> 8);
+    return c ^ 0xFFFFFFFFu;
+}
+
 // --fen-eval mode: read "fen<tab>cp_white_rel" lines from stdin (one position per
 // line, e.g. from Gigafish), featurize each HalfKAv2 independently, emit the SAME
 // 140-byte records as --stream so the trainer consumes them identically. No game
 // replay (positions are independent). cp is white-relative; target flipped to stm-rel.
-static void fen_eval_mode(long max_pos) {
-    Position pos;
-    std::string line, tbuf;
-    tbuf.reserve(140 * 4096);
-    long n = 0;
-    auto flush = [&]() { if (!tbuf.empty()) { std::fwrite(tbuf.data(), 1, tbuf.size(), stdout); tbuf.clear(); } };
-    while (std::getline(std::cin, line)) {
-        if (max_pos && n >= max_pos) break;
-        auto tab = line.find_last_of('\t');
-        if (tab == std::string::npos) continue;
-        std::string fen = line.substr(0, tab);
-        float cp = (float)atoi(line.c_str() + tab + 1);   // cp is an int (centipawns); atoi never throws
-        pos.set(fen.c_str());
-        int wk = (int)pos.king_sq(WHITE), bk = (int)pos.king_sq(BLACK);
-        int16_t wfeat[MAX_PIECES], bfeat[MAX_PIECES]; int nw = 0, nb = 0;
+// Positions are independent, so this parallelizes over worker threads (the old
+// single-thread path parsed a full FEN per position and ran ~6x slower than the
+// game-replay mode); output order is preserved via sequence-numbered jobs.
+static bool fen_eval_one(Position& pos, const char* ls, const char* le, uint32_t skip_thresh,
+                         std::vector<char>& out) {
+    const char* tab = nullptr;
+    for (const char* p = le - 1; p >= ls && !tab; --p)
+        if (*p == '\t') tab = p;
+    if (!tab) return false;
+    if (skip_thresh && crc32_ieee(ls, (size_t)(tab - ls)) < skip_thresh) return false;
+    char fbuf[128];
+    size_t flen = (size_t)(tab - ls);
+    if (flen >= sizeof fbuf) return false;
+    std::memcpy(fbuf, ls, flen); fbuf[flen] = '\0';
+    float cp = (float)atoi(tab + 1);   // cp is an int (centipawns); atoi never throws
+    pos.set(fbuf);
+    int wk = (int)pos.king_sq(WHITE), bk = (int)pos.king_sq(BLACK);
+    int16_t wfeat[MAX_PIECES], bfeat[MAX_PIECES]; int nw = 0, nb = 0;
 #ifdef FAST_HALFKA
-        int xor_w  = ((wk & 7) < 4 ? 7 : 0);
-        int xor_b  = ((bk & 7) < 4 ? 7 : 0) ^ 56;
-        int bucket_w = KingBuckets[xor_w ^ wk] * NUM_PLANES;
-        int bucket_b = KingBuckets[xor_b ^ bk] * NUM_PLANES;
-        Bitboard occ = pos.pieces();
-        while (occ && nw < MAX_PIECES) {
-            int sq = (int)pop_lsb(occ);
-            Piece pc = pos.piece_on(Square(sq));
-            int pt = (int)piece_type_of(pc);
-            bool is_w = (color_of_piece(pc) == WHITE);
-            wfeat[nw++] = (int16_t)((xor_w ^ sq) + (pt * 2 + (is_w ? 0 : 1)) * NUM_SQ + bucket_w);
-            bfeat[nb++] = (int16_t)((xor_b ^ sq) + (pt * 2 + (is_w ? 1 : 0)) * NUM_SQ + bucket_b);
-        }
-#else
-        for (int sq = 0; sq < NUM_SQ && nw < MAX_PIECES; ++sq) {
-            Piece pc = pos.piece_on(Square(sq));
-            if (pc == NO_PIECE) continue;
-            wfeat[nw++] = (int16_t)halfka_idx(true,  wk, sq, pc);
-            bfeat[nb++] = (int16_t)halfka_idx(false, bk, sq, pc);
-        }
-#endif
-        for (int i = nw; i < MAX_PIECES; ++i) wfeat[i] = (int16_t)NUM_INPUTS;
-        for (int i = nb; i < MAX_PIECES; ++i) bfeat[i] = (int16_t)NUM_INPUTS;
-        bool stm_white = (pos.side_to_move() == WHITE);
-        float target = stm_white ? cp : -cp;
-        float stm = stm_white ? 1.0f : 0.0f;
-        float result = 0.0f;   // fen-eval input has no game result
-        char buf[140];
-        std::memcpy(buf, wfeat, 64); std::memcpy(buf + 64, bfeat, 64);
-        std::memcpy(buf + 128, &stm, 4); std::memcpy(buf + 132, &target, 4);
-        std::memcpy(buf + 136, &result, 4);
-        tbuf.insert(tbuf.end(), buf, buf + 140);
-        if (tbuf.size() >= 140 * 4096) { flush(); if ((++n) % 1000000 == 0) std::fprintf(stderr, "  %ldM\n", n/1000000); }
-        else ++n;
+    int xor_w  = ((wk & 7) < 4 ? 7 : 0);
+    int xor_b  = ((bk & 7) < 4 ? 7 : 0) ^ 56;
+    int bucket_w = KingBuckets[xor_w ^ wk] * NUM_PLANES;
+    int bucket_b = KingBuckets[xor_b ^ bk] * NUM_PLANES;
+    Bitboard occ = pos.pieces();
+    while (occ && nw < MAX_PIECES) {
+        int sq = (int)pop_lsb(occ);
+        Piece pc = pos.piece_on(Square(sq));
+        int pt = (int)piece_type_of(pc);
+        bool is_w = (color_of_piece(pc) == WHITE);
+        wfeat[nw++] = (int16_t)((xor_w ^ sq) + (pt * 2 + (is_w ? 0 : 1)) * NUM_SQ + bucket_w);
+        bfeat[nb++] = (int16_t)((xor_b ^ sq) + (pt * 2 + (is_w ? 1 : 0)) * NUM_SQ + bucket_b);
     }
-    flush();
-    std::fprintf(stderr, "fen-eval: featurized %ld positions\n", n);
+#else
+    for (int sq = 0; sq < NUM_SQ && nw < MAX_PIECES; ++sq) {
+        Piece pc = pos.piece_on(Square(sq));
+        if (pc == NO_PIECE) continue;
+        wfeat[nw++] = (int16_t)halfka_idx(true,  wk, sq, pc);
+        bfeat[nb++] = (int16_t)halfka_idx(false, bk, sq, pc);
+    }
+#endif
+    for (int i = nw; i < MAX_PIECES; ++i) wfeat[i] = (int16_t)NUM_INPUTS;
+    for (int i = nb; i < MAX_PIECES; ++i) bfeat[i] = (int16_t)NUM_INPUTS;
+    bool stm_white = (pos.side_to_move() == WHITE);
+    // TSV contract: the cp column is WHITE-relative and the trainer wants
+    // stm-relative targets — negate for black to move. (A dump tool once wrote
+    // the binpack's raw stm-relative score; the double negation flipped half
+    // the targets and collapsed a run. The trainer's stm-split correlation
+    // gate now catches this class before training starts.)
+    float target = stm_white ? cp : -cp;
+    float stm = stm_white ? 1.0f : 0.0f;
+    float result = 0.0f;   // fen-eval input has no game result
+    char buf[140];
+    std::memcpy(buf, wfeat, 64); std::memcpy(buf + 64, bfeat, 64);
+    std::memcpy(buf + 128, &stm, 4); std::memcpy(buf + 132, &target, 4);
+    std::memcpy(buf + 136, &result, 4);
+    out.insert(out.end(), buf, buf + 140);
+    return true;
+}
+
+static void fen_eval_mode(long max_pos, double skip_hash_frac, int nthreads) {
+    // Job buffers are multi-MB; keep them on the heap instead of per-allocation
+    // mmap/munmap (measured 40s of system time churning page faults otherwise).
+    mallopt(M_MMAP_THRESHOLD, 64 * 1024 * 1024);
+    const uint32_t skip_thresh = (uint32_t)(skip_hash_frac * 4294967296.0);
+    if (skip_hash_frac > 0.0)
+        std::fprintf(stderr, "fen-eval: skipping FEN hashes below %u (%.4f%% held out)\n",
+                     skip_thresh, skip_hash_frac * 100.0);
+    long n = 0;
+    const auto t0 = std::chrono::steady_clock::now();
+    long next_prog = 5000000;
+    auto progress = [&](bool force) {
+        if (n >= next_prog || force) {
+            double sec = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
+            std::fprintf(stderr, "fen-eval: %ldM positions, %.0fK pos/s\n",
+                         n / 1000000, n / 1000.0 / (sec > 1e-9 ? sec : 1e-9));
+            next_prog = n + 5000000;
+        }
+    };
+    if (nthreads <= 1) {
+        Position pos1;
+        std::string line;
+        while (std::getline(std::cin, line)) {
+            if (max_pos && n >= max_pos) break;
+            std::vector<char> out;
+            if (fen_eval_one(pos1, line.data(), line.data() + line.size(), skip_thresh, out)) {
+                std::fwrite(out.data(), 1, out.size(), stdout);
+                ++n;
+            }
+            progress(false);
+        }
+    } else {
+        // Unordered parallel path: the trainer reshuffles every epoch, so output
+        // order carries zero information — workers write completed blocks
+        // directly under a mutex. (An earlier ordered job-queue version spent
+        // most of its wall time serializing on sequence numbers.)
+        struct Block { std::string text; };
+        std::deque<Block*> ready;
+        std::mutex m, wm;
+        std::condition_variable cv_work;
+        bool eof = false;
+        auto worker = [&]() {
+            Position wpos;
+            std::vector<char> out;
+            for (;;) {
+                Block* b;
+                {
+                    std::unique_lock<std::mutex> lk(m);
+                    cv_work.wait(lk, [&] { return !ready.empty() || eof; });
+                    if (ready.empty()) return;
+                    b = ready.front(); ready.pop_front();
+                }
+                out.clear();
+                size_t st = 0;
+                while (st < b->text.size()) {
+                    size_t e = b->text.find('\n', st);
+                    if (e == std::string::npos) e = b->text.size();
+                    if (e > st) fen_eval_one(wpos, b->text.data() + st, b->text.data() + e, skip_thresh, out);
+                    st = e + 1;
+                }
+                {
+                    std::lock_guard<std::mutex> lw(wm);
+                    std::fwrite(out.data(), 1, out.size(), stdout);
+                    n += (long)(out.size() / 140);
+                    progress(false);
+                }
+                delete b;
+            }
+        };
+        std::vector<std::thread> pool;
+        for (int i = 0; i < nthreads; ++i) pool.emplace_back(worker);
+        std::string carry;
+        char rbuf[1 << 22];
+        while (true) {
+            size_t got = std::fread(rbuf, 1, sizeof rbuf, stdin);
+            if (got == 0) break;
+            size_t last_nl = 0, nl = std::string::npos;
+            // find last newline in the read chunk
+            for (size_t i = got; i > 0; --i) if (rbuf[i-1] == '\n') { nl = i - 1; break; }
+            std::string* block;
+            if (carry.empty()) {
+                if (nl == std::string::npos) { carry.append(rbuf, got); continue; }
+                block = new std::string(rbuf, nl + 1);
+                carry.append(rbuf + nl + 1, got - nl - 1);
+            } else {
+                block = new std::string(std::move(carry));
+                carry.clear();
+                if (nl == std::string::npos) { block->append(rbuf, got); }
+                else { block->append(rbuf, nl + 1); carry.append(rbuf + nl + 1, got - nl - 1); }
+            }
+            {
+                std::lock_guard<std::mutex> lk(m);
+                ready.push_back(reinterpret_cast<Block*>(block));
+                cv_work.notify_one();
+            }
+            // bounded queue: wait if workers are far behind
+            while (true) {
+                size_t rq;
+                { std::lock_guard<std::mutex> lk(m); rq = ready.size(); }
+                if (rq < (size_t)(4 * nthreads)) break;
+                std::this_thread::sleep_for(std::chrono::milliseconds(2));
+            }
+        }
+        {
+            std::lock_guard<std::mutex> lk(m);
+            eof = true;
+            cv_work.notify_all();
+        }
+        for (auto& t : pool) t.join();
+    }
+    double sec = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
+    std::fprintf(stderr, "fen-eval: featurized %ld positions in %.0fs (%.0fK pos/s)\n",
+                 n, sec, n / 1000.0 / (sec > 1e-9 ? sec : 1e-9));
 }
 
 int main(int argc, char** argv) {
@@ -220,6 +363,7 @@ int main(int argc, char** argv) {
     long max_pos = 0;                        // 0 = no limit
     bool stream_mode = false;                // --stream: emit 140-byte records to stdout (no .npy)
     bool fen_eval = false;                   // --fen-eval: read "fen<tab>cp" lines, emit 140-byte records
+    double skip_hash_frac = 0.0;             // --skip-hash-frac F: drop lines with crc32(fen)/2^32 < F (val holdout)
     int nthreads = (int)std::thread::hardware_concurrency();
     for (int i = 1; i < argc; ++i) {
         std::string a = argv[i];
@@ -230,12 +374,13 @@ int main(int argc, char** argv) {
         else if (a == "--threads") nthreads = std::atoi(next("0"));
         else if (a == "--stream")  stream_mode = true;
         else if (a == "--fen-eval") fen_eval = true;
+        else if (a == "--skip-hash-frac") skip_hash_frac = std::atof(next("0"));
         else { std::fprintf(stderr, "unknown arg: %s\n", a.c_str()); return 2; }
     }
 
     init_magic_bitboards();
     init_line_tables();
-    if (fen_eval) { fen_eval_mode(max_pos); return 0; }
+    if (fen_eval) { fen_eval_mode(max_pos, skip_hash_frac, nthreads); return 0; }
 
     if (!stream_mode) mkdir(out_dir, 0755);   // create output dir if missing (fopen "wb" won't)
     init_line_tables();   // CRITICAL: populates BetweenBB/LineBB; without it pin detection

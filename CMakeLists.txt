@@ -52,10 +52,13 @@ else()
     else()
         add_compile_options(-O3 -fno-exceptions -fno-rtti)
 
-        # CPU-specific optimizations
+        # CPU-specific optimizations. LUMINEX_MARCH overrides the default native
+        # for portable builds: the static featurizer binary is built on one
+        # machine and shipped to others, and a native build SIGILLs on older
+        # CPUs (caught on a Hygon Zen-1 pod, which lacks AVX2).
+        set(LUMINEX_MARCH "native" CACHE STRING "-march level (native, x86-64-v2, x86-64-v3, ...)")
         if(NOT CI)
-            # -march=native enables all CPU features (BMI2, AVX2, AVX512, etc.)
-            try_add_flag(-march=native)
+            try_add_flag(-march=${LUMINEX_MARCH})
             try_add_flag(-mtune=native)
         else()
             # CI: target common baseline
