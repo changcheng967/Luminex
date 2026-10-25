@@ -37,8 +37,16 @@ int main(int argc, char** argv) {
         if (e.ply < 8 || e.ply > 200) continue;
 
         const std::string fen = e.pos.fen();
-        const int n = std::snprintf(line, sizeof line, "%s\t%d\n", fen.c_str(),
-                                    static_cast<int>(e.score));
+        // TSV contract: the cp column is WHITE-relative. The binpack's score is
+        // SIDE-TO-MOVE-relative (nnue-pytorch's convention), so negate it when
+        // black is to move. Writing it raw flipped half the training targets
+        // once and collapsed a full run.
+        const auto sp1 = fen.find(' ');
+        const bool black_to_move = (sp1 != std::string::npos
+                                    && fen.size() > sp1 + 1 && fen[sp1 + 1] == 'b');
+        const int cp_out = black_to_move ? -static_cast<int>(e.score)
+                                         : static_cast<int>(e.score);
+        const int n = std::snprintf(line, sizeof line, "%s\t%d\n", fen.c_str(), cp_out);
         std::fwrite(line, 1, n, stdout);
         ++kept;
 
