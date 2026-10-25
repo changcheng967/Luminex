@@ -22,14 +22,31 @@ cd $WS/lichess-bot
 [ -d lib ] || git clone -q --depth 1 https://github.com/lichess-bot-devs/lichess-bot tmpclone && rsync -a tmpclone/ ./ 2>/dev/null; rm -rf tmpclone
 python3 -c "import requests, websockets, chess, rich" 2>/dev/null || python3 -m pip install -q -r requirements.txt
 
-# 3. stop any previous instance, start fresh
-pkill -f lichess-bot.py 2>/dev/null; sleep 1
-nohup python3 lichess-bot.py > $WS/bot.log 2>&1 &
-sleep 6
+# stop any previous instance — but NOT if it's healthy: each restart opens a new
+# event stream and Lichess rate-limits /api/stream/event (the bot then sits in a
+# backoff loop and misses challenges). Restart only when dead or crash-looping.
 if pgrep -f lichess-bot.py > /dev/null; then
+    if ! grep -q "Welcome" $WS/bot.log 2>/dev/null || grep -q "rate-limited" $WS/bot.log 2>/dev/null && \
+       [ "$(grep -c "rate-limited" $WS/bot.log 2>/dev/null)" -lt 20 ]; then
+        echo "[bot] already running and healthy — leaving it alone"
+        exit 0
+    fi
+    echo "[bot] existing instance unhealthy — restarting"
+    pkill -f lichess-bot.py; sleep 10
+else
+    sleep 1
+fi
+nohup python3 lichess-bot.py > $WS/bot.log 2>&1 &
+# Welcome alone is NOT proof of health: the event stream connects after auth,
+# and a rate-limited stream kills the process later. Require alive at +60s AND
+# no rate-limit line — a blocked stream retries ~1/s and dies within the minute.
+sleep 60
+if pgrep -f "python3 lichess-bot.py" > /dev/null && ! grep -q "rate-limited" $WS/bot.log; then
     echo "[bot] luminexbot is UP — awaiting challenges. Log: $WS/bot.log"
     grep -E "Welcome" $WS/bot.log | head -1
 else
-    echo "[bot] FAILED to start — last log lines:"; tail -5 $WS/bot.log
+    echo "[bot] FAILED to start (process died or stream rate-limited) — DO NOT retry"
+    echo "[bot] for at least 30 minutes; each attempt re-arms Lichess's block."
+    tail -3 $WS/bot.log | strings | head -3
     exit 1
 fi
