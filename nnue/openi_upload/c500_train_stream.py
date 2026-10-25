@@ -90,8 +90,7 @@ try:  # OpenI's code preparation strips execute bits; restore rather than crash
 except OSError:
     pass
 assert os.path.exists(FEAT), f"featurizer missing: {FEAT}"
-from luminex_nnue_train import LNNUE, save_nnue, NUM_INPUTS, V13NNUE
-_V13 = os.environ.get("NNUE_ARCH", "gen768") == "v13"
+from luminex_nnue_train import LNNUE, save_nnue, NUM_INPUTS
 _ANCHOR_W = float(os.environ.get("NNUE_ANCHOR_W", "0"))
 
 L1   = int(os.environ.get("NNUE_L1", "512"))
@@ -137,13 +136,13 @@ _RESULT_CP = float(os.environ.get("NNUE_RESULT_CP", "1000.0"))
 device = "cuda" if torch.cuda.is_available() else "cpu"
 OUT = os.environ.get("NNUE_OUT_NAME", "luminex_v6.nnue"); OUT_BASE = OUT[:-5] if OUT.endswith(".nnue") else OUT
 total_bytes = sum(os.path.getsize(f) for f in FRAMES)
-_arch_name = "V13 (factorized-8 FT, side feats, crelu)" if _V13 else "gen768"
+_arch_name = "gen768"
 _anchor_note = f" anchor_w={_ANCHOR_W}" if _ANCHOR_W > 0 else ""
 print(f"arch: {_arch_name}{_anchor_note}", flush=True)
 print(f"per-frame train (OOM-safe): {len(FRAMES)} frames, {total_bytes/1e9:.2f}GB, L1={L1} bs={BS} cap={CAP:,} feat_threads={NTH} grad-clip={_gc} device={device}", flush=True)
 print(f"loss: power={os.environ.get('NNUE_LOSS_POWER', '2.6')} in sigmoid(cp/{SCALE:.0f}) space, pos-weight w1={_POS_W1} w2={_POS_W2}{' (OFF)' if _POS_W1 == 0 else ''}, lambda=1.0 (pure eval — gamepack has no game results; SF end-lambda practice)", flush=True)
 
-model = (V13NNUE(dual_head=False) if _V13 else LNNUE(L1=L1)).to(device)
+model = LNNUE(L1=L1).to(device)
 gstep = 0  # must exist before resume check (fresh runs would NameError otherwise)
 _ck = None  # resume checkpoint dict (kept for SWA state restore further below)
 _resume = os.environ.get("NNUE_RESUME") or os.path.join(os.path.dirname(__file__) or ".", OUT_BASE + ".pt")
@@ -161,19 +160,14 @@ if os.path.exists(_resume) and os.environ.get("NNUE_RESUME", "1") != "0":
         # arch L1 from the tail's input width (robust to pairwise FTs: the
         # embedding is 2x wide but l2 always sees 2*L1)
         _ck_L1 = _ck["model"]["l2.weight"].shape[1] // 2
-        if _V13 and _ck["model"]["ft.weight"].shape[0] != V13NNUE().ft.weight.shape[0]:
-            # V13 checkpoints carry factorized FT rows; a mismatched (gen768)
-            # checkpoint cannot load shape-wise -- only same-arch resume is valid.
-            raise SystemExit("FATAL: NNUE_ARCH=v13 resume needs a V13 checkpoint "
-                             "(got a gen768 one). Scratch run: unset NNUE_RESUME.")
-        if (not _V13) and _ck_L1 != L1:
+        if _ck_L1 != L1:
             # Net2Net widening (Gen v1.3 Step 0): load old-width ckpt into wider model
             from luminex_nnue_train import LNNUE
             LNNUE.net2net_widen(model, _ck["model"], _ck_L1)
             gstep = _ck.get("gstep", 0)
             _opt_state = None  # old moments are shape-incompatible — fresh optimizer
             print(f"[NET2NET] widened {_ck_L1} -> {L1} from {_resume} at gstep={gstep} (optimizer fresh)", flush=True)
-        elif (not _V13) and (
+        elif (
             _ck["model"]["ft.weight"].shape != tuple(model.ft.weight.shape)
             or _ck["model"]["l2.weight"].shape != tuple(model.l2.weight.shape)
             or (getattr(model, 'num_buckets', 1) > 1 and 'bl2.0.weight' not in _ck["model"])
@@ -223,11 +217,6 @@ _swa_sess0 = gstep
 _ft_params = [model.ft.weight, model.ft_bias]
 _tail_w    = [model.l2.weight, model.l3.weight, model.out.weight]
 _tail_b    = [model.l2.bias, model.l3.bias, model.out.bias]
-if _V13:
-    # side projection trains with the tail groups — WITHOUT this it gets grads
-    # but NEVER updates (the pass-3 lin-head bug class, caught in review)
-    _tail_w += [model.side_proj.weight]
-    _tail_b += [model.side_proj.bias]
 _tail_wd = float(os.environ.get("NNUE_TAIL_WD", "1e-2"))
 # Per-group LR multipliers (pass-4 levers): the FT is converged after 3 passes,
 # the tiny tail can still move (tail mult), and a FRESH DOSL head needs to train
@@ -294,12 +283,10 @@ if gstep == 0 and _ck is None:  # fresh runs only — warm starts skip calibrati
     if device == "cuda": torch.cuda.synchronize()
     _sps = _CAL_STEPS / (_t.time() - _cal_t0)
     print(f"  [calibrate] {_sps:.1f} steps/s (BS={BS})", flush=True)
-    model = (V13NNUE(dual_head=False) if _V13 else LNNUE(L1=L1)).to(device)  # reset — calibration dirtied the weights
+    model = LNNUE(L1=L1).to(device)  # reset — calibration dirtied the weights
     # re-init optimizer (fresh model params) — same name-based groups as above
     _tw2 = [model.l2.weight, model.l3.weight, model.out.weight]
     _tb2 = [model.l2.bias, model.l3.bias, model.out.bias]
-    if _V13:
-        _tw2 += [model.side_proj.weight]; _tb2 += [model.side_proj.bias]
     opt = torch.optim.AdamW([
         {"params": [model.ft.weight, model.ft_bias], "weight_decay": 0.0},
         {"params": _tw2, "weight_decay": _tail_wd},
@@ -698,10 +685,6 @@ for epoch in range(EPOCHS):
                     _a = (torch.sigmoid(pred / SCALE).mean()
                           - torch.sigmoid(ti / SCALE).mean()) ** 2
                     loss = loss + _ANCHOR_W * _a
-                _v13_reg = getattr(model, "last_acc_reg", None)
-                if _v13_reg is not None and torch.is_tensor(_v13_reg):
-                    # int16-accumulator compatibility (V13): see V13NNUE.forward
-                    loss = loss + _v13_reg
                 if not torch.isfinite(loss):
                     print(f"  WARN: non-finite loss at step {gstep} — skipping batch "
                           f"(if this repeats, weights are already poisoned — restart)", flush=True)
