@@ -304,6 +304,13 @@ if _FRAMES_SKIP > 0 and _FRAMES_SKIP < len(FRAMES):
         _subset_frames.append(f); _subset_bytes += int(fb / 1.05)
 FRAMES = _subset_frames if _subset_frames else FRAMES[:1]  # at least 1 frame
 est_pos = sum(os.path.getsize(f) for f in FRAMES) // 1.05
+if _FENEVAL:
+    # est_pos above is the .xz BYTE size — meaningless for positions. Estimate
+    # from the measured test80 dump compression: 995MB xz = 50M lines ≈ 20
+    # compressed bytes per position (3.5GB raw text, ~70B/line, xz ratio 0.28).
+    # Drives the featurize-cache disk guard below; ±2x error only flips caching
+    # on/off, never correctness.
+    est_pos = int(sum(os.path.getsize(f) for f in FRAMES) / 20)
 EPOCHS = max(1, int(_total_visits / max(1, est_pos)))
 _max_ep = int(os.environ.get("NNUE_MAX_EPOCHS", "0"))  # optional hard cap (0 = budget-limited)
 if _max_ep > 0: EPOCHS = min(EPOCHS, _max_ep)
@@ -425,7 +432,15 @@ for epoch in range(EPOCHS):
         # Featurizer progress goes to stderr; pass it through so featurize
         # phases are visible instead of silently swallowed by the pipeline.
         _pass_err = None if os.environ.get("NNUE_QUIET") else None
-        if _FENEVAL:
+        if _FENEVAL and _FEAT_CACHE and epoch == 0:
+            dec = "xz -dc" if _FENEVAL.endswith(".xz") else "cat"
+            cmd = f"{dec} {_FENEVAL} | {FEAT} --fen-eval --threads {NTH} | tee {_fc}"
+            p = subprocess.Popen(["bash", "-c", cmd], stdout=subprocess.PIPE, bufsize=0, stderr=None)
+        elif _FENEVAL and _FEAT_CACHE and os.path.exists(_fc) and os.path.getsize(_fc) > REC * 1000:
+            # big fen-eval sets re-featurize per epoch otherwise (~15min for 300M pos)
+            print(f"  [cache] reading {os.path.basename(_fc)} ({os.path.getsize(_fc)/1e6:.0f}MB)", flush=True)
+            p = subprocess.Popen(["cat", _fc], stdout=subprocess.PIPE, bufsize=0)
+        elif _FENEVAL:
             dec = "xz -dc" if _FENEVAL.endswith(".xz") else "cat"
             cmd = f"{dec} {_FENEVAL} | {FEAT} --fen-eval --threads {NTH}"
             p = subprocess.Popen(["bash", "-c", cmd], stdout=subprocess.PIPE, bufsize=0, stderr=None)
