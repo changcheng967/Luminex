@@ -9,10 +9,11 @@ engine:
   ponder: false
 
   draw_or_resign:
-    resign_enabled: true
+    resign_enabled: false           # never resign: the engine is ~2880, not 3600 — down
+                                    # a queen it still swindles 2600s; play to mate
     resign_score: -1000
     resign_moves: 3
-    offer_draw_enabled: false
+    offer_draw_enabled: false       # no draw offers either: let the opponent ask
     offer_draw_score: 0
     offer_draw_moves: 10
     offer_draw_pieces: 10
