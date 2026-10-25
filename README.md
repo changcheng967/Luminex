@@ -4,9 +4,11 @@
 
 A UCI chess engine written in C++23. Luminex plays with an NNUE evaluation by
 default — a 768-wide HalfKAv2_hg network (Gen768, function-preserving Net2Net
-widening of the 512-wide predecessor) — and ships with a self-engineered
-hand-crafted evaluation (HCE) as an always-available fallback and tuning
-testbed.
+widening of the 512-wide predecessor), since v6.2.0 fine-tuned on
+Stockfish-relabel data (Leela self-play positions relabeled by deep Stockfish
+search — the same public training data Stockfish itself uses) — and ships with
+a self-engineered hand-crafted evaluation (HCE) as an always-available fallback
+and tuning testbed. Estimated strength: ~2880 Elo blitz.
 
 ## Download
 
@@ -20,7 +22,7 @@ Latest release: [github.com/changcheng967/Luminex/releases](https://github.com/c
 | Windows (MSVC) | `luminex-windows-x86-64.exe` |
 | macOS (Apple Silicon) | `luminex-macos-arm64` |
 
-Each release also attaches the current network (`luminex_gen768_i8.nnue`).
+Each release also attaches the current network (`luminex_sf1_i8.nnue`).
 Place it next to the binary — NNUE then loads automatically. Without the file
 (or on hardware without AVX2) the engine transparently falls back to HCE.
 
@@ -40,7 +42,7 @@ go movetime 1000
 | `Hash` | 256 | Transposition-table size in MB |
 | `Threads` | 1 | Search threads (lazy SMP; each thread owns its NNUE accumulator) |
 | `UseNNUE` | true | NNUE evaluation (automatic HCE fallback if unavailable) |
-| `NNUEFile` | `luminex_gen768_i8.nnue` | Path to the `.nnue` network file |
+| `NNUEFile` | `luminex_sf1_i8.nnue` | Path to the `.nnue` network file |
 | `Ponder` | false | pondering |
 | `Contempt` | 0 | Draw avoidance (centipawns) |
 | `Move Overhead` | 10 | Time-management safety margin (ms) |
@@ -74,9 +76,12 @@ Luminex has two interchangeable evaluation functions, selected at runtime via
 
 ## NNUE Training
 
-The current net is a 768-wide HalfKAv2_hg network obtained by
-function-preserving Net2Net widening of the 512-wide predecessor. Training and
-data tooling live under `nnue/` and `src/lc0pack.cpp`.
+The current net is a 768-wide HalfKAv2_hg network, warm-started from the
+Gen768 lineage and fine-tuned on Stockfish-relabel data (Leela positions with
+deep-Stockfish search labels, filtered to |eval| < 800 cp and ply 8-200).
+Training and data tooling live under `nnue/` and `src/lc0pack.cpp`: the
+streaming trainer, the SF-relabel binpack dumper, the featurizer, quantizers,
+validation-split tooling, and the SPSA search tuner.
 
 ## Build
 
