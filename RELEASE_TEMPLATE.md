@@ -3,7 +3,7 @@
 > One-line summary in **bold**: what changed + headline number + link to evidence.
 
 ## Highlights
-- 2–4 bullets. Each: **feature name** (commit link) — one sentence what + one sentence measured impact.
+- Bullets, as many as the release warrants. Each: **feature name** (commit link) — one sentence what + one sentence measured impact.
 
 ## Strength
 | Matchup | TC | Games | Score | Elo |
