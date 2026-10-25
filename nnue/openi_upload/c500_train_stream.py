@@ -307,6 +307,12 @@ est_pos = sum(os.path.getsize(f) for f in FRAMES) // 1.05
 EPOCHS = max(1, int(_total_visits / max(1, est_pos)))
 _max_ep = int(os.environ.get("NNUE_MAX_EPOCHS", "0"))  # optional hard cap (0 = budget-limited)
 if _max_ep > 0: EPOCHS = min(EPOCHS, _max_ep)
+if _FENEVAL and _max_ep <= 0:
+    # fen-eval: EPOCHS above divides the visit budget by the .xz BYTE size —
+    # meaningless for compressed TSV (it computed ~6 here). With the VRAM cache
+    # each extra epoch is pure training (no re-featurize), so raise the loop cap
+    # and let budget-hit / NNUE_T_MAX_STEPS govern, as the sizing line promises.
+    EPOCHS = max(EPOCHS, 4000)
 # Featurize-cache disk guard: caching every selected frame needs est_pos*REC bytes on
 # /tmp (~1.5TB for a full 74-frame run). If that doesn't fit, tee hits ENOSPC
 # mid-frame, the featurizer dies on SIGPIPE, and a full /tmp can also kill the
@@ -451,35 +457,43 @@ for epoch in range(EPOCHS):
             w, b, s, t, r = _VRAM_STORE[_vram_key]
             N = w.shape[0]
             print(f"  [vram-cache] epoch {epoch}: reusing {N:,} pos (no re-featurize)", flush=True)
-        while not _skip_featurize:   # process frame in <=CAP-position VRAM loads (big frames -> multiple parts)
-            ws, bs, ss, ts, rsl = [], [], [], [], []
-            got = 0
-            while got < CAP:
-                data = bytearray()
-                while len(data) < BUF * REC:
-                    d = p.stdout.read(min(1 << 20, BUF * REC - len(data)))
-                    if not d: break
-                    data += d
-                m = len(data) // REC
-                if m == 0: break
-                a = np.frombuffer(bytes(data[:m * REC]), dtype=np.uint8).reshape(m, REC)
-                ws.append(torch.from_numpy(a[:, :64].copy().view(np.int16).reshape(m, 32)).to(device))
-                bs.append(torch.from_numpy(a[:, 64:128].copy().view(np.int16).reshape(m, 32)).to(device))
-                ss.append(torch.from_numpy(a[:, 128:132].copy().view(np.float32).reshape(m)).to(device))
-                ts.append(torch.from_numpy(a[:, 132:136].copy().view(np.float32).reshape(m)).to(device))
-                rsl.append(torch.from_numpy(a[:, 136:140].copy().view(np.float32).reshape(m)).to(device))
-                got += m
-            if got == 0: break
-            part += 1
-            if part == 1: print(f"[featurizing+training frame {fi+1}/{len(FRAMES)} ...]", flush=True)
-            # cat each, FREE its list immediately -> avoids the 2x peak that OOM'd before
-            w = torch.cat(ws); del ws
-            b = torch.cat(bs); del bs
-            s = torch.cat(ss); del ss
-            t = torch.cat(ts); del ts
-            r = torch.cat(rsl); del rsl
-            N = got
-            print(f"  [frame {fi+1} part {part}: {N:,} pos -> train]", flush=True)
+        # One iteration per <=CAP-position VRAM part. A cache-hit epoch enters with
+        # w/b/s/t/r/N already restored above and must run the SAME training loop
+        # below — the old `while not _skip_featurize:` header skipped the whole
+        # body for cached epochs, making them 2-second no-ops that trained nothing.
+        while True:
+            if _skip_featurize:
+                part += 1
+                print(f"  [frame {fi+1} part {part}: {N:,} pos -> train (vram-cache)]", flush=True)
+            else:
+                ws, bs, ss, ts, rsl = [], [], [], [], []
+                got = 0
+                while got < CAP:
+                    data = bytearray()
+                    while len(data) < BUF * REC:
+                        d = p.stdout.read(min(1 << 20, BUF * REC - len(data)))
+                        if not d: break
+                        data += d
+                    m = len(data) // REC
+                    if m == 0: break
+                    a = np.frombuffer(bytes(data[:m * REC]), dtype=np.uint8).reshape(m, REC)
+                    ws.append(torch.from_numpy(a[:, :64].copy().view(np.int16).reshape(m, 32)).to(device))
+                    bs.append(torch.from_numpy(a[:, 64:128].copy().view(np.int16).reshape(m, 32)).to(device))
+                    ss.append(torch.from_numpy(a[:, 128:132].copy().view(np.float32).reshape(m)).to(device))
+                    ts.append(torch.from_numpy(a[:, 132:136].copy().view(np.float32).reshape(m)).to(device))
+                    rsl.append(torch.from_numpy(a[:, 136:140].copy().view(np.float32).reshape(m)).to(device))
+                    got += m
+                if got == 0: break
+                part += 1
+                if part == 1: print(f"[featurizing+training frame {fi+1}/{len(FRAMES)} ...]", flush=True)
+                # cat each, FREE its list immediately -> avoids the 2x peak that OOM'd before
+                w = torch.cat(ws); del ws
+                b = torch.cat(bs); del bs
+                s = torch.cat(ss); del ss
+                t = torch.cat(ts); del ts
+                r = torch.cat(rsl); del rsl
+                N = got
+                print(f"  [frame {fi+1} part {part}: {N:,} pos -> train]", flush=True)
             perm = torch.randperm(N, device=device)
             _POWER = float(os.environ.get("NNUE_LOSS_POWER", "2.6"))  # 0 = old sigmoid-MSE
             _FEN_SKIP = float(os.environ.get("NNUE_FEN_SKIP", "0"))  # 0=disabled; hard-drop was losing decisive positions
@@ -573,6 +587,11 @@ for epoch in range(EPOCHS):
                     except Exception: _l2 = ""
                     dt = time.time() - t0
                     print(f"  e{epoch} f{fi+1}p{part} step {gstep} loss={loss.item():.5f}{_l2} | {total_pos/1e6:.0f}M+{i/1e6:.0f}M | {gstep/max(dt,1):.1f} steps/s", flush=True)
+                if _T_MAX_FIXED > 0 and (gstep - _SEG0) >= _T_MAX_LIVE:
+                    # fixed horizon (NNUE_T_MAX_STEPS): cosine has annealed to LR=0 —
+                    # stop instead of idling at zero LR until the budget clock expires
+                    print(f">>> T_max reached at step {gstep} - saving & stopping", flush=True)
+                    _save_final("tmax")
                 if BUDGET and time.time() - t0 >= BUDGET:
                     del w, b, s, t, perm; torch.cuda.empty_cache()
                     try: p.stdout.close(); p.terminate()
@@ -606,17 +625,23 @@ for epoch in range(EPOCHS):
                 _health = f"unavailable ({_e})"
             # VRAM store decision: keep this frame's tensors for later epochs
             # only when the WHOLE frame fits with working room (single-part frames
-            # whose estimated bytes < free VRAM at epoch 0).
-            if _vram_store_here and part == 1 and _vram_frame_bytes(N) < _free_vram:
+            # whose estimated bytes < free VRAM at epoch 0). N < CAP proves this
+            # part ended early (= the frame is COMPLETE): caching part 1 of a
+            # multi-part frame would make later epochs silently train on a subset.
+            if _vram_store_here and part == 1 and N < CAP and _vram_frame_bytes(N) < _free_vram:
                 _VRAM_STORE[_vram_key] = (w, b, s, t, r)
                 print(f"  [vram-cache] stored {N:,} pos ({_vram_frame_bytes(N)/1e9:.1f}GB < {_free_vram/1e9:.0f}GB free)", flush=True)
             else:
+                # cache-hit epochs: drops LOCAL refs only — _VRAM_STORE keeps the tensors
                 del w, b, s, t, perm; torch.cuda.empty_cache()
+            if _skip_featurize:
+                break   # cache hit = exactly one restored part; this epoch's frame is done
         if not _skip_featurize:
             try: p.stdout.close(); p.wait()
             except Exception: pass
-        if _skip_featurize:
-            _health = "vram-cache epoch (health skipped — same data as epoch 0)"
+        # cached epochs now reach the shared health block inside the loop, so
+        # _health is real per-epoch MAE — no placeholder. If it's still None the
+        # frame genuinely produced nothing and the FATAL below must fire.
         if _health:
             print(f"  [HEALTH f{fi+1}] {_health}", flush=True)
         else:
