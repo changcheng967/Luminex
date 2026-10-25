@@ -90,11 +90,19 @@ class LNNUE(nn.Module):
         # (NPU-compatible; EmbeddingBag may be unsupported on Ascend). Both compute the same
         # accumulator. Use embbag on CUDA (speed), gather on NPU (compat).
         self.ft_mode = ft_mode
+        # Pairwise activation (v2 lever): FT width doubles per perspective and the
+        # post-accumulator activation becomes clamp(a) * clamp(b) over the two
+        # halves instead of clamp(x)^2. Products ACROSS two learned transforms —
+        # a signed AND-gate between feature groups. Tail input stays 2*L1 (the
+        # per-perspective output is L1 wide), so all tail shapes are unchanged.
+        # Warm start is exact: duplicated halves give clamp(x)^2 = SCReLU.
+        self.pairwise = _os.environ.get("NNUE_PAIRWISE", "0") == "1"
+        emb_dim = 2 * L1 if self.pairwise else L1
         if ft_mode == 'gather':
-            self.ft = nn.Linear(NUM_INPUTS, L1, bias=False)
+            self.ft = nn.Linear(NUM_INPUTS, emb_dim, bias=False)
         else:
-            self.ft = nn.EmbeddingBag(NUM_INPUTS + 1, L1, mode='sum', padding_idx=NUM_INPUTS)  # padding row frozen at zero
-        self.ft_bias = nn.Parameter(torch.zeros(L1))
+            self.ft = nn.EmbeddingBag(NUM_INPUTS + 1, emb_dim, mode='sum', padding_idx=NUM_INPUTS)  # padding row frozen at zero
+        self.ft_bias = nn.Parameter(torch.zeros(emb_dim))
         self.l2 = nn.Linear(2 * L1, L2)                # stm + nstm concatenated
         self.l3 = nn.Linear(L2, L3)
         self.out = nn.Linear(L3, 1)
@@ -170,6 +178,119 @@ class LNNUE(nn.Module):
         print(f"  [net2net] widened {old_L1} -> {new_L1} (+{D} dims, "
               f"FT randn*0.02, bias={LNNUE.EPS}, L2 new cols=0)", flush=True)
         return model
+
+    # ---------------------------------------------------------------
+    # v2 warm-start expansion (post-G0 levers). Two independent ops,
+    # both applied to the checkpoint state before load_state_dict:
+    #
+    #  pairwise duplication: FT columns [w+delta, w-delta]. The product
+    #  clamp(w+d)*clamp(w-d) differs from clamp(w)^2 only by O(delta^2)
+    #  while the symmetry breaks at O(delta) — without the antisymmetric
+    #  noise the two halves receive identical gradients and NEVER
+    #  separate (the duplicate would be a permanent no-op).
+    #
+    #  tail-width (J) widening: new L2 rows and new L3 columns get
+    #  N(0, 0.01^2) noise — NOT zeros in both matrices, which is the
+    #  dead-unit trap (zero L3 columns give exactly zero gradient to
+    #  the new L2 rows forever, and the run looks healthy while the
+    #  new units never learn). The small noise makes step-0 output
+    #  drift by O(0.01^2 * L1) — negligible, recovered within steps.
+    # ---------------------------------------------------------------
+    @staticmethod
+    def v2_expand(model, ckpt_state):
+        sd = {k: v.clone() for k, v in ckpt_state.items()}
+
+        # --- pairwise duplication (SCReLU checkpoint -> pairwise model) ---
+        if getattr(model, 'pairwise', False) and sd['ft.weight'].shape[1] == model.L1:
+            # Noise scale: the per-lane perturbation ACCUMULATES over ~31 active
+            # features (std delta*sqrt(31)), and the step-0 output drift is
+            # O(S^2) per lane summed over 1536 lanes. delta=0.0005 gives
+            # S^2 ~ 8e-6 (sub-centipawn); delta=0.01 measured 56cp — the
+            # function-preservation test caught it.
+            d = torch.randn_like(sd['ft.weight']) * 0.0005
+            d[-1, :] = 0.0                                  # padding row stays zero
+            sd['ft.weight'] = torch.cat([sd['ft.weight'] + d, sd['ft.weight'] - d], dim=1)
+            db = torch.randn_like(sd['ft_bias']) * 0.0005
+            sd['ft_bias'] = torch.cat([sd['ft_bias'] + db, sd['ft_bias'] - db], dim=0)
+            print("  [v2] pairwise: FT duplicated antisymmetrically (drift O(S^2), S~0.003)", flush=True)
+
+        # --- tail-width (J) widening: applies to plain and bucketed tails ---
+        def widen_tail(pre, lw_key, lb_key, l3_key):
+            if pre + lw_key not in sd:
+                return
+            old_J = sd[pre + lw_key].shape[0]
+            new_J = model.L2
+            if old_J >= new_J:
+                return
+            lw, lb = sd[pre + lw_key], sd[pre + lb_key] if pre + lb_key in sd else None
+            nw = torch.randn(new_J, lw.shape[1], device=lw.device) * 0.01
+            nw[:old_J] = lw
+            sd[pre + lw_key] = nw
+            if lb is not None:
+                nb = torch.zeros(new_J, device=lb.device)
+                nb[:old_J] = lb
+                sd[pre + lb_key] = nb
+            l3 = sd[pre + l3_key]                            # [L3, old_J]
+            n3 = torch.randn(l3.shape[0], new_J, device=l3.device) * 0.01
+            n3[:, :old_J] = l3
+            sd[pre + l3_key] = n3
+            print(f"  [v2] {pre or 'main'} tail widened J {old_J} -> {new_J} "
+                  f"(noise 0.01 both matrices — no dead units)", flush=True)
+
+        widen_tail('', 'l2.weight', 'l2.bias', 'l3.weight')
+        if getattr(model, 'num_buckets', 1) > 1:
+            if 'bl2.0.weight' not in sd:
+                # No-bucket checkpoint into a bucketed model: seed EVERY bucket
+                # with a copy of the plain tail (zero-init buckets would each
+                # need to relearn the eval from scratch — the DCU lesson).
+                for b in range(model.num_buckets):
+                    sd[f'bl2.{b}.weight'] = sd['l2.weight'].clone()
+                    sd[f'bl2.{b}.bias'] = sd['l2.bias'].clone()
+                    sd[f'bl3.{b}.weight'] = sd['l3.weight'].clone()
+                    sd[f'bl3.{b}.bias'] = sd['l3.bias'].clone()
+                    sd[f'bout.{b}.weight'] = sd['out.weight'].clone()
+                    sd[f'bout.{b}.bias'] = sd['out.bias'].clone()
+                print(f"  [v2] seeded all {model.num_buckets} bucket tails from the plain tail", flush=True)
+            else:
+                for b in range(model.num_buckets):
+                    widen_tail(f'bl2.{b}.', f'bl2.{b}.weight', f'bl2.{b}.bias', f'bl3.{b}.weight')
+
+        missing = model.load_state_dict(sd, strict=False)
+        if missing.missing_keys:
+            print(f"  [v2] missing keys after expansion: {missing.missing_keys}", flush=True)
+        return model
+
+    # ---------------------------------------------------------------
+    # Warm-start from a float LNN1 .nnue (the format quantize_i8 reads).
+    # Rebuilds a trainer state_dict so the same expansion/resume paths
+    # apply to engine-format nets (e.g. the committed p4 raw net).
+    # ---------------------------------------------------------------
+    @staticmethod
+    def load_lnn1_state(path):
+        import struct as _struct
+        import torch as _t
+        with open(path, 'rb') as f:
+            assert f.read(4) == b'LNN1', f"{path} is not a float LNN1 net"
+            L1, L2, L3, NI = _struct.unpack('iiii', f.read(16))
+
+            def rt():
+                (n,) = _struct.unpack('i', f.read(4))
+                import numpy as _np
+                return _t.frombuffer(bytearray(f.read(n * 4)), dtype=_t.float32).clone()
+
+            ft_w = rt().reshape(L1, NI)         # channel-major [L1, NI] (exporter transpose)
+            ft_b = rt()
+            l2_w = rt().reshape(L2, 2 * L1); l2_b = rt()
+            l3_w = rt().reshape(L3, L2);     l3_b = rt()
+            out_w = rt().reshape(1, L3);     out_b = rt()
+        pad = _t.zeros(1, L1)
+        return {
+            'ft.weight': _t.cat([ft_w.t(), pad], dim=0),   # [NI+1, L1], pad row zero
+            'ft_bias': ft_b,
+            'l2.weight': l2_w, 'l2.bias': l2_b,
+            'l3.weight': l3_w, 'l3.bias': l3_b,
+            'out.weight': out_w, 'out.bias': out_b.view(1),
+        }
         # FT init: effective fan-in ~32 active features/half (not NUM_INPUTS=24576).
         # std=1/sqrt(32) -> accumulator std ~1 (active SCReLU range).
         nn.init.normal_(self.ft.weight, mean=0.0, std=0.2)
@@ -216,11 +337,18 @@ class LNNUE(nn.Module):
         else:
             acc_w = self.ft(w_idx) + self.ft_bias
             acc_b = self.ft(b_idx) + self.ft_bias
+        if self.pairwise:
+            # h_persp = clamp(first half) * clamp(second half); duplicated halves
+            # at init reproduce SCReLU exactly (see v2_expand)
+            L = self.L1
+            pw = lambda a: torch.clamp(a[:, :L], 0.0, 1.0) * torch.clamp(a[:, L:], 0.0, 1.0)
+            acc_w, acc_b = pw(acc_w), pw(acc_b)
         stm_mask = stm.view(-1, 1).float()
         stm_acc = stm_mask * acc_w + (1 - stm_mask) * acc_b
         nstm_acc = (1 - stm_mask) * acc_w + stm_mask * acc_b
         h = torch.cat([stm_acc, nstm_acc], dim=1)
-        h = torch.clamp(h, 0.0, 1.0) ** 2
+        if not self.pairwise:
+            h = torch.clamp(h, 0.0, 1.0) ** 2
         if self.num_buckets > 1:
             # material count from active features (non-pad indices)
             mat = (w_idx < NUM_INPUTS).sum(dim=1).long()  # 0..32
@@ -585,6 +713,12 @@ def main():
 def save_nnue(model, path):
     """Export weights as float32 binary (C++ loader reads this). Quantization
     to int8/int16 happens in the C++ inference / a separate export step."""
+    if getattr(model, 'pairwise', False):
+        # The engine does not know the pairwise activation yet — a binary export
+        # would load with wrong semantics. Checkpoint (.pt) remains complete.
+        print(f"  [export] pairwise model: skipping {os.path.basename(path)} "
+              f"(engine loader lacks pairwise support; use the .pt)", flush=True)
+        return
     if isinstance(model, V13NNUE):
         return _save_nnue_v13(model, path)
     with open(path, 'wb') as f:

@@ -84,6 +84,11 @@ train_mod = _find_file("luminex_nnue_train.py")
 CODE_DIR = os.environ.get("CODE_DIR") or (os.path.dirname(train_mod) if train_mod else "/tmp/code")
 sys.path.insert(0, CODE_DIR)
 FEAT = os.environ.get("FEAT") or _find_file("luminex-featurize") or os.path.join(CODE_DIR, "luminex-featurize")
+try:  # OpenI's code preparation strips execute bits; restore rather than crash
+    if os.path.exists(FEAT) and not os.access(FEAT, os.X_OK):
+        os.chmod(FEAT, 0o755)
+except OSError:
+    pass
 assert os.path.exists(FEAT), f"featurizer missing: {FEAT}"
 from luminex_nnue_train import LNNUE, save_nnue, NUM_INPUTS, V13NNUE
 _V13 = os.environ.get("NNUE_ARCH", "gen768") == "v13"
@@ -145,8 +150,17 @@ _resume = os.environ.get("NNUE_RESUME") or os.path.join(os.path.dirname(__file__
 _opt_state = None  # deferred: optimizer doesn't exist yet at resume time
 if os.path.exists(_resume) and os.environ.get("NNUE_RESUME", "1") != "0":
     try:
-        _ck = torch.load(_resume, map_location=device, weights_only=False)
-        _ck_L1 = _ck["model"]["ft_bias"].shape[0]
+        if _resume.endswith(".nnue"):
+            # Warm start from an engine-format float net (LNN1): rebuild a trainer
+            # state_dict so the same expansion/resume paths apply. gstep starts 0.
+            from luminex_nnue_train import LNNUE as _LNN
+            _ck = {"model": {k: v.to(device) for k, v in _LNN.load_lnn1_state(_resume).items()}, "gstep": 0}
+            print(f"[RESUME] warm start from float net {_resume} (gstep fresh)", flush=True)
+        else:
+            _ck = torch.load(_resume, map_location=device, weights_only=False)
+        # arch L1 from the tail's input width (robust to pairwise FTs: the
+        # embedding is 2x wide but l2 always sees 2*L1)
+        _ck_L1 = _ck["model"]["l2.weight"].shape[1] // 2
         if _V13 and _ck["model"]["ft.weight"].shape[0] != V13NNUE().ft.weight.shape[0]:
             # V13 checkpoints carry factorized FT rows; a mismatched (gen768)
             # checkpoint cannot load shape-wise -- only same-arch resume is valid.
@@ -159,6 +173,19 @@ if os.path.exists(_resume) and os.environ.get("NNUE_RESUME", "1") != "0":
             gstep = _ck.get("gstep", 0)
             _opt_state = None  # old moments are shape-incompatible — fresh optimizer
             print(f"[NET2NET] widened {_ck_L1} -> {L1} from {_resume} at gstep={gstep} (optimizer fresh)", flush=True)
+        elif (not _V13) and (
+            _ck["model"]["ft.weight"].shape != tuple(model.ft.weight.shape)
+            or _ck["model"]["l2.weight"].shape != tuple(model.l2.weight.shape)
+            or (getattr(model, 'num_buckets', 1) > 1 and 'bl2.0.weight' not in _ck["model"])
+        ):
+            # v2 warm start: pairwise FT duplication and/or tail-width widening
+            # and/or bucket seeding — function-preserving (or O(noise^2)) by
+            # construction, see LNNUE.v2_expand.
+            from luminex_nnue_train import LNNUE
+            LNNUE.v2_expand(model, _ck["model"])
+            gstep = _ck.get("gstep", 0)
+            _opt_state = None
+            print(f"[V2] expanded warm start from {_resume} at gstep={gstep} (optimizer fresh)", flush=True)
         else:
             _miss = model.load_state_dict(_ck["model"], strict=False)
             if _miss.missing_keys:
@@ -227,6 +254,14 @@ if _opt_state:
         print(f"  [opt] state restore FAILED ({_e}) — rebuilding (1K-step warm-up)", flush=True)
 print(f"  [opt] FT params={sum(p.numel() for p in _ft_params):,} (wd=0, lr=x1) | tail params={sum(p.numel() for p in _tail_w + _tail_b):,} (wd={_tail_wd}, lr=x{_TAIL_LR_MULT}) | amsgrad=True", flush=True)
 
+# Wipe tripwire: fingerprint the loaded weights; any code path that rebuilds
+# the model between resume and training (calibration reset was one such bug)
+# aborts here instead of silently training from scratch for three hours.
+_wipe_sig = None
+if _ck is not None:
+    with torch.no_grad():
+        _wipe_sig = float(model.ft.weight.flatten()[::9973].abs().sum().item())
+
 # ---- AUTO-CONVERGENCE SIZING ------------------------------------------------
 # Calibrate throughput, then pick the largest data subset that can be trained
 # to convergence (loss plateaus + cosine LR reaches zero) inside the budget.
@@ -234,7 +269,9 @@ _OVERHEAD_SEC = 300   # startup, model init, first featurize warm-up
 _SPS_FALLBACK = 4.0   # conservative steps/sec if calibration unavailable (resume blocks skip calib)
 
 _sps = _SPS_FALLBACK
-if gstep == 0:  # fresh run: calibrate with a tiny forward+backward
+if gstep == 0 and _ck is None:  # fresh runs only — warm starts skip calibration
+    # (the calibration reset below REBUILDS the model, which would silently wipe
+    #  warm-started weights; resumed/warm runs take the fallback rate instead)
     import time as _t
     _dummy_w = torch.randint(0, 24576, (BS, 32), device=device, dtype=torch.long)
     _dummy_b = torch.randint(0, 24576, (BS, 32), device=device, dtype=torch.long)
@@ -414,7 +451,46 @@ gstep = globals().get('gstep', 0); t0 = time.time(); total_pos = 0   # keeps res
 # VRAM-resident featurize cache, shared across epochs: keyed per frame file.
 # Filled on epoch 0 when the whole frame's tensors fit in free VRAM; later
 # epochs reuse it and skip the featurize subprocess entirely.
+if _wipe_sig is not None:
+    with torch.no_grad():
+        _sig2 = float(model.ft.weight.flatten()[::9973].abs().sum().item())
+    assert abs(_sig2 - _wipe_sig) < 1e-3 * max(1.0, _wipe_sig), (
+        f"FATAL: model weights changed after resume ({_wipe_sig:.1f} -> {_sig2:.1f}) "
+        "— a code path rebuilt the model; refusing to train from scratch silently")
+    print(f"[wipe-guard] weights stable after resume (sig {_wipe_sig:.1f})", flush=True)
+
 _VRAM_STORE = {}
+# ---- validation holdout (NNUE_FENEVAL_VAL_FILE): per-epoch TRUE generalization.
+# The split MUST be FEN-hash based (split_val.py) so visit-multiplicity repeats
+# cannot land in both sides — the 105-epoch run's train MAE fell to 91.1 while
+# real strength collapsed; a position-level random split would have hidden it.
+_val_tensors = None
+_val_path = os.environ.get("NNUE_FENEVAL_VAL_FILE")
+if _val_path and _FENEVAL:
+    _vd = "xz -dc" if _val_path.endswith(".xz") else "cat"
+    _vproc = subprocess.Popen(["bash", "-c", f"{_vd} {_val_path} | {FEAT} --fen-eval --threads {NTH}"],
+                              stdout=subprocess.PIPE, bufsize=0, stderr=None)
+    _recs = bytearray()
+    while True:
+        _d = _vproc.stdout.read(1 << 20)
+        if not _d:
+            break
+        _recs += _d
+    try:
+        _vproc.stdout.close(); _vproc.wait()
+    except Exception:
+        pass
+    _va = np.frombuffer(bytes(_recs), dtype=np.uint8).reshape(-1, REC)
+    del _recs
+    _val_tensors = (
+        torch.from_numpy(_va[:, :64].copy().view(np.int16).reshape(-1, 32)).long().to(device),
+        torch.from_numpy(_va[:, 64:128].copy().view(np.int16).reshape(-1, 32)).long().to(device),
+        torch.from_numpy(_va[:, 128:132].copy().view(np.float32).reshape(-1)).to(device),
+        torch.from_numpy(_va[:, 132:136].copy().view(np.float32).reshape(-1)).to(device),
+    )
+    del _va
+    print(f"[VAL] held out {len(_val_tensors[3]):,} positions from {_val_path}", flush=True)
+
 for epoch in range(EPOCHS):
     for fi, frame_path in enumerate(FRAMES):
         _f0_step, _f0_t = gstep, time.time()   # per-frame rate measurement (T_max refinement)
@@ -428,21 +504,50 @@ for epoch in range(EPOCHS):
         # epochs read the cache (saves ~70s/frame — 25%+ of multi-epoch budget).
         # v2 key: the featurizer now emits 140-byte records (result channel) —
         # stale 136-byte caches from earlier runs would silently misparse.
+        # Validation holdout at the STREAM level: when a val file is set, the train
+        # featurizer drops every position whose FEN hash falls below the threshold
+        # (identical crc32/threshold math in split_val.py / extract_val) so the
+        # train and val sets are exact complements from ONE uploaded file.
+        _val_frac = float(os.environ.get("NNUE_VAL_FRAC", "0.005"))
+        _skip = f" --skip-hash-frac {_val_frac}" if (_val_tensors is not None and _val_frac > 0) else ""
+        # decompress-once raw cache: xz decode is single-threaded (~0.5M pos/s)
+        # but the MT featurizer does 3.6M/s on plain text; teeing epoch 0's
+        # decompression to /tmp makes later epochs ~7x cheaper. Guarded by disk.
+        _raw_cache = f"/tmp/feneval_raw_{os.path.basename(str(frame_path))}"
+        try:
+            import shutil as _sh2
+            _need_raw = int(os.path.getsize(_FENEVAL) * (8 if _FENEVAL.endswith(".xz") else 3 if _FENEVAL.endswith(".zst") else 0))
+            _raw_cache_ok = _need_raw > 0 and _sh2.disk_usage("/tmp").free > _need_raw * 1.1
+        except Exception:
+            _raw_cache_ok = False
         _fc = f"/tmp/featcache2_{os.path.basename(frame_path)}.raw"
         # Featurizer progress goes to stderr; pass it through so featurize
         # phases are visible instead of silently swallowed by the pipeline.
         _pass_err = None if os.environ.get("NNUE_QUIET") else None
         if _FENEVAL and _FEAT_CACHE and epoch == 0:
-            dec = "xz -dc" if _FENEVAL.endswith(".xz") else "cat"
-            cmd = f"{dec} {_FENEVAL} | {FEAT} --fen-eval --threads {NTH} | tee {_fc}"
+            dec = ("xz -T0 -dc" if _FENEVAL.endswith(".xz") else "zstd -dc") if _FENEVAL.endswith((".xz", ".zst")) else "cat"
+            cmd = f"{dec} {_FENEVAL} | {FEAT} --fen-eval --threads {NTH}{_skip} | tee {_fc}"
             p = subprocess.Popen(["bash", "-c", cmd], stdout=subprocess.PIPE, bufsize=0, stderr=None)
         elif _FENEVAL and _FEAT_CACHE and os.path.exists(_fc) and os.path.getsize(_fc) > REC * 1000:
             # big fen-eval sets re-featurize per epoch otherwise (~15min for 300M pos)
             print(f"  [cache] reading {os.path.basename(_fc)} ({os.path.getsize(_fc)/1e6:.0f}MB)", flush=True)
             p = subprocess.Popen(["cat", _fc], stdout=subprocess.PIPE, bufsize=0)
+        elif _FENEVAL and _FENEVAL.endswith((".xz", ".zst")) and os.path.exists(_raw_cache) and os.path.getsize(_raw_cache) > 1e8:
+            # raw text cached by epoch 0's tee: cat + MT featurize runs ~3.6M pos/s
+            # vs ~0.5M/s through single-threaded xz decode
+            print(f"  [raw-cache] reading {os.path.basename(_raw_cache)} "
+                  f"({os.path.getsize(_raw_cache)/1e9:.1f}GB)", flush=True)
+            cmd = f"cat {_raw_cache} | {FEAT} --fen-eval --threads {NTH}{_skip}"
+            p = subprocess.Popen(["bash", "-c", cmd], stdout=subprocess.PIPE, bufsize=0, stderr=None)
+        elif _FENEVAL and _FENEVAL.endswith((".xz", ".zst")) and _raw_cache_ok and epoch == 0:
+            # epoch 0: tee the decompressed text to /tmp while featurizing at the
+            # xz-bound rate (the tee adds no wall time; later epochs skip xz entirely)
+            dec = "xz -T0 -dc" if _FENEVAL.endswith(".xz") else "zstd -dc"
+            cmd = f"{dec} {_FENEVAL} | tee {_raw_cache} | {FEAT} --fen-eval --threads {NTH}{_skip}"
+            p = subprocess.Popen(["bash", "-c", cmd], stdout=subprocess.PIPE, bufsize=0, stderr=None)
         elif _FENEVAL:
-            dec = "xz -dc" if _FENEVAL.endswith(".xz") else "cat"
-            cmd = f"{dec} {_FENEVAL} | {FEAT} --fen-eval --threads {NTH}"
+            dec = ("xz -T0 -dc" if _FENEVAL.endswith(".xz") else "zstd -dc") if _FENEVAL.endswith((".xz", ".zst")) else "cat"
+            cmd = f"{dec} {_FENEVAL} | {FEAT} --fen-eval --threads {NTH}{_skip}"
             p = subprocess.Popen(["bash", "-c", cmd], stdout=subprocess.PIPE, bufsize=0, stderr=None)
         elif _FEAT_CACHE and epoch == 0:
             dec = "zstd -dc" if frame_path.endswith(".zst") else "xz -dc"
@@ -532,6 +637,23 @@ for epoch in range(EPOCHS):
                     assert 0 <= int(bi.min().item()) and int(bi.max().item()) <= NUM_INPUTS, "bad black feature idx"
                     assert bool(((si == 0.0) | (si == 1.0)).all()), "bad stm values (not 0/1)"
                     assert bool(((ri == -1.0) | (ri == 0.0) | (ri == 1.0)).all()), "bad result values (not -1/0/+1)"
+                    # Label-convention gate (the 589M incident): with a warm-started
+                    # model, predictions must correlate POSITIVELY with targets
+                    # within EACH side-to-move half. A stm-vs-white-relative score
+                    # mix flips one half negative — detectable before any training.
+                    if _ck is not None:
+                        with torch.no_grad():
+                            _g = min(8192, wi.shape[0])
+                            _gp = model(wi[:_g], bi[:_g], si[:_g]).float()
+                        for _nm, _mask in (("WTM", si[:_g] > 0.5), ("BTM", si[:_g] < 0.5)):
+                            if int(_mask.sum()) < 512:
+                                continue
+                            _c = float(torch.corrcoef(torch.stack(
+                                [_gp[_mask], ti[:_g][_mask]]))[0, 1])
+                            assert _c > 0.3, (
+                                f"LABEL CONVENTION FAIL: corr(pred,target) on {_nm} = {_c:+.3f} "
+                                f"(negative ⇒ the cp column's stm convention is flipped for this half)")
+                        print("  [DATA] stm-split correlation gate PASS (labels consistent)", flush=True)
                 # Smart FEN skip: drop positions where |target| is extreme (>800cp)
                 # — these are usually won/lost positions where eval adds noise
                 if _FEN_SKIP > 0:
@@ -659,6 +781,17 @@ for epoch in range(EPOCHS):
         # frame genuinely produced nothing and the FATAL below must fire.
         if _health:
             print(f"  [HEALTH f{fi+1}] {_health}", flush=True)
+            if _val_tensors is not None:
+                with torch.no_grad():
+                    _m = min(200000, len(_val_tensors[3]))
+                    _vpred = model(_val_tensors[0][:_m], _val_tensors[1][:_m], _val_tensors[2][:_m]).float()
+                _vmae = (_vpred - _val_tensors[3][:_m].clamp(-1500.0, 1500.0)).abs().mean().item()
+                try:
+                    _gap = _vmae - _mae
+                except NameError:
+                    _gap = float("nan")
+                print(f"  [VAL f{fi+1}] MAE={_vmae:.1f}cp  train-val gap={_gap:+.1f}cp "
+                      f"(sustained gap above 1.0cp = memorizing, not learning)", flush=True)
         else:
             # A frame that yields ZERO positions means the featurizer crashed
             # (e.g. binary/glibc mismatch) — an empty epoch must never "succeed".
