@@ -271,3 +271,20 @@ non-result signals (best_q target swap, deblunder filters) or leaves the
 data entirely (search-side adaptation to V13's eval scale).
 
 ---
+
+---
+
+## v2 program (in progress)
+
+v1 (gen768, spec in V1-GEN768.md) is the shipped architecture. The v2 program
+adds levers decided by measurement: the G0 battery (linear head R2 0.196 vs
+full-net 0.515 - interactions dominate) and a six-arm comparison on a 14M
+slice (baseline / 4 buckets / J32 / pairwise / pairwise+J32 / over-capacity
+probe). Settled so far: int16 accumulator by range-constrained training,
+eight whole-tail material buckets with copy-seeded warm start, a PSQT-style
+linear rider, rounded requantization. Gated on the arms: tail width 32,
+pairwise activation, P/N/K threat features. Discipline from the 105-epoch
+overfit incident: FEN-hash validation holdouts, 2-8 epochs over large unique
+sets, per-epoch val MAE with a memorization alarm, and a label-convention
+gate (a raw stm-relative dump once flipped half the targets and collapsed a
+full run; fixed at the dump source and gated at train time).
