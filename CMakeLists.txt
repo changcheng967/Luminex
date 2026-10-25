@@ -1,5 +1,14 @@
 cmake_minimum_required(VERSION 3.20)
-project(Luminex VERSION 6.2.0 LANGUAGES CXX)
+# Single source of truth for the version: src/luminex.h (ENGINE_VERSION).
+# Bump the version THERE only — CMake reads it so project(), installers, and
+# the UCI id line can never disagree again (the v6.2.0 release shipped with
+# binaries reporting 6.1.0 because the string lived in two places).
+file(READ "${CMAKE_CURRENT_SOURCE_DIR}/src/luminex.h" _LUX_HDR)
+string(REGEX MATCH "ENGINE_VERSION = \"([0-9]+\\.[0-9]+\\.[0-9]+)\"" _LUX_VER "${_LUX_HDR}")
+if(NOT CMAKE_MATCH_1)
+    message(FATAL_ERROR "cannot parse ENGINE_VERSION from src/luminex.h")
+endif()
+project(Luminex VERSION ${CMAKE_MATCH_1} LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
