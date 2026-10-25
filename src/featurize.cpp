@@ -190,6 +190,9 @@ static bool fen_eval_one(Position& pos, const char* ls, const char* le, uint32_t
     for (const char* p = le - 1; p >= ls && !tab; --p)
         if (*p == '\t') tab = p;
     if (!tab) return false;
+    // quiet flag column (optional, default 0 = quiet): 1 capture, 2 in-check
+    int quiet = 0;
+    if (le > tab + 1) quiet = atoi(tab + 1);
     if (skip_thresh && crc32_ieee(ls, (size_t)(tab - ls)) < skip_thresh) return false;
     char fbuf[128];
     size_t flen = (size_t)(tab - ls);
@@ -231,7 +234,9 @@ static bool fen_eval_one(Position& pos, const char* ls, const char* le, uint32_t
     // gate now catches this class before training starts.)
     float target = stm_white ? cp : -cp;
     float stm = stm_white ? 1.0f : 0.0f;
-    float result = 0.0f;   // fen-eval input has no game result
+    // quiet flag rides in the result channel (unused, always 0, for fen-eval
+    // data): 0 quiet, 1 capture-best, 2 in-check. Round-3 loss weights by it.
+    float result = static_cast<float>(quiet);
     char buf[140];
     std::memcpy(buf, wfeat, 64); std::memcpy(buf + 64, bfeat, 64);
     std::memcpy(buf + 128, &stm, 4); std::memcpy(buf + 132, &target, 4);

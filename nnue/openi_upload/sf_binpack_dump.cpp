@@ -46,7 +46,16 @@ int main(int argc, char** argv) {
                                     && fen.size() > sp1 + 1 && fen[sp1 + 1] == 'b');
         const int cp_out = black_to_move ? -static_cast<int>(e.score)
                                          : static_cast<int>(e.score);
-        const int n = std::snprintf(line, sizeof line, "%s\t%d\n", fen.c_str(), cp_out);
+        // Quiet flags for round-3 training: the engine consumes eval at quiet
+        // nodes only (qsearch resolves checks and captures), so the loss should
+        // weight positions by the same classes. Both derive from the stored
+        // move: in-check = the mover was in check; capture-best = the binpack's
+        // best move takes material. Third column: 0 quiet, 1 capture, 2 check.
+        int quiet = 0;
+        if (!e.pos.checkers().empty()) quiet = 2;
+        else if (e.isCapturingMove()) quiet = 1;
+        const int n = std::snprintf(line, sizeof line, "%s\t%d\t%d\n",
+                                    fen.c_str(), cp_out, quiet);
         std::fwrite(line, 1, n, stdout);
         ++kept;
 

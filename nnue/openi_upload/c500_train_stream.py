@@ -110,6 +110,16 @@ _wc = float(os.environ.get("NNUE_WCLAMP", "0"))          # OFF (fallback only; r
 # default here too: only enable with values you intend to A/B.
 _POS_W1 = float(os.environ.get("NNUE_POS_W1", "0"))    # 0 = OFF (SF default)
 _POS_W2 = float(os.environ.get("NNUE_POS_W2", "0.5"))  # SF default
+# Quiet-robust loss (round 3): NNUE_QUIET_LOSS="quiet,capture,check" — weights
+# per position class from the dump's flag column. The engine consumes eval at
+# quiet nodes only; the tactical tail is label noise (the sf1-vs-full law).
+_QUIET_MODE = bool(os.environ.get("NNUE_QUIET_LOSS"))
+try:
+    _QUIET_WQ, _QUIET_WC, _QUIET_WI = (
+        [float(x) for x in os.environ["NNUE_QUIET_LOSS"].split(",")] + [0.0] * 3)[:3]
+except (KeyError, ValueError):
+    _QUIET_MODE = False
+    _QUIET_WQ = _QUIET_WC = _QUIET_WI = 0.0
 # DOSL dual-head (Step-0): aux linear head trained alongside the full net so it is
 # a standalone-usable qsearch stand-pat. Warmup at lam=1.0 (head alone must be a
 # competent eval), then joint lam=0.25 persists as the anchor loss throughout.
@@ -623,7 +633,11 @@ for epoch in range(EPOCHS):
                     assert 0 <= int(wi.min().item()) and int(wi.max().item()) <= NUM_INPUTS, "bad white feature idx"
                     assert 0 <= int(bi.min().item()) and int(bi.max().item()) <= NUM_INPUTS, "bad black feature idx"
                     assert bool(((si == 0.0) | (si == 1.0)).all()), "bad stm values (not 0/1)"
-                    assert bool(((ri == -1.0) | (ri == 0.0) | (ri == 1.0)).all()), "bad result values (not -1/0/+1)"
+                    # result channel carries the quiet flag for fen-eval data:
+                    # 0 quiet, 1 capture-best, 2 in-check (gamepacks keep -1/0/+1)
+                    _fen_quiet = bool(((ri == 0.0) | (ri == 1.0) | (ri == 2.0)).all())
+                    _game_res = bool(((ri == -1.0) | (ri == 0.0) | (ri == 1.0)).all())
+                    assert _fen_quiet or _game_res, "bad result/quiet values"
                     # Label-convention gate (the 589M incident): with a warm-started
                     # model, predictions must correlate POSITIVELY with targets
                     # within EACH side-to-move half. A stm-vs-white-relative score
@@ -653,31 +667,45 @@ for epoch in range(EPOCHS):
                     if _lam < 1.0:
                         ti = _lam * ti + (1.0 - _lam) * _RESULT_CP * torch.where(si == 1.0, ri, -ri)
                 opt.zero_grad()
+                # quiet-robust weights (NNUE_QUIET_LOSS="w_q,w_c,w_i", e.g. "1,0.15,0"):
+                # per-sample weights from the flag channel; None when disabled or the
+                # data carries game results (-1/0/+1) instead of quiet flags.
+                _qw = None
+                if _QUIET_MODE and (ri == 2.0).any():
+                    _qw = torch.where(ri == 0.0, _QUIET_WQ,
+             torch.where(ri == 1.0, _QUIET_WC, _QUIET_WI))
                 if os.environ.get("NNUE_AUTOCAST", "1") != "0":
                     ctx_ac = torch.autocast(device_type=device, dtype=torch.bfloat16)
                 else:
                     ctx_ac = torch.autocast(device_type=device, enabled=False)   # fp32 (no bf16 drift)
                 with ctx_ac:
                     pred = model(wi, bi, si)
-                    if _POWER > 0:
-                        # Power-2.6 loss in SIGMOID space (SF's proven formula):
-                        # diff = |σ(pred/SCALE) - σ(target/SCALE)|, loss = diff^2.6
-                        # NOT raw cp space — raw cp gradients are ~6500x larger and
-                        # get annihilated by gradient clipping (the bug that caused
-                        # loss to flatline at ~230K with zero effective learning)
-                        _sdiff = (torch.sigmoid(pred / SCALE) - torch.sigmoid(ti / SCALE)).abs()
-                        _pterms = _sdiff ** _POWER
-                        if _POS_W1 > 0:
-                            # SF position weighting, weight-normalized exactly like
-                            # SF: loss = (terms*w).sum()/w.sum() — not w*mean(), so
-                            # the loss scale stays comparable to the unweighted run.
-                            _pf = torch.sigmoid(ti / SCALE)
-                            _pw = 1.0 + (2.0 ** _POS_W1 - 1.0) * ((_pf - 0.5) ** 2 * _pf * (1.0 - _pf)) ** _POS_W2
-                            loss = (_pterms * _pw).sum() / _pw.sum()
-                        else:
-                            loss = _pterms.mean()
+                if _POWER > 0:
+                    # Power-2.6 loss in SIGMOID space (SF's proven formula):
+                    # diff = |σ(pred/SCALE) - σ(target/SCALE)|, loss = diff^2.6
+                    # NOT raw cp space — raw cp gradients are ~6500x larger and
+                    # get annihilated by gradient clipping (the bug that caused
+                    # loss to flatline at ~230K with zero effective learning)
+                    _sdiff = (torch.sigmoid(pred / SCALE) - torch.sigmoid(ti / SCALE)).abs()
+                    _pterms = _sdiff ** _POWER
+                    if _POS_W1 > 0:
+                        # SF position weighting, weight-normalized exactly like
+                        # SF: loss = (terms*w).sum()/w.sum() — not w*mean(), so
+                        # the loss scale stays comparable to the unweighted run.
+                        _pf = torch.sigmoid(ti / SCALE)
+                        _pw = 1.0 + (2.0 ** _POS_W1 - 1.0) * ((_pf - 0.5) ** 2 * _pf * (1.0 - _pf)) ** _POS_W2
+                        loss = (_pterms * _pw).sum() / _pw.sum()
+                    elif _qw is not None:
+                        # Round-3 quiet-robust loss: weight-normalized per-sample
+                        # weights from the quiet flag channel (0 quiet / 1 capture /
+                        # 2 in-check). The engine consumes eval at quiet nodes only;
+                        # this stops capacity flowing into the tactical tail where
+                        # labels are noise (the sf1-vs-full law).
+                        loss = (_pterms * _qw).sum() / _qw.sum()
                     else:
-                        loss = ((torch.sigmoid(pred / SCALE) - torch.sigmoid(ti / SCALE)) ** 2).mean()
+                        loss = _pterms.mean()
+                else:
+                    loss = ((torch.sigmoid(pred / SCALE) - torch.sigmoid(ti / SCALE)) ** 2).mean()
                 if _ANCHOR_W > 0:
                     # Anti-drift anchor (p5/p6 lesson): the power loss is nearly
                     # blind to constant stm-relative offsets; pin the batch mean
