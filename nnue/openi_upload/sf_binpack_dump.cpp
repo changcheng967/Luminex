@@ -52,7 +52,7 @@ int main(int argc, char** argv) {
         // move: in-check = the mover was in check; capture-best = the binpack's
         // best move takes material. Third column: 0 quiet, 1 capture, 2 check.
         int quiet = 0;
-        if (!e.pos.checkers().empty()) quiet = 2;
+        if (!e.pos.checkers().isEmpty()) quiet = 2;
         else if (e.isCapturingMove()) quiet = 1;
         const int n = std::snprintf(line, sizeof line, "%s\t%d\t%d\n",
                                     fen.c_str(), cp_out, quiet);
