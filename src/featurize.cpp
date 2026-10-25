@@ -190,7 +190,9 @@ static bool fen_eval_one(Position& pos, const char* ls, const char* le, uint32_t
     for (const char* p = le - 1; p >= ls && !tab; --p)
         if (*p == '\t') tab = p;
     if (!tab) return false;
-    // quiet flag column (optional, default 0 = quiet): 1 capture, 2 in-check
+    // quiet flag column (optional): 1 capture, 2 in-check. When absent, compute
+    // what the FEN alone gives: in-check (capture-best needs the binpack's move).
+    // The Luminex Position knows check state once set() has run (below).
     int quiet = 0;
     if (le > tab + 1) quiet = atoi(tab + 1);
     if (skip_thresh && crc32_ieee(ls, (size_t)(tab - ls)) < skip_thresh) return false;
@@ -200,6 +202,9 @@ static bool fen_eval_one(Position& pos, const char* ls, const char* le, uint32_t
     std::memcpy(fbuf, ls, flen); fbuf[flen] = '\0';
     float cp = (float)atoi(tab + 1);   // cp is an int (centipawns); atoi never throws
     pos.set(fbuf);
+    // quiet flag: column value if present, else derived from the FEN —
+    // in-check positions carry pure label noise for a static eval.
+    if (quiet == 0 && pos.checkers()) quiet = 2;
     int wk = (int)pos.king_sq(WHITE), bk = (int)pos.king_sq(BLACK);
     int16_t wfeat[MAX_PIECES], bfeat[MAX_PIECES]; int nw = 0, nb = 0;
 #ifdef FAST_HALFKA
