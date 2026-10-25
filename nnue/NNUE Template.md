@@ -1,3 +1,5 @@
+<!-- Blank template. Filled examples: V1-GEN768.md (shipped), V13.md (experimental). -->
+
 # NNUE Architecture Specification: [Network Name / Version]
 
 ## 1. General Metadata
