@@ -289,15 +289,18 @@ sets, per-epoch val MAE with a memorization alarm, and a label-convention
 gate (a raw stm-relative dump once flipped half the targets and collapsed a
 full run; fixed at the dump source and gated at train time).
 
-### Correction (Oct 2026): the six-arm suite was a no-op
+### Correction of a correction (Oct 2026): the six-arm suite was real
 
-The trainer that ran the six-arm suite never implemented
-NNUE_BUCKETS / NNUE_L2 / NNUE_PAIRWISE — the env vars were parsed by nothing
-and silently ignored, so the "buckets ≈ neutral / J32 null / pairwise null"
-rows measured run-to-run noise between identical baseline runs. Every
-structural conclusion drawn from that table is void: tail width 32 and
-pairwise were never tested, only never applied. The regime critique
-(28 epochs on a 14M slice) still stands, and is now moot. Consequence for
-the v2 ladder: T1 (bucketed tails, L2 16→32) is untested territory, not
-pre-rejected, and any future arm script must assert the trainer acknowledges
-each lever (grep the env var in the trainer before trusting the arm).
+An earlier note here claimed the suite was a no-op because the trainer
+didn't parse NNUE_BUCKETS / NNUE_L2 / NNUE_PAIRWISE. That was a misdiagnosis:
+the env vars are consumed inside LNNUE.__init__ in luminex_nnue_train.py,
+and the trainer's resume path seeds bucketed/widened tails via
+LNNUE.v2_expand (function-preservation tested: bucket copy-seed 0.000cp,
+pairwise duplication sub-cp, J-widening no-dead-units). The levers were
+applied and "buckets ≈ neutral / J32 null / pairwise null" is real
+evidence. What still stands — and was always the documented caveat — is the
+regime confound: 3,000 steps over a 14M slice is ~28 epochs, far past the
+2-8 epoch band, i.e. the arms measured the levers on noisy labels in an
+overfit regime. The levers remain untested on clean quiet labels in-regime;
+that is the T1 gate. Lesson recorded: verify which file consumes an env var
+before declaring a lever dead — grep the module, not just the entry point.
