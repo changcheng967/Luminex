@@ -484,6 +484,9 @@ if _val_path and _FENEVAL:
         torch.from_numpy(_va[:, 64:128].copy().view(np.int16).reshape(-1, 32)).long().to(device),
         torch.from_numpy(_va[:, 128:132].copy().view(np.float32).reshape(-1)).to(device),
         torch.from_numpy(_va[:, 132:136].copy().view(np.float32).reshape(-1)).to(device),
+        # 5th column: quiet flag (0 quiet / 1 capture-best / 2 in-check) when the
+        # dump carries it — gates the quiet-subset val MAE, the round-3 metric.
+        torch.from_numpy(_va[:, 136:140].copy().view(np.float32).reshape(-1)).to(device),
     )
     del _va
     print(f"[VAL] held out {len(_val_tensors[3]):,} positions from {_val_path}", flush=True)
@@ -814,6 +817,23 @@ for epoch in range(EPOCHS):
                     _gap = float("nan")
                 print(f"  [VAL f{fi+1}] MAE={_vmae:.1f}cp  train-val gap={_gap:+.1f}cp "
                       f"(sustained gap above 1.0cp = memorizing, not learning)", flush=True)
+                # Quiet-subset val MAE — the metric the engine actually consumes.
+                # Blended MAE worsening is EXPECTED under quiet weighting; this is
+                # the number that must improve.
+                if len(_val_tensors) > 4:
+                    try:
+                        with torch.no_grad():
+                            _vflg = _val_tensors[4][:_m]
+                            _verr = (_vpred - _val_tensors[3][:_m].clamp(-1500.0, 1500.0)).abs()
+                            _parts = []
+                            for _cname, _cval in (("quiet", 0.0), ("capture", 1.0), ("check", 2.0)):
+                                _cm = _vflg == _cval
+                                if int(_cm.sum()) > 0:
+                                    _parts.append(f"{_cname}={float(_verr[_cm].mean()):.1f}")
+                            if _parts:
+                                print(f"  [VAL f{fi+1}] by class (cp): {' '.join(_parts)}", flush=True)
+                    except Exception as _e:
+                        print(f"  [VAL] per-class skip: {_e}", flush=True)
         else:
             # A frame that yields ZERO positions means the featurizer crashed
             # (e.g. binary/glibc mismatch) — an empty epoch must never "succeed".
