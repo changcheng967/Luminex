@@ -120,6 +120,7 @@ try:
 except (KeyError, ValueError):
     _QUIET_MODE = False
     _QUIET_WQ = _QUIET_WC = _QUIET_WI = 0.0
+_QUIET_FIRST_PRINT = True
 # DOSL dual-head (Step-0): aux linear head trained alongside the full net so it is
 # a standalone-usable qsearch stand-pat. Warmup at lam=1.0 (head alone must be a
 # competent eval), then joint lam=0.25 persists as the anchor loss throughout.
@@ -691,10 +692,14 @@ for epoch in range(EPOCHS):
                     # loss to flatline at ~230K with zero effective learning)
                     _sdiff = (torch.sigmoid(pred / SCALE) - torch.sigmoid(ti / SCALE)).abs()
                     _pterms = _sdiff ** _POWER
-                    if _qw is not None and (gstep % 500) == 0:
+                    # print on the FIRST weighted batch and every 500 steps after;
+                    # a warm-resumed gstep (e.g. 163076) may not hit a multiple of
+                    # 500 inside a short pilot at all
+                    if _qw is not None and (_QUIET_FIRST_PRINT or (gstep % 500) == 0):
                         # Pilot mechanics check: the share of the WEIGHTED loss each
                         # position class actually carries (quiet/capture/check).
                         with torch.no_grad():
+                            _QUIET_FIRST_PRINT = False
                             _mq = float((_pterms * _qw)[ri == 0.0].sum())
                             _mc = float((_pterms * _qw)[ri == 1.0].sum())
                             _mi = float((_pterms * _qw)[ri == 2.0].sum())
