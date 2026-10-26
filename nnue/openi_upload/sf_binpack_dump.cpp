@@ -30,6 +30,11 @@ int main(int argc, char** argv) {
     // after a pod restart; skipped entries replay at full decompress speed
     // without FEN generation (the expensive part), so resume is cheap.
     long long skipScanned = (argc > 3) ? std::atoll(argv[3]) : 0;
+    // Hard scan bound: the full binpack is ~987M entries; a reader that wraps
+    // or re-reads past end must never silently duplicate the corpus (the
+    // triplication incident). The runner passes size+10% margin; if this
+    // fires before natural DONE, the output tail must be inspected for wrap.
+    const long long maxScanned = (argc > 4) ? std::atoll(argv[4]) : 0;
 
     binpack::CompressedTrainingDataEntryReader reader(argv[1]);
 
@@ -84,6 +89,10 @@ int main(int argc, char** argv) {
         if ((scanned % 10'000'000) == 0)
             std::fprintf(stderr, "scanned %lldM, kept %lldM (skip was %lldM)\n",
                          scanned / 1'000'000, kept / 1'000'000, skipScanned / 1'000'000);
+        if (maxScanned && scanned >= maxScanned) {
+            std::fprintf(stderr, "SCAN BOUND hit at %lld — check tail for wrap\n", scanned);
+            break;
+        }
         if (maxPos && kept >= maxPos) break;
     }
     logProgress(true);
