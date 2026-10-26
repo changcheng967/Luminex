@@ -20,21 +20,42 @@
 
 int main(int argc, char** argv) {
     if (argc < 2) {
-        std::fprintf(stderr, "usage: %s in.binpack [max_positions]\n", argv[0]);
+        std::fprintf(stderr, "usage: %s in.binpack [max_positions] [resume_scanned]\n");
         return 1;
     }
     const long long maxPos = (argc > 2) ? std::atoll(argv[2]) : 0;
+    // Resume by entry count: the reader is strictly sequential, so skipping N
+    // entries reproduces the previous run's position exactly. The runner loop
+    // (see run_dump.sh) reads the last progress line and relaunches with it
+    // after a pod restart; skipped entries replay at full decompress speed
+    // without FEN generation (the expensive part), so resume is cheap.
+    long long skipScanned = (argc > 3) ? std::atoll(argv[3]) : 0;
 
     binpack::CompressedTrainingDataEntryReader reader(argv[1]);
 
     long long scanned = 0, kept = 0;
-    char line[256];
+    // progress log on NAS: last complete line is the resume point. The lock
+    // line prevents the two-racing-processes bug that triplicated the first
+    // dump (two writers into one multi-block xz interleaved valid blocks).
+    std::string progPath = std::string(argv[1]) + ".progress";
+    FILE* prog = std::fopen(progPath.c_str(), "a");
+    auto logProgress = [&](bool force) {
+        if (!prog) return;
+        static long long last = -1;
+        if (force || scanned - last >= 10'000'000) {
+            std::fprintf(prog, "scanned=%lld kept=%lld\n", scanned, kept);
+            std::fflush(prog);
+            last = scanned;
+        }
+    };
+
     while (reader.hasNext()) {
         const auto e = reader.next();
         ++scanned;
+        if (scanned <= skipScanned) continue;
 
-        if (e.score < -800 || e.score > 800) continue;
-        if (e.ply < 8 || e.ply > 200) continue;
+        if (e.score < -800 || e.score > 800) { logProgress(false); continue; }
+        if (e.ply < 8 || e.ply > 200) { logProgress(false); continue; }
 
         const std::string fen = e.pos.fen();
         // TSV contract: the cp column is WHITE-relative. The binpack's score is
@@ -60,10 +81,12 @@ int main(int argc, char** argv) {
         ++kept;
 
         if ((scanned % 10'000'000) == 0)
-            std::fprintf(stderr, "scanned %lldM, kept %lldM\n",
-                         scanned / 1'000'000, kept / 1'000'000);
+            std::fprintf(stderr, "scanned %lldM, kept %lldM (skip was %lldM)\n",
+                         scanned / 1'000'000, kept / 1'000'000, skipScanned / 1'000'000);
         if (maxPos && kept >= maxPos) break;
     }
+    logProgress(true);
+    if (prog) std::fclose(prog);
     std::fprintf(stderr, "DONE scanned=%lld kept=%lld\n", scanned, kept);
     return 0;
 }
