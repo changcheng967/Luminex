@@ -44,6 +44,7 @@ struct Limits {
 struct SearchParams {
     int contempt = 0;
     int multi_pv = 1;
+    int move_overhead_ms = 30;  // UCI "Move Overhead": latency safety margin (ms)
 };
 
 // Search statistics for debugging

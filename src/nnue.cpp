@@ -1,10 +1,10 @@
-// nnue.cpp — NNUE evaluation with an INCREMENTAL accumulator (float, stage 1).
+// nnue.cpp — NNUE evaluation with an incremental accumulator.
 //
-// v1 rebuilt the feature transformer from scratch every eval (135K NPS — 15x slower
-// than HCE). This version keeps the accumulator in a per-thread stack (acc_stack[],
-// indexed by Position::st_ply()) and updates it incrementally on make_move, so
-// evaluate() just reads it. Validated to match the full-refresh reference exactly
-// (debug self-check) before int8/SIMD (stage 2).
+// A full feature-transformer rebuild per eval is ~15x slower than this design
+// (measured 135K nps on the first prototype). The accumulator lives in a
+// per-thread stack (acc_stack[], indexed by Position::st_ply()) and is updated
+// incrementally on make_move, so evaluate() just reads it. The debug self-check
+// validates it against the full-refresh reference exactly.
 //
 // The accumulator lives in a thread_local global (NOT in StateInfo) — putting it in
 // StateInfo bloated state_stack[2048] to ~8MB and overflowed the stack (Position is
@@ -131,6 +131,7 @@ namespace { struct Stat { long long n = 0, cyc = 0; }; }
 
 static Stat st_eval, st_update, st_refresh, st_king_refresh, st_incremental;
 static long long g_act_nz = 0, g_act_tot = 0;   // activation sparsity (non-zero L1 outputs after SCReLU)
+static long long g_sat_events = 0;              // exact accumulator leaving int16 range (self-check only)
 static bool g_profile = false;
 static bool g_profile_inited = false;
 static inline bool profile_on() {
@@ -147,13 +148,14 @@ static inline long long rdtsc() {
 }
 void print_stats() {
     if (!profile_on()) return;
-    std::fprintf(stderr, "NNUE profile: evals=%lld (%.1fM cyc, %.0f cyc/eval) | updates=%lld (%.1fM cyc, %.0f cyc/upd) | king-refreshes=%lld (%.0f cyc/kr) | incrementals=%lld (%.0f cyc/inc) | refreshes=%lld (%.1fM cyc) | L1-act density=%.1f%%\n",
+    std::fprintf(stderr, "NNUE profile: evals=%lld (%.1fM cyc, %.0f cyc/eval) | updates=%lld (%.1fM cyc, %.0f cyc/upd) | king-refreshes=%lld (%.0f cyc/kr) | incrementals=%lld (%.0f cyc/inc) | refreshes=%lld (%.1fM cyc) | L1-act density=%.1f%% | sat_events=%lld\n",
                  st_eval.n, st_eval.cyc/1000000.0, st_eval.n ? double(st_eval.cyc)/st_eval.n : 0.0,
                  st_update.n, st_update.cyc/1000000.0, st_update.n ? double(st_update.cyc)/st_update.n : 0.0,
                  st_king_refresh.n, st_king_refresh.n ? double(st_king_refresh.cyc)/st_king_refresh.n : 0.0,
                  st_incremental.n, st_incremental.n ? double(st_incremental.cyc)/st_incremental.n : 0.0,
                  st_refresh.n, st_refresh.cyc/1000000.0,
-                 g_act_tot ? 100.0*g_act_nz/g_act_tot : 0.0);
+                 g_act_tot ? 100.0*g_act_nz/g_act_tot : 0.0,
+                 g_sat_events);
 }
 
 constexpr int NUM_SQ = 64;
@@ -419,8 +421,11 @@ static inline void remove_feature(Accumulator& a, int p, int ksq, int sq, Piece 
 }
 
 // FUSED single-pass delta for the dominant quiet-move pattern remove(from)+add(to):
-// one accumulator read-modify-write instead of two (Campaign C). Net lane delta
-// is (w_to - w_from); saturating semantics identical to the sequential pair.
+// one accumulator read-modify-write instead of two. Net lane delta is (w_to - w_from).
+// Exactly the sequential remove+add pair whenever no lane saturates; saturating
+// add/sub do NOT commute, so on saturation the fused path can differ from a
+// sequential int16 pair (the self-check counts those events in g_sat_events —
+// range-constrained training must keep it at zero).
 static inline void move_feature(Accumulator& a, int p, int ksq, Square from, Square to, Piece pf, Piece pt) {
     bool white_pov = (p == 0);
     int f_idx = halfka_idx(white_pov, ksq, from, pf);
@@ -602,6 +607,11 @@ Value evaluate(const Position& pos) {
                 // int16 saturating acc: saturated lanes differ from the exact
                 // reference in raw value but are IDENTICAL after the SCReLU clip
                 // (window [0,8192] sits 4x below saturation). Compare activations.
+                // g_sat_events tracks how often the exact value even reaches the
+                // int16 boundary — it should stay at zero under range-constrained
+                // training; if it grows, the fused/sequential divergence above
+                // becomes live and the training constraint has failed.
+                if (std::fabs(ref) >= 32768.0f) ++g_sat_events;
                 float ref_a = std::min(1.0f, std::max(0.0f, ref * FT_WINV));
                 float inc_a = std::min(1.0f, std::max(0.0f, inc.v[p][l] * FT_WINV));
                 if (std::fabs(ref_a - inc_a) > 1.0f/127.0f + 1e-6) {

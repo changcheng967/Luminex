@@ -203,7 +203,7 @@ void handle_uci() {
     safe_output("option name Contempt type spin default 0 min -1000 max 1000\n");
     safe_output("option name Clear Hash type button\n");
     safe_output("option name BookFile type string default <empty>\n");
-    safe_output("option name Move Overhead type spin default 10 min 0 max 5000\n");
+    safe_output("option name Move Overhead type spin default 30 min 0 max 5000\n");
     safe_output("option name SyzygyPath type string default <empty>\n");
     safe_output("option name Skill Level type spin default 20 min 0 max 20\n");
     safe_output("option name UCI_ShowWDL type check default false\n");
@@ -430,11 +430,27 @@ void handle_setoption(const std::string& cmd) {
         value += token;
     }
 
-    if (name == "Move Overhead" || name == "SyzygyPath" || name == "Skill Level" ||
+    if (name == "SyzygyPath" || name == "Skill Level" ||
         name == "UCI_ShowWDL" || name == "UCI_Elo" || name == "UCI_LimitStrength" ||
         name == "UCI_Chess960" || name == "Analysis") { /* accepted — UCI GUI/bot compatibility */ }
+    else if (name == "Move Overhead") {
+        int ov = std::stoi(value);
+        if (ov < 0) ov = 0;
+        if (ov > 5000) ov = 5000;
+        params.move_overhead_ms = ov;
+    }
     else if (name == "UseNNUE") { nnue::set_enabled(value == "true"); }
-    else if (name == "NNUEFile") { if (!value.empty()) nnue::load(value); }
+    else if (name == "NNUEFile") {
+        if (!value.empty() && nnue::load(value)) {
+            // TT values and correction history were learned against the previous
+            // net's eval; carrying them across a net swap injects stale corrections
+            // and outdated bounds into the new net's search.
+            TT.clear();
+            TT.new_search();
+            clear_correction_history();
+            clear_search_history();
+        }
+    }
     else if (name == "SearchDepth") { g_search_depth = std::stoi(value); }
     else if (name == "NodesPerMove") { g_nodes_per_move = std::stoi(value); }
     else if (name == "Contempt" || name == "UCI_AnalyseMode") {

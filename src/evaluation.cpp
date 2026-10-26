@@ -22,22 +22,20 @@ static_assert(feat::NPHASE == 632);
 EvalParams g_eval_params;
 
 // ============================================================
-// SELF-ENGINEERED EVALUATION
-// All values derived from chess principles and logical reasoning.
-// No values borrowed from PeSTO, Ethereal, Stash, or any other engine.
+// Handcrafted evaluation (HCE fallback — NNUE is used when a net is
+// loaded). All values derived from chess principles; nothing is
+// borrowed from PeSTO, Ethereal, Stash or any other engine.
 //
-// Design philosophy:
-//   1. Piece values based on classical chess theory (Reinfeld/Euwe)
-//   2. PST tables from first principles: where pieces WANT to be
-//   3. Mobility: linear formula (each square adds fixed value)
-//   4. Threats: proportional to value gap between attacker and target
+//   1. Piece values: classical MG/EG ratios
+//   2. PST tables: square value by piece type and phase
+//   3. Mobility: linear per-square value
+//   4. Threats: proportional to attacker/target value gap
 //   5. King safety: quadratic danger curve from attack units
 //   6. Pawn structure: doubled/isolated/backward/connected/phalanx
-//   7. Passed pawns: exponential growth in endgame
+//   7. Passed pawns: rank-scaled endgame growth
 // ============================================================
 
-// Self-engineered piece material values
-// Logic: classical ratios with MG/EG adjustments
+// Piece material values (MG/EG split, classical ratios)
 //   Pawn: 90 MG (development cost), 100 EG (full value)
 //   Knight: 320 MG (3.2 pawns), 290 EG (slow piece, less valuable)
 //   Bishop: 340 MG (diagonal range > L-shapes), 310 EG (long-range)
@@ -52,10 +50,10 @@ static int PieceValueEG[8] = { 100, 290, 310, 530, 940, 0, 0, 0 };
 //
 // Principles for each piece type:
 //   Pawn: center > wing, advancement scales with rank
-//   Knight: center is king ("rim is dim"), edges penalized
+//   Knight: center preferred, edges penalized
 //   Bishop: long diagonals (c4,d5,e4,f5), avoid corners
 //   Rook: open files, 7th rank penetration
-//   Queen: don't overextend early, central when attacking
+//   Queen: restrained early, central when attacking
 //   King MG: safety behind pawn shield
 //   King EG: centralization critical
 // ============================================================

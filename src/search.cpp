@@ -23,12 +23,11 @@ extern void uci_debug_log(const char* format, ...);
 // This is set by the main thread when "stop" is received
 volatile bool g_stop_requested = false;
 
-// Search statistics — THREAD_LOCAL: a plain global here was the multithreading killer.
-// Every node touches several of these counters (TT probe, eval-cache hit/miss, prunes);
-// if shared, every node bounces the struct's cache line across all cores and threads
-// serialize on it (observed: 4 threads produced FEWER nodes/sec than 1). Per-thread
-// accumulation eliminates the contention. Node COUNTING is unaffected (uses the `nodes`
-// atomic); only the end-of-search stats dump becomes main-thread-local (informational).
+// Search statistics — THREAD_LOCAL: shared, these counters bounce one cache line
+// across all cores (every node touches several of them) and threads serialize on it
+// (measured: 4 threads produced FEWER nodes/sec than 1). Per-thread accumulation
+// removes the contention. Node COUNTING is unaffected (uses the `nodes` atomic);
+// only the end-of-search stats dump becomes main-thread-local (informational).
 thread_local SearchStats g_stats;
 
 // Search globals
@@ -120,11 +119,11 @@ struct EvalCacheEntry {
     uint64_t key;
     int32_t value;  // Changed from int16_t to match Value type
 };
-constexpr int EVAL_CACHE_SIZE = 65536;  // 64K entries — sweet spot (32K too small, 512K too much)
-// THREAD_LOCAL + heap-allocated (vector): a shared global array here was the #2 multithreading
-// killer after g_stats. Every eval-miss writes eval_cache[idx] from every thread -> cache-line
-// bouncing. Per-thread cache removes the contention (evals are deterministic per position, so no
-// cross-thread sharing is lost that the TT doesn't already provide).
+constexpr int EVAL_CACHE_SIZE = 65536;  // 64K entries — measured best (32K too small, 512K too much)
+// THREAD_LOCAL + heap-allocated (vector): shared, every eval-miss write bounces this
+// cache line across threads — the same contention failure as g_stats above. A per-thread
+// cache removes it (evals are deterministic per position, so no cross-thread sharing
+// is lost that the TT doesn't already provide).
 static thread_local std::vector<EvalCacheEntry> eval_cache(EVAL_CACHE_SIZE);
 
 inline int16_t corrhist_score(const CorrHistTable& table, uint64_t key) {
@@ -337,7 +336,7 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
     Value eval = VALUE_ZERO;
 
     if (!in_check) {
-        // PMG philosophy: reuse cached full eval if available (free + more accurate)
+        // Reuse cached full eval when available (free + more accurate)
         // Cache miss runs a full NNUE eval — tactical_only is ignored when a net
         // is loaded (nnue::evaluate takes no such flag), so miss == hit cost.
         uint64_t key = pos.key();
@@ -773,22 +772,13 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
     }
 
     // ================================================================
-    // INNOVATION: "Phased Move Generation" (PMG)
-    // Traditional engines generate ALL moves upfront, score them all,
-    // then search. This wastes huge amounts of work: most positions
-    // cause cutoff on the TT move or a capture, making quiet move
-    // generation + scoring completely wasted.
-    //
-    // Our approach: search in strict priority phases, only generating
-    // the next phase if no cutoff occurred:
+    // Staged move generation: moves are searched in strict priority
+    // phases and each phase is generated only if no cutoff occurred —
     //   Phase 1: TT move (free - already known)
     //   Phase 2: Captures + promotions (GEN_CAPTURE)
     //   Phase 3: Quiet moves (GEN_QUIET) - only if needed
-    //
-    // This is a novel design because most engines that split generation
-    // still pre-generate everything. We truly defer quiet generation.
-    // In positions where a capture causes cutoff (very common), we
-    // never even touch the quiet move generator.
+    // Most positions cut off on the TT move or a capture, so quiet
+    // generation is skipped entirely.
     // ================================================================
 
     Value best_value = -VALUE_INFINITE;
@@ -1783,7 +1773,7 @@ Move search(Position& pos, Limits& lim) {
         helper_threads.emplace_back(helper_thread_func, pos, i);
     }
 
-    // Time management — Third Generation: Stability + Score Progression
+    // Time management: stability + score progression
     if (limits.use_time_management()) {
         Color us = pos.side_to_move();
         int time_left = limits.time[int(us)];
@@ -1792,7 +1782,7 @@ Move search(Position& pos, Limits& lim) {
         if (time_left < 0) time_left = 0;
         if (time_inc < 0) time_inc = 0;
 
-        int overhead = 30;
+        int overhead = std::max(0, params.move_overhead_ms);
 
         if (limits.movestogo > 0) {
             int mtg = std::max(1, limits.movestogo);

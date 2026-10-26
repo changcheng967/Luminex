@@ -44,7 +44,7 @@ go movetime 1000
 | `UseNNUE` | true | NNUE evaluation (automatic HCE fallback if unavailable) |
 | `NNUEFile` | `luminex_sf1_i8.nnue` | Path to the `.nnue` network file |
 | `Contempt` | 0 | Draw avoidance (centipawns) |
-| `Move Overhead` | 10 | Time-management safety margin (ms) |
+| `Move Overhead` | 30 | Time-management safety margin (ms) |
 | `BookFile` | `<empty>` | Polyglot opening-book path |
 | `SearchDepth` | 0 | If >0, fixed-depth search (overrides time control) |
 | `NodesPerMove` | 0 | If >0, fixed node budget per move |

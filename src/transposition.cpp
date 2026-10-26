@@ -11,8 +11,9 @@ void TTEntry::save(uint64_t k, Value v, bool pv, Bound b, Depth d, Move m, Value
     eval_ = int32_t(ev);
     // depth 0 would encode to 127 and collide with the empty sentinel
     // (probing treats depth_==127 as "empty slot"); clamp to 1 so a future
-    // qsearch TT store can't corrupt the sentinel
-    depth_ = uint8_t(std::max<Depth>(d, 1) + 127);
+    // qsearch TT store can't corrupt the sentinel. The top must clamp at 128
+    // too: d+127 > 255 wraps uint8_t (d=129 -> 0 -> decodes as -127).
+    depth_ = uint8_t(std::min<Depth>(128, std::max<Depth>(d, 1)) + 127);
     gen_bound = uint8_t((g << 2) | b);
     pv_flag = pv ? 1 : 0;
 }

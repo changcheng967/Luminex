@@ -1,5 +1,6 @@
 #include "luminex.h"
 #include "evaluation.h"
+#include "movegen.h"
 #include "nnue.h"
 #include <algorithm>
 #include <cctype>
@@ -1135,8 +1136,13 @@ bool Position::see_ge(Move m, Value threshold) const {
     Bitboard occupied = pieces();
     occupied &= ~square_bb(from);
 
-    // For EP captures, the captured pawn is NOT on the target square
-    Value gain = m.is_en_passant() ? PAWN_VALUE : piece_value[piece_type_on(to)];
+    // For EP captures, the captured pawn is NOT on the target square.
+    // PT_NONE (255) on a quiet destination would index far out of bounds —
+    // all current callers are capture-only, but guard so a future
+    // quiet-move SEE caller cannot trip it.
+    PieceType victim = piece_type_on(to);
+    Value gain = m.is_en_passant() ? PAWN_VALUE
+               : (victim == PT_NONE ? Value(0) : piece_value[victim]);
     if (m.is_promotion()) {
         gain += piece_value[m.promotion_type()] - piece_value[PAWN];
     }
@@ -1460,9 +1466,13 @@ bool Position::validate_move(Move m, Square from, Square to, Piece moved_pc, Pie
 
 bool Position::is_draw() const {
     // 50-move rule: if 100 half-moves (50 full moves) without
-    // a pawn push or capture, it's a draw
+    // a pawn push or capture, it's a draw — but checkmate delivered on the
+    // 100th halfmove ends the game immediately (FIDE 5.1.1 beats the 5.2.2
+    // claim), so a mated side at the boundary loses rather than draws.
     if (st_->halfmove_clock >= 100) {
-        return true;
+        if (!is_check()) return true;
+        ExtMove evasions[MAX_MOVES];
+        return generate<GEN_LEGAL>(*this, evasions) != evasions;
     }
 
     // Insufficient material detection

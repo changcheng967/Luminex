@@ -27,7 +27,6 @@ enum GenType : int {
     GEN_LEGAL,
     GEN_CAPTURE,
     GEN_QUIET,
-    GEN_QUIET_CHECK,
     GEN_EVASION,
     GEN_NON_EVASION,
     GEN_ALL
