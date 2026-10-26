@@ -167,6 +167,21 @@ inline void update_all_corrections(const Position& pos, int depth, int error) {
     corrhist_update(w->corrhist_kingpawns, kingpawns_key(pos), weight, error);
 }
 
+// |correction| distribution probe (NNUE_CORR_STATS=1): samples the correction
+// applied at qsearch stand-pat — the engine's most eval-trusting cutoff. A
+// healthy bias estimator keeps p90 under ~30cp; p90 beyond ~80cp means the
+// correction is a second, unvalidated evaluator and should be re-derived, not
+// re-tuned. Main-thread samples only (thread_local, printed by the main worker).
+static thread_local long long corr_samples = 0;
+static thread_local long long corr_buckets[6] = {};
+static inline void corr_sample(int c) {
+    static const bool on = (std::getenv("NNUE_CORR_STATS") != nullptr);
+    ++corr_samples;
+    if (!on || (corr_samples & 63) != 0) return;
+    int a = c < 0 ? -c : c;
+    corr_buckets[a < 16 ? 0 : a < 32 ? 1 : a < 64 ? 2 : a < 128 ? 3 : a < 200 ? 4 : 5]++;
+}
+
 // Thread-local node counter to avoid atomic overhead on every node
 static thread_local uint64_t local_nodes = 0;
 static thread_local uint64_t last_reported_nodes = 0;
@@ -352,6 +367,7 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
         int correction = get_total_correction(pos);
         correction = std::max(-200, std::min(200, correction));
         eval = Value(eval + correction);
+        corr_sample(correction);
 
         if (eval >= beta) {
             g_stats.qs_stand_pat_cutoffs++;
@@ -2211,6 +2227,29 @@ Move search(Position& pos, Limits& lim) {
                 (long long)g_stats.pmg_tt_cutoffs, (long long)g_stats.pmg_capture_cutoffs,
                 (long long)g_stats.pmg_quiet_cutoffs);
             fclose(sf);
+        }
+
+        // NNUE_CORR_STATS: stand-pat |correction| distribution (see corr_sample)
+        if (std::getenv("NNUE_CORR_STATS")) {
+            static const char* corr_labels[6] = {"<16", "16-32", "32-64", "64-128", "128-200", ">=200"};
+            long long tot = 0;
+            for (long long b : corr_buckets) tot += b;
+            if (tot > 0) {
+                long long acc = 0; int p50 = 5, p90 = 5;
+                for (int i = 0; i < 6; ++i) {
+                    acc += corr_buckets[i];
+                    if (p50 == 5 && acc >= tot / 2) p50 = i;
+                    if (p90 == 5 && acc >= (tot * 9) / 10) p90 = i;
+                }
+                char buf[256];
+                std::snprintf(buf, sizeof buf,
+                    "info string CORR samples=%lld p50=%scp p90=%scp | <16:%.1f%% 16-32:%.1f%% 32-64:%.1f%% 64-128:%.1f%% 128-200:%.1f%% >=200:%.1f%%\n",
+                    tot, corr_labels[p50], corr_labels[p90],
+                    100.0 * corr_buckets[0] / tot, 100.0 * corr_buckets[1] / tot,
+                    100.0 * corr_buckets[2] / tot, 100.0 * corr_buckets[3] / tot,
+                    100.0 * corr_buckets[4] / tot, 100.0 * corr_buckets[5] / tot);
+                uci_safe_output(buf);
+            }
         }
 
         std::ostringstream s;
