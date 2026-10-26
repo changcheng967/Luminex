@@ -595,6 +595,9 @@ Value evaluate(const Position& pos) {
                     Piece pc = pos.piece_on(Square(sq));
                     if (pc == NO_PIECE) continue;
                     int idx = halfka_idx(white_pov, ksq, sq, pc);
+                    // the loop computed idx and discarded it — the "reference"
+                    // was the bias alone, so any real position aborted here
+                    ref += ft_w[(size_t)idx * g_L1 + l];
                 }
                 // int16 saturating acc: saturated lanes differ from the exact
                 // reference in raw value but are IDENTICAL after the SCReLU clip

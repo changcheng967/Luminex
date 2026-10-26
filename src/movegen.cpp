@@ -277,7 +277,10 @@ ExtMove* generate(const Position& pos, ExtMove* moveList) {
         // Filter for legal moves (evasion moves should already be legal, but verify anyway)
         ExtMove* legal_end = start;
         for (ExtMove* it = start; it != end; ++it) {
-            bool is_legal = pos.legal(it->move);
+            // skip_pseudo=true: generate_moves only emitted pseudo-legal moves,
+            // so re-validating pseudo-legality here did the work twice on the
+            // hottest path (every root node and perft node)
+            bool is_legal = pos.legal(it->move, true);
             if (is_legal) {
                 *(legal_end++) = *it;
             }

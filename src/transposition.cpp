@@ -1,5 +1,6 @@
 #include "luminex.h"
 #include <cstring>
+#include <algorithm>
 
 namespace luminex {
 
@@ -8,7 +9,10 @@ void TTEntry::save(uint64_t k, Value v, bool pv, Bound b, Depth d, Move m, Value
     move16 = uint16_t(m.raw());
     value_ = int32_t(v);
     eval_ = int32_t(ev);
-    depth_ = uint8_t(d + 127);
+    // depth 0 would encode to 127 and collide with the empty sentinel
+    // (probing treats depth_==127 as "empty slot"); clamp to 1 so a future
+    // qsearch TT store can't corrupt the sentinel
+    depth_ = uint8_t(std::max<Depth>(d, 1) + 127);
     gen_bound = uint8_t((g << 2) | b);
     pv_flag = pv ? 1 : 0;
 }

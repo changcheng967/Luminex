@@ -209,7 +209,6 @@ void handle_uci() {
     safe_output("option name UCI_ShowWDL type check default false\n");
     safe_output("option name SearchDepth type spin default 0 min 0 max 30\n");
     safe_output("option name NodesPerMove type spin default 0 min 0 max 100000000\n");
-    safe_output("option name QsearchLinear type check default true\n");
     safe_output("option name UCI_Elo type spin default 1320 min 1320 max 3190\n");
     safe_output("option name UCI_LimitStrength type check default false\n");
     safe_output("option name UCI_Chess960 type check default false\n");
