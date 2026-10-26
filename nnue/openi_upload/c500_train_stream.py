@@ -688,6 +688,17 @@ for epoch in range(EPOCHS):
                     # loss to flatline at ~230K with zero effective learning)
                     _sdiff = (torch.sigmoid(pred / SCALE) - torch.sigmoid(ti / SCALE)).abs()
                     _pterms = _sdiff ** _POWER
+                    if _qw is not None and (gstep % 500) == 0:
+                        # Pilot mechanics check: the share of the WEIGHTED loss each
+                        # position class actually carries (quiet/capture/check).
+                        with torch.no_grad():
+                            _mq = float((_pterms * _qw)[ri == 0.0].sum())
+                            _mc = float((_pterms * _qw)[ri == 1.0].sum())
+                            _mi = float((_pterms * _qw)[ri == 2.0].sum())
+                            _ms = _mq + _mc + _mi
+                            print(f"  [QUIET] step {gstep} n(q/c/i)="
+                                  f"{int((ri==0.0).sum())}/{int((ri==1.0).sum())}/{int((ri==2.0).sum())} "
+                                  f"weighted loss-mass q={_mq/_ms:.3f} c={_mc/_ms:.3f} i={_mi/_ms:.3f}", flush=True)
                     if _POS_W1 > 0:
                         # SF position weighting, weight-normalized exactly like
                         # SF: loss = (terms*w).sum()/w.sum() — not w*mean(), so
