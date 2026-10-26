@@ -52,8 +52,10 @@ struct SPSAParams {
         std::fclose(f);
     }
 
-    // Singular extension margin (beta offset for singularity test)
-    int _singular_margin = 200;  // placeholder — will be wired into search.cpp
+    // Singular extension margin, scaled by depth in the singularity test
+    // (search.cpp: sBeta = tt_value - depth * _singular_margin / 320).
+    // Default 200 reproduces the prior depth*10/16 formula exactly.
+    int _singular_margin = 200;
 
     // Global instance (loaded once at startup)
     static SPSAParams& get() {

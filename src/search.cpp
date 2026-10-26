@@ -66,6 +66,17 @@ inline Value value_from_tt(Value v, int ply) {
 // Per-thread search state for lazy SMP
 constexpr int MAX_PLY_PLUS_6 = MAX_PLY + 6;
 
+// Correction history: multiple tables for more precise eval correction (from Stash).
+// Each table captures eval errors correlated with a different aspect of the position.
+constexpr int CORRHIST_SIZE = 16384;
+constexpr int CORRHIST_GRAIN = 256;       // Internal scaling: stored = actual * GRAIN
+constexpr int CORRHIST_MAX = 256 * 32;    // ±32 cp per table after dividing by GRAIN
+constexpr int CORRHIST_WEIGHT_SCALE = 256;
+
+struct CorrHistTable {
+    int16_t data[CORRHIST_SIZE];
+};
+
 struct SearchWorker {
     Stack stack[MAX_PLY_PLUS_6];
     Move killers[MAX_PLY][2] = {};
@@ -73,6 +84,16 @@ struct SearchWorker {
     int capture_history[12][64][7] = {};
     Move counter_move_table[12][64] = {};
     int low_ply_history[4][12][64] = {};  // Plies 1-3 history (index 0 unused)
+    // Correction history lives per-worker: as shared globals these 192 KiB were
+    // written six times per node from every thread — the third instance of the
+    // shared-writable-state scaling bug (see g_stats and eval_cache). Per-worker
+    // stats are also the correct lazy-SMP semantics: the main worker keeps its
+    // corrections across searches within a game, helper threads start fresh.
+    CorrHistTable corrhist_pawn = {};
+    CorrHistTable corrhist_nonpawn[2] = {};  // Per color
+    CorrHistTable corrhist_minor = {};
+    CorrHistTable corrhist_major = {};
+    CorrHistTable corrhist_kingpawns = {};   // King safety: pawn structure + king squares
 };
 
 // Thread-local pointer to current thread's search state
@@ -106,23 +127,6 @@ constexpr int EVAL_CACHE_SIZE = 65536;  // 64K entries — sweet spot (32K too s
 // cross-thread sharing is lost that the TT doesn't already provide).
 static thread_local std::vector<EvalCacheEntry> eval_cache(EVAL_CACHE_SIZE);
 
-// Correction history: multiple tables for more precise eval correction (from Stash).
-// Each table captures eval errors correlated with a different aspect of the position.
-constexpr int CORRHIST_SIZE = 16384;
-constexpr int CORRHIST_GRAIN = 256;       // Internal scaling: stored = actual * GRAIN
-constexpr int CORRHIST_MAX = 256 * 32;    // ±32 cp per table after dividing by GRAIN
-constexpr int CORRHIST_WEIGHT_SCALE = 256;
-
-struct CorrHistTable {
-    int16_t data[CORRHIST_SIZE];
-};
-
-CorrHistTable corrhist_pawn;
-CorrHistTable corrhist_nonpawn[2];  // Per color
-CorrHistTable corrhist_minor;
-CorrHistTable corrhist_major;
-CorrHistTable corrhist_kingpawns;   // King safety context: pawn structure + king positions
-
 inline int16_t corrhist_score(const CorrHistTable& table, uint64_t key) {
     return table.data[uint32_t(key) & (CORRHIST_SIZE - 1)] / CORRHIST_GRAIN;
 }
@@ -134,12 +138,13 @@ inline uint64_t kingpawns_key(const Position& pos) {
 }
 
 inline int get_total_correction(const Position& pos) {
-    return corrhist_score(corrhist_pawn, pos.pawn_key())
-         + corrhist_score(corrhist_nonpawn[0], pos.nonpawn_key(WHITE))
-         + corrhist_score(corrhist_nonpawn[1], pos.nonpawn_key(BLACK))
-         + corrhist_score(corrhist_minor, pos.minor_key())
-         + corrhist_score(corrhist_major, pos.major_key())
-         + corrhist_score(corrhist_kingpawns, kingpawns_key(pos));
+    const SearchWorker* w = worker;
+    return corrhist_score(w->corrhist_pawn, pos.pawn_key())
+         + corrhist_score(w->corrhist_nonpawn[0], pos.nonpawn_key(WHITE))
+         + corrhist_score(w->corrhist_nonpawn[1], pos.nonpawn_key(BLACK))
+         + corrhist_score(w->corrhist_minor, pos.minor_key())
+         + corrhist_score(w->corrhist_major, pos.major_key())
+         + corrhist_score(w->corrhist_kingpawns, kingpawns_key(pos));
 }
 
 inline void corrhist_update(CorrHistTable& table, uint64_t key, int16_t weight, int32_t error) {
@@ -153,13 +158,14 @@ inline void corrhist_update(CorrHistTable& table, uint64_t key, int16_t weight, 
 }
 
 inline void update_all_corrections(const Position& pos, int depth, int error) {
+    SearchWorker* w = worker;
     int16_t weight = (int16_t)std::min(16, depth + 1);
-    corrhist_update(corrhist_pawn, pos.pawn_key(), weight, error);
-    corrhist_update(corrhist_nonpawn[0], pos.nonpawn_key(WHITE), weight, error);
-    corrhist_update(corrhist_nonpawn[1], pos.nonpawn_key(BLACK), weight, error);
-    corrhist_update(corrhist_minor, pos.minor_key(), weight, error);
-    corrhist_update(corrhist_major, pos.major_key(), weight, error);
-    corrhist_update(corrhist_kingpawns, kingpawns_key(pos), weight, error);
+    corrhist_update(w->corrhist_pawn, pos.pawn_key(), weight, error);
+    corrhist_update(w->corrhist_nonpawn[0], pos.nonpawn_key(WHITE), weight, error);
+    corrhist_update(w->corrhist_nonpawn[1], pos.nonpawn_key(BLACK), weight, error);
+    corrhist_update(w->corrhist_minor, pos.minor_key(), weight, error);
+    corrhist_update(w->corrhist_major, pos.major_key(), weight, error);
+    corrhist_update(w->corrhist_kingpawns, kingpawns_key(pos), weight, error);
 }
 
 // Thread-local node counter to avoid atomic overhead on every node
@@ -332,7 +338,8 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
 
     if (!in_check) {
         // PMG philosophy: reuse cached full eval if available (free + more accurate)
-        // Falls back to tactical_only on cache miss (cheaper than full eval)
+        // Cache miss runs a full NNUE eval — tactical_only is ignored when a net
+        // is loaded (nnue::evaluate takes no such flag), so miss == hit cost.
         uint64_t key = pos.key();
         uint32_t idx = uint32_t(key) & (EVAL_CACHE_SIZE - 1);
         if (eval_cache[idx].key == key) {
@@ -2386,11 +2393,14 @@ void uci_info([[maybe_unused]] const Position& pos, int depth, Value score, uint
 }
 
 void clear_correction_history() {
-    std::memset(&corrhist_pawn, 0, sizeof(corrhist_pawn));
-    std::memset(corrhist_nonpawn, 0, sizeof(corrhist_nonpawn));
-    std::memset(&corrhist_minor, 0, sizeof(corrhist_minor));
-    std::memset(&corrhist_major, 0, sizeof(corrhist_major));
-    std::memset(&corrhist_kingpawns, 0, sizeof(corrhist_kingpawns));
+    // Tables live per-worker now; helper threads are fresh per search, so only
+    // the persistent main worker's tables need clearing between games.
+    if (!main_search_worker) return;
+    std::memset(&main_search_worker->corrhist_pawn, 0, sizeof(CorrHistTable));
+    std::memset(main_search_worker->corrhist_nonpawn, 0, sizeof(CorrHistTable) * 2);
+    std::memset(&main_search_worker->corrhist_minor, 0, sizeof(CorrHistTable));
+    std::memset(&main_search_worker->corrhist_major, 0, sizeof(CorrHistTable));
+    std::memset(&main_search_worker->corrhist_kingpawns, 0, sizeof(CorrHistTable));
 }
 
 void clear_search_history() {
