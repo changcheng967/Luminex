@@ -288,3 +288,16 @@ overfit incident: FEN-hash validation holdouts, 2-8 epochs over large unique
 sets, per-epoch val MAE with a memorization alarm, and a label-convention
 gate (a raw stm-relative dump once flipped half the targets and collapsed a
 full run; fixed at the dump source and gated at train time).
+
+### Correction (Oct 2026): the six-arm suite was a no-op
+
+The trainer that ran the six-arm suite never implemented
+NNUE_BUCKETS / NNUE_L2 / NNUE_PAIRWISE — the env vars were parsed by nothing
+and silently ignored, so the "buckets ≈ neutral / J32 null / pairwise null"
+rows measured run-to-run noise between identical baseline runs. Every
+structural conclusion drawn from that table is void: tail width 32 and
+pairwise were never tested, only never applied. The regime critique
+(28 epochs on a 14M slice) still stands, and is now moot. Consequence for
+the v2 ladder: T1 (bucketed tails, L2 16→32) is untested territory, not
+pre-rejected, and any future arm script must assert the trainer acknowledges
+each lever (grep the env var in the trainer before trusting the arm).
