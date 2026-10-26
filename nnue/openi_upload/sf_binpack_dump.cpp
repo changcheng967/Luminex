@@ -49,6 +49,7 @@ int main(int argc, char** argv) {
         }
     };
 
+    char line[256];
     while (reader.hasNext()) {
         const auto e = reader.next();
         ++scanned;
