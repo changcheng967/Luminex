@@ -3,12 +3,13 @@
 <p align="center"><img src="luminex.jpg" alt="Luminex" width="280"></p>
 
 A UCI chess engine written in C++23. Luminex plays with an NNUE evaluation by
-default — a 768-wide HalfKAv2_hg network (Gen768, function-preserving Net2Net
-widening of the 512-wide predecessor), since v6.2.0 fine-tuned on
-Stockfish-relabel data (Leela self-play positions relabeled by deep Stockfish
-search — the same public training data Stockfish itself uses) — and ships with
-a self-engineered hand-crafted evaluation (HCE) as an always-available fallback
-and tuning testbed. Estimated strength: ~2880 Elo blitz.
+default — a 768-wide HalfKAv2_hm network (Gen768), since v6.3.0 trained with a
+quiet-weighted loss on Stockfish-relabel data (Leela self-play positions
+relabeled by deep Stockfish search — the same public training data Stockfish
+itself uses; the loss weights positions by what the search actually consumes:
+quiet nodes) — and ships with a self-engineered hand-crafted evaluation (HCE)
+as an always-available fallback and tuning testbed. Estimated strength:
+~2960 Elo blitz.
 
 ## Download
 
@@ -22,7 +23,7 @@ Latest release: [github.com/changcheng967/Luminex/releases](https://github.com/c
 | Windows (MSVC) | `luminex-windows-x86-64.exe` |
 | macOS (Apple Silicon) | `luminex-macos-arm64` |
 
-Each release also attaches the current network (`luminex_sf1_i8.nnue`).
+Each release also attaches the current network (`luminex_sfq_i8.nnue`).
 Place it next to the binary — NNUE then loads automatically. Without the file
 (or on hardware without AVX2) the engine transparently falls back to HCE.
 
@@ -42,7 +43,7 @@ go movetime 1000
 | `Hash` | 256 | Transposition-table size in MB |
 | `Threads` | 1 | Search threads (lazy SMP; each thread owns its NNUE accumulator) |
 | `UseNNUE` | true | NNUE evaluation (automatic HCE fallback if unavailable) |
-| `NNUEFile` | `luminex_sf1_i8.nnue` | Path to the `.nnue` network file |
+| `NNUEFile` | `luminex_sfq_i8.nnue` | Path to the `.nnue` network file |
 | `Contempt` | 0 | Draw avoidance (centipawns) |
 | `Move Overhead` | 30 | Time-management safety margin (ms) |
 | `BookFile` | `<empty>` | Polyglot opening-book path |
