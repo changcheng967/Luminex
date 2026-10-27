@@ -68,8 +68,8 @@ challenge:
     - rated
 
 greeting:
-  hello: "Hi! I'm Luminex 6.2.0 (github.com/changcheng967/Luminex) — C++23 engine, SF-relabel NNUE, ~2880 blitz. Good luck!"
-  hello_spectators: "Luminex 6.2.0 (github.com/changcheng967/Luminex) — SF-relabel NNUE, 8 threads."
+  hello: "Hi! I'm Luminex 6.3.0 (github.com/changcheng967/Luminex) — C++23 engine, quiet-trained NNUE, ~3030 blitz. Good luck!"
+  hello_spectators: "Luminex 6.3.0 (github.com/changcheng967/Luminex) — quiet-trained NNUE, 8 threads."
   goodbye: "Thanks for the game!"
 
 pgn_directory: "pgn"
