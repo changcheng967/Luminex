@@ -2,6 +2,8 @@
 
 <p align="center"><img src="luminex.jpg" alt="Luminex" width="280"></p>
 
+[![Ask DeepWiki](https://deepwiki.com/badge.svg)](https://deepwiki.com/changcheng967/Luminex)
+
 A UCI chess engine written in C++23. Luminex plays with an NNUE evaluation by
 default — a 768-wide HalfKAv2_hm network (Gen768), since v6.3.0 trained with a
 quiet-weighted loss on Stockfish-relabel data (Leela self-play positions
