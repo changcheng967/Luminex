@@ -9,7 +9,8 @@ relabeled by deep Stockfish search — the same public training data Stockfish
 itself uses; the loss weights positions by what the search actually consumes:
 quiet nodes) — and ships with a self-engineered hand-crafted evaluation (HCE)
 as an always-available fallback and tuning testbed. Estimated strength:
-~2960 Elo blitz.
+~3030 Elo blitz (Stash-ladder implied: beats Stash 26 at 3000-rated, level
+with Stash 27 at 3057).
 
 ## Download
 
