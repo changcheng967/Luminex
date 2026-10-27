@@ -52,19 +52,22 @@ def write_params(path, values):
 
 
 class UCIEngine:
-    def __init__(self, path, workdir, net, nodes):
+    def __init__(self, path, workdir, net, nodes, hash_mb=64):
         self.p = subprocess.Popen(
             [path], cwd=workdir, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
-            stderr=subprocess.DEVNULL, text=True, bufsize=1)
+            stderr=subprocess.DEVNULL, text=True, encoding="utf-8",
+            errors="replace", bufsize=1)
         self.send("uci")
-        self.until("uciok")
+        if not self.until("uciok"):
+            self.p.kill(); raise RuntimeError("engine did not answer uciok")
         self.send(f"setoption name UseNNUE value true")
         self.send(f"setoption name NNUEFile value {net}")
         self.send(f"setoption name NodesPerMove value {nodes}")
         self.send("setoption name Threads value 1")
-        self.send("setoption name Hash value 16")
+        self.send(f"setoption name Hash value {hash_mb}")
         self.send("isready")
-        self.until("readyok")
+        if not self.until("readyok"):
+            self.p.kill(); raise RuntimeError("engine did not answer readyok")
 
     def send(self, s):
         self.p.stdin.write(s + "\n")
@@ -141,12 +144,24 @@ def run_pairs(engine, dir_a, dir_b, net, nodes, pairs, concurrency, rng_seed):
                 fen = jobs.get_nowait()
             except queue.Empty:
                 break
-            if a is None:
-                a = UCIEngine(engine, dir_a, net, nodes)
-                b = UCIEngine(engine, dir_b, net, nodes)
-            s1 = play_game(a, b, fen)          # A(+) as white
-            s2 = -play_game(b, a, fen)         # A(+) as black
-            score[0] += s1 + s2
+            try:
+                if a is None:
+                    a = UCIEngine(engine, dir_a, net, nodes, ARGS.hash)
+                    b = UCIEngine(engine, dir_b, net, nodes, ARGS.hash)
+                s1 = play_game(a, b, fen)          # A(+) as white
+                s2 = -play_game(b, a, fen)         # A(+) as black
+                score[0] += s1 + s2
+            except Exception as e:
+                # crashed engine/pipe: the pair is a loss for the + side, and the
+                # engines are recreated fresh on the next job (no leaks, and the
+                # score denominator stays honest)
+                print(f"  [worker] pair failed ({e!r}) — counted as loss", flush=True)
+                score[0] -= 2
+                for eng in (a, b):
+                    if eng:
+                        try: eng.quit()
+                        except Exception: eng.p.kill()
+                a = b = None
         if a: a.quit()
         if b: b.quit()
 
@@ -179,6 +194,9 @@ def main():
     ap.add_argument("--games", type=int, default=120)
     ap.add_argument("--concurrency", type=int, default=12)
     ap.add_argument("--nodes", type=int, default=100000)
+    ap.add_argument("--hash", type=int, default=64, help="engine hash MB per side")
+    ap.add_argument("--max-seconds", type=int, default=0,
+                    help="hard wall-clock deadline; stops cleanly at theta_bar (0 = off)")
     ap.add_argument("--ckpt", default="spsa.ckpt")
     args = ap.parse_args()
     ARGS = args
@@ -204,10 +222,18 @@ def main():
         os.makedirs(d, exist_ok=True)
 
     pairs = args.games // 2
+    t_start = time.time()
     print(f"spsa: {args.iterations} iters x {args.games} games, "
-          f"conc={args.concurrency}, nodes={args.nodes}", flush=True)
+          f"conc={args.concurrency}, nodes={args.nodes}, hash={args.hash}"
+          + (f", deadline={args.max_seconds}s" if args.max_seconds else ""),
+          flush=True)
 
     for it in range(start_iter, args.iterations):
+        if args.max_seconds and time.time() - t_start > args.max_seconds - 60:
+            # leave a minute of slack so the last iteration can finish + checkpoint
+            print(f"[deadline] stopping after iteration {it} "
+                  f"({time.time()-t0:.0f}s elapsed)", flush=True)
+            break
         k = it + 1
         dp = []
         for (_, _, lo, hi) in PARAMS:
