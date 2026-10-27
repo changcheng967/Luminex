@@ -30,7 +30,7 @@ engine:
   uci_options:
     Threads: 8
     Hash: 4096
-    NNUEFile: "/mnt/workspace/luminex_sf1_i8.nnue"
+    NNUEFile: "/mnt/workspace/luminex_sfq_i8.nnue"
     Move Overhead: 100
 
   silence_stderr: false
