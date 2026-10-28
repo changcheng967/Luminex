@@ -567,19 +567,16 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
         }
     }
     Value tt_value = found ? value_from_tt(tte->value(), ss->ply) : VALUE_ZERO;
+    // depth() is already cross-search aged: probe() decrements the stored byte
+    // (2 plies per intervening search, clamped) so stale entries lose BOTH their
+    // cutoff authority and their replacement-priority simultaneously.
     Depth tt_depth = found ? tte->depth() : DEPTH_ZERO;
-    // Cross-search aging: entries written by an earlier "go" lose 2 plies of
-    // depth authority per intervening search. A stale deep entry from a previous
-    // move can otherwise dominate the fresh search (the 31...a3?? mechanism:
-    // persistent-process replay reproduced the blunder; clearing state cured it).
-    int tt_age = found ? int(tte->search_age(TT.search_id())) : 0;
-    Depth tt_depth_eff = Depth(tt_depth - 2 * tt_age);
 
     // ttPv: this position was a PV node when stored in TT
     bool ttPv = found && tte->is_pv();
 
     // TT cutoff: require exact or greater depth for safety
-    if (!pv_node && found && tt_depth_eff >= depth &&
+    if (!pv_node && found && tt_depth >= depth &&
         (tt_value >= beta ? (tte->bound() & BOUND_LOWER) : (tte->bound() & BOUND_UPPER))) {
         g_stats.tt_cutoffs++;
         // TT cutoff stat updates: reinforce heuristics even on TT hits
@@ -839,7 +836,7 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
         is_shuffling = tt_move.from() == (ss - 2)->current_move.to() &&
                        (ss - 2)->current_move.from() == (ss - 4)->current_move.to();
     }
-    if (tt_move != MOVE_NONE && !pv_node && found && tt_depth_eff >= depth - 3 && depth >= 6 &&
+    if (tt_move != MOVE_NONE && !pv_node && found && tt_depth >= depth - 3 && depth >= 6 &&
         (tte->bound() & BOUND_LOWER) && abs(tt_value) < VALUE_KNOWN_WIN && !is_shuffling) {
         // Singular margin scales with depth; _singular_margin default 200
         // reproduces the prior depth*10/16 (= depth*200/320) exactly.

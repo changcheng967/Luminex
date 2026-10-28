@@ -73,6 +73,17 @@ TTEntry* TranspositionTable::probe(uint64_t key, bool& found) {
                 entry->gen_bound = uint8_t(generation8 | (entry->gen_bound & 0x3));
             }
             found = (entry->depth_ != 127);
+            // Self-cleaning cross-search aging: age the STORED depth byte so the
+            // entry drops out of both the cutoff check and the depth-preferred
+            // replacement ranking (a read-time-only discount leaves stale deep
+            // entries squatting in slots they can never be trusted for). Clamp at
+            // 128: 127 is the empty sentinel, and a depth-1 entry aged 2 plies
+            // would otherwise land exactly on it and be silently discarded.
+            if (found && entry->search_id_ != search_id8) {
+                int age = int(uint8_t(search_id8 - entry->search_id_));
+                entry->depth_ = uint8_t(std::max(128, int(entry->depth_) - 2 * age));
+                entry->search_id_ = search_id8;
+            }
             return entry;
         }
     }
