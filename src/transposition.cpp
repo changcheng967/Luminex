@@ -16,6 +16,7 @@ void TTEntry::save(uint64_t k, Value v, bool pv, Bound b, Depth d, Move m, Value
     depth_ = uint8_t(std::min<Depth>(128, std::max<Depth>(d, 1)) + 127);
     gen_bound = uint8_t((g << 2) | b);
     pv_flag = pv ? 1 : 0;
+    search_id_ = TT.search_id();
 }
 
 void TranspositionTable::resize(size_t mb) {

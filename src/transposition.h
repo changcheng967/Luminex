@@ -15,7 +15,8 @@ struct TTEntry {
     int32_t eval_;   // Changed from int16_t to prevent truncation
     uint8_t depth_;
     uint8_t gen_bound;
-    uint8_t pv_flag;  // 1 if this was a PV node, 0 otherwise
+    uint8_t pv_flag;    // 1 if this was a PV node, 0 if not
+    uint8_t search_id_; // which search wrote this entry (cross-search aging)
 
     Move move() const { return Move(move16); }
     Depth depth() const { return Depth(depth_ - 127); }
@@ -23,6 +24,7 @@ struct TTEntry {
     bool is_pv() const { return pv_flag != 0; }
     Value value() const { return Value(value_); }
     Value eval() const { return Value(eval_); }
+    uint8_t search_age(uint8_t now) const { return uint8_t(now - search_id_); }
 
     void save(uint64_t k, Value v, bool pv, Bound b, Depth d, Move m, Value ev, uint8_t g);
 };
@@ -52,12 +54,15 @@ public:
     void prefetch(uint64_t key) const;
 
     uint8_t generation() const { return generation8; }
+    uint8_t search_id() const { return search_id8; }
+    void begin_search() { ++search_id8; }  // once per "go": entry ages by 1/search
     size_t hashfull() const;
 
 private:
     std::vector<TTCluster> table;
     size_t entries;
     uint8_t generation8 = 0;
+    uint8_t search_id8 = 0;
 };
 
 inline TranspositionTable TT;
