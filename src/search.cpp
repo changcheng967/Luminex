@@ -1812,11 +1812,11 @@ Move search(Position& pos, Limits& lim) {
         } else {
             // Sudden death with increment-scaled reserve (the neryba flag:
             // +19.29 and mate-in-14 lost at 0:07). The reserve scales with
-            // the increment so it's meaningful at every clock, mtg is fixed
-            // so the per-move share doesn't grow late, and max_time is
+            // the increment, with a floor at time_left/6 so zero-increment
+            // formats also hold back ~17% of the clock. max_time is
             // independently capped at usable/2.
             int mtg     = 30;
-            int reserve = std::min(time_left / 3, 20 * time_inc + 300);
+            int reserve = std::max(std::min(time_left / 3, 20 * time_inc + 300), time_left / 6);
             int usable  = std::max(1, time_left - overhead - reserve);
 
             int opt_time = (usable + time_inc * mtg * 3 / 4) / mtg;
@@ -1826,8 +1826,9 @@ Move search(Position& pos, Limits& lim) {
 
         ideal_time = std::max(10, ideal_time);
         max_time = std::max(ideal_time, max_time);
-        ideal_time = std::min(ideal_time, time_left - overhead);
-        max_time = std::min(max_time, std::max(ideal_time, time_left - overhead));
+        int cap = std::max(1, time_left - overhead);
+        ideal_time = std::min(ideal_time, cap);
+        max_time   = std::min(max_time, cap);
     } else {
         ideal_time = 0;
         max_time = 0;
