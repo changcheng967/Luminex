@@ -255,6 +255,10 @@ inline int futility_margin(int depth, bool improving) {
 
 // Search start time for time management
 static std::chrono::steady_clock::time_point search_start;
+// INVARIANT: both are written exactly once per search, before the helper
+// threads are created, and never modified afterwards. That ordering is what
+// makes them safe to read from every worker without atomics — do not move the
+// assignment below the thread spawn again (see search(): "Time management").
 static int ideal_time = 0;  // Ideal time to use for this search
 static int max_time = 0;    // Maximum time to use
 
@@ -1788,13 +1792,11 @@ Move search(Position& pos, Limits& lim) {
         worker->stack[i].pv[0] = MOVE_NONE;
     }
 
-    // Launch helper threads for lazy SMP
-    helpers_running = true;
-    for (int i = 1; i < num_threads; ++i) {
-        helper_threads.emplace_back(helper_thread_func, pos, i);
-    }
-
-    // Time management
+    // Time management — computed BEFORE the helpers are spawned so every worker
+    // reads THIS search's budget. check_time() polls max_time on every node, and
+    // spawning first left the helpers reading the previous search's values for
+    // the first instant of each search (same shape as the correction-history
+    // bug: shared state written after the readers have already started).
     if (limits.use_time_management()) {
         Color us = pos.side_to_move();
         int time_left = limits.time[int(us)];
@@ -1832,6 +1834,12 @@ Move search(Position& pos, Limits& lim) {
     } else {
         ideal_time = 0;
         max_time = 0;
+    }
+
+    // Launch helper threads for lazy SMP (after the time budget is published)
+    helpers_running = true;
+    for (int i = 1; i < num_threads; ++i) {
+        helper_threads.emplace_back(helper_thread_func, pos, i);
     }
 
     // Initialize killers (clear for new search)
