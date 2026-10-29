@@ -304,3 +304,42 @@ regime confound: 3,000 steps over a 14M slice is ~28 epochs, far past the
 overfit regime. The levers remain untested on clean quiet labels in-regime;
 that is the T1 gate. Lesson recorded: verify which file consumes an env var
 before declaring a lever dead — grep the module, not just the entry point.
+
+## 13. Session 1 — dose/weight decomposition, and the dose curve (Oct 2026)
+
+Five runs on the full SF-labelled corpus (776M positions/run, p4 warm start,
+LR 1e-4, BS 131072, loss-power 2.6), each varying ONE factor from the T0
+recipe (quiet 1/0.3/0, 6000 steps ≈ 1.3 epochs, default seed). Gates were
+600-game fixed-node matches vs T0 with the openings book (± ~28 Elo at 95%).
+
+- **r0u** (unweighted loss, T0's exact dose): 206–?–? measured **−25** — the
+  clean seed-paired weight effect. Quiet weighting is worth ~25 Elo.
+- **r0b** (seed 99, otherwise T0): **−22** — one draw of run-to-run noise;
+  same order as the weight effect itself.
+- **d065** (0.65× dose ≈ 0.86 epochs): **−57 ± 28**. Pre-registered +40
+  under the log-linear dose model — rejected, sign wrong.
+- **d2** (2× dose ≈ 2.6 epochs): **−5 ± 27**. Pre-registered −60 — rejected,
+  the high-dose side is nearly flat at 2.6, not falling log-linearly.
+- **r1** (capture weight 0.1 instead of 0.3): **−45 ± 27**. Pre-registered
+  ±15 under "weight axis is flat" — rejected at the edge; the capture weight
+  carries real signal.
+
+**The dose curve** (quiet recipe, vs T0 at 1.3ep): 0.86ep → −57, 1.3ep → 0,
+2.6ep → −5, and ~4.45ep → ~−115 (from the v6.2.0 recipe delta net of the
+r0u weight effect). Shape: a **flat top at 1.3–2.6 epochs with a cliff past
+~2.6 and a steep underfit wall below ~0.9**. Log-linear is dead. T0 already
+sits on the flat top — there is no headroom from dose on THIS corpus in
+either direction. The corpus is exhausted at ~1.3 epochs; the constraint is
+unique positions, not reads. Session 2 therefore goes to new data
+(linrock binpacks → chunked-flagged dump → combined corpus), which should
+shift the whole curve up and its optimum right, rather than re-reading.
+
+**Weight axis**: capture 0.1 loses 45 and unweighted (capture 1.0) loses 25,
+so the capture weight has an interior optimum with 0.3 near it. The only
+remaining weight-axis probe of interest is capture 0.4–0.5 (r2), low
+priority vs new data.
+
+**Seed variance**: r0b is one draw (−22). Seeds 7/123/2024 launched
+sequentially on the DCU pod (same script pattern as session 1) to get five
+total draws (with T0's default and 99) and a real σ_seed for every gate
+reading above.
