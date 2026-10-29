@@ -1810,17 +1810,18 @@ Move search(Position& pos, Limits& lim) {
             ideal_time = time_left / mtg + time_inc - overhead;
             max_time = time_left / std::max(1, mtg / 2) + time_inc - overhead;
         } else {
-            // Sudden death with reserve: never spend below a floor for future
-            // moves (the neryba flag: +19.29 and mate-in-14 lost on time at
-            // 0:07 — max_time had no reserve). mtg adapts: early moves assume
-            // a long game, late moves a short one.
-            int mtg     = std::max(20, 50 - pos.game_ply() / 2);
-            int reserve = std::min(time_left / 4, 300);
+            // Sudden death with increment-scaled reserve (the neryba flag:
+            // +19.29 and mate-in-14 lost at 0:07). The reserve scales with
+            // the increment so it's meaningful at every clock, mtg is fixed
+            // so the per-move share doesn't grow late, and max_time is
+            // independently capped at usable/2.
+            int mtg     = 30;
+            int reserve = std::min(time_left / 3, 20 * time_inc + 300);
             int usable  = std::max(1, time_left - overhead - reserve);
 
             int opt_time = (usable + time_inc * mtg * 3 / 4) / mtg;
             ideal_time   = std::min(opt_time, usable / 3);
-            max_time     = std::min(usable, std::max(ideal_time * 3, time_inc + 50));
+            max_time     = std::min(usable / 2, std::max(ideal_time * 2, time_inc + 50));
         }
 
         ideal_time = std::max(10, ideal_time);
