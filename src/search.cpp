@@ -1794,7 +1794,7 @@ Move search(Position& pos, Limits& lim) {
         helper_threads.emplace_back(helper_thread_func, pos, i);
     }
 
-    // Time management: stability + score progression
+    // Time management
     if (limits.use_time_management()) {
         Color us = pos.side_to_move();
         int time_left = limits.time[int(us)];
@@ -1810,17 +1810,23 @@ Move search(Position& pos, Limits& lim) {
             ideal_time = time_left / mtg + time_inc - overhead;
             max_time = time_left / std::max(1, mtg / 2) + time_inc - overhead;
         } else {
-            // Sudden death: simple fraction + increment
-            int mtg = 25;
-            int opt_time = (time_left + time_inc * mtg * 3 / 4) / mtg;
-            ideal_time = std::min(opt_time, time_left / 2);
-            max_time = std::min(time_left - overhead, std::max(ideal_time * 3, time_inc + 50));
+            // Sudden death with reserve: never spend below a floor for future
+            // moves (the neryba flag: +19.29 and mate-in-14 lost on time at
+            // 0:07 — max_time had no reserve). mtg adapts: early moves assume
+            // a long game, late moves a short one.
+            int mtg     = std::max(20, 50 - pos.game_ply() / 2);
+            int reserve = std::min(time_left / 4, 300);
+            int usable  = std::max(1, time_left - overhead - reserve);
+
+            int opt_time = (usable + time_inc * mtg * 3 / 4) / mtg;
+            ideal_time   = std::min(opt_time, usable / 3);
+            max_time     = std::min(usable, std::max(ideal_time * 3, time_inc + 50));
         }
 
         ideal_time = std::max(10, ideal_time);
         max_time = std::max(ideal_time, max_time);
         ideal_time = std::min(ideal_time, time_left - overhead);
-        max_time = std::min(max_time, time_left - overhead);
+        max_time = std::min(max_time, std::max(ideal_time, time_left - overhead));
     } else {
         ideal_time = 0;
         max_time = 0;
