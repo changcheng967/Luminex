@@ -324,22 +324,44 @@ recipe (quiet 1/0.3/0, 6000 steps ≈ 1.3 epochs, default seed). Gates were
   ±15 under "weight axis is flat" — rejected at the edge; the capture weight
   carries real signal.
 
-**The dose curve** (quiet recipe, vs T0 at 1.3ep): 0.86ep → −57, 1.3ep → 0,
-2.6ep → −5, and ~4.45ep → ~−115 (from the v6.2.0 recipe delta net of the
-r0u weight effect). Shape: a **flat top at 1.3–2.6 epochs with a cliff past
-~2.6 and a steep underfit wall below ~0.9**. Log-linear is dead. T0 already
-sits on the flat top — there is no headroom from dose on THIS corpus in
-either direction. The corpus is exhausted at ~1.3 epochs; the constraint is
-unique positions, not reads. Session 2 therefore goes to new data
-(linrock binpacks → chunked-flagged dump → combined corpus), which should
-shift the whole curve up and its optimum right, rather than re-reading.
+**The dose curve** (quiet recipe, vs T0 at 6000 steps): 3900 steps/0.86ep →
+−57, 6000 steps/1.3ep → 0, 12000 steps/2.6ep → −5, ~4.45ep → ~−115
+(indirect: the v6.2.0 recipe delta with the weight credit removed). Shape: a
+**plateau from 6000 to 12000 steps, a steep wall below 3900 steps, and the
+cliff somewhere between 2.6 and 4.45 epochs**. Log-linear is dead. T0 sits
+at the **left edge of the plateau, not on an interior optimum**: 6000 steps
+is the *minimum sufficient* dose with no margin below it, so any future
+change of corpus or recipe must re-verify that 6000 steps is still enough.
+(The safe read is 2× — doubling the read cost nothing.)
 
-**Weight axis**: capture 0.1 loses 45 and unweighted (capture 1.0) loses 25,
-so the capture weight has an interior optimum with 0.3 near it. The only
-remaining weight-axis probe of interest is capture 0.4–0.5 (r2), low
-priority vs new data.
+**Plateau is in steps, not epochs — and that does NOT license "more data."**
+6000 and 12000 steps on the same corpus give the same net. Under a
+steps-reading, doubling the corpus at 6000 steps (0.66ep of 1.2B) is
+predicted to give the same net too, and doubling at 12000 steps is already
+measured at −5. This batch closes the epoch question and leaves the data
+question untouched. The one live mechanism for unique data is gradient
+redundancy (at 6000 steps each position is read 1.3×; on 6B it would be
+0.13×) — real but second-order: expectation +10–30, not +100. The clean
+test is one arm: **597M vs 2B unique, both at 12000 steps, same recipe** —
+d2 IS the 597M@12k control, so this costs one training run plus a gate. If
+the 2B arm wins by 20+, diversity pays and the corpus program is right; if
+they tie, more data is not the lever and that saves months of dumping.
 
-**Seed variance**: r0b is one draw (−22). Seeds 7/123/2024 launched
-sequentially on the DCU pod (same script pattern as session 1) to get five
-total draws (with T0's default and 99) and a real σ_seed for every gate
-reading above.
+**Weight axis**: capture 0.1 → −45 ± 28, capture 0.3 → 0, unweighted
+(capture 1.0) → −25 ± 28. 0.3 beats both sides — it is now a *measured*
+optimum against both neighbors — but the two failures differ by only 20
+against ±40 on the difference, so they cannot be ordered. Within this
+single-variable design the weight contribution is **≤ 25, point estimate
+25, not established at 95% on its own gate**; the ~114 dose component of
+the v6.3.0 recipe gain is carried by the gen768sf comparison. Remaining
+probe: capture 0.4–0.5 (r2), low priority.
+
+**Seed pairing**: r0u, d065, d2 and r1 all ran T0's default seed — every
+session-1 delta above is seed-paired and needs no seed correction. The
+seeds-7/123/2024 runs calibrate σ_seed for FUTURE arms (a new corpus means
+a new data order), not for re-reading tonight.
+
+**Session 2, revised**: (1) the diversity arm — 597M vs 2B at 12000 steps;
+(2) re-verify 6000-step sufficiency on any new corpus, since a corpus
+change moves the wall; (3) r2 capture 0.4–0.5, low priority; (4) epochs on
+a fixed corpus: closed.
