@@ -324,6 +324,17 @@ recipe (quiet 1/0.3/0, 6000 steps ≈ 1.3 epochs, default seed). Gates were
   ±15 under "weight axis is flat" — rejected at the edge; the capture weight
   carries real signal.
 
+**Gate resolution (the binding constraint).** A 600-game gate has ±28
+half-width at 95% (SE(Elo) ≈ 695·√(0.25/N)); detectable effects: 600g →
+~28, 1200g → ~20, 2000g → ~15, 5000g → ~10. Every gate this program has
+run at 300–600 games could only see effects ≥ ~40 Elo. All four session-1
+deltas sit between 5 and 57 — two of them are real, two are not, and the
+gates can barely tell which. **Default gate is now 2,000 games** (±15, two
+hours per arm on the arena box — one arm per night, which is the cadence
+anyway). The diversity prediction (+10–30) straddles the 1,200/5,000-game
+range, so that arm is gated at 2,000 minimum and read as a pre-registered
+range check, not a point.
+
 **The dose curve** (quiet recipe, vs T0 at 6000 steps): 3900 steps/0.86ep →
 −57, 6000 steps/1.3ep → 0, 12000 steps/2.6ep → −5, ~4.45ep → ~−115
 (indirect: the v6.2.0 recipe delta with the weight credit removed). Shape: a
@@ -341,11 +352,26 @@ predicted to give the same net too, and doubling at 12000 steps is already
 measured at −5. This batch closes the epoch question and leaves the data
 question untouched. The one live mechanism for unique data is gradient
 redundancy (at 6000 steps each position is read 1.3×; on 6B it would be
-0.13×) — real but second-order: expectation +10–30, not +100. The clean
-test is one arm: **597M vs 2B unique, both at 12000 steps, same recipe** —
-d2 IS the 597M@12k control, so this costs one training run plus a gate. If
-the 2B arm wins by 20+, diversity pays and the corpus program is right; if
-they tie, more data is not the lever and that saves months of dumping.
+0.13×) — real but second-order: expectation +10–30, not +100. The test runs
+in two stages, cheapest first:
+
+1. **Redundancy screen (no dump needed): 300M vs 597M, both at 12,000
+   steps, same source.** Total visits identical (1.573B); only
+   per-position redundancy differs (5.2 vs 2.6 passes). Arm B already
+   exists — it is d2. Arm A (h300, a 300M prefix of the same TSV, default
+   seed so the h2h with d2 is seed-paired) is one training run. Decision
+   rule pre-registered: h2h d2 vs h300 at 2,000 games, A ≥ 20 Elo worse →
+   the pass-penalty is real at 2× and the unique-corpus arm is justified;
+   tie → the mechanism does not pay at 2× and 2B almost certainly will not
+   either, saving months of dump work. (A large A-loss is unambiguous
+   either way: cliff or gradient, both point toward fewer passes.)
+2. **The 2B arm — only if the screen passes — must be a STRICT SUPERSET:
+   597M ∪ 1.4B new, through the IDENTICAL filter/flag pipeline.** A fresh
+   linrock-only corpus would differ from B in two variables (diversity AND
+   label distribution/filter generation) and any result would be
+   unattributable. The natural implementation ("dump the archive and train
+   on it") is the wrong experiment; the superset construction is the
+   requirement.
 
 **Weight axis**: capture 0.1 → −45 ± 28, capture 0.3 → 0, unweighted
 (capture 1.0) → −25 ± 28. 0.3 beats both sides — it is now a *measured*
@@ -359,9 +385,14 @@ probe: capture 0.4–0.5 (r2), low priority.
 **Seed pairing**: r0u, d065, d2 and r1 all ran T0's default seed — every
 session-1 delta above is seed-paired and needs no seed correction. The
 seeds-7/123/2024 runs calibrate σ_seed for FUTURE arms (a new corpus means
-a new data order), not for re-reading tonight.
+a new data order), not for re-reading tonight. Caveat on the estimate
+itself: σ from 4 draws is only good to ±40%, so the first σ_seed is an
+order-of-magnitude number (is it 10 or 30?), not a precise constant. If it
+lands near 25, single-seed deltas below ~25 are unreadable and the
+2,000-game default gate becomes mandatory rather than advisable.
 
-**Session 2, revised**: (1) the diversity arm — 597M vs 2B at 12000 steps;
-(2) re-verify 6000-step sufficiency on any new corpus, since a corpus
-change moves the wall; (3) r2 capture 0.4–0.5, low priority; (4) epochs on
-a fixed corpus: closed.
+**Session 2, revised**: (1) the redundancy screen — 300M vs 597M (d2) at
+12000 steps, gated by 2000-game h2h; (2) if it passes, the 2B strict
+superset through the identical pipeline; (3) re-verify 6000-step
+sufficiency on any new corpus, since a corpus change moves the wall; (4)
+r2 capture 0.4–0.5, low priority; (5) epochs on a fixed corpus: closed.
