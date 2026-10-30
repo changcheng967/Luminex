@@ -29,8 +29,11 @@ run () {
   D=$(grep -E "^DONE" logs/$NAME.log | tail -1)
   Q=$(grep "weighted loss-mass" logs/$NAME.log | tail -1 | grep -oE "q=[0-9.]+ c=[0-9.]+")
   echo "$NAME | $D | $Q" >> logs/session2.log
-  python3 $WS/Luminex/nnue/openi_upload/quantize_i8.py $NAME.nnue ${NAME}_i8.nnue >> logs/$NAME.log 2>&1 \
-    && cp -f $NAME.nnue ${NAME}_i8.nnue "$HARVEST/" \
+  # trainer writes to Luminex/nnue/openi_upload/out/ (relative to the trainer
+  # file, NOT cwd) — harvest from there
+  TD=$WS/Luminex/nnue/openi_upload/out
+  python3 $WS/Luminex/nnue/openi_upload/quantize_i8.py $TD/$NAME.nnue $TD/${NAME}_i8.nnue >> logs/$NAME.log 2>&1 \
+    && cp -f $TD/$NAME.nnue $TD/${NAME}_i8.nnue "$HARVEST/" \
     && echo "$NAME harvested $(date +%H:%M:%S)" >> logs/session2.log \
     || echo "$NAME QUANTIZE_OR_HARVEST_FAILED" >> logs/session2.log
 }

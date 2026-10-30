@@ -39,8 +39,11 @@ env FEAT=$FEAT NNUE_L1=768 NNUE_RESUME=$CKPT \
 D=$(grep -E "^DONE" logs/h300.log | tail -1)
 Q=$(grep "weighted loss-mass" logs/h300.log | tail -1 | grep -oE "q=[0-9.]+ c=[0-9.]+")
 echo "h300 | $D | $Q" >> logs/session2.log
-python3 $WS/Luminex/nnue/openi_upload/quantize_i8.py h300.nnue h300_i8.nnue >> logs/h300.log 2>&1 \
-  && cp -f h300.nnue h300_i8.nnue "$HARVEST/" \
+# trainer writes to Luminex/nnue/openi_upload/out/ (relative to the trainer
+# file, NOT cwd) — quantize and harvest from there
+TD=$WS/Luminex/nnue/openi_upload/out
+python3 $WS/Luminex/nnue/openi_upload/quantize_i8.py $TD/h300.nnue $TD/h300_i8.nnue >> logs/h300.log 2>&1 \
+  && cp -f $TD/h300.nnue $TD/h300_i8.nnue "$HARVEST/" \
   && echo "h300 harvested $(date +%H:%M:%S)" >> logs/session2.log \
   || echo "h300 QUANTIZE_OR_HARVEST_FAILED" >> logs/session2.log
 echo SESSION2_DIVERSITY_DONE >> logs/session2.log
