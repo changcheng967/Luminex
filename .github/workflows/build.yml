@@ -37,6 +37,36 @@ jobs:
     - name: Test UCI
       run: printf 'uci\nisready\nquit\n' | ./build/luminex
 
+  # glibc-2.35 build for older hosts (DCU pods, Ubuntu 22.04). gcc-13 ships on
+  # the 22.04 runner image; static libstdc++/libgcc so no GLIBCXX_3.4.3x is
+  # needed at runtime. Same source, both march levels, artifacts attached.
+  linux-legacy:
+    runs-on: ubuntu-22.04
+    strategy:
+      matrix:
+        include:
+          - suffix: linux-x86-64-glibc235-modern
+            flags: "-march=x86-64-v3 -mtune=generic"
+          - suffix: linux-x86-64-glibc235
+            flags: "-march=x86-64 -mtune=generic -msse4.2 -mpopcnt"
+    steps:
+    - uses: actions/checkout@v5
+    - name: Install dependencies
+      run: sudo apt-get update && sudo apt-get install -y ninja-build
+    - name: Configure
+      run: cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DCI=ON -DCMAKE_CXX_COMPILER=g++-13 -DCMAKE_CXX_FLAGS="${{ matrix.flags }} -static-libstdc++ -static-libgcc"
+    - name: Build
+      run: cmake --build build --config Release
+    - name: Run Bench
+      run: ./build/luminex bench
+    - name: Test UCI
+      run: printf 'uci\nisready\nquit\n' | ./build/luminex
+    - uses: actions/upload-artifact@v4
+      with:
+        name: luminex-${{ matrix.suffix }}
+        path: build/luminex
+
+
   windows-modern:
     runs-on: windows-2022  # pin: windows-latest image no longer exposes a VS instance to cmake
     defaults:
