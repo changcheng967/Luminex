@@ -438,6 +438,59 @@ bucket net must be bit-identical to T0 at load before any training;
 (2) pre-registered read — ≥ +20 Elo on games reopens the architecture
 program with games as the instrument; ±15 closes it with a valid ruler.
 
+### Paired-opening error bars (round-7 correction)
+
+The `-repeat` colour-swapped design correlates game pairs: effective N is
+~N/1.96, so the 95% half-width is 1.4× the independent-games figure.
+**Every 600-game gate in this program was ±39, not ±28.** Retrospective
+reads: d065 −57 ±39 (clean), d2 −5 ±39 (flat), **r1 −45 ±39 (CI −84…−6,
+still excludes 0, barely)**, **r0u −25 ±39 (inside noise)**. The dose
+curve's shape survives — the effects are large and ordered — but the
+weight axis is now honestly "point estimates 0.3 > {0.1, 1.0}, only r1's
+gate clears its own CI." Gate sizing for the bucket read: 2,500 paired
+games minimum for a +20 threshold; 4,000 to separate +10 from +20 — at
+DCU arena speed both cost under two hours, so gates default to 4,000
+where a ship decision hangs on the band.
+
+### The +106 FT-tail probe — hypothesis REJECTED (Oct 31)
+
+Pre-registered: FT tail grows ≥2× from 12k→20k steps → cliff is
+rare-row memorization → run anchor. Measured (all .pt checkpoints on the
+DCU NFS; gstep decodes as steps + 120,784 featurize baseline — p4=0,
+T0/sfq=6k, gen768sf_full=20k = the 4.39ep cliff net, gen768sf=42k):
+
+- FT (18.9M params): max 2.398→2.402 (0→20k), p99.9 flat ±2%, n>1.0
+  2,973→3,109. **Flat.** At 42k: max 2.434, n>1.0 3,231 — still no 2×.
+- Extended to tail layers over the same range: l2 max 0.760→0.789,
+  l2 mean −1%, l3/out flat. **The 114-Elo cliff (6k→20k) has NO global
+  weight-statistics signature in any layer.** Only at 42k does l2 creep
+  (std +47%) — deeper degradation, past the range that matters.
+- Cross-recipe at fixed dose (T0/r0u/r1/r0b at 6k): statistics agree to
+  the 4th decimal. Recipe differences are function-level, not
+  distribution-level.
+
+Consequences: anchor (`NNUE_ANCHOR_W`, implemented, idle) has NO
+supporting evidence — not run. The +106 mechanism is now bounded: not
+FT stats, not tail stats, not any of the 7 offline metrics — it lives in
+the position-level function. Next probe when taken: per-position eval
+divergence between the 6k and 20k nets on a labelled stream, split by
+material phase / king square / quiet-capture flag (g0_gates-style on
+.rec) — find WHERE the two nets disagree.
+
+### Bucket re-measurement, final plan (round-7)
+
+Engine work priced at 2–3h as an offset into the flat tail arrays (new
+magic LNI9, hdr gains NUM_BUCKETS; old nets load unchanged). Two known
+bug nests, both verified in code: the VNNI batched-L3 interleave
+(`g_l3_batched`) and the AVX2 chunk-L2 load-time reorder — both rewrite
+weights in place and must loop per bucket or buckets 1+ are garbage.
+Guard: copy-seeded bucket net must be bit-identical to T0 over a walked
+game. **2 buckets before 8** (≥16 vs <16 men — near-balanced split; 8
+equal-width buckets starve the endgame tails that need phase
+specialisation most). One C500 session at T0's recipe, same seed;
+4,000-game gate. Pre-registered: ≥ +20 reopens architecture on games;
+±15 at 4,000 games closes it with a valid ruler.
+
 ### Open contradictions (the quiet-law backlog)
 
 The +106 had no offline mechanism (7 metrics failed to separate it from
