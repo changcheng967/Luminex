@@ -514,17 +514,27 @@ Side observation that hardens the paradox: the 20k net has the BEST MAE
 on this slice (100.1 vs T0's 101.5) — the dose axis shows the same MAE
 anti-correlation with strength the anchor pair did. Both recipe gains
 came with equal-or-worse per-position statistics AND no measurable error
-correlation structure. What remains unmeasured: true sibling ICC (needs
-SF labels on generated children — a bounded but real labeling job), and
-position-level divergence (WHERE the nets disagree, by class) — both in
-the backlog. Per pre-registration: the covariance story is dead as
-measurable by these proxies; the +106 stays open.
+correlation structure. Per pre-registration: the covariance story is
+dead as measurable by these proxies; the +106 stays open.
+
+**Round-9 verification and reinterpretation of the lag-1 "artifact".**
+Re-measured with white-relative error (sign flipped on BTM positions):
+**lag-1 correlation is +0.71 (T0), +0.72 (r0u), +0.71 (sf20k), +0.66
+(sf42k)** — the stm-convention flip was hiding a LARGE, near-universal
+error persistence: ~70% of eval error variance carries from one position
+to the next along a game, invariant to recipe and dose (differences in
+the second decimal). Two-part verdict on the ensemble hypothesis: (1)
+correlated error exists and is big — CONFIRMED at ρ≈0.7; (2) T0 has less
+of it — REFUTED (Δ ≤ 0.01). Correlated error is a constant of this
+architecture/data family, not the +106's mechanism. (Caveat: the 0.7
+measures persistence along played trajectories — a proxy for, not a
+measurement of, sibling-group covariance at search nodes.)
 
 ### Open contradictions (the quiet-law backlog)
 
-The +106 had no offline mechanism (7 metrics failed to separate it from
-a net 139 Elo weaker). 20...bxa4 reproduces cold in every arm at 40M
-nodes. 86.4% sign agreement on clear pairs means one in seven clear
+The +106 had no offline mechanism (8 metrics + ICC now: 0/9). 20...bxa4
+reproduces cold in every arm at 40M nodes. 86.4% sign agreement on clear
+pairs means one in seven clear
 comparisons is backwards on BOTH nets — the failing 14% is unidentified.
 Four Carlsen-game errors reproduce in no replay configuration. None is
 an "axis"; all are the shape of thing that produced the last jump.
