@@ -396,3 +396,53 @@ lands near 25, single-seed deltas below ~25 are unreadable and the
 superset through the identical pipeline; (3) re-verify 6000-step
 sufficiency on any new corpus, since a corpus change moves the wall; (4)
 r2 capture 0.4–0.5, low priority; (5) epochs on a fixed corpus: closed.
+
+### The redundancy screen result (Oct 31, DCU arena)
+
+d2 vs h300 head-to-head, 2,000 games (10×200 chunks, 8moves_v3 book,
+NodesPerMove 20000, colors swapped, fastchess on the DCU pod — the arena
+mscope used to host was rebuilt here while its service was down; engine
+via a new glibc-2.35 CI build since release binaries need glibc 2.38).
+Pooled: **d2 837 – h300 774 – 389 draws = 51.6% for d2 → d2 +11 ± 21**.
+Pre-registered rule: h300 ≥ 20 Elo worse → build the 2B superset. The
+point estimate (11) is under threshold → **tie → the data axis closes,
+measured on games**. The 11-Elo gradient does point the way redundancy
+theory predicts (more passes slightly worse), but at a 2× ratio the whole
+effect is noise-level — 2B unique positions cannot be expected to pay.
+The linrock dump program is shelved. Caveat on record: at ±21 the gate
+cannot fully separate 11 from 20; the asymmetry argument (a true −20
+reading +11 is a 1.5σ miss) supports the tie read.
+
+### The instrument rule (after round-6 cross-examination)
+
+Every closure claim must name its instrument. The recipe axis (dose,
+weights) is closed **on games** — defensible. The architecture axis
+(buckets, L2 widening, predicates, FT width) was closed **on val MAE**,
+an instrument the anchor experiment later discredited (+106 net was
+0.56cp WORSE on quiet-subset MAE than a −33 net). Not one architecture
+lever has ever been gated on games. "Architecture is dead" is therefore
+retracted; the honest claim is "architecture was measured with a broken
+ruler and never re-measured with the working one."
+
+**First re-measurement: tail-only output buckets** (8 piece-count tail
+sets, same FT, copy-seeded from T0's checkpoint). Trainer support exists
+and is function-preservation tested (v2_expand). CORRECTION to the
+proposal as received: the ENGINE does not support bucketed nets today —
+nnue.h/nnue.cpp have no multi-tail loader and no material-count
+selection (verified by grep; the engine's "bucket" mentions are input
+king-planes, attack curves, correction histograms). Real cost = engine
+loader + evaluate() bucket select + i8 quantizer extension (~half a
+day, backward-compatible format), THEN the C500 session (6000 steps,
+T0 recipe, same seed) and a 2000-game gate. Guards: (1) copy-seeded
+bucket net must be bit-identical to T0 at load before any training;
+(2) pre-registered read — ≥ +20 Elo on games reopens the architecture
+program with games as the instrument; ±15 closes it with a valid ruler.
+
+### Open contradictions (the quiet-law backlog)
+
+The +106 had no offline mechanism (7 metrics failed to separate it from
+a net 139 Elo weaker). 20...bxa4 reproduces cold in every arm at 40M
+nodes. 86.4% sign agreement on clear pairs means one in seven clear
+comparisons is backwards on BOTH nets — the failing 14% is unidentified.
+Four Carlsen-game errors reproduce in no replay configuration. None is
+an "axis"; all are the shape of thing that produced the last jump.

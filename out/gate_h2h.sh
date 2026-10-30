@@ -31,7 +31,7 @@ for i in $(seq 1 10); do
     -openings file=$G/8moves_v3.pgn format=pgn order=sequential start=$START \
     -rounds 100 -repeat -concurrency 7 \
     -pgnout file=$G/pgn/h2h_$i.pgn > $G/h2h_$i.log 2>&1
-  S=$(grep -E "Score of" $G/h2h_$i.log | tail -1)
+  S=$(grep -E "^Games: " $G/h2h_$i.log | tail -1)
   if [ -z "$S" ]; then
     echo "CHUNK $i FAILED (no score line)" >> $RES
     tail -5 $G/h2h_$i.log >> $RES
