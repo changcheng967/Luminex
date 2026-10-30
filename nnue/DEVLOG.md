@@ -491,6 +491,35 @@ specialisation most). One C500 session at T0's recipe, same seed;
 4,000-game gate. Pre-registered: ≥ +20 reopens architecture on games;
 ±15 at 4,000 games closes it with a valid ruler.
 
+### The sibling-correlation probe — REJECTED (Oct 31, round 8)
+
+Agent-1's ensemble frame: strength tracks the COVARIANCE of eval error
+across the positions search compares (siblings), not per-position error;
+correlated class bias survives any depth (bxa4, Bc7??); quiet weighting
+and the dose cut would then be decorrelation interventions. Pre-registered
+H1 weight→decorrelation (T0 < r0u), H2 dose→correlation (T0 < sf20k).
+
+The corpus has no labelled sibling sets, so two proxies were measured on
+a 300K game-ordered slice (4,661 games): class-ICC of SIGNED error within
+material-piece-count classes (one-way random effects, 887 classes ≥50),
+and lag-1 autocorrelation of signed error within games. Result across
+T0/r0u/sf20k/sf42k: **class-ICC ≈ 0.000 for every net (±0.0003) and
+between-net differences ≤ 0.0001 — REJECTED on both hypotheses.** No
+material-class-correlated error exists in any net, quiet or not, at any
+dose. (The lag-1 ≈ −0.43 values are an stm-convention artifact — signed
+stm-relative error alternates sign with the mover — so only the
+between-net differences there are meaningful, and they are ~0.003.)
+
+Side observation that hardens the paradox: the 20k net has the BEST MAE
+on this slice (100.1 vs T0's 101.5) — the dose axis shows the same MAE
+anti-correlation with strength the anchor pair did. Both recipe gains
+came with equal-or-worse per-position statistics AND no measurable error
+correlation structure. What remains unmeasured: true sibling ICC (needs
+SF labels on generated children — a bounded but real labeling job), and
+position-level divergence (WHERE the nets disagree, by class) — both in
+the backlog. Per pre-registration: the covariance story is dead as
+measurable by these proxies; the +106 stays open.
+
 ### Open contradictions (the quiet-law backlog)
 
 The +106 had no offline mechanism (7 metrics failed to separate it from
