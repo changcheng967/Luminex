@@ -1101,7 +1101,15 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
         if (ss->forced_ply_count >= 3 && ext_count == 0 && depth >= 4) {
             ext_count++;
         }
+        // Depth-explosion guard: a line of checks + singular doubles could
+        // otherwise extend faster than depth shrinks
+        if (ext_count > 2) ext_count = 2;
         new_depth += ext_count;
+        // Every full-window search must keep the extension. The pre-fix code
+        // passed literal depth - 1 at all full-depth call sites, so extensions
+        // only ever reached the reduced LMR search — check, singular, recapture
+        // and forcing extensions never actually fired (audit finding 2).
+        const int full_depth = depth - 1 + ext_count;
 
         // Store current move and moved piece for counter-move history
         ss->current_move = m;
@@ -1123,7 +1131,7 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
             // Re-search with full window at standard depth if LMR found improvement
             if (value > alpha) {
                 g_stats.lmr_researches++;
-                value = -search_worker(pos, ss + 1, -beta, -alpha, depth - 1, !cut_node);
+                value = -search_worker(pos, ss + 1, -beta, -alpha, full_depth, !cut_node);
                 if (stop.load(std::memory_order_relaxed)) {
                     pos.undo_move(m);
                     return false;
@@ -1131,14 +1139,14 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
             }
         } else if (moves_played > 0) {
             // PVS: zero-window scout search for non-first moves
-            value = -search_worker(pos, ss + 1, -alpha - 1, -alpha, depth - 1, !cut_node);
+            value = -search_worker(pos, ss + 1, -alpha - 1, -alpha, full_depth, !cut_node);
             if (stop.load(std::memory_order_relaxed)) {
                 pos.undo_move(m);
                 return false;
             }
             // Re-search with full window if scout found improvement
             if (value > alpha && value < beta) {
-                value = -search_worker(pos, ss + 1, -beta, -alpha, depth - 1, false);
+                value = -search_worker(pos, ss + 1, -beta, -alpha, full_depth, false);
                 if (stop.load(std::memory_order_relaxed)) {
                     pos.undo_move(m);
                     return false;
@@ -1146,7 +1154,7 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
             }
         } else {
             // First move: full window search
-            value = -search_worker(pos, ss + 1, -beta, -alpha, depth - 1, false);
+            value = -search_worker(pos, ss + 1, -beta, -alpha, full_depth, false);
             if (stop.load(std::memory_order_relaxed)) {
                 pos.undo_move(m);
                 return false;
