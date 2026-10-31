@@ -812,3 +812,28 @@ null-move stale pins, LNI8 guard, and bench return-code are the bundle.
 The SMP formal-races critique is valid C++ pedantry but secondary:
 lazy-SMP engines universally ship benign TT races; hardening is
 XOR-checksum entries, not a rewrite.
+
+### wd100 verdict and repair gate 1 (Nov 1)
+
+**wd100: 1,551–1,765–684 of 4,000 = 47.33% → −18.6 ± 15 vs T0.** The
+negative branch, decisively: shrinking the tail 26% during training
+COSTS ~19 Elo. The tail's fitted content is real signal, not label-bias
+excess; dilution does not pay in the tail; per the pre-registered tree
+the architecture retest series (buckets, MoE-as-dilution) is CLOSED BY
+MEASUREMENT. The tail is now read three ways: default decay inert (0.3%
+shrink), 10x decay harmful (−19), and the old bucket arms tautological.
+The label-bias hypothesis loses its cheapest prediction; what remains
+of it lives at the FT (1.02M vs 786M updates/param), untested and now
+unscheduled. Training-side architecture work ends here.
+
+**Repair gate 1 (history tables → SearchWorker): 50.00% EXACTLY** —
+every one of 20 chunks finished Wins == Losses to the game (e.g.
+84–84–32), 4,000 games total. Not a coin-flip: it is BIT IDENTITY. The
+refactor is behavior-preserving at 1 thread by design (no other thread
+exists to race), the binaries differ (160 bytes), so the engines played
+identical moves all night. That is the cleanest possible no-regression
+proof: the refactor introduced no bug. The fix's actual value —
+removing cross-thread cache-line contention on 2x2.36 MB tables — is a
+multithread effect and moves to the 4-thread gate (CCRL conditions),
+queued next on the same arena. The fix is kept regardless: it is the
+correct lazy-SMP semantics either way.
