@@ -664,3 +664,66 @@ exonerating eval, persistent replay isolating TT). Reproduction is step
 two of the loop, mandatory. A blunder that will not reproduce cold is
 presumed a clock artefact until proven otherwise — the last three were
 exactly that shape.
+
+### Round 12 — the 770× density fact, and the dilution probe launched
+
+At 6,000 steps × 131,072 batch = 786M samples: each FT parameter
+receives ~1.02M updates (32 of 24,576 rows active per position), each
+TAIL parameter receives 786M — a **770× update-density ratio**
+(arithmetic verified). The tail is not "well trained," it is saturated
+three orders of magnitude past the FT, which explains the old 8-bucket
+suite's +0.9cp without any routing assumption: bucketing an already
+saturated block. A bucket null therefore cannot distinguish "routing
+useless" from "tail saturated" — buckets are not a clean pilot for
+routing.
+
+Three mechanisms separated: **dilution** (fewer fits per param —
+cheapest probe), **routing** (narrower distribution per param — 2
+balanced buckets), **position** (FT vs tail — MoE). Two corrections to
+the proposal as received: (1) `NNUE_ANCHOR_W` is a batch-mean
+PREDICTION pin (sigmoid space, the p5/p6 anti-drift), NOT a pull toward
+base-net weights — the round-10 mechanism framing and the round-12
+probe choice both fail on the code. (2) The correct dilution knob is
+`NNUE_TAIL_WD` — and it is ALREADY ON at 1e-2 in T0's lineage (AdamW:
+tail wd=1e-2, FT wd=0 "rare-bucket protection", biases wd=0). So the
+dilution probe is a VARIATION in both directions, not an introduction:
+**wd10 = 1e-1 (10× brake) and wd00 = 0 (brake removed)**, both at T0's
+exact recipe and default seed (seed-paired), launched as session 3.
+Pre-registered: wd10 ≥ +3 vs T0 at 2,500–4,000 games → dilution real,
+buckets/MoE test its scale. wd10 ≈ 0 → fixed-step dilution dead, MoE's
+justification collapses to Triumviratus's +27. wd00 < T0 → corroborates
+the brake story from the other side. Bucket decision tree (2 balanced
+buckets, ≥16/<16 men): ≥ +5 → routing works in tail, MoE prior up;
+≈ 0 (±3) → tail saturated, MoE still runnable (FT unsaturated);
+negative → architecture axis closes for good.
+
+### Round 13 — the decay budget, corrected twice
+
+Agent's correction of the correction needed its own correction: the
+`NNUE_TAIL_LR_MULT=3` he used is a header-comment EXAMPLE — the trainer
+default is **1.0**, and our recipe never set it. So Σlr_tail ≈ 0.3
+(clamped cosine, LR 1e-4, 6000 steps), not 0.9, and every decay budget
+is 3× weaker than his table: **wd 0.01 → 0.3% total shrink (fully
+inert), 0.1 → 3% (the wd10 arm first launched — also dead zone, killed
+at ~10 min), 0.33 → 9.4%, 1.0 → 26% (the corrected arm), 2.3 → 50%.**
+wd00 (brake removed) was never informative — 0.3% → 0% is invisible to
+any gate.
+
+**Launched: wd100** (`NNUE_TAIL_WD=1.0`), T0's exact recipe otherwise,
+default seed — verified in the optimizer log (`tail wd=1.0, lr=x1.0`).
+Pathology watch active per the `NNUE_WCLAMP` root-cause note ("tail wd
++ amsgrad" once produced pathology): the per-step `L2|max|` line is the
+tail-norm monitor; prior-run range 0.76–0.79, wd100 reading 0.75 early.
+If the norm GROWS mid-run the old pathology has recurred and the gate
+reading is void regardless of score.
+
+Revised sequence adopted (agent's round-12 order stands, arm corrected):
+**wd100 is the true pilot of dilution** — pure, no routing confound,
+one order of magnitude cheaper than buckets. Decision tree at 2,500–
+4,000 games vs T0: **≥ +5** → tail capacity excess real, buckets worth
+running (same mechanism, same location), MoE prior up; **≈ 0 (±3)** →
+tail saturated, buckets skipped, MoE's case rests on FT unsaturation
+alone (1.02M vs 786M updates per param); **negative** → architecture
+axis closes for good. Framing correction accepted as final: wd is the
+smaller dose of the same medicine; buckets are the same dose PLUS a
+routing confound.
