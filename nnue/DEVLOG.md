@@ -752,21 +752,50 @@ claim against source; all seven load-bearing findings are CONFIRMED:
 4. **Capture-cutoff history updates are unreachable** — the
    `!is_quiet` bonus sits inside the `is_quiet` block (search.cpp
    ~1229).
-5. **The bucket training pipeline was invalid** — third revision of
-   this record: the streaming optimizer registers only l2/l3/out (NOT
-   bl2/bl3/bout) and the exporter writes only the base tail, so the
-   six-arm bucket suite actually ran FT training against FROZEN
-   copy-seeded tails and exported the untouched base tail. The arms
-   were neither no-ops nor bucket tests. Their neutrality is weak
-   frozen-tail-vs-live-tail evidence only (400 steps, 14M slice,
-   overfit regime). Any future bucket test needs trainer optimizer
-   groups + export + quantizer + engine loader work first.
-6. **Non-AVX2 builds + LNI8 nets are broken** — the int8 evaluator
+5. **The bucket training pipeline was invalid — and the arms were a
+   TAUTOLOGY** (fourth revision of this record, final): the streaming
+   optimizer registers only l2/l3/out (NOT bl2/bl3/bout) and the
+   exporter writes only the base tail. Since v2_expand copy-seeds every
+   bucket from the base tail and the buckets never receive updates,
+   forward through the frozen clones is IDENTICAL to forward through
+   the base tail — so with shared seed and data order the bucket arm is
+   bit-identical to its baseline for the whole run. "Buckets ≈ neutral"
+   was arithmetic identity, not a measurement. The pairwise arm is
+   muted the same way (duplicated halves reproduce SCReLU exactly, tail
+   never trains); only J-widening touched optimizer-registered
+   parameters and it measured null. Buckets are UNTESTED. The October
+   "correction of a correction" (§: "the six-arm suite was real")
+   verified the env var is parsed but never checked the params are
+   OPTIMIZED — the mirror-image of the mistake it warned about.
+   Retest cost: optimizer fix + export + quantizer + engine loader +
+   session + gate.
+6. **The two history tables are globals** — counter_moves and
+   continuation_history, 2.36 MB each, written on every beta cutoff,
+   read in ordering, still carrying the "lazy SMP tolerates races"
+   comment that the corrhist 8T wall falsified (those tables were
+   192 KiB and measured as the multithreading wall before being moved
+   per-worker). Same fix, third instance of the oversight: move into
+   SearchWorker. Ranked repair #1 for CCRL (four cores).
+7. **Non-AVX2 builds + LNI8 nets are broken** — the int8 evaluator
    compiles only under AVX2; SSE4-only builds fall to a float tail
    whose weights were never loaded. Untouched by our arena (always
    AVX2) but a portability landmine in the "universal" release binary.
-7. **`bench` returns 0 even when perft fails** (main.cpp) and CI has
+8. **`bench` returns 0 even when perft fails** (main.cpp) and CI has
    no net-load/game/sanitizer assertions.
+
+Repair ranking (Elo per hour; all are repairs of already-paid-for
+machinery, none has a measured value, 2 and 3 require a retune after):
+1. move the two history tables into SearchWorker; 2. plumb new_depth
+through every branch; 3. fix see_ge's missing first recapture (the
+real cost: bad_captures[] is never populated and capture LMR can never
+fire — a disabled reduction class, not misordering); 4. cheap bundle
+(capture-history brace, razoring equality, qsearch in-check cutoff,
+null-move guard); 5. bucket optimizer + loader retest. The SEE x-ray
+line is DISPUTED (audit says wrong square; agent 1 defends it as
+Stockfish-correct) — unresolvable from memory; the rewrite settles it
+with a reference-tested comparison, not by trusting either reading.
+Atomic-TT/concurrency rewrite deferred until after the history move is
+re-measured.
 
 Also accepted: the ~3030 figure is a local Stash-ladder interpolation
 whose exact protocol was not preserved — not a CCRL measurement. The
