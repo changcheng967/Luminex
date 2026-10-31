@@ -538,3 +538,76 @@ pairs means one in seven clear
 comparisons is backwards on BOTH nets — the failing 14% is unidentified.
 Four Carlsen-game errors reproduce in no replay configuration. None is
 an "axis"; all are the shape of thing that produced the last jump.
+
+## 14. The pivot (Oct 30): metrics → forensics
+
+**Method ledger.** Three instrument classes, tallied across the whole +106
+campaign:
+
+| instrument class | record |
+|---|---|
+| offline metrics | **0 / 8** |
+| architecture changes | **0 / 5** |
+| game forensics | **2 / 2** |
+
+The asymmetry is the finding. Every instrument that reads *positions* has
+failed; both instruments that read *games* produced something. Decision rule
+adopted: **stop proposing metrics.** Eight failures in the same direction is
+not an invitation to a ninth variant.
+
+**Divergence probe — deleted from the backlog.** It would have been metric #9
+against an 0/8 record. The base-rate argument settles it.
+
+**sf42k caveat recorded.** The strength-rank table has four entries; three are
+measured, sf42k's is *assumed* and was never gated. The dose-axis pair that
+actually carries the quiet law — T0 101.5 MAE vs sf20k 100.1, +106 apart — is
+measured on both sides, so the law stands on well-measured points. The fourth
+point is now marked unmeasured rather than letting the table imply more than
+it shows.
+
+**σ_seed pre-registrations adopted as written.** s7 done (−8), s123 done
+(10/10, reading close to even from its chunks), s2024 at chunk 1 — all landed
+within ~20 min. If **σ ≥ 25**, the re-gate runs against **sf20k instead of
+T0** (~25 min/net on the DCU arena) and every downstream number rescales
+honestly.
+
+**Idea-3 catch — counter lifecycle.** Any counter must live on the *same
+lifecycle as the tables it describes*: they age between searches and are
+cleared on newgame/net-load. Implementation will assert that the KRP
+distribution actually changes in the offline 500-position probe **before** any
+game is spent. GEN_QUIET_CHECK applied.
+
+**Pivot accepted.** Main line becomes a **black-box recorder** + 500 bot games
++ failure-mining queries. Per move the recorder captures: ply, nodes, seldepth,
+elapsed, clock remaining, aspiration attempts, iteration completion, TT
+occupancy, |root correction|.
+
+**Sequencing, stated explicitly.** The **bucket gate runs first anyway**: it is
+already staged, costs one session, and closes the architecture retraction on
+games — the only instrument that counts — instead of leaving it
+retracted-and-unresolved. Then the research loop stops and the forensics loop
+starts. **Recorder design begins the moment σ_seed is read.**
+
+*Standing caveat from round 9 (unchanged):* ρ≈0.7 measures error persistence
+along played trajectories — a proxy for, not a measurement of, sibling-group
+covariance at search nodes.
+
+## 15. σ_seed measured — branch one (Oct 30)
+
+The three seed gates (2,000 games each vs T0, paired openings
+2001–3000): **s7 −7.6 ± 15, s123 −13.0 ± 15, s2024 −4.7 ± 15**; with
+r0b (−22 at its noisier 600g gate) the four draws have mean **−11.8**,
+observed SD **7.6**. The observed scatter (χ² = 1.5 on 3 df against the
+expected gate-noise variance of ~114) is fully consistent with pure gate
+noise: **true σ_seed ≈ 0–8, point estimate 7.6**. (Estimate itself good
+to ±40% from four draws — the order of magnitude is what matters.)
+
+Pre-registered read: **σ ≤ 12 → the +106 is real.** Taken. T0 is a mild
++1.5σ draw above the seed mean (all four draws negative, mean −12), so
+the honest decomposition of the recipe gain is ~94 Elo recipe + ~12
+seed luck — the seed lottery is an order of magnitude too small to
+explain the effect, and the mechanism genuinely lives outside every
+static property of the net (0/9 instruments). No re-gate against sf20k
+needed. Per §14: recorder design starts now; the bucket gate remains
+the one staged architecture closure before forensics becomes the main
+line.
