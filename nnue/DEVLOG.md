@@ -727,3 +727,59 @@ alone (1.02M vs 786M updates per param); **negative** → architecture
 axis closes for good. Framing correction accepted as final: wd is the
 smaller dose of the same medicine; buckets are the same dose PLUS a
 routing confound.
+
+## 16. External code audit verified — seven structural findings (Oct 31)
+
+An independent static audit of search/TT/NNUE/CI was checked claim by
+claim against source; all seven load-bearing findings are CONFIRMED:
+
+1. **SEE is effectively absent.** `see_ge` returns true when the
+   victim's value alone meets the threshold BEFORE any recapture is
+   considered (board.cpp ~1155) — for the universal `see_ge(m, 0)`
+   call every capture in the engine's history has been classified
+   SEE-good; the swap loop is dead code at threshold 0. The x-ray
+   update also reveals attackers of the vacated ORIGIN square, not the
+   exchange square. Downstream victims: good/bad capture ordering,
+   qsearch SEE pruning, ProbCut admission, losing-capture LMR.
+2. **Extensions are computed but not searched.** `new_depth += ext`
+   only reaches the LMR branch; PVS scout, full re-search, and the
+   first-move branch (where singular extensions live) all recurse at
+   plain `depth - 1`. Check/singular/recapture/forcing extensions have
+   never actually extended anything; the stats count attempts.
+3. **Singular verification is self-fulfilling.** The TT probe/cutoff
+   has no `excluded_move` guard, so the verification search can return
+   on the very entry it is testing.
+4. **Capture-cutoff history updates are unreachable** — the
+   `!is_quiet` bonus sits inside the `is_quiet` block (search.cpp
+   ~1229).
+5. **The bucket training pipeline was invalid** — third revision of
+   this record: the streaming optimizer registers only l2/l3/out (NOT
+   bl2/bl3/bout) and the exporter writes only the base tail, so the
+   six-arm bucket suite actually ran FT training against FROZEN
+   copy-seeded tails and exported the untouched base tail. The arms
+   were neither no-ops nor bucket tests. Their neutrality is weak
+   frozen-tail-vs-live-tail evidence only (400 steps, 14M slice,
+   overfit regime). Any future bucket test needs trainer optimizer
+   groups + export + quantizer + engine loader work first.
+6. **Non-AVX2 builds + LNI8 nets are broken** — the int8 evaluator
+   compiles only under AVX2; SSE4-only builds fall to a float tail
+   whose weights were never loaded. Untouched by our arena (always
+   AVX2) but a portability landmine in the "universal" release binary.
+7. **`bench` returns 0 even when perft fails** (main.cpp) and CI has
+   no net-load/game/sanitizer assertions.
+
+Also accepted: the ~3030 figure is a local Stash-ladder interpolation
+whose exact protocol was not preserved — not a CCRL measurement. The
+parked OpenBench deployment is the structural fix (reproducible,
+anchored, artifact-preserving tests).
+
+**Consequence for the queue:** these are forensics-loop candidates —
+code contradictions instead of game contradictions — each still needing
+a game gate. SEE first (with the warning that SPSA tuned around broken
+SEE, so the first correct version may regress before retune);
+extension plumbing, singular TT guard, capture-history braces,
+gives_check completeness, razoring equality, qsearch in-check cap,
+null-move stale pins, LNI8 guard, and bench return-code are the bundle.
+The SMP formal-races critique is valid C++ pedantry but secondary:
+lazy-SMP engines universally ship benign TT races; hardening is
+XOR-checksum entries, not a rewrite.
