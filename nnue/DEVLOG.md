@@ -611,3 +611,56 @@ static property of the net (0/9 instruments). No re-gate against sf20k
 needed. Per §14: recorder design starts now; the bucket gate remains
 the one staged architecture closure before forensics becomes the main
 line.
+
+### Round-11 refinements (Oct 31)
+
+**σ_seed split.** The four draws are better read as two numbers: an
+OFFSET (T0 ≈ +8–12 above the recipe mean — a mildly fortunate draw) and
+a SPREAD (σ_seed ≈ 0–8, point ~4, noise-corrected). The operative fact:
+**seed noise ≪ gate noise (±15–21) — every gate in the programme was
+measuring sampling noise, not seed noise; single-seed arms are
+sufficient for all ordinary decisions, forever.** Headline effect: the
+recipe is worth ~+94 with seed uncertainty ~±4 — the project's first
+properly bounded effect estimate.
+
+**The unified label-bias hypothesis.** The MAE anti-correlation is not
+uniform: it is FLAT along the weight axis (0.1 cp across a real 25-Elo
+difference) and INVERTED along the dose axis (−1.4 cp toward 110 Elo
+weaker). Two failures: MAE cannot see real eval differences, and it
+rewards over-training. Hypothesis of record: **the SF labels carry a
+bias that training amplifies; light dose is an accidental brake on
+fitting it.** This single sentence explains the +94 being real, the 0/9
+metric record, the dose cliff, and the null result of the redundancy
+screen (same bias, more of it). Consequence: the eval lever is the
+label; labels cannot be characterised offline; forensics is the method
+that finds errors the labels agree with.
+
+**Architecture re-test scope.** MoE-on-FT proposed (2 experts, material
+routing) as the "regulariser wearing architecture's clothes": same
+6,000 steps, more parameters, less memorisation per parameter.
+Counter-note recorded: at FIXED steps the 2-bucket tail split has the
+same dilution property at smaller magnitude (tail 400K params ×2 vs FT
+18.9M ×2), so the label-bias story does not predict buckets fail — it
+predicts a smaller dose of the same medicine. Sequence: the staged
+bucket gate runs first (hours, already scoped), MoE second (days:
+dual-accumulator refresh on material crossing, trainer copy-seed,
+~75 MB nets, kill at <+5, 2,500-game gate). Either outcome of the
+bucket gate is evidence about the mechanism, not just the lever.
+
+**Recorder spec, reprioritised.** All three flagship losses were
+diagnosed as time-shaped (neryba flagged at +19.29 with mate-in-14;
+Carlsen's seven inaccuracies clustered 0:28–1:18; Sykora's blunders at
+0:28). Field order therefore: (1) time_left at each move, both sides;
+(2) nodes, seldepth, elapsed, last-iteration-completed; (3) |root
+correction|; (4) hashfull; (5) eval and move scores last.
+**Pre-registered query, before any data is looked at:** moves ≥0.7
+pawns worse than Stockfish's AND time_left < 60 s AND queens on.
+2–3 hits per game = weakness with a known trigger and a candidate fix;
+zero = the clock story is wrong, which is worth knowing in a week.
+
+**Forensics protocol caution.** The loop is 2/2 but both wins came from
+one specimen each AND were reproduced before being fixed (cold replay
+exonerating eval, persistent replay isolating TT). Reproduction is step
+two of the loop, mandatory. A blunder that will not reproduce cold is
+presumed a clock artefact until proven otherwise — the last three were
+exactly that shape.
