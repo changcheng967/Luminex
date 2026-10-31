@@ -82,6 +82,13 @@ struct SearchWorker {
     int history[12][64] = {};
     int capture_history[12][64][7] = {};
     Move counter_move_table[12][64] = {};
+    // Counter-move and continuation histories lived as 2.36 MB-per-table
+    // globals until Oct 2026 — same shared-writable-state family as g_stats,
+    // eval_cache and the corrhist 8T wall, but 12x the table size and written
+    // on every beta cutoff. Fourth instance of the pattern; per-worker is also
+    // the correct lazy-SMP semantics (main worker keeps them across searches).
+    int counter_moves[12][64][12][64] = {};
+    int continuation_history[12][64][12][64] = {};
     int low_ply_history[4][12][64] = {};  // Plies 1-3 history (index 0 unused)
     // Correction history lives per-worker: as shared globals these 192 KiB were
     // written six times per node from every thread — the third instance of the
@@ -101,13 +108,7 @@ static thread_local SearchWorker* worker = nullptr;
 // Persistent main worker — keeps history alive across searches within a game
 static SearchWorker* main_search_worker = nullptr;
 
-// Shared between threads (lazy SMP tolerates races in these heuristic tables)
-// Counter-move history: [prev_piece][prev_to][piece][to]
-int counter_moves[12][64][12][64];
-
-// Continuation history (2-ply): [piece2][to2][piece1][to1]
-// Tracks how good a move is given OUR previous move (2 plies back)
-int continuation_history[12][64][12][64];
+// (counter_moves / continuation_history moved into SearchWorker — see struct)
 
 // Lazy SMP helper thread management (inside anonymous namespace for internal linkage)
 static std::vector<std::thread> helper_threads;
@@ -210,11 +211,11 @@ inline int combined_history(const SearchWorker* w, const Stack* ss, Piece pc, Sq
     int score = w->history[int(pc)][int(to)];
 
     if (ss->ply >= 1 && (ss - 1)->current_move != MOVE_NONE && (ss - 1)->moved_piece != NO_PIECE) {
-        score += counter_moves[int((ss - 1)->moved_piece)][int((ss - 1)->current_move.to())][int(pc)][int(to)];
+        score += w->counter_moves[int((ss - 1)->moved_piece)][int((ss - 1)->current_move.to())][int(pc)][int(to)];
     }
 
     if (ss->ply >= 2 && (ss - 2)->current_move != MOVE_NONE && (ss - 2)->moved_piece != NO_PIECE) {
-        score += continuation_history[int((ss - 2)->moved_piece)][int((ss - 2)->current_move.to())][int(pc)][int(to)];
+        score += w->continuation_history[int((ss - 2)->moved_piece)][int((ss - 2)->current_move.to())][int(pc)][int(to)];
     }
 
     return score;
@@ -595,7 +596,7 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
                 if (ss->ply >= 1 && (ss - 1)->current_move != MOVE_NONE && (ss - 1)->moved_piece != NO_PIECE) {
                     Move prev_move = (ss - 1)->current_move;
                     Piece prev_pc = (ss - 1)->moved_piece;
-                    int& cm = counter_moves[int(prev_pc)][int(prev_move.to())][int(moved)][int(tt_move.to())];
+                    int& cm = worker->counter_moves[int(prev_pc)][int(prev_move.to())][int(moved)][int(tt_move.to())];
                     cm += bonus - cm * std::abs(bonus) / 16368;
                     worker->counter_move_table[int(prev_pc)][int(prev_move.to())] = tt_move;
                 }
@@ -604,7 +605,7 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
                 if (ss->ply >= 2 && (ss - 2)->current_move != MOVE_NONE && (ss - 2)->moved_piece != NO_PIECE) {
                     Move prev2_move = (ss - 2)->current_move;
                     Piece prev2_pc = (ss - 2)->moved_piece;
-                    int& ch = continuation_history[int(prev2_pc)][int(prev2_move.to())][int(moved)][int(tt_move.to())];
+                    int& ch = worker->continuation_history[int(prev2_pc)][int(prev2_move.to())][int(moved)][int(tt_move.to())];
                     ch += bonus - ch * std::abs(bonus) / 16368;
                 }
             } else if (moved != NO_PIECE && tt_move.is_capture()) {
@@ -1208,7 +1209,7 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
                         if (ss->ply >= 1 && (ss - 1)->current_move != MOVE_NONE && (ss - 1)->moved_piece != NO_PIECE) {
                             Move prev_move = (ss - 1)->current_move;
                             Piece prev_pc = (ss - 1)->moved_piece;
-                            int& cm = counter_moves[int(prev_pc)][int(prev_move.to())][int(pc)][int(m.to())];
+                            int& cm = worker->counter_moves[int(prev_pc)][int(prev_move.to())][int(pc)][int(m.to())];
                             cm += bonus - cm * abs(bonus) / 16368;
                             worker->counter_move_table[int(prev_pc)][int(prev_move.to())] = m;
                         }
@@ -1217,7 +1218,7 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
                         if (ss->ply >= 2 && (ss - 2)->current_move != MOVE_NONE && (ss - 2)->moved_piece != NO_PIECE) {
                             Move prev2_move = (ss - 2)->current_move;
                             Piece prev2_pc = (ss - 2)->moved_piece;
-                            int& ch = continuation_history[int(prev2_pc)][int(prev2_move.to())][int(pc)][int(m.to())];
+                            int& ch = worker->continuation_history[int(prev2_pc)][int(prev2_move.to())][int(pc)][int(m.to())];
                             ch += bonus - ch * abs(bonus) / 16368;
                         }
 
@@ -1254,13 +1255,13 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
                             if (ss->ply >= 1 && (ss - 1)->current_move != MOVE_NONE && (ss - 1)->moved_piece != NO_PIECE) {
                                 Move prev_move = (ss - 1)->current_move;
                                 Piece prev_pc = (ss - 1)->moved_piece;
-                                int& cm = counter_moves[int(prev_pc)][int(prev_move.to())][int(qpc)][int(qm.to())];
+                                int& cm = worker->counter_moves[int(prev_pc)][int(prev_move.to())][int(qpc)][int(qm.to())];
                                 cm += malus - cm * abs(malus) / 16368;
                             }
                             if (ss->ply >= 2 && (ss - 2)->current_move != MOVE_NONE && (ss - 2)->moved_piece != NO_PIECE) {
                                 Move prev2_move = (ss - 2)->current_move;
                                 Piece prev2_pc = (ss - 2)->moved_piece;
-                                int& ch = continuation_history[int(prev2_pc)][int(prev2_move.to())][int(qpc)][int(qm.to())];
+                                int& ch = worker->continuation_history[int(prev2_pc)][int(prev2_move.to())][int(qpc)][int(qm.to())];
                                 ch += malus - ch * abs(malus) / 16368;
                             }
                             // Low-ply history malus (plies 1-3)
@@ -2460,9 +2461,9 @@ void clear_search_history() {
         std::memset(main_search_worker->counter_move_table, 0, sizeof(main_search_worker->counter_move_table));
         std::memset(main_search_worker->low_ply_history, 0, sizeof(main_search_worker->low_ply_history));
         std::memset(main_search_worker->killers, 0, sizeof(main_search_worker->killers));
+        std::memset(main_search_worker->counter_moves, 0, sizeof(main_search_worker->counter_moves));
+        std::memset(main_search_worker->continuation_history, 0, sizeof(main_search_worker->continuation_history));
     }
-    std::memset(counter_moves, 0, sizeof(counter_moves));
-    std::memset(continuation_history, 0, sizeof(continuation_history));
 }
 
 } // namespace luminex
