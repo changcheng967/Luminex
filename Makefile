@@ -35,6 +35,17 @@ else
   MARCH   ?= x86-64-v3
 endif
 
+# The engine is C++23 (<format>): needs g++ 13+ or clang 18+ with libc++.
+# Fail with one clear line instead of a page of template errors on the
+# older g++ that many worker images ship by default (e.g. 9.4 on AI Studio).
+GCC_MAJOR := $(shell $(CXX) -dumpversion 2>/dev/null | cut -d. -f1)
+IS_CLANG  := $(shell $(CXX) --version 2>/dev/null | head -1 | grep -ci clang)
+ifneq ($(IS_CLANG),1)
+ifeq ($(shell test $(GCC_MAJOR) -ge 13 2>/dev/null && echo ok),)
+  $(error Luminex needs g++ 13+ (C++23 <format>). Found $(CXX) $(shell $(CXX) -dumpversion 2>/dev/null). Install g++-13 and rerun with CXX=g++-13)
+endif
+endif
+
 # EVALFILE is accepted and ignored: Luminex loads .nnue at runtime through the
 # EvalFile UCI option, not by embedding it at build time. The OpenBench client
 # is patched to inject that option (see ../LUMINEX_INTEGRATION.md).
