@@ -367,7 +367,10 @@ bool load(const std::string& path) {
     // TLB misses. Best effort — silently ignored where disallowed.
     madvise(ft_w.data(), (ft_w.size() * sizeof(int16_t) + 0xFFFFF) & ~0xFFFFF, MADV_HUGEPAGE);
 #endif
-    std::printf("nnue: loaded %s (%s L1=%d L2=%d L3=%d)%s\n", path.c_str(), g_int8 ? "int8" : "float", L1, L2, L3);
+    // SIX specifiers, five args — the trailing %s read a garbage vararg and
+    // strlen()'d it: benign UB on x86-64, SIGSEGV on aarch64 (every ARM worker
+    // "disconnect" traced to this line).
+    std::printf("nnue: loaded %s (%s L1=%d L2=%d L3=%d)\n", path.c_str(), g_int8 ? "int8" : "float", L1, L2, L3);
     return true;
 }
 

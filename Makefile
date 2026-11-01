@@ -30,7 +30,7 @@ BUILD_DIR ?= build-openbench
 # architecture instead.
 UNAME_M   := $(shell uname -m)
 ifeq ($(UNAME_M),aarch64)
-  MARCH   ?= neoverse-n1
+  MARCH   ?= armv8-a
 else
   MARCH   ?= x86-64-v3
 endif
