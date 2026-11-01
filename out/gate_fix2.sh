@@ -2,7 +2,8 @@
 # Repair gate 2: extension plumbing. fix2 binary (extensions live in every
 # branch, capped at 2) vs fix1 binary (history fix only), same T0 net,
 # 1 thread. 4,000 games in 20 chunks of 200. Openings 6001-8000 (disjoint
-# from 1-1000, 2001-3000, 3001-4000, 5001-6000).
+# from 1-1000, 2001-3000, 3001-4000, 5001-6000). Concurrency 3 (not 7): runs
+# alongside the 4T history gate which occupies 8 of the 14-core quota.
 # Expectation pre-registered: extensions activate never-fired machinery —
 # sign UNKNOWN (tactical depth helps; node inflation at fixed budget hurts;
 # SPSA margins were tuned with extensions dead). This gate measures net effect;
@@ -27,7 +28,7 @@ for i in $(seq 1 20); do
     -engine cmd=$OLD name=fix1 option.NNUEFile=$T0 option.Threads=1 option.Hash=64 \
     -each proto=uci tc=60+0 option.NodesPerMove=20000 \
     -openings file=$G/8moves_v3.pgn format=pgn order=sequential start=$START \
-    -rounds 100 -repeat -concurrency 7 \
+    -rounds 100 -repeat -concurrency 3 \
     -pgnout file=$G/pgn/fix2_$i.pgn > $G/fix2_$i.log 2>&1
   S=$(grep -E "^Games: " $G/fix2_$i.log | tail -1)
   if [ -z "$S" ]; then
