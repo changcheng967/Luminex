@@ -125,21 +125,34 @@ int main(int argc, char* argv[]) {
         auto ms = duration_cast<milliseconds>(end - start).count();
         std::cout << "Time: " << ms << "ms" << std::endl;
 
-        // OpenBench bench contract: the client parses /nodes searched (\d+)/
-        // and /nps (\d+)/ from the LAST matching lines, so these must come
-        // after the perft output. Perft totals are integer-only and identical
-        // on every ISA, which is what makes this a cross-worker determinism
-        // check (a search bench would differ between AVX2/AVX-512/ARM builds
-        // and get workers blacklisted for bench mismatches).
-        const uint64_t total_nodes = p1 + p2 + p3 + p4;
-        std::cout << "Nodes searched " << total_nodes << std::endl;
-        if (ms > 0)
-            std::cout << "NPS " << (total_nodes * 1000ULL / (uint64_t)ms) << std::endl;
-
         if (p1 == 20 && p2 == 400 && p3 == 8902 && p4 == 197281) {
             std::cout << "ALL PERFT TESTS PASSED" << std::endl;
         } else {
             std::cout << "PERFT TESTS FAILED!" << std::endl;
+        }
+
+        // OpenBench bench contract, two lines, printed LAST so the client's
+        // reverse-order parser picks them over any search info lines:
+        //   "Nodes searched" = the PERFT total — integer-only, identical on
+        //     every ISA, which is what makes it the cross-worker determinism
+        //     check (a search-bench node count would differ between
+        //     AVX2/AVX-512/ARM builds and get workers blacklisted).
+        //   "NPS" = measured SEARCH speed from a short depth-limited probe.
+        //     Bench runs net-less (HCE eval), so this is a speed probe, not a
+        //     strength measurement — the client reports it as the machine's
+        //     engine speed, which drives time-control scaling per worker.
+        {
+            Position probe;
+            probe.set("rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1");
+            Limits lim;
+            lim.depth = 11;
+            auto t0 = high_resolution_clock::now();
+            search(probe, lim);
+            auto sms = duration_cast<milliseconds>(high_resolution_clock::now() - t0).count();
+            const uint64_t total_nodes = p1 + p2 + p3 + p4;
+            std::cout << "Nodes searched " << total_nodes << std::endl;
+            if (sms > 0)
+                std::cout << "NPS " << (nodes.load() * 1000ULL / (uint64_t)sms) << std::endl;
         }
         return 0;
     }
