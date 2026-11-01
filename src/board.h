@@ -108,6 +108,7 @@ public:
     void undo_null_move();
 
     bool see_ge(Move m, Value threshold = VALUE_ZERO) const;
+    Value exchange(Square to, Color stm, Bitboard occ, PieceType captured) const;
 
     bool legal(Move m, bool skip_pseudo = false) const;    bool pseudo_legal(const Move m) const;
     bool capture(Move m) const;
