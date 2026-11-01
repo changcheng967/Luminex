@@ -126,6 +126,12 @@ if(WIN32)
     target_link_libraries(luminex PRIVATE)
 endif()
 
+# Link pthreads explicitly: glibc >= 2.34 folds it into libc so CI never
+# noticed it was missing, but older sysroots (conda-forge toolchains target
+# 2.28) keep it separate and std::thread fails at link time without this.
+find_package(Threads REQUIRED)
+target_link_libraries(luminex PRIVATE Threads::Threads)
+
 # === Tuner target ===
 option(BUILD_FEATURIZER "Build Game-Pack NNUE featurizer" OFF)
 option(BUILD_EVALTRACE "Build HCE eval trace tool" OFF)
