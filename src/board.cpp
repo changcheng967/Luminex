@@ -1125,83 +1125,59 @@ void Position::assert_consistency([[maybe_unused]] const char* location) {
 #endif
 }
 
+// Exchange value of recapturing on `to`, for `stm` to move. A side
+// recaptures only while profitable:
+//   exchange = max(0, captured - exchange(opponent))
+// attackers_to() is recomputed per level with updated occupancy, so x-ray
+// reveals through vacated squares are handled by construction.
+Value Position::exchange(Square to, Color stm, Bitboard occ, PieceType captured) const {
+    static constexpr Value PIECE_VALUE[6] = {
+        PAWN_VALUE, KNIGHT_VALUE, BISHOP_VALUE, ROOK_VALUE, QUEEN_VALUE, 0
+    };
+    // & occ: pieces already consumed by deeper recursion must not reappear
+    Bitboard attackers = attackers_to(to, occ) & pieces(stm) & occ;
+
+    PieceType pt = KING;
+    for (int t = PAWN; t <= QUEEN; ++t) {
+        if (attackers & pieces(stm, PieceType(t))) { pt = PieceType(t); break; }
+    }
+
+    bool king_only = pt == KING && (attackers & pieces(stm, KING));
+    if (!attackers || (king_only && (attackers_to(to, occ) & occ & pieces(Color(stm ^ 1)))))
+        return VALUE_ZERO;  // no legal recapture
+
+    Square sq = king_only ? king_square[stm]
+                          : lsb(attackers & pieces(stm, pt));
+    occ ^= square_bb(sq);
+
+    Value recapture = PIECE_VALUE[captured]
+                    - exchange(to, Color(stm ^ 1), occ, pt);
+    return recapture > VALUE_ZERO ? recapture : VALUE_ZERO;
+}
+
 bool Position::see_ge(Move m, Value threshold) const {
+    static constexpr Value PIECE_VALUE[6] = {
+        PAWN_VALUE, KNIGHT_VALUE, BISHOP_VALUE, ROOK_VALUE, QUEEN_VALUE, 0
+    };
     Square from = m.from();
     Square to = m.to();
 
-    constexpr Value piece_value[] = {
-        PAWN_VALUE, KNIGHT_VALUE, BISHOP_VALUE, ROOK_VALUE, QUEEN_VALUE, 0
-    };
+    Bitboard occ = pieces() ^ square_bb(from);
+    if (m.is_en_passant())
+        occ ^= square_bb(Square(to - (side_to_move_ == WHITE ? 8 : -8)));
 
-    Bitboard occupied = pieces();
-    occupied &= ~square_bb(from);
+    PieceType victim = m.is_en_passant() ? PAWN : piece_type_on(to);
+    Value gain = victim == PT_NONE || victim == KING ? VALUE_ZERO
+                                                    : PIECE_VALUE[victim];
+    if (m.is_promotion())
+        gain += PIECE_VALUE[m.promotion_type()] - PIECE_VALUE[PAWN];
 
-    // For EP captures, the captured pawn is NOT on the target square.
-    // PT_NONE (255) on a quiet destination would index far out of bounds —
-    // all current callers are capture-only, but guard so a future
-    // quiet-move SEE caller cannot trip it.
-    PieceType victim = piece_type_on(to);
-    Value gain = m.is_en_passant() ? PAWN_VALUE
-               : (victim == PT_NONE ? Value(0) : piece_value[victim]);
-    if (m.is_promotion()) {
-        gain += piece_value[m.promotion_type()] - piece_value[PAWN];
-    }
+    PieceType attacker = piece_type_on(from);
+    if (attacker == PT_NONE || attacker == KING)
+        attacker = m.is_promotion() ? m.promotion_type() : PAWN;
 
-    if (m.is_en_passant()) {
-        Square cap_sq = Square(to - (side_to_move_ == WHITE ? 8 : -8));
-        occupied &= ~square_bb(cap_sq);
-    }
-
-    if (gain >= threshold) return true;
-
-    Bitboard attackers = attackers_to(to, occupied);
-    Color stm = Color(side_to_move_ ^ 1);
-
-    while (attackers) {
-        Bitboard stm_attackers = attackers & pieces(stm);
-        if (!stm_attackers) break;
-
-        PieceType pt;
-        Bitboard pca;
-        if ((pca = stm_attackers & pieces(stm, PAWN)))       pt = PAWN;
-        else if ((pca = stm_attackers & pieces(stm, KNIGHT))) pt = KNIGHT;
-        else if ((pca = stm_attackers & pieces(stm, BISHOP))) pt = BISHOP;
-        else if ((pca = stm_attackers & pieces(stm, ROOK)))   pt = ROOK;
-        else if ((pca = stm_attackers & pieces(stm, QUEEN)))  pt = QUEEN;
-        else { pt = KING; pca = stm_attackers & pieces(stm, KING); }
-
-        // King recapture: if opponent still has attackers, king move is illegal
-        if (pt == KING && (attackers & pieces(Color(stm ^ 1)))) {
-            // King can't recapture safely — opponent takes our last capturer for free
-            break;
-        }
-
-        Square sq = lsb(pca);
-        occupied &= ~square_bb(sq);
-
-        stm = Color(stm ^ 1);
-        gain = -gain - piece_value[pt];
-
-        if (gain >= threshold) return true;
-
-        // Only add newly revealed sliding attackers (not full recompute)
-        // ANY piece moving away can reveal a slider behind it
-        // (not just bishops/rooks/queens — a pawn moving reveals too)
-        // Diagonal sliders revealed by removing piece at sq
-        {
-            Bitboard diag = bb_diag_attacks(sq, occupied) & (pieces(BISHOP) | pieces(QUEEN));
-            attackers |= diag;
-        }
-        // Orthogonal sliders revealed by removing piece at sq
-        {
-            Bitboard orth = rook_attacks_bb(sq, occupied) & (pieces(ROOK) | pieces(QUEEN));
-            attackers |= orth;
-        }
-        // Remove the piece that just captured from attacker set
-        attackers &= occupied;
-    }
-
-    return gain >= threshold;
+    Value see = gain - exchange(to, Color(side_to_move_ ^ 1), occ, attacker);
+    return see >= threshold;
 }
 
 bool Position::legal(Move m, bool skip_pseudo) const {
