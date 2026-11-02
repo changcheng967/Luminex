@@ -181,6 +181,8 @@ inline bool Position::castling_allowed(Color c, CastlingRight cr) const { return
 
 inline int Position::game_ply() const { return game_ply_; }
 
+inline int Position::halfmove_clock() const { return st_->halfmove_clock; }
+
 inline Key Position::key() const { return st_->key; }
 inline Key Position::pawn_key() const { return st_->pawn_key; }
 inline Key Position::nonpawn_key(Color c) const { return st_->nonpawn_key[int(c)]; }
