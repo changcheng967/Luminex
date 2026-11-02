@@ -215,13 +215,10 @@ static bool g_l3_batched = false;   // l3_w_i8 interleaved for batched VNNI L3
 static bool g_enabled = true;
 
 // Per-thread accumulator stack, indexed by Position::st_ply(). v[perspective][neuron].
-// Cache-line aligned so each 4KB accumulator starts on a 64B boundary (cleaner loads
-// during the SCReLU/quant8 pass and the feature-delta add).
-// int32 integer accumulator: iacc[l] = round(b[l]*FT_WSCALE) + sum(w_int16[l]) — EXACT
-// integer sums (the old float accumulator rounded on every add and burned
-// int16->int32->float conversions inside every feature update).
-// int16 SATURATING accumulator. The SCReLU clip window is [0, 8192] (1.0x
-// FT_WSCALE); int16 saturation at +-32767 sits 4x above the window, so any lane
+// Cache-line aligned for clean loads during the SCReLU/quant8 pass.
+// int16 saturating accumulator: exact integer sums, clip window [0, 8192]
+// (1.0x FT_WSCALE); int16 saturation at +-32767 sits 4x above the window, so
+// saturating lanes were already fully clipped by SCReLU.
 // that saturates was already fully clipped. Simulated on 6000 real perspectives:
 // 2 single-lane activation-quant diffs out of 3.07M lanes (0.03% of perspectives).
 // Halves copy/update/eval traffic vs the int32 accumulator.
