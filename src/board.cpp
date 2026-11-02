@@ -172,9 +172,16 @@ void Position::set(const std::string& fen) {
     st_->move = MOVE_NONE;
     st_->captured_piece = PT_NONE;
 
-    // En passant square
+    // En passant square. Canonical rule (same one make_move applies): keep it
+    // only when a pawn of the side to move can actually capture there; an
+    // uncapturable square would be XORed out of the key on the next move
+    // without ever having been XORed in.
     ss >> token;
     st_->ep_square = (token == "-") ? SQUARE_NONE : Square((token[1] - '1') * 8 + (token[0] - 'a'));
+    if (st_->ep_square != SQUARE_NONE
+        && !(pawn_attacks_bb(Color(side_to_move_ ^ 1), square_bb(st_->ep_square)) & pieces(side_to_move_, PAWN))) {
+        st_->ep_square = SQUARE_NONE;
+    }
 
     // Halfmove clock (for 50-move rule)
     int halfmove = 0;
@@ -216,17 +223,18 @@ void Position::set(const std::string& fen) {
         st_->psq_eg += PSQ_EG[int(c)][int(pt)][int(s)];
     }
 
+    // ep_square is only ever set when capturable (see FEN parse and
+    // make_move), so its key contribution is unconditional here.
     if (st_->ep_square != SQUARE_NONE) {
-        // Only hash EP if the side to move can actually capture en passant
-        Color capturer = side_to_move_;
-        if (pawn_attacks_bb(Color(capturer ^ 1), square_bb(st_->ep_square)) & pieces(capturer, PAWN)) {
-            k ^= Zobrist::en_passant[file_of(st_->ep_square)];
-        }
+        k ^= Zobrist::en_passant[file_of(st_->ep_square)];
     }
 
+    // Per-color masks: WHITE bits 0-1, BLACK bits 2-3. Testing a white-only
+    // mask for both colors left black's initial castling key unhashed while
+    // make_move still XORed it out.
     for (Color c : {WHITE, BLACK}) {
         for (int i = 0; i < 2; ++i) {
-            if (castling_rights_[c] & (WHITE_KINGSIDE << i)) {
+            if (castling_rights_[c] & (WHITE_KINGSIDE << (2 * int(c) + i))) {
                 k ^= Zobrist::castling[(c << 1) | i];
             }
         }
@@ -1015,6 +1023,11 @@ void Position::do_null_move() {
     st_->key ^= Zobrist::side;
     side_to_move_ = Color(side_to_move_ ^ 1);
 
+    // checkers/pinned/block_checkers copied above describe the OLD side to
+    // move; legal()'s fast path trusts them for the new one and would accept
+    // moves exposing the new side's own king. Recompute for the flipped side.
+    set_check_info(st_);
+
     st_->ply = 0;
     ++game_ply_;
 }
@@ -1170,9 +1183,11 @@ bool Position::see_ge(Move m, Value threshold) const {
     if (m.is_promotion())
         gain += PIECE_VALUE[m.promotion_type()] - PIECE_VALUE[PAWN];
 
-    PieceType attacker = piece_type_on(from);
-    if (attacker == PT_NONE || attacker == KING)
-        attacker = m.is_promotion() ? m.promotion_type() : PAWN;
+    // A promoting pawn exchanges as its promoted type; kings keep KING (the
+    // value table maps it to 0, and king "recaptures" are gated in exchange).
+    PieceType attacker = m.is_promotion() ? m.promotion_type() : piece_type_on(from);
+    if (attacker == PT_NONE)
+        attacker = PAWN;
 
     Value see = gain - exchange(to, Color(side_to_move_ ^ 1), occ, attacker);
     return see >= threshold;

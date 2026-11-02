@@ -429,10 +429,10 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
     if (!in_check) {
         for (ExtMove* it = moves; it != end; ++it) {
             if (it->move.is_capture()) {
-                PieceType captured = pos.piece_type_on(it->move.to());
+                PieceType captured = it->move.is_en_passant() ? PAWN : pos.piece_type_on(it->move.to());
                 PieceType attacker = pos.piece_type_on(it->move.from());
                 static constexpr int pv[] = {100, 320, 330, 500, 900, 20000, 0};
-                it->value = (captured != PT_NONE ? pv[captured] : 0) * 10 - pv[attacker];
+                it->value = pv[captured] * 10 - pv[attacker];
                 if (it->move.is_promotion()) it->value += pv[it->move.promotion_type()];
             } else {
                 it->value = 0;
@@ -463,10 +463,10 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
             continue;
         }
 
-        // Skip losing captures with negative SEE (but keep queen promotions)
-        // Allow slightly losing captures at deeper qsearch depths (from Stash)
-        // Exception: when in check, try all evasions regardless of SEE
-        if (!in_check && !it->move.is_promotion() && !pos.see_ge(it->move, Value(-60 * depth))) {
+        // Skip losing captures with negative SEE (but keep queen promotions).
+        // Threshold goes negative as depth drops: deeper in qsearch tolerates
+        // increasingly losing captures. Exception: in check, try all evasions.
+        if (!in_check && !it->move.is_promotion() && !pos.see_ge(it->move, Value(60 * depth))) {
             continue;
         }
 
@@ -600,8 +600,10 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
     // ttPv: this position was a PV node when stored in TT
     bool ttPv = found && tte->is_pv();
 
-    // TT cutoff: require exact or greater depth for safety
-    if (!pv_node && found && tt_depth >= depth &&
+    // TT cutoff: require exact or greater depth for safety. Never cut in an
+    // excluded node: the singular-verification search probes the same key as
+    // the entry under test and would prove the bound with itself.
+    if (!pv_node && !ss->excluded_move && found && tt_depth >= depth &&
         (tt_value >= beta ? (tte->bound() & BOUND_LOWER) : (tte->bound() & BOUND_UPPER))) {
         g_stats.tt_cutoffs++;
         // TT cutoff stat updates: reinforce heuristics even on TT hits
@@ -779,7 +781,9 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
     }
 
     // ProbCut - if a capture is obviously good enough, verify with shallow search
-    if (!pv_node && depth >= 5 && !pos.is_check() && ss->ply >= 2) {
+    // Skipped in excluded nodes: pruning the singular verification would
+    // shortcut the very measurement the verification exists to make.
+    if (!pv_node && depth >= 5 && !pos.is_check() && ss->ply >= 2 && !ss->excluded_move) {
         Value rbeta = std::min(beta + 175, VALUE_INFINITE - 200);
         int rdepth = depth - 3;
 
@@ -1309,7 +1313,7 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
                     }
                 }
                 } // end common malus updates
-                if (!stop.load(std::memory_order_relaxed)) {
+                if (!stop.load(std::memory_order_relaxed) && TT.should_store(tte, found, depth)) {
                     tte->save(pos.key(), value_to_tt(value, ss->ply), pv_node, BOUND_LOWER, depth, m, eval, TT.generation());
                 }
                 if (moves_played_before == 0) g_stats.first_move_cutoffs++;
@@ -1360,7 +1364,9 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
             } else if (m.is_promotion()) {
                 score = 1800000 + m.promotion_type() * 10000;
             } else {
-                PieceType captured = pos.piece_type_on(m.to());
+                // EP target square is empty; treat the victim as a pawn so
+                // the 7-entry value/history tables stay in bounds.
+                PieceType captured = m.is_en_passant() ? PAWN : pos.piece_type_on(m.to());
                 PieceType attacker = pos.piece_type_on(m.from());
                 int mvv_lva = piece_value[captured] * 10 - piece_value[attacker];
                 int cap_hist = worker->capture_history[int(pos.piece_on(m.from()))][int(m.to())][int(captured)];
@@ -1595,7 +1601,8 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
         else if (best_value > original_alpha) bound = BOUND_EXACT;  // PV node improved alpha
         else bound = BOUND_UPPER;
         // Use best_move_found instead of ss->pv[ss->ply] to avoid stale PV corruption
-        tte->save(pos.key(), value_to_tt(best_value, ss->ply), pv_node, bound, depth, best_move_found, eval, TT.generation());
+        if (TT.should_store(tte, found, depth))
+            tte->save(pos.key(), value_to_tt(best_value, ss->ply), pv_node, bound, depth, best_move_found, eval, TT.generation());
 
         // Update multi-table correction history: learn from the difference between
         // search result and static eval, indexed by multiple position aspects.
@@ -1755,7 +1762,8 @@ static void helper_thread_func(Position pos_copy, int thread_id) {
             if (!stop.load(std::memory_order_relaxed)) {
                 bool found;
                 TTEntry* tte = TT.probe(pos_copy.key(), found);
-                tte->save(pos_copy.key(), depth_best_value, true, BOUND_EXACT, d, depth_best_move, VALUE_ZERO, TT.generation());
+                if (TT.should_store(tte, found, d))
+                    tte->save(pos_copy.key(), depth_best_value, true, BOUND_EXACT, d, depth_best_move, VALUE_ZERO, TT.generation());
             }
         }
     }
@@ -1998,7 +2006,7 @@ Move search(Position& pos, Limits& lim) {
             }
             // Prioritize winning captures (MVV-LVA)
             else if (m.is_capture()) {
-                PieceType captured = pos.piece_type_on(m.to());
+                PieceType captured = m.is_en_passant() ? PAWN : pos.piece_type_on(m.to());
                 PieceType attacker = pos.piece_type_on(m.from());
                 static constexpr int piece_value[] = {100, 320, 330, 500, 900, 20000, 0};
                 score = 1000000 + piece_value[captured] * 10 - piece_value[attacker];
@@ -2158,8 +2166,9 @@ Move search(Position& pos, Limits& lim) {
         if (depth_best_move != MOVE_NONE && !stop.load(std::memory_order_relaxed)) {
             bool root_found;
             TTEntry* root_tte = TT.probe(pos.key(), root_found);
-            root_tte->save(pos.key(), depth_best_value, true, BOUND_EXACT,
-                           root_depth, depth_best_move, VALUE_ZERO, TT.generation());
+            if (TT.should_store(root_tte, root_found, root_depth))
+                root_tte->save(pos.key(), depth_best_value, true, BOUND_EXACT,
+                               root_depth, depth_best_move, VALUE_ZERO, TT.generation());
         }
 
         root_score = depth_best_value;

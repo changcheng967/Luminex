@@ -50,8 +50,16 @@ public:
     void new_search();
 
     TTEntry* probe(uint64_t key, bool& found);
-    void write(uint64_t key, Value v, bool pv, Bound b, Depth d, Move m, Value ev);
     void prefetch(uint64_t key) const;
+
+    // Store policy for probe-returned entries: always store on a miss (the
+    // replacement victim was already chosen by probe); on a same-key hit keep
+    // the old entry unless this search is at least as deep or the entry is
+    // from an older search.
+    bool should_store(const TTEntry* tte, bool found, Depth d) const {
+        return !found || d >= tte->depth() || (tte->gen_bound & 0xFC) != generation8;
+    }
+
 
     uint8_t generation() const { return generation8; }
     uint8_t search_id() const { return search_id8; }

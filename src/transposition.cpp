@@ -14,7 +14,10 @@ void TTEntry::save(uint64_t k, Value v, bool pv, Bound b, Depth d, Move m, Value
     // qsearch TT store can't corrupt the sentinel. The top must clamp at 128
     // too: d+127 > 255 wraps uint8_t (d=129 -> 0 -> decodes as -127).
     depth_ = uint8_t(std::min<Depth>(128, std::max<Depth>(d, 1)) + 127);
-    gen_bound = uint8_t((g << 2) | b);
+    // g arrives pre-shifted (generation8 advances in steps of 4, keeping the
+    // low 2 bits free for the bound); shifting again here would desynchronize
+    // save and probe encodings.
+    gen_bound = uint8_t(g | b);
     pv_flag = pv ? 1 : 0;
     search_id_ = TT.search_id();
 }
@@ -88,56 +91,20 @@ TTEntry* TranspositionTable::probe(uint64_t key, bool& found) {
         }
     }
 
-    // Find entry with lowest depth - use pre-computed idx
+    // Find the least valuable entry to replace. Old-generation entries are
+    // discounted first (they lose authority to anything current); within the
+    // same generation the shallowest depth goes.
     TTEntry* replace = &table[idx].entry[0];
     for (int i = 1; i < 3; ++i) {
         TTEntry* e = &table[idx].entry[i];
-        if (e->depth_ - ((e->gen_bound & 0xFC) == generation8 ? 127 : 0) <
-            replace->depth_ - ((replace->gen_bound & 0xFC) == generation8 ? 127 : 0)) {
+        if (e->depth_ - ((e->gen_bound & 0xFC) == generation8 ? 0 : 127) <
+            replace->depth_ - ((replace->gen_bound & 0xFC) == generation8 ? 0 : 127)) {
             replace = e;
         }
     }
 
     found = false;
     return replace;
-}
-
-void TranspositionTable::write(uint64_t key, Value v, bool pv, Bound b, Depth d, Move m, Value ev) {
-    if (table.empty()) return;
-
-    size_t idx = (size_t)key & (table.size() - 1);
-
-    // First pass: find exact key match - always update
-    for (int i = 0; i < 3; ++i) {
-        TTEntry* e = &table[idx].entry[i];
-        if (e->key32 == uint32_t(key >> 32)) {
-            e->save(key, v, pv, b, d, m, ev, generation8);
-            return;
-        }
-    }
-
-    // Second pass: find best replacement candidate (depth-preferred with aging)
-    TTEntry* replace = &table[idx].entry[0];
-    for (int i = 1; i < 3; ++i) {
-        TTEntry* e = &table[idx].entry[i];
-
-        // Prefer replacing entries from old searches (different generation)
-        int r_gen = (replace->gen_bound & 0xFC) == generation8 ? 0 : 1;
-        int e_gen = (e->gen_bound & 0xFC) == generation8 ? 0 : 1;
-
-        int r_score = r_gen * 256 + replace->depth_;
-        int e_score = e_gen * 256 + e->depth_;
-
-        // For same generation, prefer replacing shallower entries
-        if (r_gen == e_gen && e->depth_ < replace->depth_) {
-            replace = e;
-        }
-        else if (e_score > r_score) {
-            replace = e;
-        }
-    }
-
-    replace->save(key, v, pv, b, d, m, ev, generation8);
 }
 
 size_t TranspositionTable::hashfull() const {
