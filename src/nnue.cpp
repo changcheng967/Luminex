@@ -810,8 +810,10 @@ Value evaluate(const Position& pos) {
             fhi = vmulq_f32(fhi, fhi);
             flo = vmulq_n_f32(flo, 127.0f);
             fhi = vmulq_n_f32(fhi, 127.0f);
-            int32x4_t ilo = vcvtq_s32_f32(flo);
-            int32x4_t ihi = vcvtq_s32_f32(fhi);
+            // vcvtnq = round-to-nearest-even, matching _mm*_cvtps_epi32 on x86;
+            // vcvtq truncates and drifts up to one quantization step per lane.
+            int32x4_t ilo = vcvtnq_s32_f32(flo);
+            int32x4_t ihi = vcvtnq_s32_f32(fhi);
             int16x8_t i16 = vcombine_s16(vqmovn_s32(ilo), vqmovn_s32(ihi));
             uint8x8_t u8 = vqmovun_s16(i16);
             vst1_u8(h_i8 + l, u8);
@@ -829,8 +831,8 @@ Value evaluate(const Position& pos) {
             fhi = vmulq_f32(fhi, fhi);
             flo = vmulq_n_f32(flo, 127.0f);
             fhi = vmulq_n_f32(fhi, 127.0f);
-            ilo = vcvtq_s32_f32(flo);
-            ihi = vcvtq_s32_f32(fhi);
+            ilo = vcvtnq_s32_f32(flo);
+            ihi = vcvtnq_s32_f32(fhi);
             i16 = vcombine_s16(vqmovn_s32(ilo), vqmovn_s32(ihi));
             u8 = vqmovun_s16(i16);
             vst1_u8(h_i8 + L1 + l, u8);
@@ -850,7 +852,8 @@ Value evaluate(const Position& pos) {
             }
             int32_t dot = vaddvq_s32(acc);
             float s = l2_b[o] + dot * ics2;
-            h2[o] = s < 0 ? 0 : (s > 1 ? 1 : s);
+            float c = s < 0 ? 0 : (s > 1 ? 1 : s);
+            h2[o] = c * c;  // SCReLU: square after clamp, matching the x86 path
         }
         uint8_t h2_i8[NNUE_L1_MAX];
         for (int o = 0; o < L2; ++o) h2_i8[o] = (uint8_t)std::lrintf(h2[o] * 127.0f);
@@ -866,7 +869,8 @@ Value evaluate(const Position& pos) {
             }
             int32_t dot = vaddvq_s32(acc);
             float s = l3_b[o] + dot * ics3;
-            h3[o] = s < 0 ? 0 : (s > 1 ? 1 : s);
+            float c = s < 0 ? 0 : (s > 1 ? 1 : s);
+            h3[o] = c * c;  // SCReLU: square after clamp, matching the x86 path
         }
         uint8_t h3_i8[NNUE_L1_MAX];
         for (int o = 0; o < L3; ++o) h3_i8[o] = (uint8_t)std::lrintf(h3[o] * 127.0f);
@@ -897,7 +901,8 @@ Value evaluate(const Position& pos) {
             const int8_t* w = &l2_w_i8[static_cast<size_t>(o) * total_in];
             for (int i = 0; i < total_in; ++i) acc += w[i] * h_i8[i];
             float s = l2_b[o] + acc * ics2;
-            h2[o] = s < 0 ? 0 : (s > 1 ? 1 : s);
+            float c = s < 0 ? 0 : (s > 1 ? 1 : s);
+            h2[o] = c * c;  // SCReLU: square after clamp, matching the x86 path
         }
         uint8_t h2_i8[NNUE_L1_MAX];
         for (int o = 0; o < L2; ++o) h2_i8[o] = (uint8_t)std::lrintf(h2[o] * 127.0f);
@@ -907,7 +912,8 @@ Value evaluate(const Position& pos) {
             const int8_t* w = &l3_w_i8[static_cast<size_t>(o) * L2];
             for (int i = 0; i < L2; ++i) acc += w[i] * h2_i8[i];
             float s = l3_b[o] + acc * ics3;
-            h3[o] = s < 0 ? 0 : (s > 1 ? 1 : s);
+            float c = s < 0 ? 0 : (s > 1 ? 1 : s);
+            h3[o] = c * c;  // SCReLU: square after clamp, matching the x86 path
         }
         uint8_t h3_i8[NNUE_L1_MAX];
         for (int o = 0; o < L3; ++o) h3_i8[o] = (uint8_t)std::lrintf(h3[o] * 127.0f);
