@@ -331,8 +331,13 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
         return evaluate(pos, true);
     }
 
-    // Search captures to depth -4 to avoid horizon effect
-    if (depth < -4) {
+    // Search captures to depth -4 to avoid horizon effect. A side still in
+    // check must not stand pat: forcing lines search evasions until the
+    // check sequence ends or the hard cap at -12 stops the recursion
+    if (depth < -12) {
+        return evaluate(pos, true);
+    }
+    if (depth < -4 && !pos.is_check()) {
         return evaluate(pos, true);
     }
 
@@ -708,9 +713,10 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
     if (!pv_node && !pos.is_check() && depth <= 4) {
         Value razor_margin = SPSAParams::get().razor_base + depth * depth * SPSAParams::get().razor_coeff;
         if (eval + razor_margin < alpha) {
-            // Try quiescence search to confirm the position is really losing
+            // qsearch fail-high against the (alpha-1, alpha) window returns
+            // exactly alpha, which is an upper bound, not a confirmed fail-low
             Value qsearch_value = qsearch(pos, ss, alpha - 1, alpha, 0);
-            if (qsearch_value <= alpha) {
+            if (qsearch_value < alpha) {
                 g_stats.razoring_prunes++;
                 return qsearch_value;  // Confirmed losing, prune
             }
@@ -720,7 +726,7 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
     // Null move pruning (static R formula)
     int piece_count = popcount(pos.pieces()) - popcount(pos.pieces(PAWN)) - 2;
     bool null_move_ok = !pv_node && !pos.is_check() && depth >= 2 && piece_count >= 1 &&
-                          eval >= beta && eval >= ss->static_eval &&
+                          eval >= beta &&
                           ss->ply >= 1 && !ss->excluded_move;
 
     if (null_move_ok) {
@@ -1236,50 +1242,53 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
                             lh += bonus - lh * abs(bonus) / 16368;
                         }
                     }
-                    // Capture history update for capture moves that caused cutoff
-                    if (!is_quiet && ss->ply < MAX_PLY && captured_pt != PT_NONE) {
-                        int cap_bonus = depth > 17 ? -8 : 19 * depth * depth + 155 * depth - 132;
-                        int& ch = worker->capture_history[int(ss->moved_piece)][int(m.to())][int(captured_pt)];
-                        ch += cap_bonus - ch * std::abs(cap_bonus) / 16368;
-                    }
-                    // Capture history malus for fail-low captures
-                    int cap_malus = depth > 17 ? 8 : -(depth * (depth + 1) * 2 - 2);
-                    // If quiet caused cutoff: penalize ALL captures. If capture caused cutoff: skip the best capture.
-                    int cap_malus_end = is_quiet ? capturesSearched_count : (capturesSearched_count > 0 ? capturesSearched_count - 1 : 0);
-                    for (int i = 0; i < cap_malus_end; ++i) {
-                        int& ch = worker->capture_history[int(capturesSearched_piece[i])][int(capturesSearched[i].to())][int(capturesSearched_cap[i])];
-                        ch += cap_malus - ch * abs(cap_malus) / 16368;
-                    }
-                    // History gravity malus for non-cutoff quiet moves (use stat_bonus formula)
-                    int malus = depth > 17 ? 8 : -(depth * (depth + 1) * 2 - 2);
-                    // If capture caused cutoff: penalize ALL quiets. If quiet caused cutoff: skip the best quiet.
-                    int quiet_malus_end = !is_quiet ? quiet_count : (quiet_count > 0 ? quiet_count - 1 : 0);
-                    for (int i = 0; i < quiet_malus_end; ++i) {
-                        Move qm = quiets_searched[i];
-                        Piece qpc = pos.piece_on(qm.from());
-                        if (qpc != NO_PIECE) {
-                            int& h = worker->history[int(qpc)][int(qm.to())];
-                            h += malus - h * abs(malus) / 16368;
-                            if (ss->ply >= 1 && (ss - 1)->current_move != MOVE_NONE && (ss - 1)->moved_piece != NO_PIECE) {
-                                Move prev_move = (ss - 1)->current_move;
-                                Piece prev_pc = (ss - 1)->moved_piece;
-                                int& cm = worker->counter_moves[int(prev_pc)][int(prev_move.to())][int(qpc)][int(qm.to())];
-                                cm += malus - cm * abs(malus) / 16368;
-                            }
-                            if (ss->ply >= 2 && (ss - 2)->current_move != MOVE_NONE && (ss - 2)->moved_piece != NO_PIECE) {
-                                Move prev2_move = (ss - 2)->current_move;
-                                Piece prev2_pc = (ss - 2)->moved_piece;
-                                int& ch = worker->continuation_history[int(prev2_pc)][int(prev2_move.to())][int(qpc)][int(qm.to())];
-                                ch += malus - ch * abs(malus) / 16368;
-                            }
-                            // Low-ply history malus (plies 1-3)
-                            if (ss->ply >= 1 && ss->ply <= 3) {
-                                int& lh = worker->low_ply_history[ss->ply][int(qpc)][int(qm.to())];
-                                lh += malus - lh * abs(malus) / 16368;
-                            }
+                } // end quiet-cutoff updates
+
+                // Capture history bonus for capture moves that caused cutoff
+                if (!is_quiet && ss->ply < MAX_PLY && captured_pt != PT_NONE) {
+                    int cap_bonus = depth > 17 ? -8 : 19 * depth * depth + 155 * depth - 132;
+                    int& ch = worker->capture_history[int(ss->moved_piece)][int(m.to())][int(captured_pt)];
+                    ch += cap_bonus - ch * std::abs(cap_bonus) / 16368;
+                }
+                // Capture history malus for fail-low captures
+                if (ss->ply < MAX_PLY) {
+                int cap_malus = depth > 17 ? 8 : -(depth * (depth + 1) * 2 - 2);
+                // If quiet caused cutoff: penalize ALL captures. If capture caused cutoff: skip the best capture.
+                int cap_malus_end = is_quiet ? capturesSearched_count : (capturesSearched_count > 0 ? capturesSearched_count - 1 : 0);
+                for (int i = 0; i < cap_malus_end; ++i) {
+                    int& ch = worker->capture_history[int(capturesSearched_piece[i])][int(capturesSearched[i].to())][int(capturesSearched_cap[i])];
+                    ch += cap_malus - ch * abs(cap_malus) / 16368;
+                }
+                // History gravity malus for non-cutoff quiet moves (use stat_bonus formula)
+                int malus = depth > 17 ? 8 : -(depth * (depth + 1) * 2 - 2);
+                // If capture caused cutoff: penalize ALL quiets. If quiet caused cutoff: skip the best quiet.
+                int quiet_malus_end = !is_quiet ? quiet_count : (quiet_count > 0 ? quiet_count - 1 : 0);
+                for (int i = 0; i < quiet_malus_end; ++i) {
+                    Move qm = quiets_searched[i];
+                    Piece qpc = pos.piece_on(qm.from());
+                    if (qpc != NO_PIECE) {
+                        int& h = worker->history[int(qpc)][int(qm.to())];
+                        h += malus - h * abs(malus) / 16368;
+                        if (ss->ply >= 1 && (ss - 1)->current_move != MOVE_NONE && (ss - 1)->moved_piece != NO_PIECE) {
+                            Move prev_move = (ss - 1)->current_move;
+                            Piece prev_pc = (ss - 1)->moved_piece;
+                            int& cm = worker->counter_moves[int(prev_pc)][int(prev_move.to())][int(qpc)][int(qm.to())];
+                            cm += malus - cm * abs(malus) / 16368;
+                        }
+                        if (ss->ply >= 2 && (ss - 2)->current_move != MOVE_NONE && (ss - 2)->moved_piece != NO_PIECE) {
+                            Move prev2_move = (ss - 2)->current_move;
+                            Piece prev2_pc = (ss - 2)->moved_piece;
+                            int& ch = worker->continuation_history[int(prev2_pc)][int(prev2_move.to())][int(qpc)][int(qm.to())];
+                            ch += malus - ch * abs(malus) / 16368;
+                        }
+                        // Low-ply history malus (plies 1-3)
+                        if (ss->ply >= 1 && ss->ply <= 3) {
+                            int& lh = worker->low_ply_history[ss->ply][int(qpc)][int(qm.to())];
+                            lh += malus - lh * abs(malus) / 16368;
                         }
                     }
                 }
+                } // end common malus updates
                 if (!stop.load(std::memory_order_relaxed)) {
                     tte->save(pos.key(), value_to_tt(value, ss->ply), pv_node, BOUND_LOWER, depth, m, eval, TT.generation());
                 }
