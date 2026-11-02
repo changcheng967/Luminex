@@ -88,6 +88,7 @@ public:
     bool castling_allowed(Color c, CastlingRight cr) const;
 
     int game_ply() const;
+    int halfmove_clock() const;
 
     Key key() const;
     Key pawn_key() const;
