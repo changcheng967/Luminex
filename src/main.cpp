@@ -129,6 +129,7 @@ int main(int argc, char* argv[]) {
             std::cout << "ALL PERFT TESTS PASSED" << std::endl;
         } else {
             std::cout << "PERFT TESTS FAILED!" << std::endl;
+            return 1;
         }
 
         // OpenBench bench contract, two lines, printed LAST so the client's
