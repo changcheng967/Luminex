@@ -700,7 +700,7 @@ Value evaluate(const Position& pos, bool tactical_only) {
             // Passed-pawn path decomposition (dominant endgame passer term in
             // strong HCE engines). Decomposes the flat rank bonus by advancement
             // potential. A rank-7 passer ranges from ~worthless (enemy blockaded)
-            // to winning (clear, safe path); previously Luminex scored both the same.
+            // to winning (clear, safe path).
             {
                 Square stop_sq = relative_square(c, make_square(f, Rank(r + 1)));
                 bool stop_enemy = (pos.pieces(them) & square_bb(stop_sq)) != 0;

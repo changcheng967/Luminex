@@ -840,7 +840,7 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
 
     // Singular extension: check if TT move is significantly better than alternatives
     int singular_extension = 0;
-    // Shuffling detection (from Stockfish): don't extend moves that shuffle back and forth
+    // Don't extend shuffling moves
     bool is_shuffling = false;
     if (ss->ply >= 4 && !tt_move.is_capture() &&
         (ss - 2)->current_move != MOVE_NONE && (ss - 4)->current_move != MOVE_NONE) {
@@ -858,7 +858,7 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
         if (singular_value < sBeta) {
             singular_extension = 1;
             // Double extension: if move is EXTREMELY singular (fails by a lot),
-            // extend even more - inspired by Stockfish's double extension
+            // double extension for strongly singular moves
             if (singular_value < sBeta - depth) {
                 singular_extension = 2;
             }
@@ -1009,7 +1009,7 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
         any_legal_move = true;  // Legal move exists (even if later pruned)
 
         // Continuation pruning: skip quiet moves with very poor history at low depth
-        // Worth ~10 ELO (from Ethereal). Uses combined counter+continuation history.
+        // Combined counter+continuation history
         if (is_quiet && !pv_node && depth <= 4 && moves_played > 0) {
             Piece pc = pos.piece_on(m.from());
             if (pc != NO_PIECE) {
@@ -1114,7 +1114,7 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
         // Every full-window search must keep the extension. The pre-fix code
         // passed literal depth - 1 at all full-depth call sites, so extensions
         // only ever reached the reduced LMR search — check, singular, recapture
-        // and forcing extensions never actually fired (audit finding 2).
+        //
         const int full_depth = depth - 1 + ext_count;
 
         // Store current move and moved piece for counter-move history
@@ -1213,7 +1213,7 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
                     }
                     Piece pc = ss->moved_piece;
                     if (pc != NO_PIECE) {
-                        // Stockfish 11 stat_bonus: conservative quadratic scaling
+                        // Quadratic stat bonus
                         int bonus = depth > 17 ? -8 : 19 * depth * depth + 155 * depth - 132;
                         // Gravity formula for plain history
                         int& h = worker->history[int(pc)][int(m.to())];

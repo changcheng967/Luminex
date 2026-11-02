@@ -601,10 +601,8 @@ bool Position::do_move(Move m) {
 
     // Debug-only validation: check move flags match board state
     // In release builds, moves from generator + legal() guarantee correctness.
-    // NOTE: the featurizer's data path DEPENDS on the return-false behavior to
-    // skip the ~0.006% of anomalously-encoded games — compile with care. The
-    // stderr banners are noise for production runs, so they're gated behind
-    // NNUE_VERBOSE_MOVE_ERR=1 (skips still happen and are counted downstream).
+    // The featurizer depends on the return-false skip behavior for
+    // anomalously-encoded games. Set NNUE_VERBOSE_MOVE_ERR=1 for stderr banners.
 #ifndef NDEBUG
     static const bool verbose_move_err = std::getenv("NNUE_VERBOSE_MOVE_ERR") != nullptr;
     PieceType piece_at_to = piece_type_on(to);
@@ -740,7 +738,7 @@ bool Position::do_move(Move m) {
 
     // Update en passant square (check piece type before move)
     // CRITICAL FIX: Remove old EP square from key BEFORE setting new one
-    // The key was copied from previous state and still contains the old EP hash
+    // Key still contains stale EP hash from the copied state
     if (st_->ep_square != SQUARE_NONE) {
         st_->key ^= Zobrist::en_passant[file_of(st_->ep_square)];
     }

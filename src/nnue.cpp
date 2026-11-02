@@ -19,6 +19,9 @@
 #include <cstdlib>
 #include <cstring>
 #include <chrono>
+#if defined(__ARM_FEATURE_DOTPROD)
+#include <arm_neon.h>
+#endif
 #if defined(__linux__)
 #include <sys/mman.h>
 #endif
@@ -212,13 +215,10 @@ static bool g_l3_batched = false;   // l3_w_i8 interleaved for batched VNNI L3
 static bool g_enabled = true;
 
 // Per-thread accumulator stack, indexed by Position::st_ply(). v[perspective][neuron].
-// Cache-line aligned so each 4KB accumulator starts on a 64B boundary (cleaner loads
-// during the SCReLU/quant8 pass and the feature-delta add).
-// int32 integer accumulator: iacc[l] = round(b[l]*FT_WSCALE) + sum(w_int16[l]) — EXACT
-// integer sums (the old float accumulator rounded on every add and burned
-// int16->int32->float conversions inside every feature update).
-// int16 SATURATING accumulator. The SCReLU clip window is [0, 8192] (1.0x
-// FT_WSCALE); int16 saturation at +-32767 sits 4x above the window, so any lane
+// Cache-line aligned for clean loads during the SCReLU/quant8 pass.
+// int16 saturating accumulator: exact integer sums, clip window [0, 8192]
+// (1.0x FT_WSCALE); int16 saturation at +-32767 sits 4x above the window, so
+// saturating lanes were already fully clipped by SCReLU.
 // that saturates was already fully clipped. Simulated on 6000 real perspectives:
 // 2 single-lane activation-quant diffs out of 3.07M lanes (0.03% of perspectives).
 // Halves copy/update/eval traffic vs the int32 accumulator.
@@ -318,7 +318,7 @@ bool load(const std::string& path) {
         out_b = ob[0];
         f.read(reinterpret_cast<char*>(&g_so), 4);
         // Reorder L2 weights for AVX2 SF-style chunk access (not needed for AVX-512 VNNI).
-#if !defined(__AVX512VNNI__)
+#if defined(__AVX2__) && !defined(__AVX512VNNI__)
         // Old: [output][chunk]  →  New: [chunk][output]  (each chunk's 16 weight rows contiguous)
         // Old: [output][chunk]  →  New: [chunk][output]  (each chunk's 16 weight rows contiguous)
         {
@@ -789,13 +789,97 @@ Value evaluate(const Position& pos) {
         h3[o] = clip01(s);
     }
 #else
-    // ---- scalar fallback (non-AVX2 builds: ARM etc.) ----
-    // int8 nets previously had NO path here: g_int8 fell through to the float
-    // LNN1 code below, which reads l2_w — EMPTY for LNI8 nets (only l2_w_i8
-    // was loaded). Undefined behavior that survived on x86 and SIGSEGV'd on
-    // aarch64. This mirrors the AVX2 math scalar, using the loader's non-VNNI
-    // CHUNK-MAJOR l2 layout ([chunk][output], 32-wide chunks — see the load-
-    // time reorder guarded by #if !defined(__AVX512VNNI__)).
+    // ---- non-AVX2 path (ARM etc.) ----
+#if defined(__ARM_FEATURE_DOTPROD)
+    if (g_int8) {
+        uint8_t h_i8[2 * NNUE_L1_MAX];
+        // SCReLU + quantize: acc int16 → float → clip01 → square → ×127 → uint8
+        // 8 elements per iteration via NEON
+        for (int l = 0; l < L1; l += 8) {
+            // stm half
+            int16x8_t v = vld1q_s16(acc_stm + l);
+            int32x4_t lo = vmovl_s16(vget_low_s16(v));
+            int32x4_t hi = vmovl_s16(vget_high_s16(v));
+            float32x4_t flo = vcvtq_f32_s32(lo);
+            float32x4_t fhi = vcvtq_f32_s32(hi);
+            flo = vmulq_n_f32(flo, FT_WINV);
+            fhi = vmulq_n_f32(fhi, FT_WINV);
+            flo = vminq_f32(vmaxq_f32(flo, vdupq_n_f32(0.0f)), vdupq_n_f32(1.0f));
+            fhi = vminq_f32(vmaxq_f32(fhi, vdupq_n_f32(0.0f)), vdupq_n_f32(1.0f));
+            flo = vmulq_f32(flo, flo);
+            fhi = vmulq_f32(fhi, fhi);
+            flo = vmulq_n_f32(flo, 127.0f);
+            fhi = vmulq_n_f32(fhi, 127.0f);
+            int32x4_t ilo = vcvtq_s32_f32(flo);
+            int32x4_t ihi = vcvtq_s32_f32(fhi);
+            int16x8_t i16 = vcombine_s16(vqmovn_s32(ilo), vqmovn_s32(ihi));
+            uint8x8_t u8 = vqmovun_s16(i16);
+            vst1_u8(h_i8 + l, u8);
+            // nstm half
+            v = vld1q_s16(acc_nstm + l);
+            lo = vmovl_s16(vget_low_s16(v));
+            hi = vmovl_s16(vget_high_s16(v));
+            flo = vcvtq_f32_s32(lo);
+            fhi = vcvtq_f32_s32(hi);
+            flo = vmulq_n_f32(flo, FT_WINV);
+            fhi = vmulq_n_f32(fhi, FT_WINV);
+            flo = vminq_f32(vmaxq_f32(flo, vdupq_n_f32(0.0f)), vdupq_n_f32(1.0f));
+            fhi = vminq_f32(vmaxq_f32(fhi, vdupq_n_f32(0.0f)), vdupq_n_f32(1.0f));
+            flo = vmulq_f32(flo, flo);
+            fhi = vmulq_f32(fhi, fhi);
+            flo = vmulq_n_f32(flo, 127.0f);
+            fhi = vmulq_n_f32(fhi, 127.0f);
+            ilo = vcvtq_s32_f32(flo);
+            ihi = vcvtq_s32_f32(fhi);
+            i16 = vcombine_s16(vqmovn_s32(ilo), vqmovn_s32(ihi));
+            u8 = vqmovun_s16(i16);
+            vst1_u8(h_i8 + L1 + l, u8);
+        }
+        const float cs2 = g_s2 * 127.0f, cs3 = g_s3 * 127.0f, cso = g_so * 127.0f;
+        const float ics2 = 1.0f / cs2, ics3 = 1.0f / cs3, icso = 1.0f / cso;
+        const int total_in = 2 * L1;
+        float h2[NNUE_L1_MAX];
+        // L2: output-major dots via SDOT (int8 weights × uint8 activations)
+        for (int o = 0; o < L2; ++o) {
+            int32x4_t acc = vdupq_n_s32(0);
+            const int8_t* w = &l2_w_i8[static_cast<size_t>(o) * total_in];
+            for (int i = 0; i < total_in; i += 16) {
+                int8x16_t wv = vld1q_s8(w + i);
+                uint8x16_t hv = vld1q_u8(h_i8 + i);
+                acc = vdotq_s32(acc, wv, hv);
+            }
+            int32_t dot = vaddvq_s32(acc);
+            float s = l2_b[o] + dot * ics2;
+            h2[o] = s < 0 ? 0 : (s > 1 ? 1 : s);
+        }
+        uint8_t h2_i8[NNUE_L1_MAX];
+        for (int o = 0; o < L2; ++o) h2_i8[o] = (uint8_t)std::lrintf(h2[o] * 127.0f);
+        float h3[NNUE_L1_MAX];
+        // L3: same SDOT pattern over L2 inputs
+        for (int o = 0; o < L3; ++o) {
+            int32x4_t acc = vdupq_n_s32(0);
+            const int8_t* w = &l3_w_i8[static_cast<size_t>(o) * L2];
+            for (int i = 0; i < L2; i += 16) {
+                int8x16_t wv = vld1q_s8(w + i);
+                uint8x16_t hv = vld1q_u8(h2_i8 + i);
+                acc = vdotq_s32(acc, wv, hv);
+            }
+            int32_t dot = vaddvq_s32(acc);
+            float s = l3_b[o] + dot * ics3;
+            h3[o] = s < 0 ? 0 : (s > 1 ? 1 : s);
+        }
+        uint8_t h3_i8[NNUE_L1_MAX];
+        for (int o = 0; o < L3; ++o) h3_i8[o] = (uint8_t)std::lrintf(h3[o] * 127.0f);
+        // output layer: L3=32 is a multiple of 16, no tail handling needed
+        int32x4_t acc = vdupq_n_s32(0);
+        for (int i = 0; i < L3; i += 16)
+            acc = vdotq_s32(acc, vld1q_s8(out_w_i8.data() + i), vld1q_u8(h3_i8 + i));
+        int32_t dot = vaddvq_s32(acc);
+        float ov = out_b + dot * icso;
+        return static_cast<Value>(std::llround(ov * OUT_SCALE));
+    }
+#else
+    // Scalar fallback for ARM without dotprod (older ARMv8.0)
     if (g_int8) {
         uint8_t h_i8[2 * NNUE_L1_MAX];
         for (int l = 0; l < L1; ++l) {
@@ -806,15 +890,12 @@ Value evaluate(const Position& pos) {
         }
         const float cs2 = g_s2 * 127.0f, cs3 = g_s3 * 127.0f, cso = g_so * 127.0f;
         const float ics2 = 1.0f / cs2, ics3 = 1.0f / cs3, icso = 1.0f / cso;
-        const int total_in = 2 * L1, num_chunks = total_in / 32;
+        const int total_in = 2 * L1;
         float h2[NNUE_L1_MAX];
         for (int o = 0; o < L2; ++o) {
             int32_t acc = 0;
-            for (int c = 0; c < num_chunks; ++c) {
-                const int8_t* w = &l2_w_i8[(static_cast<size_t>(c) * L2 + o) * 32];
-                const uint8_t* a = &h_i8[c * 32];
-                for (int j = 0; j < 32; ++j) acc += w[j] * a[j];
-            }
+            const int8_t* w = &l2_w_i8[static_cast<size_t>(o) * total_in];
+            for (int i = 0; i < total_in; ++i) acc += w[i] * h_i8[i];
             float s = l2_b[o] + acc * ics2;
             h2[o] = s < 0 ? 0 : (s > 1 ? 1 : s);
         }
@@ -835,6 +916,7 @@ Value evaluate(const Position& pos) {
         float ov = out_b + acc * icso;
         return static_cast<Value>(std::llround(ov * OUT_SCALE));
     }
+#endif // __ARM_FEATURE_DOTPROD
     float h[2 * NNUE_L1_MAX];
     float h2[NNUE_L1_MAX];
     for (int l = 0; l < L1; ++l) { h[l] = clip01(acc_stm[l] * FT_WINV); h[L1 + l] = clip01(acc_nstm[l] * FT_WINV); }

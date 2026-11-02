@@ -42,3 +42,10 @@ __pycache__/
 # Local test artifacts
 *.pgn
 *.log
+out/
+build/
+build-dbg/
+*.nnue
+__pycache__/
+.video_agent/
+.workbuddy-ai/
