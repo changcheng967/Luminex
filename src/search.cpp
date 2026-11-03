@@ -1031,9 +1031,9 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
         Bitboard our_bishops = pos.pieces(us, BISHOP, QUEEN) & ~square_bb(from);
         Bitboard our_rooks   = pos.pieces(us, ROOK, QUEEN) & ~square_bb(from);
 
-        // Direct check by the moved piece (or the rook after castling)
+        // Direct check by the moved piece (promotions check as the new
+        // type; castling is handled separately below via the rook square)
         PieceType pt = m.is_promotion() ? m.promotion_type()
-                      : m.is_castling()  ? ROOK
                       : piece_type_of(pos.piece_on(from));
 
         bool direct = false;
@@ -1049,9 +1049,11 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
             direct = (bishop_attacks_bb(to, occ_after) & square_bb(opp_ksq)) != 0
                    || (rook_attacks_bb(to, occ_after) & square_bb(opp_ksq)) != 0;
         }
-        // For castling, also check the king's new square
+        // Castling: the rook (not the king) may give check from its
+        // destination square
         if (m.is_castling() && !direct) {
-            direct = (rook_attacks_bb(to + (to > from ? -1 : 1), occ_after) & square_bb(opp_ksq)) != 0;
+            Square rto = Square(to + (to > from ? -1 : 1));
+            direct = (rook_attacks_bb(rto, occ_after) & square_bb(opp_ksq)) != 0;
         }
         if (direct) return true;
 
