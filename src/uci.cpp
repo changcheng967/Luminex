@@ -25,6 +25,9 @@ namespace luminex {
 // Global volatile stop flag - defined in search.cpp
 extern volatile bool g_stop_requested;
 
+// Per-root-move perft counts; defined in main.cpp (used by "go perft")
+uint64_t perft_divide(Position& pos, Depth depth);
+
 // Position for UCI
 static Position pos;
 int g_search_depth = 0;
@@ -370,7 +373,6 @@ void handle_go(Position& pos, const std::string& cmd) {
             int d = 0;
             ps >> d;
             if (d >= 1 && d <= 8) {
-                uint64_t perft_divide(Position&, Depth);
                 uint64_t total = perft_divide(pos, Depth(d));
                 safe_output("total " + std::to_string(total) + "\n");
             } else {
