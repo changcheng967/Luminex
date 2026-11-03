@@ -109,6 +109,9 @@ struct SearchWorker {
     CorrHistTable corrhist_minor = {};
     CorrHistTable corrhist_major = {};
     CorrHistTable corrhist_kingpawns = {};   // King safety: pawn structure + king squares
+    // Ply below which null moves are banned while a null-move verification
+    // search is running (0 = no ban)
+    int nmp_disabled_ply = 0;
 };
 
 // Thread-local pointer to current thread's search state
@@ -379,30 +382,67 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
         return VALUE_DRAW + draw_noise - (pos.side_to_move() == WHITE ? params.contempt / 2 : -params.contempt / 2);
     }
 
-    // Evaluate position
+    // TT probe: memoizes qsearch nodes (the bulk of the tree). Bound-consistent
+    // cutoffs, a reusable static eval, and the TT move for capture ordering.
+    // Entries stored by the main search (depth > 0) are strictly more
+    // authoritative than what qsearch would produce here, so depth >= 0 accepts.
+    bool tt_found = false;
+    TTEntry* tte = TT.probe(pos.key(), tt_found);
+    Value tt_value = tt_found ? value_from_tt(tte->value(), ss->ply) : VALUE_ZERO;
+    Move tt_move = MOVE_NONE;
     bool in_check = pos.is_check();
+
+    if (tt_found) {
+        Move m = tte->move();
+        // Only a capture is playable in non-check qsearch; any legal move works
+        // as an evasion
+        if (m && m.from() < SQUARE_NONE && m.to() < SQUARE_NONE && pos.legal(m, true)
+            && (in_check || m.is_capture() || m.is_promotion())) {
+            tt_move = m;
+        }
+        // Mate-range values need repetition context qsearch cannot verify;
+        // cutoffs are restricted to bounded non-mate scores
+        if (tte->depth() >= 0 && std::abs(tt_value) < VALUE_KNOWN_WIN) {
+            if (tt_value >= beta && (tte->bound() & BOUND_LOWER)) return tt_value;
+            if (tt_value <= alpha && (tte->bound() & BOUND_UPPER)) return tt_value;
+        }
+    }
+
+    // Evaluate position. raw_eval is what caches/TT hold; the damped eval is
+    // what stand-pat decisions see.
     Value eval = VALUE_ZERO;
+    Value raw_eval = VALUE_ZERO;
 
     if (!in_check) {
-        // Qsearch fills the cache itself; the tactical bit gates only under
-        // HCE (see eval_cached), preserving full sharing under NNUE.
-        uint64_t key = pos.key();
-        uint32_t idx = uint32_t(key) & (EVAL_CACHE_SIZE - 1);
-        if (eval_cache[idx].key == key && (nnue::loaded() || eval_cache[idx].tactical != 0)) {
-            eval = Value(eval_cache[idx].value);
-            g_stats.eval_cache_hits_qs++;
+        if (tt_found && tte->eval() != VALUE_INFINITE) {
+            // Stored static eval (already correction-adjusted at store time)
+            raw_eval = tte->eval();
         } else {
-            eval = evaluate(pos, true);
-            eval_cache[idx].key = key;
-            eval_cache[idx].value = int32_t(eval);
-            eval_cache[idx].tactical = 1;
-            g_stats.eval_cache_misses_qs++;
+            // Qsearch fills the cache itself; the tactical bit gates only under
+            // HCE, preserving full sharing under NNUE. The cache holds the
+            // uncorrected value; correction is applied per read.
+            uint64_t key = pos.key();
+            uint32_t idx = uint32_t(key) & (EVAL_CACHE_SIZE - 1);
+            if (eval_cache[idx].key == key && (nnue::loaded() || eval_cache[idx].tactical != 0)) {
+                raw_eval = Value(eval_cache[idx].value);
+                g_stats.eval_cache_hits_qs++;
+            } else {
+                raw_eval = evaluate(pos, true);
+                eval_cache[idx].key = key;
+                eval_cache[idx].value = int32_t(raw_eval);
+                eval_cache[idx].tactical = 1;
+                g_stats.eval_cache_misses_qs++;
+            }
+            int correction = get_total_correction(pos);
+            correction = std::max(-200, std::min(200, correction));
+            raw_eval = Value(raw_eval + correction);
+            corr_sample(correction);
         }
-        // Apply multi-table correction history to eval
-        int correction = get_total_correction(pos);
-        correction = std::max(-200, std::min(200, correction));
-        eval = Value(eval + correction);
-        corr_sample(correction);
+
+        // Draw-clock damping: a decisive eval counts for less as the
+        // 50-move draw approaches.
+        eval = pos.halfmove_clock() > 0
+             ? Value(raw_eval * (200 - pos.halfmove_clock()) / 200) : raw_eval;
 
         if (eval >= beta) {
             g_stats.qs_stand_pat_cutoffs++;
@@ -435,7 +475,8 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
 
     int moves_searched = 0;
 
-    // Score captures in qsearch by MVV-LVA for better ordering
+    // Score captures in qsearch by MVV-LVA for better ordering; the TT move
+    // (when a capture/evasion) is searched first
     if (!in_check) {
         for (ExtMove* it = moves; it != end; ++it) {
             if (it->move.is_capture()) {
@@ -447,6 +488,7 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
             } else {
                 it->value = 0;
             }
+            if (it->move == tt_move) it->value += 1000000;
         }
     }
 
@@ -521,6 +563,15 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
     // Checkmate detection - if in check and no legal evasions
     if (in_check && moves_searched == 0) {
         return -VALUE_MATE + ss->ply;
+    }
+
+    // Store the qsearch result at depth 0. should_store keeps deeper main-
+    // search entries from being clobbered by quiescence results. The early
+    // beta cutoffs above mean the value here is always below beta: an upper
+    // bound. Mate returns skip the store entirely.
+    if (!stop.load(std::memory_order_relaxed) && TT.should_store(tte, tt_found, 0)) {
+        tte->save(pos.key(), value_to_tt(alpha, ss->ply), false, BOUND_UPPER, 0,
+                  MOVE_NONE, in_check ? Value(VALUE_INFINITE) : raw_eval, TT.generation());
     }
 
     return alpha;
@@ -612,8 +663,11 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
 
     // TT cutoff: require exact or greater depth for safety. Never cut in an
     // excluded node: the singular-verification search probes the same key as
-    // the entry under test and would prove the bound with itself.
+    // the entry under test and would prove the bound with itself. Positions
+    // close to the irreversible 50-move draw are excluded too: a bound proven
+    // with more clock left does not transfer.
     if (!pv_node && !ss->excluded_move && found && tt_depth >= depth &&
+        pos.halfmove_clock() < 88 &&
         (tt_value >= beta ? (tte->bound() & BOUND_LOWER) : (tte->bound() & BOUND_UPPER))) {
         g_stats.tt_cutoffs++;
         // TT cutoff stat updates: reinforce heuristics even on TT hits
@@ -658,11 +712,20 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
         g_stats.tt_hit_but_shallow++;
     }
 
-    // Static evaluation
+    // Static evaluation. tt_store_eval is the undamped value saved to the TT;
+    // eval is draw-clock damped and drives pruning decisions.
     Value eval = VALUE_ZERO;
+    Value tt_store_eval = VALUE_INFINITE;
     int eval_uncertainty = 0;  // Magnitude of correction history (measures eval unreliability)
     if (!pos.is_check()) {
-        eval = eval_cached(pos);
+        // The stored TT eval (correction-adjusted at store time) skips the
+        // eval-cache probe and the NNUE call; VALUE_INFINITE marks entries
+        // saved without one (root stores, in-check nodes)
+        tt_store_eval = (found && tte->eval() != VALUE_INFINITE) ? tte->eval() : eval_cached(pos);
+        // Draw-clock damping: decisive evals count for less as the 50-move
+        // draw nears. Caches and the TT keep the undamped value.
+        eval = pos.halfmove_clock() > 0
+             ? Value(tt_store_eval * (200 - pos.halfmove_clock()) / 200) : tt_store_eval;
         // Correction history magnitude = how wrong the eval has been in similar positions.
         // High uncertainty → eval is unreliable → search should be less aggressive.
         // Low uncertainty → eval is reliable → search can be more aggressive.
@@ -750,27 +813,26 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
         }
     }
 
-    // Null move pruning. Consecutive nulls are banned: the parent already
-    // passed on moving, and a null in the null child proves nothing about
-    // zugzwang the first null didn't.
+    // Null move pruning. R grows continuously with depth and with how far
+    // eval sits above beta. Consecutive nulls are banned (a second null
+    // proves nothing the first didn't) and nulls are banned inside a
+    // verification search's ply window.
     int piece_count = popcount(pos.pieces()) - popcount(pos.pieces(PAWN)) - 2;
     bool null_move_ok = !pv_node && !pos.is_check() && depth >= 2 && piece_count >= 1 &&
                           eval >= beta &&
                           ss->ply >= 1 && !ss->excluded_move &&
-                          (ss - 1)->current_move != MOVE_NULL;
+                          (ss - 1)->current_move != MOVE_NULL &&
+                          ss->ply >= worker->nmp_disabled_ply;
 
     if (null_move_ok) {
         ss->current_move = MOVE_NULL;  // consecutive-null guard reads (ss+1)->current_move
         pos.do_null_move();
 
         auto& sp = SPSAParams::get();
-        int R = sp.nmp_base + (depth > sp.nmp_thresh1 ? 1 : 0) + (depth > sp.nmp_thresh2 ? 1 : 0);
+        int margin = std::max(int(eval) - int(beta), 0);
+        int R = sp.nmp_base + depth / 3 + std::min(margin / 200, 3);
 
         if (piece_count < 4) R -= 1;
-
-        // Eval-adaptive: when eval is far above beta, the position is clearly
-        // winning — a shallower null move verification is sufficient
-        if (int(eval) - int(beta) > 200) R += 1;
 
         R = std::max(2, std::min(R, depth - 1));
         Value null_value = -search_worker(pos, ss + 1, -beta, -beta + 1, depth - R, !cut_node);
@@ -780,9 +842,14 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
             // Distrust mate scores from null move
             if (null_value >= VALUE_MATE_IN_MAX_PLY) null_value = beta;
 
-            // Verification search at high depth (zugzwang-prone endgames)
-            if (piece_count < 4 && depth >= 6) {
+            // Verification: same position, nulls banned for the first
+            // 3/4 of the remaining depth. High depth always verifies; low
+            // piece counts verify early (zugzwang-prone endgames).
+            if (depth >= 14 || (piece_count < 4 && depth >= 6)) {
+                int saved_disable_ply = worker->nmp_disabled_ply;
+                worker->nmp_disabled_ply = ss->ply + 3 * (depth - R) / 4;
                 Value verify = search_worker(pos, ss, beta - 1, beta, (depth - R) * 3 / 4, !cut_node);
+                worker->nmp_disabled_ply = saved_disable_ply;
                 if (verify >= beta) {
                     g_stats.null_move_prunes++;
                     return null_value;
@@ -1216,10 +1283,19 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
                 pos.undo_move(m);
                 return false;
             }
-            // Re-search with full window at standard depth if LMR found improvement
+            // Re-search with full window if LMR found improvement. The
+            // re-search depth follows the reduced score: far above the
+            // current best says the move is likely genuinely good and
+            // deserves extra depth; barely above alpha says the improvement
+            // may be noise and can be confirmed shallower.
             if (value > alpha) {
                 g_stats.lmr_researches++;
-                value = -search_worker(pos, ss + 1, -beta, -alpha, full_depth, !cut_node);
+                int r_depth = full_depth;
+                if (best_value > -VALUE_INFINITE && value > best_value + 64 + 8 * full_depth)
+                    r_depth++;
+                else if (value < alpha + 8 && r_depth > 1)
+                    r_depth--;
+                value = -search_worker(pos, ss + 1, -beta, -alpha, r_depth, !cut_node);
                 if (stop.load(std::memory_order_relaxed)) {
                     pos.undo_move(m);
                     return false;
@@ -1372,7 +1448,7 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
                 }
                 } // end common malus updates
                 if (!stop.load(std::memory_order_relaxed) && TT.should_store(tte, found, depth)) {
-                    tte->save(pos.key(), value_to_tt(value, ss->ply), pv_node, BOUND_LOWER, depth, m, eval, TT.generation());
+                    tte->save(pos.key(), value_to_tt(value, ss->ply), pv_node, BOUND_LOWER, depth, m, tt_store_eval, TT.generation());
                 }
                 if (moves_played_before == 0) g_stats.first_move_cutoffs++;
                 return true;  // beta cutoff
@@ -1660,7 +1736,7 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
         else bound = BOUND_UPPER;
         // Use best_move_found instead of ss->pv[ss->ply] to avoid stale PV corruption
         if (TT.should_store(tte, found, depth))
-            tte->save(pos.key(), value_to_tt(best_value, ss->ply), pv_node, bound, depth, best_move_found, eval, TT.generation());
+            tte->save(pos.key(), value_to_tt(best_value, ss->ply), pv_node, bound, depth, best_move_found, tt_store_eval, TT.generation());
 
         // Update multi-table correction history: learn from the difference between
         // search result and static eval, indexed by multiple position aspects.
@@ -1821,7 +1897,7 @@ static void helper_thread_func(Position pos_copy, int thread_id) {
                 bool found;
                 TTEntry* tte = TT.probe(pos_copy.key(), found);
                 if (TT.should_store(tte, found, d))
-                    tte->save(pos_copy.key(), depth_best_value, true, BOUND_EXACT, d, depth_best_move, VALUE_ZERO, TT.generation());
+                    tte->save(pos_copy.key(), depth_best_value, true, BOUND_EXACT, d, depth_best_move, VALUE_INFINITE, TT.generation());
             }
         }
     }
@@ -1977,6 +2053,12 @@ Move search(Position& pos, Limits& lim) {
     int effective_depth = (limits.depth == 0) ? MAX_PLY : limits.depth;
     int start_depth = 1;
     int last_aspiration_attempts = 1;  // root sharpness signal for time mgmt
+    // Node-effort signals from the PREVIOUS depth iteration: the values are
+    // only meaningful once that iteration completed, so they are carried
+    // across the loop boundary instead of being reset and read in the same
+    // iteration (which always read zero).
+    uint64_t prev_depth_nodes = 0;
+    uint64_t prev_best_nodes = 0;
 
     for (root_depth = start_depth; root_depth <= effective_depth; ++root_depth) {
         // Check stop at the very start of each depth iteration
@@ -1984,7 +2066,8 @@ Move search(Position& pos, Limits& lim) {
             break;
         }
 
-        // Node-effort tracking for time management
+        // Node-effort tracking for time management (published to the
+        // prev_* pair at the end of the iteration)
         uint64_t nodes_at_depth_start = nodes.load(std::memory_order_relaxed);
         uint64_t nodes_spent_on_best = 0;
 
@@ -2007,9 +2090,9 @@ Move search(Position& pos, Limits& lim) {
             int stability_reduction = (best_move_stability >= 4) ? ideal_time * 3 / 5
                                     : (best_move_stability >= 3) ? ideal_time * 3 / 4
                                     : ideal_time;
-            // Node-effort: if best move dominates effort (>80%), reduce time
-            uint64_t total_depth_nodes = nodes.load(std::memory_order_relaxed) - nodes_at_depth_start;
-            if (total_depth_nodes > 0 && nodes_spent_on_best * 100 / total_depth_nodes > 80) {
+            // Node-effort: if the best move dominated the PREVIOUS
+            // iteration's effort (>80%), this position is easy — save time
+            if (prev_depth_nodes > 0 && prev_best_nodes * 100 / prev_depth_nodes > 80) {
                 stability_reduction = stability_reduction * 3 / 4;
             }
             // Score-drop extension: when eval drops sharply, spend more time investigating
@@ -2091,11 +2174,67 @@ Move search(Position& pos, Limits& lim) {
             return a.value > b.value;
         });
 
+        // MultiPV mode: every root move gets a full-window search and the
+        // top-N results are reported per iteration. This bypasses the
+        // aspiration/PVS fast path entirely (analysis use — cost is fine)
+        // and keeps best_move = the top line.
+        if (params.multi_pv > 1) {
+            int n_moves = int(end - moves);
+            Value mv_scores[MAX_MOVES];
+
+            for (ExtMove* it = moves; it != end; ++it) {
+                if (g_stop_requested || stop.load(std::memory_order_relaxed)) break;
+                if (check_time()) break;
+                if (!pos.do_move(it->move)) { mv_scores[it - moves] = -VALUE_INFINITE; continue; }
+                Value v = -search_worker(pos, worker->stack + 1,
+                                         -VALUE_INFINITE + 1, VALUE_INFINITE - 1,
+                                         root_depth - 1, false);
+                pos.undo_move(it->move);
+                if (stop.load(std::memory_order_relaxed)) break;
+                mv_scores[it - moves] = v;
+            }
+
+            if (!stop.load(std::memory_order_relaxed)) {
+                // Stable rank: sort indices by score descending, keeping the
+                // previous iteration's order among equals
+                int idx[MAX_MOVES];
+                for (int i = 0; i < n_moves; ++i) idx[i] = i;
+                std::stable_sort(idx, idx + n_moves, [&](int a, int b) {
+                    return mv_scores[a] > mv_scores[b];
+                });
+
+                // Rewrite the move list in ranked order so the next (and
+                // final) iteration orders by strength
+                ExtMove ranked[MAX_MOVES];
+                for (int i = 0; i < n_moves; ++i) {
+                    ranked[i] = moves[idx[i]];
+                    ranked[i].value = 2000000 - i;  // carry rank into next sort
+                }
+                std::copy(ranked, ranked + n_moves, moves);
+
+                best_move = moves[0].move;
+                best_value = mv_scores[idx[0]];
+                root_score = best_value;
+
+                auto search_end = std::chrono::steady_clock::now();
+                int t_ms = int(std::chrono::duration_cast<std::chrono::milliseconds>(
+                    search_end - search_start).count());
+                uint64_t total_nodes = nodes.load(std::memory_order_relaxed);
+                int report = std::min(params.multi_pv, n_moves);
+                for (int k = 0; k < report; ++k) {
+                    uci_info(pos, root_depth, mv_scores[idx[k]], total_nodes, t_ms,
+                             k + 1, moves[k].move);
+                }
+            }
+            continue;  // next depth iteration
+        }
+
         // Clean aspiration loop with root PVS
         Value depth_best_value = -VALUE_INFINITE;
         Move depth_best_move = MOVE_NONE;
 
         int aspiration_attempts = 0;
+        int fail_high_streak = 0;
         while (true) {
             aspiration_attempts++;
             // Reset on each aspiration iteration to avoid stale values
@@ -2105,6 +2244,11 @@ Move search(Position& pos, Limits& lim) {
                 alpha = -VALUE_INFINITE;
                 beta = VALUE_INFINITE;
             }
+            // Repeated fail-highs re-search one ply shallower per streak:
+            // the position is clearly winning, only the exact height of the
+            // bound is in question, and proving it at full depth is waste.
+            int asp_depth = root_depth - 1
+                          - (fail_high_streak >= 2 ? std::min(fail_high_streak - 1, 3) : 0);
 
             // Search all root moves with current bounds
             int root_moves_searched = 0;
@@ -2127,11 +2271,11 @@ Move search(Position& pos, Limits& lim) {
                 // PVS: first move gets full window, rest get zero-window scout
                 if (root_moves_searched == 0) {
                     value = -search_worker(pos, worker->stack + 1, -beta, -running_alpha,
-                                           root_depth - 1, false);
+                                           asp_depth, false);
                 } else {
                     // Zero-window scout search
                     value = -search_worker(pos, worker->stack + 1, -running_alpha - 1, -running_alpha,
-                                           root_depth - 1, true);
+                                           asp_depth, true);
                     // CRITICAL: Check stop immediately after recursive call
                     if (g_stop_requested || stop.load(std::memory_order_relaxed)) {
                         pos.undo_move(it->move);
@@ -2140,7 +2284,7 @@ Move search(Position& pos, Limits& lim) {
                     // Re-search with full window only if scout found something better
                     if (value > running_alpha && value < beta) {
                         value = -search_worker(pos, worker->stack + 1, -beta, -running_alpha,
-                                               root_depth - 1, false);
+                                               asp_depth, false);
                     }
                 }
 
@@ -2178,12 +2322,16 @@ Move search(Position& pos, Limits& lim) {
 
             // Aspiration window check uses ORIGINAL alpha (not running_alpha)
             if (depth_best_value < alpha) {
-                // Fail low - widen downward (lower alpha only, keep beta)
+                // Fail low - widen downward, and halve the top of the window:
+                // the old beta overshot and re-searching against it is waste
+                fail_high_streak = 0;
                 alpha = std::max(Value(-VALUE_INFINITE),
                                  Value(depth_best_value - aspiration_delta));
+                beta = Value((int(alpha) + int(beta)) / 2);
                 aspiration_delta += aspiration_delta / 2;
             } else if (depth_best_value >= beta) {
                 // Fail high - widen upward (raise beta only, keep alpha)
+                fail_high_streak++;
                 beta = std::min(Value(VALUE_INFINITE),
                                 Value(depth_best_value + aspiration_delta));
                 aspiration_delta += aspiration_delta / 2;
@@ -2226,10 +2374,15 @@ Move search(Position& pos, Limits& lim) {
             TTEntry* root_tte = TT.probe(pos.key(), root_found);
             if (TT.should_store(root_tte, root_found, root_depth))
                 root_tte->save(pos.key(), depth_best_value, true, BOUND_EXACT,
-                               root_depth, depth_best_move, VALUE_ZERO, TT.generation());
+                               root_depth, depth_best_move, VALUE_INFINITE, TT.generation());
         }
 
         root_score = depth_best_value;
+
+        // Publish this iteration's node-effort numbers for the next
+        // iteration's time-management check
+        prev_depth_nodes = nodes.load(std::memory_order_relaxed) - nodes_at_depth_start;
+        prev_best_nodes = nodes_spent_on_best;
 
         // Flush local node count to atomic for accurate reporting
         nodes.fetch_add(local_nodes - last_reported_nodes, std::memory_order_relaxed);
@@ -2483,34 +2636,60 @@ Move search(Position& pos, Limits& lim) {
     return best_move;
 }
 
-void uci_info([[maybe_unused]] const Position& pos, int depth, Value score, uint64_t node_count, int time_ms) {
+void uci_info(const Position& pos, int depth, Value score, uint64_t node_count, int time_ms,
+              int multipv, Move seed_move) {
     std::string line;
     uint64_t nps = time_ms > 0 ? node_count * 1000 / uint64_t(time_ms) : 0;
+    const bool mpv = multipv > 1;
+    const std::string mpv_tag = mpv ? std::format(" multipv {}", multipv) : "";
 
     // Handle mate scores
     // Note: -VALUE_INFINITE is not a mate score, it means no valid search result
     if (score >= VALUE_MATE_IN_MAX_PLY && score < VALUE_INFINITE) {
         int mate_in = (VALUE_MATE - score + 1) / 2;                       // Mate in N moves
         std::format_to(std::back_inserter(line),
-            "info depth {} score mate {} nodes {} nps {} pv", depth, mate_in, node_count, nps);
+            "info depth {}{} score mate {} nodes {} nps {} pv", depth, mpv_tag, mate_in, node_count, nps);
     } else if (score <= -VALUE_MATE_IN_MAX_PLY && score > -VALUE_INFINITE) {
         int mate_in = -(VALUE_MATE + score + 1) / 2;                      // Being mated in N moves
         std::format_to(std::back_inserter(line),
-            "info depth {} score mate {} nodes {} nps {} pv", depth, mate_in, node_count, nps);
+            "info depth {}{} score mate {} nodes {} nps {} pv", depth, mpv_tag, mate_in, node_count, nps);
     } else {
         // Normal score in centipawns (score is side-to-move relative, like evaluate())
         int score_cp = score * 100 / PAWN_VALUE;
+        std::string wdl;
+        if (params.show_wdl) {
+            // Approximate per-mille model: logistic win curve over the eval;
+            // draw share falls as the eval leaves zero and as the board
+            // empties (simpler positions convert more decisively).
+            double decisive = 1.0 / (1.0 + std::exp(-std::abs(score_cp) / 172.0));
+            double draw = 0.50 * std::exp(-(std::abs(score_cp) / 280.0)
+                                          * (std::abs(score_cp) / 280.0));
+            if (popcount(pos.pieces()) <= 20) draw *= 0.7;
+            double win  = score_cp >= 0 ? decisive * (1.0 - draw) : (1.0 - decisive) * (1.0 - draw);
+            double loss = 1.0 - draw - win;
+            wdl = std::format(" wdl {} {} {}", int(win * 1000), int(draw * 1000), int(loss * 1000));
+        }
         std::format_to(std::back_inserter(line),
-            "info depth {} score cp {} nodes {} nps {} pv", depth, score_cp, node_count, nps);
+            "info depth {}{} score cp {}{} nodes {} nps {} pv", depth, mpv_tag, score_cp, wdl, node_count, nps);
     }
 
-    // Extract PV from TT (uses std::formatter<luminex::Move> for each move)
+    // Extract PV from TT (uses std::formatter<luminex::Move> for each move).
+    // MultiPV lines are seeded with their own root move; the TT walk then
+    // continues from the resulting position.
     Position pv_pos = pos;
     Move pv_moves[64];
     int pv_count = 0;
     uint64_t pv_keys[64];
 
-    for (int i = 0; i < 64; ++i) {
+    if (seed_move != MOVE_NONE) {
+        pv_keys[0] = pv_pos.key();
+        pv_moves[0] = seed_move;
+        pv_count = 1;
+        std::format_to(std::back_inserter(line), " {}", seed_move);
+        pv_pos.do_move(seed_move);
+    }
+
+    for (int i = 0; i < 64 - pv_count; ++i) {
         bool found;
         TTEntry* pv_tte = TT.probe(pv_pos.key(), found);
         if (!found || pv_tte->move() == MOVE_NONE) break;
