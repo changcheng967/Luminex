@@ -346,8 +346,18 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
 
     // Search captures to depth -4 to avoid horizon effect. A side still in
     // check must not stand pat: forcing lines search evasions until the
-    // check sequence ends or the hard cap at -12 stops the recursion
+    // hard cap at -12 stops the recursion. At the cap, verify there are
+    // legal evasions before returning eval — returning static eval from
+    // a position with no legal responses would score checkmate as a
+    // normal position.
     if (depth < -12) {
+        if (pos.is_check()) {
+            ExtMove cap_moves[MAX_MOVES];
+            ExtMove* cap_end = generate<GEN_LEGAL>(pos, cap_moves);
+            if (cap_moves == cap_end) {
+                return -VALUE_MATE + ss->ply;
+            }
+        }
         return evaluate(pos, true);
     }
     if (depth < -4 && !pos.is_check()) {
@@ -740,13 +750,17 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
         }
     }
 
-    // Null move pruning (static R formula)
+    // Null move pruning. Consecutive nulls are banned: the parent already
+    // passed on moving, and a null in the null child proves nothing about
+    // zugzwang the first null didn't.
     int piece_count = popcount(pos.pieces()) - popcount(pos.pieces(PAWN)) - 2;
     bool null_move_ok = !pv_node && !pos.is_check() && depth >= 2 && piece_count >= 1 &&
                           eval >= beta &&
-                          ss->ply >= 1 && !ss->excluded_move;
+                          ss->ply >= 1 && !ss->excluded_move &&
+                          (ss - 1)->current_move != MOVE_NULL;
 
     if (null_move_ok) {
+        ss->current_move = MOVE_NULL;  // consecutive-null guard reads (ss+1)->current_move
         pos.do_null_move();
 
         auto& sp = SPSAParams::get();
@@ -986,25 +1000,67 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
         return std::max(1, std::min(reduction, depth - 2));
     };
 
-    // Helper lambda: compute check extension for a move
+    // Helper lambda: compute check extension for a move. Handles direct
+    // checks by the moved piece, discovered checks (the moved piece vacates
+    // a line to the enemy king), castling rook checks, promotion checks
+    // (checks as the promoted piece type), and en passant discovered checks.
     auto gives_check = [&](Move m) -> bool {
-        Square opp_ksq = pos.king_sq(Color(pos.side_to_move() ^ 1));
-        PieceType pt = piece_type_of(pos.piece_on(m.from()));
+        Color us = pos.side_to_move();
+        Color them = Color(us ^ 1);
+        Square opp_ksq = pos.king_sq(them);
+        Bitboard occ = pos.pieces();
+        Square from = m.from();
+        Square to = m.to();
 
-        if (pt == PAWN) {
-            return (pawn_attacks_bb(pos.side_to_move(), m.to()) & square_bb(opp_ksq)) != 0;
-        } else if (pt == KNIGHT) {
-            return (knight_attacks_bb(m.to()) & square_bb(opp_ksq)) != 0;
-        } else if (pt == BISHOP) {
-            return (bishop_attacks_bb(m.to(), pos.pieces() ^ square_bb(m.from())) & square_bb(opp_ksq)) != 0;
-        } else if (pt == ROOK) {
-            return (rook_attacks_bb(m.to(), pos.pieces() ^ square_bb(m.from())) & square_bb(opp_ksq)) != 0;
-        } else if (pt == QUEEN) {
-            Bitboard occ_no_from = pos.pieces() ^ square_bb(m.from());
-            return (bishop_attacks_bb(m.to(), occ_no_from) & square_bb(opp_ksq)) != 0
-                || (rook_attacks_bb(m.to(), occ_no_from) & square_bb(opp_ksq)) != 0;
+        // Occupancy after the move: remove from-square, add to-square,
+        // remove EP-captured pawn if applicable
+        Bitboard occ_after = (occ ^ square_bb(from)) | square_bb(to);
+        if (m.is_en_passant()) {
+            occ_after ^= square_bb(Square(to - (us == WHITE ? 8 : -8)));
         }
-        return false;
+        if (m.is_castling()) {
+            // The rook moves too; approximate by removing both and adding
+            // the king and rook destinations
+            Square rfrom, rto;
+            if (to > from) { rfrom = Square(from + 3); rto = Square(from + 1); }
+            else            { rfrom = Square(from - 4); rto = Square(from - 1); }
+            occ_after ^= square_bb(rfrom) | square_bb(rto);
+        }
+
+        Bitboard their_pieces = pos.pieces(them);
+        Bitboard our_bishops = pos.pieces(us, BISHOP, QUEEN) & ~square_bb(from);
+        Bitboard our_rooks   = pos.pieces(us, ROOK, QUEEN) & ~square_bb(from);
+
+        // Direct check by the moved piece (or the rook after castling)
+        PieceType pt = m.is_promotion() ? m.promotion_type()
+                      : m.is_castling()  ? ROOK
+                      : piece_type_of(pos.piece_on(from));
+
+        bool direct = false;
+        if (pt == PAWN) {
+            direct = (pawn_attacks_bb(us, to) & square_bb(opp_ksq)) != 0;
+        } else if (pt == KNIGHT) {
+            direct = (knight_attacks_bb(to) & square_bb(opp_ksq)) != 0;
+        } else if (pt == BISHOP) {
+            direct = (bishop_attacks_bb(to, occ_after) & square_bb(opp_ksq)) != 0;
+        } else if (pt == ROOK) {
+            direct = (rook_attacks_bb(to, occ_after) & square_bb(opp_ksq)) != 0;
+        } else if (pt == QUEEN) {
+            direct = (bishop_attacks_bb(to, occ_after) & square_bb(opp_ksq)) != 0
+                   || (rook_attacks_bb(to, occ_after) & square_bb(opp_ksq)) != 0;
+        }
+        // For castling, also check the king's new square
+        if (m.is_castling() && !direct) {
+            direct = (rook_attacks_bb(to + (to > from ? -1 : 1), occ_after) & square_bb(opp_ksq)) != 0;
+        }
+        if (direct) return true;
+
+        // Discovered check: another slider now attacks the king through
+        // the vacated from-square (or the EP-captured pawn's square)
+        Bitboard bishop_snipers = bishop_attacks_bb(opp_ksq, occ_after) & our_bishops;
+        Bitboard rook_snipers   = rook_attacks_bb(opp_ksq, occ_after) & our_rooks;
+
+        return bishop_snipers != 0 || rook_snipers != 0;
     };
 
     // Helper lambda: search a single move, return true if beta cutoff
