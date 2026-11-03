@@ -40,7 +40,6 @@ Value root_score;
 
 // Lazy SMP thread management
 int num_threads = 1;
-Move previous_root_best = MOVE_NONE;
 
 // Pondering support
 std::atomic<bool> ponder_mode{false};
@@ -60,6 +59,16 @@ inline Value value_from_tt(Value v, int ply) {
     if (v >= VALUE_MATE_IN_MAX_PLY) return Value(v - ply);
     if (v <= -VALUE_MATE_IN_MAX_PLY) return Value(v + ply);
     return v;
+}
+
+// Cutoff bonus / non-cutoff malus grow with depth and saturate: the quadratic
+// is capped past its depth-17 value instead of sign-flipping, so deep cutoffs
+// always reward and deep fails always punish.
+inline int hist_bonus(Depth d) {
+    return std::min(19 * d * d + 155 * d - 132, 8192);
+}
+inline int hist_malus(Depth d) {
+    return std::max(-(d * (d + 1) * 2 - 2), -8192);
 }
 
 // Per-thread search state for lazy SMP
@@ -119,6 +128,7 @@ static std::atomic<bool> helpers_running{false};
 struct EvalCacheEntry {
     uint64_t key;
     int32_t value;  // Changed from int16_t to match Value type
+    uint8_t tactical;  // 1 = HCE tactical_only eval (qsearch), 0 = full eval
 };
 constexpr int EVAL_CACHE_SIZE = 65536;  // 64K entries — measured best (32K too small, 512K too much)
 // THREAD_LOCAL + heap-allocated (vector): shared, every eval-miss write bounces this
@@ -225,7 +235,9 @@ inline Value eval_cached(const Position& pos) {
     uint64_t key = pos.key();
     uint32_t idx = uint32_t(key) & (EVAL_CACHE_SIZE - 1);
 
-    if (eval_cache[idx].key == key) {
+    // The tactical bit only gates under HCE, where the two eval modes differ;
+    // a loaded net makes both writers store the same value, so any entry hits.
+    if (eval_cache[idx].key == key && (nnue::loaded() || eval_cache[idx].tactical == 0)) {
         g_stats.eval_cache_hits_main++;
         int correction = get_total_correction(pos);
         correction = std::max(-200, std::min(200, correction));
@@ -236,6 +248,7 @@ inline Value eval_cached(const Position& pos) {
     Value eval = evaluate(pos);
     eval_cache[idx].key = key;
     eval_cache[idx].value = int32_t(eval);
+    eval_cache[idx].tactical = 0;
     int correction = get_total_correction(pos);
     correction = std::max(-200, std::min(200, correction));
     return Value(eval + correction);
@@ -361,16 +374,18 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
     Value eval = VALUE_ZERO;
 
     if (!in_check) {
-        // Reuse cached full eval when available (free + more accurate)
-        // Cache miss runs a full NNUE eval — tactical_only is ignored when a net
-        // is loaded (nnue::evaluate takes no such flag), so miss == hit cost.
+        // Qsearch fills the cache itself; the tactical bit gates only under
+        // HCE (see eval_cached), preserving full sharing under NNUE.
         uint64_t key = pos.key();
         uint32_t idx = uint32_t(key) & (EVAL_CACHE_SIZE - 1);
-        if (eval_cache[idx].key == key) {
+        if (eval_cache[idx].key == key && (nnue::loaded() || eval_cache[idx].tactical != 0)) {
             eval = Value(eval_cache[idx].value);
             g_stats.eval_cache_hits_qs++;
         } else {
             eval = evaluate(pos, true);
+            eval_cache[idx].key = key;
+            eval_cache[idx].value = int32_t(eval);
+            eval_cache[idx].tactical = 1;
             g_stats.eval_cache_misses_qs++;
         }
         // Apply multi-table correction history to eval
@@ -595,7 +610,7 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
         if (tt_value >= beta && tt_move && ss->ply > 0) {
             Piece moved = pos.piece_on(tt_move.from());
             if (moved != NO_PIECE && !tt_move.is_capture()) {
-                int bonus = depth > 17 ? -8 : 19 * depth * depth + 155 * depth - 132;
+                int bonus = hist_bonus(depth);
                 int& h = worker->history[int(moved)][int(tt_move.to())];
                 h += bonus - h * std::abs(bonus) / 16368;
 
@@ -617,7 +632,7 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
                 }
             } else if (moved != NO_PIECE && tt_move.is_capture()) {
                 // Capture history bonus for TT cutoff captures
-                int bonus = depth > 17 ? -8 : 19 * depth * depth + 155 * depth - 132;
+                int bonus = hist_bonus(depth);
                 PieceType captured = pos.piece_type_on(tt_move.to());
                 if (captured != PT_NONE) {
                     int& ch = worker->capture_history[int(moved)][int(tt_move.to())][int(captured)];
@@ -1061,6 +1076,7 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
         // Apply LMR to quiet moves and losing captures (SEE < 0)
         // But NEVER reduce moves that give check — they are forcing
         Depth new_depth = depth - 1;
+        int lmr_reduction = 0;  // actual reduction, before extensions
         bool gives_chk = gives_check(m);
         bool is_losing_capture = m.is_capture() && !m.is_promotion() && depth >= 1 &&
                                   !pos.see_ge(m, Value(-depth * 80));
@@ -1081,6 +1097,7 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
             if (pv_node) reduction = std::max(1, reduction - 1);
             new_depth = depth - 1 - reduction;
             if (new_depth < 1) new_depth = 1;
+            lmr_reduction = depth - 1 - new_depth;
         }
 
         // Extensions
@@ -1124,7 +1141,10 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
         // Store current move and moved piece for counter-move history
         ss->current_move = m;
         ss->moved_piece = pos.piece_on(m.from());
-        ss->reduction = do_lmr ? (depth - 1 - new_depth) : 0;
+        // Store the actual LMR reduction, not LMR-minus-extensions: the
+        // hindsight depth adjustment reads (ss-1)->reduction and extension
+        // credits were cancelling real reductions out of that signal.
+        ss->reduction = lmr_reduction;
 
         if (!pos.do_move(m)) {
             return false;
@@ -1218,7 +1238,7 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
                     Piece pc = ss->moved_piece;
                     if (pc != NO_PIECE) {
                         // Quadratic stat bonus
-                        int bonus = depth > 17 ? -8 : 19 * depth * depth + 155 * depth - 132;
+                        int bonus = hist_bonus(depth);
                         // Gravity formula for plain history
                         int& h = worker->history[int(pc)][int(m.to())];
                         h += bonus - h * abs(bonus) / 16368;
@@ -1250,13 +1270,13 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
 
                 // Capture history bonus for capture moves that caused cutoff
                 if (!is_quiet && ss->ply < MAX_PLY && captured_pt != PT_NONE) {
-                    int cap_bonus = depth > 17 ? -8 : 19 * depth * depth + 155 * depth - 132;
+                    int cap_bonus = hist_bonus(depth);
                     int& ch = worker->capture_history[int(ss->moved_piece)][int(m.to())][int(captured_pt)];
                     ch += cap_bonus - ch * std::abs(cap_bonus) / 16368;
                 }
                 // Capture history malus for fail-low captures
                 if (ss->ply < MAX_PLY) {
-                int cap_malus = depth > 17 ? 8 : -(depth * (depth + 1) * 2 - 2);
+                int cap_malus = hist_malus(depth);
                 // If quiet caused cutoff: penalize ALL captures. If capture caused cutoff: skip the best capture.
                 int cap_malus_end = is_quiet ? capturesSearched_count : (capturesSearched_count > 0 ? capturesSearched_count - 1 : 0);
                 for (int i = 0; i < cap_malus_end; ++i) {
@@ -1264,7 +1284,7 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
                     ch += cap_malus - ch * abs(cap_malus) / 16368;
                 }
                 // History gravity malus for non-cutoff quiet moves (use stat_bonus formula)
-                int malus = depth > 17 ? 8 : -(depth * (depth + 1) * 2 - 2);
+                int malus = hist_malus(depth);
                 // If capture caused cutoff: penalize ALL quiets. If quiet caused cutoff: skip the best quiet.
                 int quiet_malus_end = !is_quiet ? quiet_count : (quiet_count > 0 ? quiet_count - 1 : 0);
                 for (int i = 0; i < quiet_malus_end; ++i) {
@@ -1432,9 +1452,6 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
                         score += worker->low_ply_history[ss->ply][int(pc)][int(m.to())];
                     }
                 }
-
-                // Previous iteration's root best move bonus
-                if (m == previous_root_best) score += 70000;
 
                 // Killer moves bonus ON TOP of history
                 if (m == worker->killers[ss->ply][0]) score += 60000;
@@ -1775,7 +1792,6 @@ Move search(Position& pos, Limits& lim) {
     Move best_move = MOVE_NONE;
     Value best_value = -VALUE_INFINITE;
     root_score = best_value;
-    previous_root_best = MOVE_NONE;
     int best_move_stability = 0;  // How many consecutive iterations best move stayed the same
     bool score_dropped_sharply = false;  // Score drop extension flag
 
@@ -2144,7 +2160,6 @@ Move search(Position& pos, Limits& lim) {
             last_aspiration_attempts = aspiration_attempts;
             best_value = depth_best_value;
             best_move = depth_best_move;
-            previous_root_best = depth_best_move;
         }
 
         // Save root position to TT for PV extraction

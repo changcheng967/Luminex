@@ -134,7 +134,6 @@ extern std::atomic<bool> stop;
 extern int root_depth;
 extern Value root_score;
 extern int num_threads; // Default 1, SMP only helps at longer TC
-extern Move previous_root_best; // Previous iteration's best move for ordering
 extern std::atomic<bool> ponder_mode;
 extern std::atomic<bool> ponderhit_received;
 
