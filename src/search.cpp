@@ -2119,6 +2119,61 @@ Move search(Position& pos, Limits& lim) {
             return a.value > b.value;
         });
 
+        // MultiPV mode: every root move gets a full-window search and the
+        // top-N results are reported per iteration. This bypasses the
+        // aspiration/PVS fast path entirely (analysis use — cost is fine)
+        // and keeps best_move = the top line.
+        if (params.multi_pv > 1) {
+            int n_moves = int(end - moves);
+            Value mv_scores[MAX_MOVES];
+
+            for (ExtMove* it = moves; it != end; ++it) {
+                if (g_stop_requested || stop.load(std::memory_order_relaxed)) break;
+                if (check_time()) break;
+                if (!pos.do_move(it->move)) { mv_scores[it - moves] = -VALUE_INFINITE; continue; }
+                Value v = -search_worker(pos, worker->stack + 1,
+                                         -VALUE_INFINITE + 1, VALUE_INFINITE - 1,
+                                         root_depth - 1, false);
+                pos.undo_move(it->move);
+                if (stop.load(std::memory_order_relaxed)) break;
+                mv_scores[it - moves] = v;
+            }
+
+            if (!stop.load(std::memory_order_relaxed)) {
+                // Stable rank: sort indices by score descending, keeping the
+                // previous iteration's order among equals
+                int idx[MAX_MOVES];
+                for (int i = 0; i < n_moves; ++i) idx[i] = i;
+                std::stable_sort(idx, idx + n_moves, [&](int a, int b) {
+                    return mv_scores[a] > mv_scores[b];
+                });
+
+                // Rewrite the move list in ranked order so the next (and
+                // final) iteration orders by strength
+                ExtMove ranked[MAX_MOVES];
+                for (int i = 0; i < n_moves; ++i) {
+                    ranked[i] = moves[idx[i]];
+                    ranked[i].value = 2000000 - i;  // carry rank into next sort
+                }
+                std::copy(ranked, ranked + n_moves, moves);
+
+                best_move = moves[0].move;
+                best_value = mv_scores[idx[0]];
+                root_score = best_value;
+
+                auto search_end = std::chrono::steady_clock::now();
+                int t_ms = int(std::chrono::duration_cast<std::chrono::milliseconds>(
+                    search_end - search_start).count());
+                uint64_t total_nodes = nodes.load(std::memory_order_relaxed);
+                int report = std::min(params.multi_pv, n_moves);
+                for (int k = 0; k < report; ++k) {
+                    uci_info(pos, root_depth, mv_scores[idx[k]], total_nodes, t_ms,
+                             k + 1, moves[k].move);
+                }
+            }
+            continue;  // next depth iteration
+        }
+
         // Clean aspiration loop with root PVS
         Value depth_best_value = -VALUE_INFINITE;
         Move depth_best_move = MOVE_NONE;
@@ -2526,34 +2581,60 @@ Move search(Position& pos, Limits& lim) {
     return best_move;
 }
 
-void uci_info([[maybe_unused]] const Position& pos, int depth, Value score, uint64_t node_count, int time_ms) {
+void uci_info(const Position& pos, int depth, Value score, uint64_t node_count, int time_ms,
+              int multipv, Move seed_move) {
     std::string line;
     uint64_t nps = time_ms > 0 ? node_count * 1000 / uint64_t(time_ms) : 0;
+    const bool mpv = multipv > 1;
+    const std::string mpv_tag = mpv ? std::format(" multipv {}", multipv) : "";
 
     // Handle mate scores
     // Note: -VALUE_INFINITE is not a mate score, it means no valid search result
     if (score >= VALUE_MATE_IN_MAX_PLY && score < VALUE_INFINITE) {
         int mate_in = (VALUE_MATE - score + 1) / 2;                       // Mate in N moves
         std::format_to(std::back_inserter(line),
-            "info depth {} score mate {} nodes {} nps {} pv", depth, mate_in, node_count, nps);
+            "info depth {}{} score mate {} nodes {} nps {} pv", depth, mpv_tag, mate_in, node_count, nps);
     } else if (score <= -VALUE_MATE_IN_MAX_PLY && score > -VALUE_INFINITE) {
         int mate_in = -(VALUE_MATE + score + 1) / 2;                      // Being mated in N moves
         std::format_to(std::back_inserter(line),
-            "info depth {} score mate {} nodes {} nps {} pv", depth, mate_in, node_count, nps);
+            "info depth {}{} score mate {} nodes {} nps {} pv", depth, mpv_tag, mate_in, node_count, nps);
     } else {
         // Normal score in centipawns (score is side-to-move relative, like evaluate())
         int score_cp = score * 100 / PAWN_VALUE;
+        std::string wdl;
+        if (params.show_wdl) {
+            // Approximate per-mille model: logistic win curve over the eval;
+            // draw share falls as the eval leaves zero and as the board
+            // empties (simpler positions convert more decisively).
+            double decisive = 1.0 / (1.0 + std::exp(-std::abs(score_cp) / 172.0));
+            double draw = 0.50 * std::exp(-(std::abs(score_cp) / 280.0)
+                                          * (std::abs(score_cp) / 280.0));
+            if (popcount(pos.pieces()) <= 20) draw *= 0.7;
+            double win  = score_cp >= 0 ? decisive * (1.0 - draw) : (1.0 - decisive) * (1.0 - draw);
+            double loss = 1.0 - draw - win;
+            wdl = std::format(" wdl {} {} {}", int(win * 1000), int(draw * 1000), int(loss * 1000));
+        }
         std::format_to(std::back_inserter(line),
-            "info depth {} score cp {} nodes {} nps {} pv", depth, score_cp, node_count, nps);
+            "info depth {}{} score cp {}{} nodes {} nps {} pv", depth, mpv_tag, score_cp, wdl, node_count, nps);
     }
 
-    // Extract PV from TT (uses std::formatter<luminex::Move> for each move)
+    // Extract PV from TT (uses std::formatter<luminex::Move> for each move).
+    // MultiPV lines are seeded with their own root move; the TT walk then
+    // continues from the resulting position.
     Position pv_pos = pos;
     Move pv_moves[64];
     int pv_count = 0;
     uint64_t pv_keys[64];
 
-    for (int i = 0; i < 64; ++i) {
+    if (seed_move != MOVE_NONE) {
+        pv_keys[0] = pv_pos.key();
+        pv_moves[0] = seed_move;
+        pv_count = 1;
+        std::format_to(std::back_inserter(line), " {}", seed_move);
+        pv_pos.do_move(seed_move);
+    }
+
+    for (int i = 0; i < 64 - pv_count; ++i) {
         bool found;
         TTEntry* pv_tte = TT.probe(pv_pos.key(), found);
         if (!found || pv_tte->move() == MOVE_NONE) break;

@@ -44,6 +44,7 @@ struct Limits {
 struct SearchParams {
     int contempt = 0;
     int multi_pv = 1;
+    bool show_wdl = false;      // UCI "UCI_ShowWDL": append wdl W D L to info
     int move_overhead_ms = 30;  // UCI "Move Overhead": latency safety margin (ms)
 };
 
@@ -124,7 +125,8 @@ void clear_correction_history();
 void clear_search_history();
 
 // UCI info output
-void uci_info(const Position& pos, int depth, Value score, uint64_t nodes, int time);
+void uci_info(const Position& pos, int depth, Value score, uint64_t nodes, int time,
+              int multipv = 1, Move seed_move = MOVE_NONE);
 
 // Search globals
 extern Limits limits;

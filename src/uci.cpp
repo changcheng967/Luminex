@@ -25,6 +25,9 @@ namespace luminex {
 // Global volatile stop flag - defined in search.cpp
 extern volatile bool g_stop_requested;
 
+// Per-root-move perft counts; defined in main.cpp (used by "go perft")
+uint64_t perft_divide(Position& pos, Depth depth);
+
 // Position for UCI
 static Position pos;
 int g_search_depth = 0;
@@ -199,6 +202,7 @@ void handle_uci() {
     safe_output("id author " + std::string(ENGINE_AUTHOR) + "\n");
     safe_output("option name Hash type spin default 256 min 1 max 1048576\n");
     safe_output("option name Threads type spin default 1 min 1 max 64\n");
+    safe_output("option name MultiPV type spin default 1 min 1 max 256\n");
     safe_output("option name Ponder type check default false\n");
     safe_output("option name Contempt type spin default 0 min -1000 max 1000\n");
     safe_output("option name Clear Hash type button\n");
@@ -211,7 +215,8 @@ void handle_uci() {
     safe_output("option name NodesPerMove type spin default 0 min 0 max 100000000\n");
     safe_output("option name UCI_Elo type spin default 1320 min 1320 max 3190\n");
     safe_output("option name UCI_LimitStrength type check default false\n");
-    safe_output("option name UCI_Chess960 type check default false\n");
+    // UCI_Chess960 is deliberately not advertised: castling is implemented
+    // for standard chess only.
     // NNUE evaluation (default since v6.2.0: SF1, gen768 warm-started on SF-relabel
     // data). A missing net or missing AVX2 transparently falls back to HCE.
     safe_output("option name UseNNUE type check default true\n");
@@ -358,6 +363,25 @@ void handle_go(Position& pos, const std::string& cmd) {
     // Wait for any previous search thread to finish
     wait_for_search_thread();
 
+    // "go perft <depth>": per-root-move node counts, then the total. No
+    // search state is touched, so no TT reset and no search thread.
+    {
+        std::istringstream ps(cmd);
+        std::string t;
+        ps >> t;  // "go"
+        if (ps >> t && t == "perft") {
+            int d = 0;
+            ps >> d;
+            if (d >= 1 && d <= 8) {
+                uint64_t total = perft_divide(pos, Depth(d));
+                safe_output("total " + std::to_string(total) + "\n");
+            } else {
+                safe_output("info string go perft needs a depth 1-8\n");
+            }
+            return;
+        }
+    }
+
     TT.new_search();
 
     std::istringstream ss(cmd);
@@ -431,8 +455,17 @@ void handle_setoption(const std::string& cmd) {
     }
 
     if (name == "SyzygyPath" || name == "Skill Level" ||
-        name == "UCI_ShowWDL" || name == "UCI_Elo" || name == "UCI_LimitStrength" ||
+        name == "UCI_Elo" || name == "UCI_LimitStrength" ||
         name == "UCI_Chess960" || name == "Analysis") { /* accepted — UCI GUI/bot compatibility */ }
+    else if (name == "MultiPV") {
+        int n = std::stoi(value);
+        if (n < 1) n = 1;
+        if (n > 256) n = 256;
+        params.multi_pv = n;
+    }
+    else if (name == "UCI_ShowWDL") {
+        params.show_wdl = (value == "true");
+    }
     else if (name == "Move Overhead") {
         int ov = std::stoi(value);
         if (ov < 0) ov = 0;
