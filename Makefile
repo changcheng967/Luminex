@@ -32,7 +32,17 @@ UNAME_M   := $(shell uname -m)
 ifeq ($(UNAME_M),aarch64)
   MARCH   ?= armv8-a
 else
-  MARCH   ?= x86-64-v3
+  # Auto-detect AVX-512: the 512-bit VPDPBUSD (VNNI) doubles int8
+  # dot-product throughput over v3's 256-bit version. cascadelake is the
+  # minimum Intel target that includes AVX-512 + VNNI together; the binary
+  # runs on any x86 CPU with those features (Intel Cascade Lake+, AMD
+  # Zen 4+). Falls back to v3 (AVX2) without AVX-512. Override: MARCH=...
+  HAS_AVX512 := $(shell grep -q avx512f /proc/cpuinfo 2>/dev/null && echo yes)
+  ifeq ($(HAS_AVX512),yes)
+    MARCH   ?= cascadelake
+  else
+    MARCH   ?= x86-64-v3
+  endif
 endif
 
 # The engine is C++23 (<format>): needs g++ 13+ or clang 18+ with libc++.
