@@ -48,6 +48,11 @@ public:
     void resize(size_t mb);
     void clear();
     void new_search();
+    // The table is allocated on first use (isready or a search) rather than
+    // at startup, so a GUI's Hash setting is the only allocation: zeroing a
+    // default 256 MB that is replaced at once cost the start most of a second.
+    void ensure_allocated() { if (table.empty()) resize(DEFAULT_MB); }
+    static constexpr size_t DEFAULT_MB = 256;
 
     TTEntry* probe(uint64_t key, bool& found);
     void prefetch(uint64_t key) const;

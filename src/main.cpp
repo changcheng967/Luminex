@@ -14,8 +14,9 @@ void init() {
     // SPSA overrides from the working directory; UCI options set later win
     SPSAParams::get().load("spsa_params.txt");
     init_search_params();
-    TT.resize(256); // 256 MB transposition table (adopted 2026-08-19: self-play +16.7 LOS 89%, vs StashV20 0.509 vs 0.504 at 128)
-    TT.clear();
+    // The transposition table (default TranspositionTable::DEFAULT_MB = 256 MB,
+    // adopted 2026-08-19: self-play +16.7 LOS 89% over 128 MB) is allocated
+    // on first use, so a GUI's Hash setting replaces it before it is touched.
 }
 
 // Perft for testing
