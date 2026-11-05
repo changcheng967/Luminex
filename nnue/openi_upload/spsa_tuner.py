@@ -22,20 +22,16 @@ Usage:
 """
 import os, sys, subprocess, random, math, time, argparse, threading, queue
 
-# (name, default, lo, hi) — ORDER MUST MATCH SPSAParams::load() in spsa_params.h
+# (name, default, lo, hi) — ORDER MUST MATCH SPSAParams::load() in spsa_params.h.
+# Defaults are the engine's current values; ranges match its UCI spin options.
 PARAMS = [
-    ("lmr_scale_quiet",   40,  20,  70),
-    ("lmr_scale_noisy",   24,  10,  50),
-    ("futility_coeff",   130,  80, 200),
-    ("futility_offset",    50,   0, 120),
-    ("nmp_base",            3,   2,   6),
-    ("nmp_thresh1",         5,   3,   8),
-    ("nmp_thresh2",        12,   8,  18),
-    ("razor_base",        300, 150, 500),
-    ("razor_coeff",        60,  30, 120),
-    ("rev_fut_coeff",     100,  60, 160),
-    ("aspiration_delta",    50,  20, 100),
-    ("singular_margin",   200, 100, 400),
+    ("lmr_scale_quiet",   38,  20,  70),
+    ("nmp_base",           3,   2,   6),
+    ("razor_base",       317, 150, 500),
+    ("razor_coeff",       56,  30, 120),
+    ("rev_fut_coeff",    103,  60, 160),
+    ("aspiration_delta",  48,  20, 100),
+    ("singular_margin",  194, 100, 400),
 ]
 NP_ = len(PARAMS)
 

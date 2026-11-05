@@ -200,22 +200,17 @@ static inline void corr_sample(int c) {
 static thread_local uint64_t local_nodes = 0;
 static thread_local uint64_t last_reported_nodes = 0;
 
-// Precomputed LMR reduction tables
-// Separate tables for noisy (captures) and quiet moves (from Stash)
-// Quiet moves get ~1.6x the base reduction of noisy moves
-static int reductions_noisy[64];
+// Precomputed LMR reduction table. Only quiet moves take the formula
+// reduction; losing captures use a fixed one (see search_move).
 static int reductions_quiet[64];
 static constexpr int LMR_DENOM = 1024;
 static bool reductions_initialized = false;
 
 static void init_reductions() {
-    SPSAParams::get().load("spsa_params.txt");  // SPSA: load overrides if file exists
     auto& sp = SPSAParams::get();
-    for (int i = 1; i < 64; ++i) {
-        reductions_noisy[i] = int(sp.lmr_scale_noisy * std::log(double(i)));
+    for (int i = 1; i < 64; ++i)
         reductions_quiet[i] = int(sp.lmr_scale_quiet * std::log(double(i)));
-    }
-    reductions_noisy[0] = reductions_quiet[0] = 0;
+    reductions_quiet[0] = 0;
     reductions_initialized = true;
 }
 
@@ -261,14 +256,6 @@ inline Value eval_cached(const Position& pos) {
     std::memset(eval_cache.data(), 0, EVAL_CACHE_SIZE * sizeof(EvalCacheEntry));
 }
 
-// Reduction constants
-inline int futility_margin(int depth, bool improving) {
-    auto& sp = SPSAParams::get();
-    int base = sp.futility_coeff * depth + sp.futility_offset;
-    if (improving) base -= 20;
-    else base += 25;
-    return base;
-}
 
 // Search start time for time management
 static std::chrono::steady_clock::time_point search_start;
@@ -775,19 +762,6 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
         g_stats.iir_reductions++;
     }
 
-    // Futility pruning - use improving for better pruning decisions
-    // Depth <= 6 for balance between pruning and tactical accuracy
-    // More aggressive when opponent is worsening (wider margin)
-    // LESS aggressive when eval_uncertainty is high (eval unreliable, don't trust it for pruning)
-    {
-        int fut_margin = futility_margin(depth, ss->improving || opponent_worsening);
-        fut_margin += std::min(eval_uncertainty / 2, 100);  // Up to 100cp extra margin when uncertain
-        if (!pv_node && !pos.is_check() && depth <= 6 && eval - fut_margin >= beta) {
-            g_stats.futility_prunes++;
-            return eval;
-        }
-    }
-
     // Reverse futility pruning (static null move): if eval is far above beta, prune immediately
     // Also less aggressive when eval is uncertain
     {
@@ -980,9 +954,8 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
 
     // Helper lambda: compute LMR reduction for a move (takes gives_chk to avoid recomputation)
     auto compute_reduction = [&](Move m, int mp, bool gives_chk) -> int {
-        // Separate reduction tables for noisy vs quiet (from Stash)
-        bool is_capture = m.is_capture();
-        int* red_table = is_capture ? reductions_noisy : reductions_quiet;
+        // Called for quiet moves only; losing captures take a fixed reduction
+        const int* red_table = reductions_quiet;
         int d_idx = std::max(depth - 1, 1);
         int m_idx = std::max(mp, 1);
         if (d_idx >= 64) d_idx = 63;
@@ -2719,6 +2692,10 @@ void uci_info(const Position& pos, int depth, Value score, uint64_t node_count, 
 
     // Thread-safe output
     uci_safe_output(line);
+}
+
+void init_search_params() {
+    init_reductions();
 }
 
 void clear_correction_history() {
