@@ -1211,19 +1211,13 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
             ext_count += singular_extension;
             if (singular_extension > 0) g_stats.singular_extensions++;
         }
-        if (gives_chk) {
+        // Only a check that does not lose material is extended: a check whose
+        // piece is simply taken leaves nothing forcing to look deeper into.
+        // Recaptures get no extension; they are captures the search already
+        // orders first and qsearch resolves.
+        if (gives_chk && pos.see_ge(m, VALUE_ZERO)) {
             ext_count++;
             g_stats.check_extensions++;
-        }
-        // Recapture extension: only for significant piece captures (not pawns)
-        if (ss->ply >= 1 && (ss - 1)->current_move != MOVE_NONE && m.to() == (ss - 1)->current_move.to()) {
-            if (m.is_capture()) {
-                PieceType captured = pos.piece_type_on(m.to());
-                if (captured >= KNIGHT) {
-                    ext_count++;  // Only extend for minor/major recaptures
-                    g_stats.recapture_extensions++;
-                }
-            }
         }
         // Novel: forcing line extension. If we're 3+ plies deep in a sequence
         // of checks, this is a forcing tactical line — extend to see the conclusion.
