@@ -11,20 +11,25 @@ relabeled by deep Stockfish search — the same public training data Stockfish
 itself uses; the loss weights positions by what the search actually consumes:
 quiet nodes) — and ships with a self-engineered hand-crafted evaluation (HCE)
 as an always-available fallback and tuning testbed. Estimated strength:
-~3030 Elo blitz (Stash-ladder implied: beats Stash 26 at 3000-rated, level
-with Stash 27 at 3057).
+~3030 Elo blitz (−105 ± 20 against Stash 29, CCRL Blitz 3137, over 1,004
+games on OpenBench; the v6.3.0 ladder placed it ahead of Stash 26 and level
+with Stash 27).
 
 ## Download
 
 Latest release: [github.com/changcheng967/Luminex/releases](https://github.com/changcheng967/Luminex/releases)
 
-| Platform | Binary |
-|----------|--------|
-| Linux (AVX2) | `luminex-linux-x86-64-modern` |
-| Linux (SSE4.2) | `luminex-linux-x86-64` |
-| Windows (ClangCL) | `luminex-windows-x86-64-modern.exe` |
-| Windows (MSVC) | `luminex-windows-x86-64.exe` |
-| macOS (Apple Silicon) | `luminex-macos-arm64` |
+| Platform | Binary | CPU |
+|----------|--------|-----|
+| Linux | `luminex-linux-x86-64-modern` | AVX2 (x86-64-v3) |
+| Linux | `luminex-linux-x86-64` | SSE4.2 and POPCNT (x86-64-v2) |
+| Windows | `luminex-windows-x86-64-modern.exe` | AVX2 |
+| Windows | `luminex-windows-x86-64.exe` | POPCNT, no AVX2 needed |
+| macOS | `luminex-macos-arm64` | Apple silicon |
+
+Take the modern build unless the CPU lacks AVX2; most x86 CPUs from 2013 on
+have it. Every build runs the network: the modern ones with AVX2 kernels, the
+others with a portable int8 path (NEON dot-product on Apple silicon).
 
 Each release also attaches the current network (`luminex_sfq_i8.nnue`).
 Place it next to the binary or in the working directory and it loads
@@ -99,8 +104,13 @@ cmake -B build -DCMAKE_BUILD_TYPE=Release
 cmake --build build --config Release
 ```
 
-The NNUE VNNI path auto-selects at compile time via `__AVX512VNNI__`; without it the
-engine builds and runs using the AVX2 int8 path (or falls back to HCE if AVX2 is absent).
+The network kernels are chosen at compile time: AVX-512 VNNI
+(`__AVX512VNNI__`), AVX2, NEON dot-product on ARM, or a portable int8 path
+elsewhere. CMake targets the build machine with GCC and Clang, and AVX2 with
+MSVC; for binaries that run elsewhere, set `LUMINEX_MARCH` (GCC/Clang, e.g.
+`x86-64-v2`) or
+`LUMINEX_MSVC_ARCH` (MSVC and clang-cl: `AVX512`, `AVX2` or `SSE2`). The
+Makefile picks the AVX-512 VNNI build by itself on CPUs that support it.
 
 ## Architecture
 
