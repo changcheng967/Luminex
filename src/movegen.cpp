@@ -25,9 +25,13 @@ ExtMove* generate_moves(const Position& pos, ExtMove* moveList) {
         // Single pawn push
         if (!(pos.pieces() & square_bb(to))) {
             if (relative_rank(us, to) == RANK_8) {
-                // Promotion
-                if constexpr (T == GEN_QUIET || T == GEN_ALL || T == GEN_LEGAL || T == GEN_EVASION || T == GEN_NON_EVASION) {
+                // A queen promotion gains material like a capture, so it is
+                // generated with the captures (main-search noisy stage and
+                // qsearch); underpromotions stay with the quiet moves.
+                if constexpr (T != GEN_QUIET) {
                     *moveList++ = Move(from, to, MF_PROMO_QUEEN);
+                }
+                if constexpr (T != GEN_CAPTURE) {
                     *moveList++ = Move(from, to, MF_PROMO_ROOK);
                     *moveList++ = Move(from, to, MF_PROMO_BISHOP);
                     *moveList++ = Move(from, to, MF_PROMO_KNIGHT);

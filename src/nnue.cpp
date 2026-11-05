@@ -213,6 +213,7 @@ static bool g_loaded = false;
 static bool g_l3_batched = false;   // l3_w_i8 interleaved for batched VNNI L3
 
 static bool g_enabled = true;
+static uint32_t g_net_id = 0;   // incremented by every successful load(); keys the refresh cache
 
 // Per-thread accumulator stack, indexed by Position::st_ply(). v[perspective][neuron].
 // Cache-line aligned for clean loads during the SCReLU/quant8 pass.
@@ -272,19 +273,35 @@ bool load(const std::string& path) {
     f.read(magic, 4);
     std::string mg(magic, 4);
     if (mg != "LNN1" && mg != "LNI8") { std::fprintf(stderr, "nnue: bad magic\n"); return false; }
-    g_int8 = (mg == "LNI8");
     int32_t hdr[4];
     f.read(reinterpret_cast<char*>(hdr), sizeof(hdr));
+    if (!f) { std::fprintf(stderr, "nnue: truncated header\n"); return false; }
     int L1 = hdr[0], L2 = hdr[1], L3 = hdr[2], NI = hdr[3];
     if (NI != NUM_INPUTS) { std::fprintf(stderr, "nnue: NUM_INPUTS mismatch %d\n", NI); return false; }
     if (L1 <= 0 || L1 > NNUE_L1_MAX) { std::fprintf(stderr, "nnue: L1=%d out of range (max %d)\n", L1, NNUE_L1_MAX); return false; }
+    // The SIMD loops step L1 in 32-lane blocks and L2/L3 in 8-lane blocks, and
+    // the small VNNI dots read at most 64 bytes.
+    if (L1 % 32 != 0 || L2 <= 0 || L2 > 64 || L2 % 8 != 0 || L3 <= 0 || L3 > 64 || L3 % 8 != 0) {
+        std::fprintf(stderr, "nnue: unsupported layer sizes L1=%d L2=%d L3=%d\n", L1, L2, L3);
+        return false;
+    }
+    // From here on the globals are overwritten; a failure part-way must not
+    // leave a half-loaded net marked usable.
+    g_loaded = false;
+    g_l3_batched = false;
+    g_int8 = (mg == "LNI8");
     g_L1 = L1; g_L2 = L2; g_L3 = L3;
     std::vector<float> ft_w_raw;
     if (!read_tensor(f, ft_w_raw, L1 * NUM_INPUTS)) return false;
     ft_w.resize(static_cast<size_t>(NUM_INPUTS) * L1);
+    // int16 at x8192 holds |w| < 4.0; clamp instead of letting the cast wrap.
+    long long clamped = 0;
     for (int i = 0; i < NUM_INPUTS; ++i)
-        for (int l = 0; l < L1; ++l)
-            ft_w[i * L1 + l] = (int16_t)std::lround(ft_w_raw[l * NUM_INPUTS + i] * FT_WSCALE);
+        for (int l = 0; l < L1; ++l) {
+            long long q = std::llround(ft_w_raw[l * NUM_INPUTS + i] * FT_WSCALE);
+            if (q > 32767 || q < -32767) { q = q > 0 ? 32767 : -32767; ++clamped; }
+            ft_w[i * L1 + l] = (int16_t)q;
+        }
     if (!read_tensor(f, ft_b, L1)) return false;
     ft_b_i32.resize(L1);
     for (int l = 0; l < L1; ++l) ft_b_i32[l] = std::lround(ft_b[l] * FT_WSCALE);
@@ -361,16 +378,19 @@ bool load(const std::string& path) {
         }
     }
     g_loaded = true;
+    ++g_net_id;   // refresh-cache entries of the previous net are stale
 #if defined(__linux__) && defined(MADV_HUGEPAGE)
     // THP for the big weight tables: the incremental update path is
     // memory-latency bound (random row access into ft_w); huge pages cut
     // TLB misses. Best effort — silently ignored where disallowed.
     madvise(ft_w.data(), (ft_w.size() * sizeof(int16_t) + 0xFFFFF) & ~0xFFFFF, MADV_HUGEPAGE);
 #endif
-    // SIX specifiers, five args — the trailing %s read a garbage vararg and
-    // strlen()'d it: benign UB on x86-64, SIGSEGV on aarch64 (every ARM worker
-    // "disconnect" traced to this line).
-    std::printf("nnue: loaded %s (%s L1=%d L2=%d L3=%d)\n", path.c_str(), g_int8 ? "int8" : "float", L1, L2, L3);
+    // stdout carries UCI traffic, so the report is an info string.
+    std::printf("info string NNUE evaluation using %s (%s L1=%d L2=%d L3=%d)\n",
+                path.c_str(), g_int8 ? "int8" : "float", L1, L2, L3);
+    if (clamped > 0)
+        std::printf("info string NNUE warning: %lld feature weights exceed the int16 range and were clamped\n",
+                    clamped);
     return true;
 }
 
@@ -386,10 +406,12 @@ static inline uint8_t crelu_q8(int v) {
 // Saturating int16 on both rows; equivalent fused or sequential per sign.
 
 
-static inline void add_feature(Accumulator& a, int p, int ksq, int sq, Piece piece) {
-    int idx = halfka_idx(p == 0, ksq, sq, piece);
-    int16_t* acc = a.v[p];
-    const int16_t* w = &ft_w[static_cast<size_t>(idx) * g_L1];
+static inline const int16_t* feature_row(bool white_pov, int ksq, int sq, Piece piece) {
+    return &ft_w[static_cast<size_t>(halfka_idx(white_pov, ksq, sq, piece)) * g_L1];
+}
+
+// Add / subtract one feature row to a perspective's lanes (saturating int16).
+static inline void add_row(int16_t* acc, const int16_t* w) {
 #if defined(__AVX512F__)
     for (int l = 0; l < g_L1; l += 32)
         _mm512_storeu_si512((__m512i*)(acc + l), _mm512_adds_epi16(
@@ -404,10 +426,7 @@ static inline void add_feature(Accumulator& a, int p, int ksq, int sq, Piece pie
     for (int l = 0; l < g_L1; ++l) acc[l] = int16_t(std::max(-32768, std::min(32767, int(acc[l]) + int(w[l]))));
 #endif
 }
-static inline void remove_feature(Accumulator& a, int p, int ksq, int sq, Piece piece) {
-    int idx = halfka_idx(p == 0, ksq, sq, piece);
-    int16_t* acc = a.v[p];
-    const int16_t* w = &ft_w[static_cast<size_t>(idx) * g_L1];
+static inline void sub_row(int16_t* acc, const int16_t* w) {
 #if defined(__AVX512F__)
     for (int l = 0; l < g_L1; l += 32)
         _mm512_storeu_si512((__m512i*)(acc + l), _mm512_subs_epi16(
@@ -421,6 +440,13 @@ static inline void remove_feature(Accumulator& a, int p, int ksq, int sq, Piece 
 #else
     for (int l = 0; l < g_L1; ++l) acc[l] = int16_t(std::max(-32768, std::min(32767, int(acc[l]) - int(w[l]))));
 #endif
+}
+
+static inline void add_feature(Accumulator& a, int p, int ksq, int sq, Piece piece) {
+    add_row(a.v[p], feature_row(p == 0, ksq, sq, piece));
+}
+static inline void remove_feature(Accumulator& a, int p, int ksq, int sq, Piece piece) {
+    sub_row(a.v[p], feature_row(p == 0, ksq, sq, piece));
 }
 
 // FUSED single-pass delta for the dominant quiet-move pattern remove(from)+add(to):
@@ -460,11 +486,8 @@ static inline void move_feature(Accumulator& a, int p, int ksq, Square from, Squ
 #endif
 }
 
-static void refresh_perspective(const Position& pos, Accumulator& a, int p) {
-    bool white_pov = (p == 0);
-    int ksq = static_cast<int>(pos.king_sq(white_pov ? WHITE : BLACK));
-
-    int16_t* acc = a.v[p];
+// Lanes of an empty board: the FT bias, clamped to int16.
+static void init_bias(int16_t* acc) {
 #if defined(__AVX512F__)
     {   // vectorized clamped bias init (was 512 scalar stores per refresh);
         // inputs pre-clamped to int16 range so signed saturation == exact
@@ -480,11 +503,107 @@ static void refresh_perspective(const Position& pos, Accumulator& a, int p) {
     for (int l = 0; l < g_L1; ++l)
         acc[l] = int16_t(std::max(-32768, std::min(32767, ft_b_i32[l])));
 #endif
+}
+
+static void refresh_perspective(const Position& pos, Accumulator& a, int p) {
+    bool white_pov = (p == 0);
+    int ksq = static_cast<int>(pos.king_sq(white_pov ? WHITE : BLACK));
+    init_bias(a.v[p]);
     for (int sq = 0; sq < NUM_SQ; ++sq) {
         Piece pc = pos.piece_on(Square(sq));
         if (pc == NO_PIECE) continue;
         add_feature(a, p, ksq, Square(sq), pc);
     }
+}
+
+// Refresh cache: per perspective and own-king square, the lanes of the board
+// that king square last saw. A king move then applies only the pieces that
+// differ from that board instead of rebuilding from every piece. The cached
+// sums are exact int32, saturated only on the copy into the int16
+// accumulator, so an entry reused for a whole game never drifts. Entries
+// built under a different net (net_id) start over from the bias.
+struct alignas(64) RefreshEntry {
+    int32_t acc[NNUE_L1_MAX];
+    Bitboard pieces[2][6];   // [color][piece type] of the board acc describes
+    uint32_t net_id = 0;
+};
+
+static inline void add_row_i32(int32_t* acc, const int16_t* w) {
+#if defined(__AVX512F__)
+    for (int l = 0; l < g_L1; l += 16)
+        _mm512_storeu_si512((__m512i*)(acc + l), _mm512_add_epi32(
+            _mm512_loadu_si512((const __m512i*)(acc + l)),
+            _mm512_cvtepi16_epi32(_mm256_loadu_si256((const __m256i*)(w + l)))));
+#elif defined(__AVX2__)
+    for (int l = 0; l < g_L1; l += 8)
+        _mm256_storeu_si256((__m256i*)(acc + l), _mm256_add_epi32(
+            _mm256_loadu_si256((const __m256i*)(acc + l)),
+            _mm256_cvtepi16_epi32(_mm_loadu_si128((const __m128i*)(w + l)))));
+#else
+    for (int l = 0; l < g_L1; ++l) acc[l] += w[l];
+#endif
+}
+static inline void sub_row_i32(int32_t* acc, const int16_t* w) {
+#if defined(__AVX512F__)
+    for (int l = 0; l < g_L1; l += 16)
+        _mm512_storeu_si512((__m512i*)(acc + l), _mm512_sub_epi32(
+            _mm512_loadu_si512((const __m512i*)(acc + l)),
+            _mm512_cvtepi16_epi32(_mm256_loadu_si256((const __m256i*)(w + l)))));
+#elif defined(__AVX2__)
+    for (int l = 0; l < g_L1; l += 8)
+        _mm256_storeu_si256((__m256i*)(acc + l), _mm256_sub_epi32(
+            _mm256_loadu_si256((const __m256i*)(acc + l)),
+            _mm256_cvtepi16_epi32(_mm_loadu_si128((const __m128i*)(w + l)))));
+#else
+    for (int l = 0; l < g_L1; ++l) acc[l] -= w[l];
+#endif
+}
+// int32 lanes -> int16 lanes with signed saturation.
+static inline void store_saturated(int16_t* dst, const int32_t* src) {
+#if defined(__AVX512F__)
+    for (int l = 0; l < g_L1; l += 16)
+        _mm256_storeu_si256((__m256i*)(dst + l),
+            _mm512_cvtsepi32_epi16(_mm512_loadu_si512((const __m512i*)(src + l))));
+#elif defined(__AVX2__)
+    for (int l = 0; l < g_L1; l += 16) {
+        __m256i lo = _mm256_loadu_si256((const __m256i*)(src + l));
+        __m256i hi = _mm256_loadu_si256((const __m256i*)(src + l + 8));
+        // packs works per 128-bit half: reorder the 64-bit quarters back
+        __m256i p = _mm256_permute4x64_epi64(_mm256_packs_epi32(lo, hi), 0xD8);
+        _mm256_storeu_si256((__m256i*)(dst + l), p);
+    }
+#else
+    for (int l = 0; l < g_L1; ++l) dst[l] = int16_t(std::max(-32768, std::min(32767, src[l])));
+#endif
+}
+
+static inline RefreshEntry* refresh_cache() {
+    thread_local std::vector<RefreshEntry> store(2 * NUM_SQ);
+    return store.data();
+}
+
+static void refresh_perspective_cached(const Position& pos, Accumulator& a, int p) {
+    bool white_pov = (p == 0);
+    int ksq = static_cast<int>(pos.king_sq(white_pov ? WHITE : BLACK));
+    RefreshEntry& e = refresh_cache()[p * NUM_SQ + ksq];
+    if (e.net_id != g_net_id) {
+        std::memcpy(e.acc, ft_b_i32.data(), sizeof(int32_t) * size_t(g_L1));
+        std::memset(e.pieces, 0, sizeof(e.pieces));
+        e.net_id = g_net_id;
+    }
+    for (int c = 0; c < 2; ++c)
+        for (int pt = PAWN; pt <= KING; ++pt) {
+            Bitboard now = pos.pieces(Color(c), PieceType(pt));
+            Bitboard was = e.pieces[c][pt];
+            if (now == was) continue;
+            Piece pc = make_piece(Color(c), PieceType(pt));
+            for (Bitboard gone = was & ~now; gone; )
+                sub_row_i32(e.acc, feature_row(white_pov, ksq, pop_lsb(gone), pc));
+            for (Bitboard added = now & ~was; added; )
+                add_row_i32(e.acc, feature_row(white_pov, ksq, pop_lsb(added), pc));
+            e.pieces[c][pt] = now;
+        }
+    store_saturated(a.v[p], e.acc);
 }
 
 void refresh(Position& pos) {
@@ -553,7 +672,7 @@ void update(Position& pos, Move m, Piece moved, PieceType captured) {
         bool our_king_moved = king_moved && ((us == WHITE) == white_pov);
         if (our_king_moved) {
             long long kr_t0 = pr ? rdtsc() : 0;   // #51: independent king-refresh cost (not derived)
-            refresh_perspective(pos, a, p);   // king_sq changed → full refresh of this perspective
+            refresh_perspective_cached(pos, a, p);   // king_sq changed: rebuild via the refresh cache
             if (pr) { st_king_refresh.cyc += rdtsc() - kr_t0; st_king_refresh.n++; }
             continue;
         }
