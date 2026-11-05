@@ -469,14 +469,16 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
     // (when a capture/evasion) is searched first
     if (!in_check) {
         for (ExtMove* it = moves; it != end; ++it) {
+            static constexpr int pv[] = {100, 320, 330, 500, 900, 20000, 0};
             if (it->move.is_capture()) {
                 PieceType captured = it->move.is_en_passant() ? PAWN : pos.piece_type_on(it->move.to());
                 PieceType attacker = pos.piece_type_on(it->move.from());
-                static constexpr int pv[] = {100, 320, 330, 500, 900, 20000, 0};
                 it->value = pv[captured] * 10 - pv[attacker];
                 if (it->move.is_promotion()) it->value += pv[it->move.promotion_type()];
             } else {
-                it->value = 0;
+                // Quiet queen promotion: ordered by its material gain (Q - P),
+                // between a pawn capturing a queen and one capturing a rook
+                it->value = (pv[QUEEN] - pv[PAWN]) * 10 - pv[PAWN];
             }
             if (it->move == tt_move) it->value += 1000000;
         }
