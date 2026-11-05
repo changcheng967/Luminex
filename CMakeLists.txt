@@ -40,16 +40,19 @@ if(MSVC)
         add_link_options(/LTCG)
     endif()
 
-    # CPU feature detection: try highest first, fall back
-    # AVX512 → AVX2 → SSE4.2 → default
-    if(NOT CMAKE_BUILD_TYPE STREQUAL "Debug")
-        try_add_flag(/arch:AVX512)
-        if(NOT HAS__arch_AVX512)
-            try_add_flag(/arch:AVX2)
-            if(NOT HAS__arch_AVX2)
-                try_add_flag(/arch:SSE4_2)
-            endif()
-        endif()
+    # Instruction set: an explicit level for the CPUs the binary is meant for.
+    # This used to probe /arch:AVX512, then AVX2, then SSE4_2 and keep the newest
+    # the compiler accepted, which tests the compiler rather than the target CPU.
+    # The probe's HAS_ names never matched either, so every accepted flag was
+    # added: MSVC kept the last valid one (AVX2) and clang-cl, whose last one
+    # (SSE4_2) is not a valid x64 level, dropped them all and built for SSE2.
+    # Release builds pass AVX2 (modern) or SSE2 (compatibility).
+    set(LUMINEX_MSVC_ARCH "AVX2" CACHE STRING "/arch level for MSVC and clang-cl: AVX512, AVX2 or SSE2 (the x64 default, no flag)")
+    if(NOT LUMINEX_MSVC_ARCH MATCHES "^(AVX512|AVX2|SSE2)$")
+        message(FATAL_ERROR "LUMINEX_MSVC_ARCH must be AVX512, AVX2 or SSE2, not '${LUMINEX_MSVC_ARCH}'")
+    endif()
+    if(NOT CMAKE_BUILD_TYPE STREQUAL "Debug" AND NOT LUMINEX_MSVC_ARCH STREQUAL "SSE2")
+        add_compile_options(/arch:${LUMINEX_MSVC_ARCH})
     endif()
 else()
     # GCC/Clang
@@ -61,17 +64,32 @@ else()
     else()
         add_compile_options(-O3 -fno-exceptions -fno-rtti)
 
-        # CPU-specific optimizations. LUMINEX_MARCH overrides the default native
-        # for portable builds: the static featurizer binary is built on one
-        # machine and shipped to others, and a native build SIGILLs on older
-        # CPUs (caught on a Hygon Zen-1 pod, which lacks AVX2).
-        set(LUMINEX_MARCH "native" CACHE STRING "-march level (native, x86-64-v2, x86-64-v3, ...)")
-        if(NOT CI)
-            try_add_flag(-march=${LUMINEX_MARCH})
-            try_add_flag(-mtune=native)
+        # Instruction set. Local builds default to the build machine (native) and
+        # CI to x86-64-v3 (AVX2 + BMI2); LUMINEX_MARCH overrides both for
+        # portable binaries. The static featurizer is built on one machine and
+        # shipped to others, where a native build SIGILLs (a Hygon Zen-1 pod
+        # lacks AVX2), and the release's compatibility builds use x86-64-v2.
+        # A -march in CMAKE_CXX_FLAGS cannot do this: the options added here
+        # come later on the command line and win, which is how the v6.3.0
+        # "SSE4.2" Linux binary came out byte-identical to the AVX2 one.
+        # Apple silicon gets armv8.4-a: Apple clang accepts -march=native there
+        # but builds without the dot-product extension, and every Apple silicon
+        # Mac has Armv8.4 with it, which the NEON network kernels need.
+        if(APPLE AND CMAKE_SYSTEM_PROCESSOR MATCHES "^(arm64|aarch64)$")
+            set(_lux_march_default "armv8.4-a")
+        elseif(CI)
+            set(_lux_march_default "x86-64-v3")
         else()
-            # CI: target common baseline
-            try_add_flag(-march=x86-64-v3)  # AVX2 + BMI2 baseline
+            set(_lux_march_default "native")
+        endif()
+        set(LUMINEX_MARCH "${_lux_march_default}" CACHE STRING "-march level (native, x86-64-v2, x86-64-v3, ...)")
+        try_add_flag(-march=${LUMINEX_MARCH})
+        string(REPLACE "-" "_" _lux_march_ok "HAS__march_${LUMINEX_MARCH}")
+        if(NOT ${_lux_march_ok} AND NOT LUMINEX_MARCH STREQUAL "native")
+            message(FATAL_ERROR "the compiler rejects -march=${LUMINEX_MARCH}")
+        endif()
+        if(LUMINEX_MARCH STREQUAL "native")
+            try_add_flag(-mtune=native)
         endif()
 
         # Link-time optimization (safe on GCC/Clang)
