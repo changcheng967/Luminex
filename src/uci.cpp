@@ -671,6 +671,7 @@ void uci_loop() {
             handle_uci();
         } else if (cmd == "isready") {
             ensure_net_loaded();
+            TT.ensure_allocated();
             safe_output("readyok\n");
         } else if (cmd == "ucinewgame") {
             stop.store(true, std::memory_order_seq_cst);
