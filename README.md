@@ -27,8 +27,10 @@ Latest release: [github.com/changcheng967/Luminex/releases](https://github.com/c
 | macOS (Apple Silicon) | `luminex-macos-arm64` |
 
 Each release also attaches the current network (`luminex_sfq_i8.nnue`).
-Place it next to the binary — NNUE then loads automatically. Without the file
-(or on hardware without AVX2) the engine transparently falls back to HCE.
+Place it next to the binary or in the working directory and it loads
+automatically at the first `isready` or `go`; the `NNUEFile` option overrides
+it. Without a loadable network the engine says so with an `info string` and
+uses the hand-crafted evaluation.
 
 ## Usage
 

@@ -15,9 +15,14 @@
 #include <atomic>
 #include <mutex>
 #include <cstdio>
+#include <fstream>
 #ifdef _WIN32
 #include <windows.h>
 #include <process.h>
+#elif defined(__APPLE__)
+#include <mach-o/dyld.h>
+#elif defined(__linux__)
+#include <unistd.h>
 #endif
 
 namespace luminex {
@@ -42,6 +47,50 @@ static std::mutex io_mutex;
 
 // Debug logging
 static FILE* dbglog = nullptr;
+
+// NNUE network selection. The net loads lazily at isready/go so that a GUI's
+// NNUEFile setoption (sent between uci and isready) wins over the default.
+static std::string g_net_option;      // NNUEFile value; empty = DEFAULT_NET
+static bool g_net_attempted = false;  // load already tried for this setting
+static bool g_use_nnue = true;
+
+// Directory of the running binary (with trailing separator), or "" if unknown.
+static std::string executable_dir() {
+    std::string path;
+#if defined(_WIN32)
+    char buf[MAX_PATH];
+    DWORD n = GetModuleFileNameA(nullptr, buf, MAX_PATH);
+    if (n > 0 && n < MAX_PATH) path.assign(buf, n);
+#elif defined(__APPLE__)
+    char buf[4096];
+    uint32_t size = sizeof(buf);
+    if (_NSGetExecutablePath(buf, &size) == 0) path = buf;
+#elif defined(__linux__)
+    char buf[4096];
+    ssize_t n = readlink("/proc/self/exe", buf, sizeof(buf) - 1);
+    if (n > 0) path.assign(buf, size_t(n));
+#endif
+    size_t cut = path.find_last_of("/\\");
+    return cut == std::string::npos ? std::string() : path.substr(0, cut + 1);
+}
+
+static bool file_readable(const std::string& path) {
+    std::ifstream f(path, std::ios::binary);
+    return f.good();
+}
+
+// A net name resolves as given (relative to the working directory), then
+// next to the engine binary. Returns "" if neither exists.
+static std::string resolve_net_path(const std::string& name) {
+    if (name.empty()) return {};
+    if (file_readable(name)) return name;
+    bool absolute = name[0] == '/' || name[0] == '\\' || (name.size() > 1 && name[1] == ':');
+    if (!absolute) {
+        std::string dir = executable_dir();
+        if (!dir.empty() && file_readable(dir + name)) return dir + name;
+    }
+    return {};
+}
 
 // Check for stop command - simply check the atomic flag
 bool check_for_stop_command() {
@@ -196,6 +245,39 @@ static void search_worker(Position pos_copy, Limits lim) {
     ponder_mode.store(false, std::memory_order_relaxed);
 }
 
+// Load the configured net, falling back to DEFAULT_NET, unless that was
+// already tried for the current setting. force reloads even when a net is
+// loaded (a new NNUEFile value). Search state learned under the previous
+// eval is cleared on every successful load.
+static void ensure_net_loaded(bool force = false) {
+    if (!g_use_nnue) return;
+    if (!force && (g_net_attempted || nnue::loaded())) return;
+    g_net_attempted = true;
+
+    // The configured file first; the shipped default only while no net is loaded.
+    for (int i = 0; i < 2; ++i) {
+        const std::string name = i == 0 ? g_net_option : std::string(nnue::DEFAULT_NET);
+        if (name.empty() || (i == 1 && (nnue::loaded() || name == g_net_option))) continue;
+        std::string path = resolve_net_path(name);
+        if (path.empty()) {
+            if (i == 0) safe_output("info string NNUEFile " + name + " not found\n");
+            continue;
+        }
+        if (!nnue::load(path)) {
+            safe_output("info string NNUE network " + path + " failed to load\n");
+            continue;
+        }
+        TT.clear();
+        TT.new_search();
+        clear_correction_history();
+        clear_search_history();
+        nnue::refresh(pos);  // pos was set before this net existed
+        return;
+    }
+    if (!nnue::loaded())
+        safe_output("info string no NNUE network loaded, using the classical evaluation\n");
+}
+
 void handle_uci() {
     init_evaluation();
     safe_output("id name " + std::string(ENGINE_NAME) + " " + ENGINE_VERSION + "\n");
@@ -217,10 +299,9 @@ void handle_uci() {
     safe_output("option name UCI_LimitStrength type check default false\n");
     // UCI_Chess960 is deliberately not advertised: castling is implemented
     // for standard chess only.
-    // NNUE evaluation (default since v6.2.0: SF1, gen768 warm-started on SF-relabel
-    // data). A missing net or missing AVX2 transparently falls back to HCE.
+    // NNUE evaluation; without a loadable net the engine uses the HCE and says so.
     safe_output("option name UseNNUE type check default true\n");
-    safe_output("option name NNUEFile type string default luminex_sf1_i8.nnue\n");
+    safe_output(std::string("option name NNUEFile type string default ") + nnue::DEFAULT_NET + "\n");
     // Eval parameters (self-engineered defaults)
     safe_output("option name BishopPairMG type spin default 40 min -100 max 200\n");
     safe_output("option name BishopPairEG type spin default 100 min -100 max 300\n");
@@ -382,6 +463,9 @@ void handle_go(Position& pos, const std::string& cmd) {
         }
     }
 
+    // A GUI may send go without isready; the net must be in place either way.
+    ensure_net_loaded();
+
     TT.new_search();
 
     std::istringstream ss(cmd);
@@ -472,17 +556,14 @@ void handle_setoption(const std::string& cmd) {
         if (ov > 5000) ov = 5000;
         params.move_overhead_ms = ov;
     }
-    else if (name == "UseNNUE") { nnue::set_enabled(value == "true"); }
+    else if (name == "UseNNUE") {
+        g_use_nnue = (value == "true");
+        nnue::set_enabled(g_use_nnue);
+    }
     else if (name == "NNUEFile") {
-        if (!value.empty() && nnue::load(value)) {
-            // TT values and correction history were learned against the previous
-            // net's eval; carrying them across a net swap injects stale corrections
-            // and outdated bounds into the new net's search.
-            TT.clear();
-            TT.new_search();
-            clear_correction_history();
-            clear_search_history();
-        }
+        g_net_option = (value == "<empty>") ? std::string() : value;
+        g_net_attempted = false;
+        if (!g_net_option.empty()) ensure_net_loaded(true);
     }
     else if (name == "SearchDepth") { g_search_depth = std::stoi(value); }
     else if (name == "NodesPerMove") { g_nodes_per_move = std::stoi(value); }
@@ -565,6 +646,7 @@ void uci_loop() {
         if (cmd == "uci") {
             handle_uci();
         } else if (cmd == "isready") {
+            ensure_net_loaded();
             safe_output("readyok\n");
         } else if (cmd == "ucinewgame") {
             stop.store(true, std::memory_order_seq_cst);
@@ -602,12 +684,14 @@ void uci_loop() {
             // Static eval of the current position (NNUE if enabled, else HCE),
             // side-to-move-relative cp. Used to validate the NNUE inference
             // against the Python trainer's eval.
+            ensure_net_loaded();
             Value v = evaluate(pos, false);
             std::string out = "eval cp " + std::to_string(int(v));
             safe_output(out + "\n");
         } else if (cmd.rfind("evalbench", 0) == 0) {
             // evalbench <N>: raw evaluate() throughput on the current position
             // (roofline probe — measures the eval kernel ceiling, no search).
+            ensure_net_loaded();
             long n = atol(cmd.c_str() + 10);
             if (n <= 0) n = 1000000;
             auto t0 = std::chrono::steady_clock::now();
