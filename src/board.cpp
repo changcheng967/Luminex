@@ -1314,24 +1314,35 @@ bool Position::pseudo_legal(const Move m) const {
     if (Color(board[from] / 6) != side_to_move_) return false;
     if (pieces(side_to_move_) & square_bb(to)) return false;
 
-    // Castling
+    // Castling: rights, king home square and destination. legal() checks the
+    // rook, the path and the attacked squares.
     if (m.is_castling()) {
-        if (pt != KING) return false;
-        // CRITICAL: King must be on starting square for castling to be valid
-        Square ksq = king_square[side_to_move_];
-        if (from != ksq) return false;  // From must be king's current square
-        // Verify move goes to correct castling destination
-        if (to == Square(side_to_move_ == WHITE ? G1 : G8)) return true;  // Kingside
-        if (to == Square(side_to_move_ == WHITE ? C1 : C8)) return true;  // Queenside
-        return false;  // Invalid castling destination
+        if (pt != KING || from != Square(side_to_move_ == WHITE ? E1 : E8)) return false;
+        bool kingside  = to == Square(side_to_move_ == WHITE ? G1 : G8);
+        bool queenside = to == Square(side_to_move_ == WHITE ? C1 : C8);
+        if (m.flags() != (kingside ? MF_CASTLING_KING : queenside ? MF_CASTLING_QUEEN : 0xFFFF))
+            return false;
+        CastlingRight cr = side_to_move_ == WHITE ? (kingside ? WHITE_KINGSIDE : WHITE_QUEENSIDE)
+                                                  : (kingside ? BLACK_KINGSIDE : BLACK_QUEENSIDE);
+        return castling_allowed(side_to_move_, cr);
     }
 
-    // En passant
+    // En passant: a pawn attacking the current ep square
     if (m.is_en_passant()) {
-        if (pt != PAWN) return false;
-        if (to != st_->ep_square) return false;
-        return true;
+        return pt == PAWN && to == st_->ep_square
+            && (pawn_attacks_bb(side_to_move_, from) & square_bb(to)) != 0;
     }
+
+    // The flags must be the generator's encoding: the capture flag describes
+    // the board (undo_move restores a victim only for capture-flagged moves),
+    // only pawns promote, the double-push flag marks exactly the two-square
+    // pawn push, and 0x6000/0x7000 are unused.
+    const uint16_t flags = m.flags();
+    if (flags == 0x6000 || flags == 0x7000) return false;
+    if (m.is_capture() != (piece_on(to) != NO_PIECE)) return false;
+    if (m.is_promotion() && pt != PAWN) return false;
+    bool two_square = pt == PAWN && (int(to) - int(from) == 16 || int(from) - int(to) == 16);
+    if ((flags == MF_DOUBLE_PAWN) != two_square) return false;
 
     // Pawn moves
     if (pt == PAWN) {
@@ -1357,8 +1368,8 @@ bool Position::pseudo_legal(const Move m) const {
             return piece_on(to) == NO_PIECE && piece_on(Square(from + d)) == NO_PIECE;
         }
 
-        // Pawn capture
-        if (to == Square(from + d + WEST) || to == Square(from + d + EAST)) {
+        // Pawn capture (the attack table keeps edge files from wrapping)
+        if (pawn_attacks_bb(side_to_move_, from) & square_bb(to)) {
             if (piece_on(to) != NO_PIECE) {
                 return Color(piece_on(to) / 6) == Color(side_to_move_ ^ 1);
             }

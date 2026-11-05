@@ -200,22 +200,17 @@ static inline void corr_sample(int c) {
 static thread_local uint64_t local_nodes = 0;
 static thread_local uint64_t last_reported_nodes = 0;
 
-// Precomputed LMR reduction tables
-// Separate tables for noisy (captures) and quiet moves (from Stash)
-// Quiet moves get ~1.6x the base reduction of noisy moves
-static int reductions_noisy[64];
+// Precomputed LMR reduction table. Only quiet moves take the formula
+// reduction; losing captures use a fixed one (see search_move).
 static int reductions_quiet[64];
 static constexpr int LMR_DENOM = 1024;
 static bool reductions_initialized = false;
 
 static void init_reductions() {
-    SPSAParams::get().load("spsa_params.txt");  // SPSA: load overrides if file exists
     auto& sp = SPSAParams::get();
-    for (int i = 1; i < 64; ++i) {
-        reductions_noisy[i] = int(sp.lmr_scale_noisy * std::log(double(i)));
+    for (int i = 1; i < 64; ++i)
         reductions_quiet[i] = int(sp.lmr_scale_quiet * std::log(double(i)));
-    }
-    reductions_noisy[0] = reductions_quiet[0] = 0;
+    reductions_quiet[0] = 0;
     reductions_initialized = true;
 }
 
@@ -261,14 +256,6 @@ inline Value eval_cached(const Position& pos) {
     std::memset(eval_cache.data(), 0, EVAL_CACHE_SIZE * sizeof(EvalCacheEntry));
 }
 
-// Reduction constants
-inline int futility_margin(int depth, bool improving) {
-    auto& sp = SPSAParams::get();
-    int base = sp.futility_coeff * depth + sp.futility_offset;
-    if (improving) base -= 20;
-    else base += 25;
-    return base;
-}
 
 // Search start time for time management
 static std::chrono::steady_clock::time_point search_start;
@@ -300,9 +287,13 @@ bool check_time() {
         return true;
     }
 
-    // During pondering, skip all time-based stops
-    if (ponder_mode.load(std::memory_order_relaxed)) {
-        return false;
+    // No clock runs while pondering. On ponderhit the main thread restarts the
+    // clock at that moment; helpers stay in ponder mode until its release store.
+    if (ponder_mode.load(std::memory_order_acquire)) {
+        if (worker != main_search_worker || !ponderhit_received.exchange(false))
+            return false;
+        search_start = std::chrono::steady_clock::now();
+        ponder_mode.store(false, std::memory_order_release);
     }
 
     if (limits.movetime) {
@@ -396,7 +387,8 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
         Move m = tte->move();
         // Only a capture is playable in non-check qsearch; any legal move works
         // as an evasion
-        if (m && m.from() < SQUARE_NONE && m.to() < SQUARE_NONE && pos.legal(m, true)
+        // Full pseudo-legality check: a colliding entry's move may not fit here
+        if (m && pos.legal(m)
             && (in_check || m.is_capture() || m.is_promotion())) {
             tt_move = m;
         }
@@ -479,14 +471,16 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
     // (when a capture/evasion) is searched first
     if (!in_check) {
         for (ExtMove* it = moves; it != end; ++it) {
+            static constexpr int pv[] = {100, 320, 330, 500, 900, 20000, 0};
             if (it->move.is_capture()) {
                 PieceType captured = it->move.is_en_passant() ? PAWN : pos.piece_type_on(it->move.to());
                 PieceType attacker = pos.piece_type_on(it->move.from());
-                static constexpr int pv[] = {100, 320, 330, 500, 900, 20000, 0};
                 it->value = pv[captured] * 10 - pv[attacker];
                 if (it->move.is_promotion()) it->value += pv[it->move.promotion_type()];
             } else {
-                it->value = 0;
+                // Quiet queen promotion: ordered by its material gain (Q - P),
+                // between a pawn capturing a queen and one capturing a rook
+                it->value = (pv[QUEEN] - pv[PAWN]) * 10 - pv[PAWN];
             }
             if (it->move == tt_move) it->value += 1000000;
         }
@@ -775,19 +769,6 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
         g_stats.iir_reductions++;
     }
 
-    // Futility pruning - use improving for better pruning decisions
-    // Depth <= 6 for balance between pruning and tactical accuracy
-    // More aggressive when opponent is worsening (wider margin)
-    // LESS aggressive when eval_uncertainty is high (eval unreliable, don't trust it for pruning)
-    {
-        int fut_margin = futility_margin(depth, ss->improving || opponent_worsening);
-        fut_margin += std::min(eval_uncertainty / 2, 100);  // Up to 100cp extra margin when uncertain
-        if (!pv_node && !pos.is_check() && depth <= 6 && eval - fut_margin >= beta) {
-            g_stats.futility_prunes++;
-            return eval;
-        }
-    }
-
     // Reverse futility pruning (static null move): if eval is far above beta, prune immediately
     // Also less aggressive when eval is uncertain
     {
@@ -980,9 +961,8 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
 
     // Helper lambda: compute LMR reduction for a move (takes gives_chk to avoid recomputation)
     auto compute_reduction = [&](Move m, int mp, bool gives_chk) -> int {
-        // Separate reduction tables for noisy vs quiet (from Stash)
-        bool is_capture = m.is_capture();
-        int* red_table = is_capture ? reductions_noisy : reductions_quiet;
+        // Called for quiet moves only; losing captures take a fixed reduction
+        const int* red_table = reductions_quiet;
         int d_idx = std::max(depth - 1, 1);
         int m_idx = std::max(mp, 1);
         if (d_idx >= 64) d_idx = 63;
@@ -2442,7 +2422,9 @@ Move search(Position& pos, Limits& lim) {
     // Keep main worker alive — history persists for next search in same game
     worker = nullptr;
 
-    // Print comprehensive search statistics + dump to file for analysis
+    // Search statistics are opt-in (LUMINEX_SEARCH_STATS=1): STATS info strings
+    // plus one line per search appended to /tmp/luminex_game_stats.txt.
+    static const bool search_stats = std::getenv("LUMINEX_SEARCH_STATS") != nullptr;
     {
         // Node distribution
         int64_t total_nodes = g_stats.main_nodes + g_stats.qs_nodes;
@@ -2460,7 +2442,7 @@ Move search(Position& pos, Limits& lim) {
             ? g_stats.quiets_searched * 1000 / g_stats.quiets_generated : 0;
 
         // Write compact single-line stats to file for aggregation
-        FILE* sf = fopen("/tmp/luminex_game_stats.txt", "a");
+        FILE* sf = search_stats ? fopen("/tmp/luminex_game_stats.txt", "a") : nullptr;
         if (sf) {
             fprintf(sf, "game_ply=%d final_depth=%d nodes=%lld main=%lld qs=%lld "
                 "tt_hit_permille=%d tt_cutoff_permille=%d "
@@ -2519,6 +2501,8 @@ Move search(Position& pos, Limits& lim) {
                 uci_safe_output(buf);
             }
         }
+
+        if (!search_stats) return best_move;
 
         std::ostringstream s;
         s << "info string STATS nodes: main=" << g_stats.main_nodes
@@ -2640,7 +2624,9 @@ void uci_info(const Position& pos, int depth, Value score, uint64_t node_count, 
     // Handle mate scores
     // Note: -VALUE_INFINITE is not a mate score, it means no valid search result
     if (score >= VALUE_MATE_IN_MAX_PLY && score < VALUE_INFINITE) {
-        int mate_in = (VALUE_MATE - score + 1) / 2;                       // Mate in N moves
+        // Root moves are searched at ply 0, so a mate found at ply p is p + 1
+        // plies from the root position.
+        int mate_in = (VALUE_MATE - score + 2) / 2;                       // Mate in N moves
         std::format_to(std::back_inserter(line),
             "info depth {}{} score mate {} nodes {} nps {} pv", depth, mpv_tag, mate_in, node_count, nps);
     } else if (score <= -VALUE_MATE_IN_MAX_PLY && score > -VALUE_INFINITE) {
@@ -2713,6 +2699,10 @@ void uci_info(const Position& pos, int depth, Value score, uint64_t node_count, 
 
     // Thread-safe output
     uci_safe_output(line);
+}
+
+void init_search_params() {
+    init_reductions();
 }
 
 void clear_correction_history() {

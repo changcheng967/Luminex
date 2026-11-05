@@ -11,24 +11,31 @@ relabeled by deep Stockfish search — the same public training data Stockfish
 itself uses; the loss weights positions by what the search actually consumes:
 quiet nodes) — and ships with a self-engineered hand-crafted evaluation (HCE)
 as an always-available fallback and tuning testbed. Estimated strength:
-~3030 Elo blitz (Stash-ladder implied: beats Stash 26 at 3000-rated, level
-with Stash 27 at 3057).
+~3030 Elo blitz (−105 ± 20 against Stash 29, CCRL Blitz 3137, over 1,004
+games on OpenBench; the v6.3.0 ladder placed it ahead of Stash 26 and level
+with Stash 27).
 
 ## Download
 
 Latest release: [github.com/changcheng967/Luminex/releases](https://github.com/changcheng967/Luminex/releases)
 
-| Platform | Binary |
-|----------|--------|
-| Linux (AVX2) | `luminex-linux-x86-64-modern` |
-| Linux (SSE4.2) | `luminex-linux-x86-64` |
-| Windows (ClangCL) | `luminex-windows-x86-64-modern.exe` |
-| Windows (MSVC) | `luminex-windows-x86-64.exe` |
-| macOS (Apple Silicon) | `luminex-macos-arm64` |
+| Platform | Binary | CPU |
+|----------|--------|-----|
+| Linux | `luminex-linux-x86-64-modern` | AVX2 (x86-64-v3) |
+| Linux | `luminex-linux-x86-64` | SSE4.2 and POPCNT (x86-64-v2) |
+| Windows | `luminex-windows-x86-64-modern.exe` | AVX2 |
+| Windows | `luminex-windows-x86-64.exe` | POPCNT, no AVX2 needed |
+| macOS | `luminex-macos-arm64` | Apple silicon |
+
+Take the modern build unless the CPU lacks AVX2; most x86 CPUs from 2013 on
+have it. Every build runs the network: the modern ones with AVX2 kernels, the
+others with a portable int8 path (NEON dot-product on Apple silicon).
 
 Each release also attaches the current network (`luminex_sfq_i8.nnue`).
-Place it next to the binary — NNUE then loads automatically. Without the file
-(or on hardware without AVX2) the engine transparently falls back to HCE.
+Place it next to the binary or in the working directory and it loads
+automatically at the first `isready` or `go`; the `NNUEFile` option overrides
+it. Without a loadable network the engine says so with an `info string` and
+uses the hand-crafted evaluation.
 
 ## Usage
 
@@ -45,6 +52,9 @@ go movetime 1000
 |--------|---------|-------------|
 | `Hash` | 256 | Transposition-table size in MB |
 | `Threads` | 1 | Search threads (lazy SMP; each thread owns its NNUE accumulator) |
+| `MultiPV` | 1 | Number of principal variations reported |
+| `UCI_ShowWDL` | false | Append `wdl W D L` (per mille, approximate model) to info lines |
+| `Ponder` | false | Allow pondering (`go ponder` / `ponderhit`) |
 | `UseNNUE` | true | NNUE evaluation (automatic HCE fallback if unavailable) |
 | `NNUEFile` | `luminex_sfq_i8.nnue` | Path to the `.nnue` network file |
 | `Contempt` | 0 | Draw avoidance (centipawns) |
@@ -52,16 +62,14 @@ go movetime 1000
 | `BookFile` | `<empty>` | Polyglot opening-book path |
 | `SearchDepth` | 0 | If >0, fixed-depth search (overrides time control) |
 | `NodesPerMove` | 0 | If >0, fixed node budget per move |
-| `QsearchLinear` | true | Qsearch stand-pat via the net's linear head (inert unless the loaded net carries a trained one) |
+| `Clear Hash` | button | Clear the transposition table |
 
-The engine also exposes ~40 hand-tunable HCE parameters (`BishopPairMG`,
+The engine also exposes 24 hand-tunable HCE parameters (`BishopPairMG`,
 `RookOpenMG`, `PawnShieldCenter`, …) for evaluation experiments; see `uci.cpp`.
 
-Options accepted for GUI/bot compatibility but **not yet implemented** (silently
-ignored): `Skill Level`, `UCI_LimitStrength`/`UCI_Elo` (no Elo capping exists),
-`UCI_ShowWDL`, `SyzygyPath` (no tablebase probing), `UCI_Chess960`,
-`Analysis`. `MultiPV` is not supported yet either. These are the top
-feature-work candidates.
+Options accepted for GUI/bot compatibility but **not implemented** (silently
+ignored): `Skill Level`, `UCI_LimitStrength`/`UCI_Elo` (no strength limiting)
+and `SyzygyPath` (no tablebase probing).
 
 ## Evaluation
 
@@ -96,8 +104,13 @@ cmake -B build -DCMAKE_BUILD_TYPE=Release
 cmake --build build --config Release
 ```
 
-The NNUE VNNI path auto-selects at compile time via `__AVX512VNNI__`; without it the
-engine builds and runs using the AVX2 int8 path (or falls back to HCE if AVX2 is absent).
+The network kernels are chosen at compile time: AVX-512 VNNI
+(`__AVX512VNNI__`), AVX2, NEON dot-product on ARM, or a portable int8 path
+elsewhere. CMake targets the build machine with GCC and Clang, and AVX2 with
+MSVC; for binaries that run elsewhere, set `LUMINEX_MARCH` (GCC/Clang, e.g.
+`x86-64-v2`) or
+`LUMINEX_MSVC_ARCH` (MSVC and clang-cl: `AVX512`, `AVX2` or `SSE2`). The
+Makefile picks the AVX-512 VNNI build by itself on CPUs that support it.
 
 ## Architecture
 

@@ -1,4 +1,5 @@
 #include "luminex.h"
+#include "spsa_params.h"
 #include <chrono>
 #include <iostream>
 #include <cstdio>
@@ -10,6 +11,9 @@ void init() {
     init_line_tables();
     init_zobrist();
     init_evaluation();
+    // SPSA overrides from the working directory; UCI options set later win
+    SPSAParams::get().load("spsa_params.txt");
+    init_search_params();
     TT.resize(256); // 256 MB transposition table (adopted 2026-08-19: self-play +16.7 LOS 89%, vs StashV20 0.509 vs 0.504 at 128)
     TT.clear();
 }

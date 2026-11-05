@@ -14,9 +14,11 @@ jobs:
     - name: Install dependencies
       run: sudo apt-get update && sudo apt-get install -y ninja-build
     - name: Configure
-      run: cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DCI=ON -DCMAKE_CXX_COMPILER=g++-14 -DCMAKE_CXX_FLAGS="-march=x86-64-v3 -mtune=generic"
+      run: cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DCI=ON -DCMAKE_CXX_COMPILER=g++-14 -DLUMINEX_MARCH=x86-64-v3
     - name: Build
       run: cmake --build build --config Release
+    - name: Check instruction set
+      run: bash .github/scripts/check-isa.sh build/luminex avx2
     - name: Run Bench
       run: ./build/luminex bench
     - name: Test UCI
@@ -29,9 +31,11 @@ jobs:
     - name: Install dependencies
       run: sudo apt-get update && sudo apt-get install -y ninja-build
     - name: Configure
-      run: cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DCI=ON -DCMAKE_CXX_COMPILER=g++-14 -DCMAKE_CXX_FLAGS="-march=x86-64 -mtune=generic -msse4.2 -mpopcnt"
+      run: cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DCI=ON -DCMAKE_CXX_COMPILER=g++-14 -DLUMINEX_MARCH=x86-64-v2
     - name: Build
       run: cmake --build build --config Release
+    - name: Check instruction set
+      run: bash .github/scripts/check-isa.sh build/luminex baseline
     - name: Run Bench
       run: ./build/luminex bench
     - name: Test UCI
@@ -46,9 +50,11 @@ jobs:
       matrix:
         include:
           - suffix: linux-x86-64-glibc235-modern
-            flags: "-march=x86-64-v3 -mtune=generic"
+            march: x86-64-v3
+            level: avx2
           - suffix: linux-x86-64-glibc235
-            flags: "-march=x86-64 -mtune=generic -msse4.2 -mpopcnt"
+            march: x86-64-v2
+            level: baseline
     steps:
     - uses: actions/checkout@v5
     - name: Install dependencies
@@ -56,9 +62,11 @@ jobs:
         sudo add-apt-repository -y ppa:ubuntu-toolchain-r/test
         sudo apt-get update && sudo apt-get install -y ninja-build g++-13
     - name: Configure
-      run: cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DCI=ON -DCMAKE_CXX_COMPILER=g++-13 -DCMAKE_CXX_FLAGS="${{ matrix.flags }} -static-libstdc++ -static-libgcc"
+      run: cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DCI=ON -DCMAKE_CXX_COMPILER=g++-13 -DLUMINEX_MARCH=${{ matrix.march }} -DCMAKE_CXX_FLAGS="-static-libstdc++ -static-libgcc"
     - name: Build
       run: cmake --build build --config Release
+    - name: Check instruction set
+      run: bash .github/scripts/check-isa.sh build/luminex ${{ matrix.level }}
     - name: Run Bench
       run: ./build/luminex bench
     - name: Test UCI
@@ -77,9 +85,12 @@ jobs:
     steps:
     - uses: actions/checkout@v5
     - name: Configure
-      run: cmake -B build -G "Visual Studio 17 2022" -A x64 -T ClangCL
+      run: cmake -B build -G "Visual Studio 17 2022" -A x64 -T ClangCL -DLUMINEX_MSVC_ARCH=AVX2
     - name: Build
       run: cmake --build build --config Release
+    - name: Check instruction set
+      shell: bash
+      run: bash .github/scripts/check-isa.sh build/Release/luminex.exe avx2
     - name: Run Bench
       run: build\Release\luminex.exe bench
     - name: Test UCI
@@ -94,9 +105,12 @@ jobs:
     steps:
     - uses: actions/checkout@v5
     - name: Configure
-      run: cmake -B build -G "Visual Studio 17 2022" -A x64
+      run: cmake -B build -G "Visual Studio 17 2022" -A x64 -DLUMINEX_MSVC_ARCH=SSE2
     - name: Build
       run: cmake --build build --config Release
+    - name: Check instruction set
+      shell: bash
+      run: bash .github/scripts/check-isa.sh build/Release/luminex.exe baseline
     - name: Run Bench
       run: build\Release\luminex.exe bench
     - name: Test UCI
@@ -113,6 +127,8 @@ jobs:
       run: cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
     - name: Build
       run: cmake --build build --config Release
+    - name: Check instruction set
+      run: bash .github/scripts/check-isa.sh build/luminex dotprod
     - name: Run Bench
       run: ./build/luminex bench
     - name: Test UCI
