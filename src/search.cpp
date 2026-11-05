@@ -63,12 +63,14 @@ inline Value value_from_tt(Value v, int ply) {
 
 // Cutoff bonus / non-cutoff malus grow with depth and saturate: the quadratic
 // is capped past its depth-17 value instead of sign-flipping, so deep cutoffs
-// always reward and deep fails always punish.
+// always reward and deep fails always punish. A move that was searched and
+// failed loses exactly what a cutoff earns, so a score tracks how often a move
+// works rather than how often it was tried.
 inline int hist_bonus(Depth d) {
     return std::min(19 * d * d + 155 * d - 132, 8192);
 }
 inline int hist_malus(Depth d) {
-    return std::max(-(d * (d + 1) * 2 - 2), -8192);
+    return -hist_bonus(d);
 }
 
 // Per-thread search state for lazy SMP
