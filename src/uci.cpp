@@ -172,10 +172,13 @@ static void search_worker(Position pos_copy, Limits lim) {
             bool found;
             TTEntry* tte = TT.probe(pos_copy.key(), found);
             if (found && tte->move() != MOVE_NONE) {
+                // The TT move may come from a colliding position: print it only
+                // if it is a legal reply here.
                 Move pm = tte->move();
-                if (pm.from() < SQUARE_NONE && pm.to() < SQUARE_NONE) {
-                    ponder_move = pm;
-                }
+                ExtMove replies[MAX_MOVES];
+                ExtMove* replies_end = generate<GEN_LEGAL>(pos_copy, replies);
+                for (ExtMove* it = replies; it != replies_end; ++it)
+                    if (it->move == pm) { ponder_move = pm; break; }
             }
         }
     }
@@ -347,12 +350,11 @@ void handle_position(Position& pos, const std::string& cmd) {
                 }
             }
 
-            if (matched == MOVE_NONE) {
-                pos.set("rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1");
-                return;
-            }
-            if (!pos.do_move(matched)) {
-                pos.set("rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1");
+            // Stop at the first unplayable move and keep the position reached;
+            // resetting to the start position would search a different game.
+            if (matched == MOVE_NONE || !pos.do_move(matched)) {
+                safe_output("info string illegal move " + move_str +
+                            " in position command; it and later moves were ignored\n");
                 return;
             }
         }
