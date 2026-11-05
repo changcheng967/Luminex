@@ -72,7 +72,12 @@ else()
         # A -march in CMAKE_CXX_FLAGS cannot do this: the options added here
         # come later on the command line and win, which is how the v6.3.0
         # "SSE4.2" Linux binary came out byte-identical to the AVX2 one.
-        if(CI)
+        # Apple silicon gets armv8.4-a: Apple clang accepts -march=native there
+        # but builds without the dot-product extension, and every Apple silicon
+        # Mac has Armv8.4 with it, which the NEON network kernels need.
+        if(APPLE AND CMAKE_SYSTEM_PROCESSOR MATCHES "^(arm64|aarch64)$")
+            set(_lux_march_default "armv8.4-a")
+        elseif(CI)
             set(_lux_march_default "x86-64-v3")
         else()
             set(_lux_march_default "native")

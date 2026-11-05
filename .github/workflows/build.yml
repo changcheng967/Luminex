@@ -127,8 +127,8 @@ jobs:
       run: cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
     - name: Build
       run: cmake --build build --config Release
-    - name: Report instruction set
-      run: echo "NEON dot-product instructions (sdot) in the network code - $(objdump -d --no-show-raw-insn build/luminex | grep -c sdot || true)"
+    - name: Check instruction set
+      run: bash .github/scripts/check-isa.sh build/luminex dotprod
     - name: Run Bench
       run: ./build/luminex bench
     - name: Test UCI

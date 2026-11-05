@@ -89,6 +89,8 @@ jobs:
       run: cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
     - name: Build
       run: cmake --build build --config Release
+    - name: Check instruction set
+      run: bash .github/scripts/check-isa.sh build/luminex dotprod
     - name: Test
       run: printf 'uci\nisready\nquit\n' | ./build/luminex
     - name: Package
