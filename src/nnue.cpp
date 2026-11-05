@@ -272,19 +272,35 @@ bool load(const std::string& path) {
     f.read(magic, 4);
     std::string mg(magic, 4);
     if (mg != "LNN1" && mg != "LNI8") { std::fprintf(stderr, "nnue: bad magic\n"); return false; }
-    g_int8 = (mg == "LNI8");
     int32_t hdr[4];
     f.read(reinterpret_cast<char*>(hdr), sizeof(hdr));
+    if (!f) { std::fprintf(stderr, "nnue: truncated header\n"); return false; }
     int L1 = hdr[0], L2 = hdr[1], L3 = hdr[2], NI = hdr[3];
     if (NI != NUM_INPUTS) { std::fprintf(stderr, "nnue: NUM_INPUTS mismatch %d\n", NI); return false; }
     if (L1 <= 0 || L1 > NNUE_L1_MAX) { std::fprintf(stderr, "nnue: L1=%d out of range (max %d)\n", L1, NNUE_L1_MAX); return false; }
+    // The SIMD loops step L1 in 32-lane blocks and L2/L3 in 8-lane blocks, and
+    // the small VNNI dots read at most 64 bytes.
+    if (L1 % 32 != 0 || L2 <= 0 || L2 > 64 || L2 % 8 != 0 || L3 <= 0 || L3 > 64 || L3 % 8 != 0) {
+        std::fprintf(stderr, "nnue: unsupported layer sizes L1=%d L2=%d L3=%d\n", L1, L2, L3);
+        return false;
+    }
+    // From here on the globals are overwritten; a failure part-way must not
+    // leave a half-loaded net marked usable.
+    g_loaded = false;
+    g_l3_batched = false;
+    g_int8 = (mg == "LNI8");
     g_L1 = L1; g_L2 = L2; g_L3 = L3;
     std::vector<float> ft_w_raw;
     if (!read_tensor(f, ft_w_raw, L1 * NUM_INPUTS)) return false;
     ft_w.resize(static_cast<size_t>(NUM_INPUTS) * L1);
+    // int16 at x8192 holds |w| < 4.0; clamp instead of letting the cast wrap.
+    long long clamped = 0;
     for (int i = 0; i < NUM_INPUTS; ++i)
-        for (int l = 0; l < L1; ++l)
-            ft_w[i * L1 + l] = (int16_t)std::lround(ft_w_raw[l * NUM_INPUTS + i] * FT_WSCALE);
+        for (int l = 0; l < L1; ++l) {
+            long long q = std::llround(ft_w_raw[l * NUM_INPUTS + i] * FT_WSCALE);
+            if (q > 32767 || q < -32767) { q = q > 0 ? 32767 : -32767; ++clamped; }
+            ft_w[i * L1 + l] = (int16_t)q;
+        }
     if (!read_tensor(f, ft_b, L1)) return false;
     ft_b_i32.resize(L1);
     for (int l = 0; l < L1; ++l) ft_b_i32[l] = std::lround(ft_b[l] * FT_WSCALE);
@@ -367,10 +383,12 @@ bool load(const std::string& path) {
     // TLB misses. Best effort — silently ignored where disallowed.
     madvise(ft_w.data(), (ft_w.size() * sizeof(int16_t) + 0xFFFFF) & ~0xFFFFF, MADV_HUGEPAGE);
 #endif
-    // SIX specifiers, five args — the trailing %s read a garbage vararg and
-    // strlen()'d it: benign UB on x86-64, SIGSEGV on aarch64 (every ARM worker
-    // "disconnect" traced to this line).
-    std::printf("nnue: loaded %s (%s L1=%d L2=%d L3=%d)\n", path.c_str(), g_int8 ? "int8" : "float", L1, L2, L3);
+    // stdout carries UCI traffic, so the report is an info string.
+    std::printf("info string NNUE evaluation using %s (%s L1=%d L2=%d L3=%d)\n",
+                path.c_str(), g_int8 ? "int8" : "float", L1, L2, L3);
+    if (clamped > 0)
+        std::printf("info string NNUE warning: %lld feature weights exceed the int16 range and were clamped\n",
+                    clamped);
     return true;
 }
 

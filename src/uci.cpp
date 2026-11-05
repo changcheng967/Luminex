@@ -4,6 +4,7 @@
 #include "evaluation.h"
 #include "nnue.h"
 #include "book.h"
+#include "spsa_params.h"
 #include <chrono>
 #include <cstdarg>
 #include <format>
@@ -15,15 +16,23 @@
 #include <atomic>
 #include <mutex>
 #include <cstdio>
+#include <fstream>
 #ifdef _WIN32
 #include <windows.h>
 #include <process.h>
+#elif defined(__APPLE__)
+#include <mach-o/dyld.h>
+#elif defined(__linux__)
+#include <unistd.h>
 #endif
 
 namespace luminex {
 
 // Global volatile stop flag - defined in search.cpp
 extern volatile bool g_stop_requested;
+
+// Per-root-move perft counts; defined in main.cpp (used by "go perft")
+uint64_t perft_divide(Position& pos, Depth depth);
 
 // Position for UCI
 static Position pos;
@@ -39,6 +48,50 @@ static std::mutex io_mutex;
 
 // Debug logging
 static FILE* dbglog = nullptr;
+
+// NNUE network selection. The net loads lazily at isready/go so that a GUI's
+// NNUEFile setoption (sent between uci and isready) wins over the default.
+static std::string g_net_option;      // NNUEFile value; empty = DEFAULT_NET
+static bool g_net_attempted = false;  // load already tried for this setting
+static bool g_use_nnue = true;
+
+// Directory of the running binary (with trailing separator), or "" if unknown.
+static std::string executable_dir() {
+    std::string path;
+#if defined(_WIN32)
+    char buf[MAX_PATH];
+    DWORD n = GetModuleFileNameA(nullptr, buf, MAX_PATH);
+    if (n > 0 && n < MAX_PATH) path.assign(buf, n);
+#elif defined(__APPLE__)
+    char buf[4096];
+    uint32_t size = sizeof(buf);
+    if (_NSGetExecutablePath(buf, &size) == 0) path = buf;
+#elif defined(__linux__)
+    char buf[4096];
+    ssize_t n = readlink("/proc/self/exe", buf, sizeof(buf) - 1);
+    if (n > 0) path.assign(buf, size_t(n));
+#endif
+    size_t cut = path.find_last_of("/\\");
+    return cut == std::string::npos ? std::string() : path.substr(0, cut + 1);
+}
+
+static bool file_readable(const std::string& path) {
+    std::ifstream f(path, std::ios::binary);
+    return f.good();
+}
+
+// A net name resolves as given (relative to the working directory), then
+// next to the engine binary. Returns "" if neither exists.
+static std::string resolve_net_path(const std::string& name) {
+    if (name.empty()) return {};
+    if (file_readable(name)) return name;
+    bool absolute = name[0] == '/' || name[0] == '\\' || (name.size() > 1 && name[1] == ':');
+    if (!absolute) {
+        std::string dir = executable_dir();
+        if (!dir.empty() && file_readable(dir + name)) return dir + name;
+    }
+    return {};
+}
 
 // Check for stop command - simply check the atomic flag
 bool check_for_stop_command() {
@@ -169,10 +222,13 @@ static void search_worker(Position pos_copy, Limits lim) {
             bool found;
             TTEntry* tte = TT.probe(pos_copy.key(), found);
             if (found && tte->move() != MOVE_NONE) {
+                // The TT move may come from a colliding position: print it only
+                // if it is a legal reply here.
                 Move pm = tte->move();
-                if (pm.from() < SQUARE_NONE && pm.to() < SQUARE_NONE) {
-                    ponder_move = pm;
-                }
+                ExtMove replies[MAX_MOVES];
+                ExtMove* replies_end = generate<GEN_LEGAL>(pos_copy, replies);
+                for (ExtMove* it = replies; it != replies_end; ++it)
+                    if (it->move == pm) { ponder_move = pm; break; }
             }
         }
     }
@@ -193,12 +249,46 @@ static void search_worker(Position pos_copy, Limits lim) {
     ponder_mode.store(false, std::memory_order_relaxed);
 }
 
+// Load the configured net, falling back to DEFAULT_NET, unless that was
+// already tried for the current setting. force reloads even when a net is
+// loaded (a new NNUEFile value). Search state learned under the previous
+// eval is cleared on every successful load.
+static void ensure_net_loaded(bool force = false) {
+    if (!g_use_nnue) return;
+    if (!force && (g_net_attempted || nnue::loaded())) return;
+    g_net_attempted = true;
+
+    // The configured file first; the shipped default only while no net is loaded.
+    for (int i = 0; i < 2; ++i) {
+        const std::string name = i == 0 ? g_net_option : std::string(nnue::DEFAULT_NET);
+        if (name.empty() || (i == 1 && (nnue::loaded() || name == g_net_option))) continue;
+        std::string path = resolve_net_path(name);
+        if (path.empty()) {
+            if (i == 0) safe_output("info string NNUEFile " + name + " not found\n");
+            continue;
+        }
+        if (!nnue::load(path)) {
+            safe_output("info string NNUE network " + path + " failed to load\n");
+            continue;
+        }
+        TT.clear();
+        TT.new_search();
+        clear_correction_history();
+        clear_search_history();
+        nnue::refresh(pos);  // pos was set before this net existed
+        return;
+    }
+    if (!nnue::loaded())
+        safe_output("info string no NNUE network loaded, using the classical evaluation\n");
+}
+
 void handle_uci() {
     init_evaluation();
     safe_output("id name " + std::string(ENGINE_NAME) + " " + ENGINE_VERSION + "\n");
     safe_output("id author " + std::string(ENGINE_AUTHOR) + "\n");
     safe_output("option name Hash type spin default 256 min 1 max 1048576\n");
     safe_output("option name Threads type spin default 1 min 1 max 64\n");
+    safe_output("option name MultiPV type spin default 1 min 1 max 256\n");
     safe_output("option name Ponder type check default false\n");
     safe_output("option name Contempt type spin default 0 min -1000 max 1000\n");
     safe_output("option name Clear Hash type button\n");
@@ -209,13 +299,24 @@ void handle_uci() {
     safe_output("option name UCI_ShowWDL type check default false\n");
     safe_output("option name SearchDepth type spin default 0 min 0 max 30\n");
     safe_output("option name NodesPerMove type spin default 0 min 0 max 100000000\n");
+    // Search constants (spsa_params.h), exposed for OpenBench SPSA tuning
+    {
+        const SPSAParams& sp = SPSAParams::get();
+        safe_output(std::format("option name LmrScale type spin default {} min 20 max 70\n", sp.lmr_scale_quiet));
+        safe_output(std::format("option name NmpBase type spin default {} min 2 max 6\n", sp.nmp_base));
+        safe_output(std::format("option name RazorBase type spin default {} min 150 max 500\n", sp.razor_base));
+        safe_output(std::format("option name RazorCoeff type spin default {} min 30 max 120\n", sp.razor_coeff));
+        safe_output(std::format("option name RfpCoeff type spin default {} min 60 max 160\n", sp.rev_fut_coeff));
+        safe_output(std::format("option name AspirationDelta type spin default {} min 20 max 100\n", sp.aspiration_delta));
+        safe_output(std::format("option name SingularMargin type spin default {} min 100 max 400\n", sp._singular_margin));
+    }
     safe_output("option name UCI_Elo type spin default 1320 min 1320 max 3190\n");
     safe_output("option name UCI_LimitStrength type check default false\n");
-    safe_output("option name UCI_Chess960 type check default false\n");
-    // NNUE evaluation (default since v6.2.0: SF1, gen768 warm-started on SF-relabel
-    // data). A missing net or missing AVX2 transparently falls back to HCE.
+    // UCI_Chess960 is deliberately not advertised: castling is implemented
+    // for standard chess only.
+    // NNUE evaluation; without a loadable net the engine uses the HCE and says so.
     safe_output("option name UseNNUE type check default true\n");
-    safe_output("option name NNUEFile type string default luminex_sf1_i8.nnue\n");
+    safe_output(std::string("option name NNUEFile type string default ") + nnue::DEFAULT_NET + "\n");
     // Eval parameters (self-engineered defaults)
     safe_output("option name BishopPairMG type spin default 40 min -100 max 200\n");
     safe_output("option name BishopPairEG type spin default 100 min -100 max 300\n");
@@ -342,12 +443,11 @@ void handle_position(Position& pos, const std::string& cmd) {
                 }
             }
 
-            if (matched == MOVE_NONE) {
-                pos.set("rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1");
-                return;
-            }
-            if (!pos.do_move(matched)) {
-                pos.set("rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1");
+            // Stop at the first unplayable move and keep the position reached;
+            // resetting to the start position would search a different game.
+            if (matched == MOVE_NONE || !pos.do_move(matched)) {
+                safe_output("info string illegal move " + move_str +
+                            " in position command; it and later moves were ignored\n");
                 return;
             }
         }
@@ -357,6 +457,28 @@ void handle_position(Position& pos, const std::string& cmd) {
 void handle_go(Position& pos, const std::string& cmd) {
     // Wait for any previous search thread to finish
     wait_for_search_thread();
+
+    // "go perft <depth>": per-root-move node counts, then the total. No
+    // search state is touched, so no TT reset and no search thread.
+    {
+        std::istringstream ps(cmd);
+        std::string t;
+        ps >> t;  // "go"
+        if (ps >> t && t == "perft") {
+            int d = 0;
+            ps >> d;
+            if (d >= 1 && d <= 8) {
+                uint64_t total = perft_divide(pos, Depth(d));
+                safe_output("total " + std::to_string(total) + "\n");
+            } else {
+                safe_output("info string go perft needs a depth 1-8\n");
+            }
+            return;
+        }
+    }
+
+    // A GUI may send go without isready; the net must be in place either way.
+    ensure_net_loaded();
 
     TT.new_search();
 
@@ -431,28 +553,44 @@ void handle_setoption(const std::string& cmd) {
     }
 
     if (name == "SyzygyPath" || name == "Skill Level" ||
-        name == "UCI_ShowWDL" || name == "UCI_Elo" || name == "UCI_LimitStrength" ||
+        name == "UCI_Elo" || name == "UCI_LimitStrength" ||
         name == "UCI_Chess960" || name == "Analysis") { /* accepted — UCI GUI/bot compatibility */ }
+    else if (name == "MultiPV") {
+        int n = std::stoi(value);
+        if (n < 1) n = 1;
+        if (n > 256) n = 256;
+        params.multi_pv = n;
+    }
+    else if (name == "UCI_ShowWDL") {
+        params.show_wdl = (value == "true");
+    }
     else if (name == "Move Overhead") {
         int ov = std::stoi(value);
         if (ov < 0) ov = 0;
         if (ov > 5000) ov = 5000;
         params.move_overhead_ms = ov;
     }
-    else if (name == "UseNNUE") { nnue::set_enabled(value == "true"); }
+    else if (name == "UseNNUE") {
+        g_use_nnue = (value == "true");
+        nnue::set_enabled(g_use_nnue);
+    }
     else if (name == "NNUEFile") {
-        if (!value.empty() && nnue::load(value)) {
-            // TT values and correction history were learned against the previous
-            // net's eval; carrying them across a net swap injects stale corrections
-            // and outdated bounds into the new net's search.
-            TT.clear();
-            TT.new_search();
-            clear_correction_history();
-            clear_search_history();
-        }
+        g_net_option = (value == "<empty>") ? std::string() : value;
+        g_net_attempted = false;
+        if (!g_net_option.empty()) ensure_net_loaded(true);
     }
     else if (name == "SearchDepth") { g_search_depth = std::stoi(value); }
     else if (name == "NodesPerMove") { g_nodes_per_move = std::stoi(value); }
+    else if (name == "LmrScale") {
+        SPSAParams::get().lmr_scale_quiet = std::stoi(value);
+        init_search_params();  // the reduction table is derived from it
+    }
+    else if (name == "NmpBase")         { SPSAParams::get().nmp_base = std::stoi(value); }
+    else if (name == "RazorBase")       { SPSAParams::get().razor_base = std::stoi(value); }
+    else if (name == "RazorCoeff")      { SPSAParams::get().razor_coeff = std::stoi(value); }
+    else if (name == "RfpCoeff")        { SPSAParams::get().rev_fut_coeff = std::stoi(value); }
+    else if (name == "AspirationDelta") { SPSAParams::get().aspiration_delta = std::stoi(value); }
+    else if (name == "SingularMargin")  { SPSAParams::get()._singular_margin = std::stoi(value); }
     else if (name == "Contempt" || name == "UCI_AnalyseMode") {
         if (name == "Contempt") {
             params.contempt = std::stoi(value);
@@ -532,6 +670,7 @@ void uci_loop() {
         if (cmd == "uci") {
             handle_uci();
         } else if (cmd == "isready") {
+            ensure_net_loaded();
             safe_output("readyok\n");
         } else if (cmd == "ucinewgame") {
             stop.store(true, std::memory_order_seq_cst);
@@ -569,12 +708,14 @@ void uci_loop() {
             // Static eval of the current position (NNUE if enabled, else HCE),
             // side-to-move-relative cp. Used to validate the NNUE inference
             // against the Python trainer's eval.
+            ensure_net_loaded();
             Value v = evaluate(pos, false);
             std::string out = "eval cp " + std::to_string(int(v));
             safe_output(out + "\n");
         } else if (cmd.rfind("evalbench", 0) == 0) {
             // evalbench <N>: raw evaluate() throughput on the current position
             // (roofline probe — measures the eval kernel ceiling, no search).
+            ensure_net_loaded();
             long n = atol(cmd.c_str() + 10);
             if (n <= 0) n = 1000000;
             auto t0 = std::chrono::steady_clock::now();

@@ -560,10 +560,13 @@ Value evaluate(const Position& pos, bool tactical_only) {
                 score += popcount(pos.pieces(c, BISHOP)) * PieceValueEG[BISHOP];
                 score += popcount(pos.pieces(c, KNIGHT)) * PieceValueEG[KNIGHT];
 
-                return (strong == WHITE) ? score : -score;
+                // evaluate() is side-to-move relative, like every other return
+                int white_score = (strong == WHITE) ? score : -score;
+                return pos.side_to_move() == WHITE ? white_score : -white_score;
             }
-            // Non-mating material (lone bishop/knight vs king): drawn
-            return VALUE_DRAW;
+            // A lone minor or two knights cannot force mate; with pawns left the
+            // position is evaluated normally below
+            if (!pos.pieces(c, PAWN)) return VALUE_DRAW;
         }
     }
 

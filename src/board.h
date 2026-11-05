@@ -88,6 +88,7 @@ public:
     bool castling_allowed(Color c, CastlingRight cr) const;
 
     int game_ply() const;
+    int halfmove_clock() const;
 
     Key key() const;
     Key pawn_key() const;
@@ -180,6 +181,8 @@ inline Square Position::king_sq(Color c) const { return king_square[c]; }
 inline bool Position::castling_allowed(Color c, CastlingRight cr) const { return castling_rights_[c] & cr; }
 
 inline int Position::game_ply() const { return game_ply_; }
+
+inline int Position::halfmove_clock() const { return st_->halfmove_clock; }
 
 inline Key Position::key() const { return st_->key; }
 inline Key Position::pawn_key() const { return st_->pawn_key; }

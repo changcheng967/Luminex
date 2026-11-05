@@ -27,8 +27,10 @@ Latest release: [github.com/changcheng967/Luminex/releases](https://github.com/c
 | macOS (Apple Silicon) | `luminex-macos-arm64` |
 
 Each release also attaches the current network (`luminex_sfq_i8.nnue`).
-Place it next to the binary — NNUE then loads automatically. Without the file
-(or on hardware without AVX2) the engine transparently falls back to HCE.
+Place it next to the binary or in the working directory and it loads
+automatically at the first `isready` or `go`; the `NNUEFile` option overrides
+it. Without a loadable network the engine says so with an `info string` and
+uses the hand-crafted evaluation.
 
 ## Usage
 
@@ -45,6 +47,9 @@ go movetime 1000
 |--------|---------|-------------|
 | `Hash` | 256 | Transposition-table size in MB |
 | `Threads` | 1 | Search threads (lazy SMP; each thread owns its NNUE accumulator) |
+| `MultiPV` | 1 | Number of principal variations reported |
+| `UCI_ShowWDL` | false | Append `wdl W D L` (per mille, approximate model) to info lines |
+| `Ponder` | false | Allow pondering (`go ponder` / `ponderhit`) |
 | `UseNNUE` | true | NNUE evaluation (automatic HCE fallback if unavailable) |
 | `NNUEFile` | `luminex_sfq_i8.nnue` | Path to the `.nnue` network file |
 | `Contempt` | 0 | Draw avoidance (centipawns) |
@@ -52,16 +57,14 @@ go movetime 1000
 | `BookFile` | `<empty>` | Polyglot opening-book path |
 | `SearchDepth` | 0 | If >0, fixed-depth search (overrides time control) |
 | `NodesPerMove` | 0 | If >0, fixed node budget per move |
-| `QsearchLinear` | true | Qsearch stand-pat via the net's linear head (inert unless the loaded net carries a trained one) |
+| `Clear Hash` | button | Clear the transposition table |
 
-The engine also exposes ~40 hand-tunable HCE parameters (`BishopPairMG`,
+The engine also exposes 24 hand-tunable HCE parameters (`BishopPairMG`,
 `RookOpenMG`, `PawnShieldCenter`, …) for evaluation experiments; see `uci.cpp`.
 
-Options accepted for GUI/bot compatibility but **not yet implemented** (silently
-ignored): `Skill Level`, `UCI_LimitStrength`/`UCI_Elo` (no Elo capping exists),
-`UCI_ShowWDL`, `SyzygyPath` (no tablebase probing), `UCI_Chess960`,
-`Analysis`. `MultiPV` is not supported yet either. These are the top
-feature-work candidates.
+Options accepted for GUI/bot compatibility but **not implemented** (silently
+ignored): `Skill Level`, `UCI_LimitStrength`/`UCI_Elo` (no strength limiting)
+and `SyzygyPath` (no tablebase probing).
 
 ## Evaluation
 
