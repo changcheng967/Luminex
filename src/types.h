@@ -185,6 +185,7 @@ public:
 static_assert(sizeof(Move) == 2, "Move should be 2 bytes");
 
 constexpr Move MOVE_NONE;
+constexpr Move MOVE_NULL{0x1F};  // Sentinel distinct from MOVE_NONE (0) for null moves
 
 // Depth constants
 constexpr Depth DEPTH_ZERO = 0;
