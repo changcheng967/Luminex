@@ -47,6 +47,9 @@ go movetime 1000
 |--------|---------|-------------|
 | `Hash` | 256 | Transposition-table size in MB |
 | `Threads` | 1 | Search threads (lazy SMP; each thread owns its NNUE accumulator) |
+| `MultiPV` | 1 | Number of principal variations reported |
+| `UCI_ShowWDL` | false | Append `wdl W D L` (per mille, approximate model) to info lines |
+| `Ponder` | false | Allow pondering (`go ponder` / `ponderhit`) |
 | `UseNNUE` | true | NNUE evaluation (automatic HCE fallback if unavailable) |
 | `NNUEFile` | `luminex_sfq_i8.nnue` | Path to the `.nnue` network file |
 | `Contempt` | 0 | Draw avoidance (centipawns) |
@@ -54,16 +57,14 @@ go movetime 1000
 | `BookFile` | `<empty>` | Polyglot opening-book path |
 | `SearchDepth` | 0 | If >0, fixed-depth search (overrides time control) |
 | `NodesPerMove` | 0 | If >0, fixed node budget per move |
-| `QsearchLinear` | true | Qsearch stand-pat via the net's linear head (inert unless the loaded net carries a trained one) |
+| `Clear Hash` | button | Clear the transposition table |
 
-The engine also exposes ~40 hand-tunable HCE parameters (`BishopPairMG`,
+The engine also exposes 24 hand-tunable HCE parameters (`BishopPairMG`,
 `RookOpenMG`, `PawnShieldCenter`, …) for evaluation experiments; see `uci.cpp`.
 
-Options accepted for GUI/bot compatibility but **not yet implemented** (silently
-ignored): `Skill Level`, `UCI_LimitStrength`/`UCI_Elo` (no Elo capping exists),
-`UCI_ShowWDL`, `SyzygyPath` (no tablebase probing), `UCI_Chess960`,
-`Analysis`. `MultiPV` is not supported yet either. These are the top
-feature-work candidates.
+Options accepted for GUI/bot compatibility but **not implemented** (silently
+ignored): `Skill Level`, `UCI_LimitStrength`/`UCI_Elo` (no strength limiting)
+and `SyzygyPath` (no tablebase probing).
 
 ## Evaluation
 

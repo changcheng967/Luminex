@@ -300,9 +300,13 @@ bool check_time() {
         return true;
     }
 
-    // During pondering, skip all time-based stops
-    if (ponder_mode.load(std::memory_order_relaxed)) {
-        return false;
+    // No clock runs while pondering. On ponderhit the main thread restarts the
+    // clock at that moment; helpers stay in ponder mode until its release store.
+    if (ponder_mode.load(std::memory_order_acquire)) {
+        if (worker != main_search_worker || !ponderhit_received.exchange(false))
+            return false;
+        search_start = std::chrono::steady_clock::now();
+        ponder_mode.store(false, std::memory_order_release);
     }
 
     if (limits.movetime) {
@@ -2448,7 +2452,9 @@ Move search(Position& pos, Limits& lim) {
     // Keep main worker alive — history persists for next search in same game
     worker = nullptr;
 
-    // Print comprehensive search statistics + dump to file for analysis
+    // Search statistics are opt-in (LUMINEX_SEARCH_STATS=1): STATS info strings
+    // plus one line per search appended to /tmp/luminex_game_stats.txt.
+    static const bool search_stats = std::getenv("LUMINEX_SEARCH_STATS") != nullptr;
     {
         // Node distribution
         int64_t total_nodes = g_stats.main_nodes + g_stats.qs_nodes;
@@ -2466,7 +2472,7 @@ Move search(Position& pos, Limits& lim) {
             ? g_stats.quiets_searched * 1000 / g_stats.quiets_generated : 0;
 
         // Write compact single-line stats to file for aggregation
-        FILE* sf = fopen("/tmp/luminex_game_stats.txt", "a");
+        FILE* sf = search_stats ? fopen("/tmp/luminex_game_stats.txt", "a") : nullptr;
         if (sf) {
             fprintf(sf, "game_ply=%d final_depth=%d nodes=%lld main=%lld qs=%lld "
                 "tt_hit_permille=%d tt_cutoff_permille=%d "
@@ -2525,6 +2531,8 @@ Move search(Position& pos, Limits& lim) {
                 uci_safe_output(buf);
             }
         }
+
+        if (!search_stats) return best_move;
 
         std::ostringstream s;
         s << "info string STATS nodes: main=" << g_stats.main_nodes
@@ -2646,7 +2654,9 @@ void uci_info(const Position& pos, int depth, Value score, uint64_t node_count, 
     // Handle mate scores
     // Note: -VALUE_INFINITE is not a mate score, it means no valid search result
     if (score >= VALUE_MATE_IN_MAX_PLY && score < VALUE_INFINITE) {
-        int mate_in = (VALUE_MATE - score + 1) / 2;                       // Mate in N moves
+        // Root moves are searched at ply 0, so a mate found at ply p is p + 1
+        // plies from the root position.
+        int mate_in = (VALUE_MATE - score + 2) / 2;                       // Mate in N moves
         std::format_to(std::back_inserter(line),
             "info depth {}{} score mate {} nodes {} nps {} pv", depth, mpv_tag, mate_in, node_count, nps);
     } else if (score <= -VALUE_MATE_IN_MAX_PLY && score > -VALUE_INFINITE) {
