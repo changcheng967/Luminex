@@ -400,7 +400,8 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
         Move m = tte->move();
         // Only a capture is playable in non-check qsearch; any legal move works
         // as an evasion
-        if (m && m.from() < SQUARE_NONE && m.to() < SQUARE_NONE && pos.legal(m, true)
+        // Full pseudo-legality check: a colliding entry's move may not fit here
+        if (m && pos.legal(m)
             && (in_check || m.is_capture() || m.is_promotion())) {
             tt_move = m;
         }
