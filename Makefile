@@ -32,14 +32,21 @@ UNAME_M   := $(shell uname -m)
 ifeq ($(UNAME_M),aarch64)
   MARCH   ?= armv8-a
 else
-  # Auto-detect AVX-512: the 512-bit VPDPBUSD (VNNI) doubles int8
-  # dot-product throughput over v3's 256-bit version. cascadelake is the
-  # minimum Intel target that includes AVX-512 + VNNI together; the binary
-  # runs on any x86 CPU with those features (Intel Cascade Lake+, AMD
-  # Zen 4+). Falls back to v3 (AVX2) without AVX-512. Override: MARCH=...
-  HAS_AVX512 := $(shell grep -q avx512f /proc/cpuinfo 2>/dev/null && echo yes)
-  ifeq ($(HAS_AVX512),yes)
+  # Pick the widest SIMD level the worker's CPU flags fully cover. The
+  # NNUE code uses AVX-512 F/BW/VL for the accumulator and VPDPBUSD
+  # (avx512_vnni) for the dense layers, so each level needs every flag it
+  # enables:
+  #   x86-64-v4 + avx512_vnni -> cascadelake (Cascade Lake+, Zen 4+)
+  #   x86-64-v4 (F CD BW DQ VL) -> x86-64-v4 (Skylake-SP/X: no VNNI)
+  #   otherwise               -> x86-64-v3 (AVX2)
+  # Override: MARCH=...
+  CPU_FLAGS := $(shell grep -m1 '^flags' /proc/cpuinfo 2>/dev/null)
+  HAS_V4    := $(and $(filter avx512f,$(CPU_FLAGS)),$(filter avx512cd,$(CPU_FLAGS)),$(filter avx512bw,$(CPU_FLAGS)),$(filter avx512dq,$(CPU_FLAGS)),$(filter avx512vl,$(CPU_FLAGS)))
+  HAS_VNNI  := $(filter avx512_vnni,$(CPU_FLAGS))
+  ifneq ($(and $(HAS_V4),$(HAS_VNNI)),)
     MARCH   ?= cascadelake
+  else ifneq ($(HAS_V4),)
+    MARCH   ?= x86-64-v4
   else
     MARCH   ?= x86-64-v3
   endif
