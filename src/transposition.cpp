@@ -9,11 +9,10 @@ void TTEntry::save(uint64_t k, Value v, bool pv, Bound b, Depth d, Move m, Value
     move16 = uint16_t(m.raw());
     value_ = int32_t(v);
     eval_ = int32_t(ev);
-    // depth 0 would encode to 127 and collide with the empty sentinel
-    // (probing treats depth_==127 as "empty slot"); clamp to 1 so a future
-    // qsearch TT store can't corrupt the sentinel. The top must clamp at 128
-    // too: d+127 > 255 wraps uint8_t (d=129 -> 0 -> decodes as -127).
-    depth_ = uint8_t(std::min<Depth>(128, std::max<Depth>(d, 1)) + 127);
+    // Stored as d + 127 for d in [0, 128]: qsearch entries keep depth 0, so a
+    // main-search node (depth >= 1) never takes a cutoff from a qsearch bound.
+    // depth_ == 0 is the empty slot left by clear(); 128 caps the uint8 range.
+    depth_ = uint8_t(std::clamp<Depth>(d, 0, 128) + 127);
     // g arrives pre-shifted (generation8 advances in steps of 4, keeping the
     // low 2 bits free for the bound); shifting again here would desynchronize
     // save and probe encodings.
@@ -70,21 +69,22 @@ TTEntry* TranspositionTable::probe(uint64_t key, bool& found) {
     size_t idx = (size_t)key & (table.size() - 1);
     TTEntry* entry = &table[idx].entry[0];
 
+    // depth_ == 0 marks an empty slot (clear() zeroes the table); stored
+    // entries are depth + 127 >= 127.
     for (int i = 0; i < 3; ++i, ++entry) {
-        if (entry->key32 == uint32_t(key >> 32) || entry->depth_ == 127) {
-            if (entry->depth_ == 127 || (entry->gen_bound & 0xFC) != generation8) {
+        if (entry->depth_ != 0 && entry->key32 == uint32_t(key >> 32)) {
+            if ((entry->gen_bound & 0xFC) != generation8) {
                 entry->gen_bound = uint8_t(generation8 | (entry->gen_bound & 0x3));
             }
-            found = (entry->depth_ != 127);
+            found = true;
             // Self-cleaning cross-search aging: age the STORED depth byte so the
             // entry drops out of both the cutoff check and the depth-preferred
             // replacement ranking (a read-time-only discount leaves stale deep
             // entries squatting in slots they can never be trusted for). Clamp at
-            // 128: 127 is the empty sentinel, and a depth-1 entry aged 2 plies
-            // would otherwise land exactly on it and be silently discarded.
-            if (found && entry->search_id_ != search_id8) {
+            // 127 (depth 0) so an aged entry never reads as an empty slot.
+            if (entry->search_id_ != search_id8) {
                 int age = int(uint8_t(search_id8 - entry->search_id_));
-                entry->depth_ = uint8_t(std::max(128, int(entry->depth_) - 2 * age));
+                entry->depth_ = uint8_t(std::max(127, int(entry->depth_) - 2 * age));
                 entry->search_id_ = search_id8;
             }
             return entry;

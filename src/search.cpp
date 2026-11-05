@@ -825,7 +825,12 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
                           ss->ply >= worker->nmp_disabled_ply;
 
     if (null_move_ok) {
-        ss->current_move = MOVE_NULL;  // consecutive-null guard reads (ss+1)->current_move
+        // The child reads this ply as its (ss-1): MOVE_NULL bans a second null,
+        // NO_PIECE keeps it out of the continuation histories, and no LMR
+        // reduction was applied to reach it.
+        ss->current_move = MOVE_NULL;
+        ss->moved_piece = NO_PIECE;
+        ss->reduction = 0;
         pos.do_null_move();
 
         auto& sp = SPSAParams::get();
@@ -886,6 +891,10 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
             // This prevents analyzing positions where our king is in check
             if (!pos.legal(m)) continue;
 
+            // The child's (ss-1) must describe this capture, not a stale move
+            ss->current_move = m;
+            ss->moved_piece = pos.piece_on(m.from());
+            ss->reduction = 0;
             if (!pos.do_move(m)) continue;
 
             // Shallow search with reduced beta
@@ -943,7 +952,7 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
     // Don't extend shuffling moves
     bool is_shuffling = false;
     if (ss->ply >= 4 && !tt_move.is_capture() &&
-        (ss - 2)->current_move != MOVE_NONE && (ss - 4)->current_move != MOVE_NONE) {
+        (ss - 2)->moved_piece != NO_PIECE && (ss - 4)->moved_piece != NO_PIECE) {
         is_shuffling = tt_move.from() == (ss - 2)->current_move.to() &&
                        (ss - 2)->current_move.from() == (ss - 4)->current_move.to();
     }
@@ -1236,7 +1245,8 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
             g_stats.check_extensions++;
         }
         // Recapture extension: only for significant piece captures (not pawns)
-        if (ss->ply >= 1 && (ss - 1)->current_move != MOVE_NONE && m.to() == (ss - 1)->current_move.to()) {
+        // (moved_piece is NO_PIECE after a null move, whose MOVE_NULL "to" square is meaningless)
+        if (ss->ply >= 1 && (ss - 1)->moved_piece != NO_PIECE && m.to() == (ss - 1)->current_move.to()) {
             if (m.is_capture()) {
                 PieceType captured = pos.piece_type_on(m.to());
                 if (captured >= KNIGHT) {
@@ -1447,7 +1457,10 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
                     }
                 }
                 } // end common malus updates
-                if (!stop.load(std::memory_order_relaxed) && TT.should_store(tte, found, depth)) {
+                // An excluded (singular verification) node searched a different
+                // move set than its key describes: it must not write the entry.
+                if (!stop.load(std::memory_order_relaxed) && !ss->excluded_move
+                    && TT.should_store(tte, found, depth)) {
                     tte->save(pos.key(), value_to_tt(value, ss->ply), pv_node, BOUND_LOWER, depth, m, tt_store_eval, TT.generation());
                 }
                 if (moves_played_before == 0) g_stats.first_move_cutoffs++;
@@ -1715,6 +1728,9 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
     // Checkmate/stalemate detection: only when NO legal moves exist
     // (not when all legal moves were pruned by SEE/futility/LMP)
     if (moves_played == 0 && !any_legal_move && !stop.load(std::memory_order_relaxed)) {
+        // In a singular verification search the excluded TT move was the only
+        // legal move: that move is singular, the position is no mate or stalemate.
+        if (ss->excluded_move) return alpha;
         if (pos.is_check()) {
             return -VALUE_MATE + ss->ply;
         }
@@ -1728,8 +1744,10 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
     }
 
     // CRITICAL FIX: Only save to TT if search completed fully
-    // If search was aborted (stop=true), don't save garbage/incomplete scores
-    if (!stop.load(std::memory_order_relaxed)) {
+    // If search was aborted (stop=true), don't save garbage/incomplete scores.
+    // An excluded (singular verification) node's result omits the TT move, so
+    // it neither writes the entry nor teaches the correction history.
+    if (!stop.load(std::memory_order_relaxed) && !ss->excluded_move) {
         Bound bound;
         if (best_value >= beta) bound = BOUND_LOWER;
         else if (best_value > original_alpha) bound = BOUND_EXACT;  // PV node improved alpha
@@ -1800,6 +1818,8 @@ static void helper_thread_func(Position pos_copy, int thread_id) {
             alpha = prev_score - 50;
             beta = prev_score + 50;
         }
+        // The move loop raises alpha; the fail test needs the original window.
+        const Value window_alpha = alpha, window_beta = beta;
 
         // Generate moves
         ExtMove moves[MAX_MOVES];
@@ -1861,7 +1881,8 @@ static void helper_thread_func(Position pos_copy, int thread_id) {
 
         // Handle aspiration fail
         if (depth_best_move != MOVE_NONE) {
-            if (depth_best_value <= alpha || depth_best_value >= beta) {
+            if ((depth_best_value <= window_alpha && window_alpha > -VALUE_INFINITE)
+                || depth_best_value >= window_beta) {
                 // Fail - re-search with full window
                 alpha = -VALUE_INFINITE;
                 beta = VALUE_INFINITE;
@@ -2320,8 +2341,10 @@ Move search(Position& pos, Limits& lim) {
                 break;
             }
 
-            // Aspiration window check uses ORIGINAL alpha (not running_alpha)
-            if (depth_best_value < alpha) {
+            // Aspiration window check uses ORIGINAL alpha (not running_alpha).
+            // A score equal to alpha is an upper bound (fail-hard returns land
+            // exactly on the bound), so it fails low as well.
+            if (depth_best_value <= alpha && alpha > -VALUE_INFINITE) {
                 // Fail low - widen downward, and halve the top of the window:
                 // the old beta overshot and re-searching against it is waste
                 fail_high_streak = 0;
