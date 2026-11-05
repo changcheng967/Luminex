@@ -118,6 +118,9 @@ class TranspositionTable;
 // Root search
 Move search(Position& pos, Limits& limits);
 
+// Rebuild the tables derived from SPSAParams (call after changing a param)
+void init_search_params();
+
 // Correction history - clear on new game
 void clear_correction_history();
 
