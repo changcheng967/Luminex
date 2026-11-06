@@ -491,43 +491,41 @@ static inline void sub_row(int16_t* acc, const int16_t* w) {
 static inline void add_feature(Accumulator& a, int p, int ksq, int sq, Piece piece) {
     add_row(a.v[p], feature_row(p == 0, ksq, sq, piece));
 }
-static inline void remove_feature(Accumulator& a, int p, int ksq, int sq, Piece piece) {
-    sub_row(a.v[p], feature_row(p == 0, ksq, sq, piece));
-}
 
-// FUSED single-pass delta for the dominant quiet-move pattern remove(from)+add(to):
-// one accumulator read-modify-write instead of two. Net lane delta is (w_to - w_from).
-// Exactly the sequential remove+add pair whenever no lane saturates; saturating
-// add/sub do NOT commute, so on saturation the fused path can differ from a
-// sequential int16 pair (the self-check counts those events in g_sat_events —
-// range-constrained training must keep it at zero).
-static inline void move_feature(Accumulator& a, int p, int ksq, Square from, Square to, Piece pf, Piece pt) {
-    bool white_pov = (p == 0);
-    int f_idx = halfka_idx(white_pov, ksq, from, pf);
-    int t_idx = halfka_idx(white_pov, ksq, to, pt);
-    size_t fi = static_cast<size_t>(f_idx) * g_L1;
-    size_t ti = static_cast<size_t>(t_idx) * g_L1;
-    const int16_t* wf = &ft_w[fi];
-    const int16_t* wt = &ft_w[ti];
-    int16_t* acc = a.v[p];
+// One perspective of a child accumulator, written in a single pass from the
+// parent's lanes: +add0 -sub0, then -sub1 (S1), then +add1 (A1). The SIMD
+// builds saturate after every step, as add_row and sub_row do; the scalar build
+// clamps once over the first pair and then after each later step. These are the
+// steps, order and saturation of the copy-then-update-in-place sequence this
+// replaced, so the lanes are bit-identical to it. Saturating adds and subtracts
+// do not commute, so the order matters whenever a lane saturates.
+template <bool S1, bool A1>
+static inline void delta_rows(const int16_t* parent, int16_t* child, const int16_t* add0,
+                              const int16_t* sub0, const int16_t* sub1, const int16_t* add1) {
 #if defined(__AVX512F__)
     for (int l = 0; l < g_L1; l += 32) {
-        __m512i av = _mm512_loadu_si512((const __m512i*)(acc + l));
-        av = _mm512_adds_epi16(av, _mm512_loadu_si512((const __m512i*)(wt + l)));
-        av = _mm512_subs_epi16(av, _mm512_loadu_si512((const __m512i*)(wf + l)));
-        _mm512_storeu_si512((__m512i*)(acc + l), av);
+        __m512i v = _mm512_loadu_si512((const __m512i*)(parent + l));
+        v = _mm512_adds_epi16(v, _mm512_loadu_si512((const __m512i*)(add0 + l)));
+        v = _mm512_subs_epi16(v, _mm512_loadu_si512((const __m512i*)(sub0 + l)));
+        if constexpr (S1) v = _mm512_subs_epi16(v, _mm512_loadu_si512((const __m512i*)(sub1 + l)));
+        if constexpr (A1) v = _mm512_adds_epi16(v, _mm512_loadu_si512((const __m512i*)(add1 + l)));
+        _mm512_storeu_si512((__m512i*)(child + l), v);
     }
 #elif defined(__AVX2__)
     for (int l = 0; l < g_L1; l += 16) {
-        __m256i av = _mm256_loadu_si256((const __m256i*)(acc + l));
-        av = _mm256_adds_epi16(av, _mm256_loadu_si256((const __m256i*)(wt + l)));
-        av = _mm256_subs_epi16(av, _mm256_loadu_si256((const __m256i*)(wf + l)));
-        _mm256_storeu_si256((__m256i*)(acc + l), av);
+        __m256i v = _mm256_loadu_si256((const __m256i*)(parent + l));
+        v = _mm256_adds_epi16(v, _mm256_loadu_si256((const __m256i*)(add0 + l)));
+        v = _mm256_subs_epi16(v, _mm256_loadu_si256((const __m256i*)(sub0 + l)));
+        if constexpr (S1) v = _mm256_subs_epi16(v, _mm256_loadu_si256((const __m256i*)(sub1 + l)));
+        if constexpr (A1) v = _mm256_adds_epi16(v, _mm256_loadu_si256((const __m256i*)(add1 + l)));
+        _mm256_storeu_si256((__m256i*)(child + l), v);
     }
 #else
     for (int l = 0; l < g_L1; ++l) {
-        int v = int(acc[l]) + int(wt[l]) - int(wf[l]);
-        acc[l] = int16_t(std::max(-32768, std::min(32767, v)));
+        int v = std::max(-32768, std::min(32767, int(parent[l]) + int(add0[l]) - int(sub0[l])));
+        if constexpr (S1) v = std::max(-32768, std::min(32767, v - int(sub1[l])));
+        if constexpr (A1) v = std::max(-32768, std::min(32767, v + int(add1[l])));
+        child[l] = int16_t(v);
     }
 #endif
 }
@@ -667,7 +665,11 @@ void copy_for_null(Position& pos) {
     if (!g_loaded) return;
     Accumulator* const acc_stack = nnue_acc_stack();
     int ply = pos.state_ply();
-    acc_stack[ply] = acc_stack[ply - 1];   // board unchanged → child = parent
+    // The board is unchanged, so the child's lanes are the parent's. Only the
+    // first g_L1 lanes of each perspective are live (NNUE_L1_MAX sizes the
+    // struct for the widest net).
+    for (int p = 0; p < 2; ++p)
+        std::memcpy(acc_stack[ply].v[p], acc_stack[ply - 1].v[p], sizeof(int16_t) * size_t(g_L1));
 }
 
 void update(Position& pos, Move m, Piece moved, PieceType captured) {
@@ -690,10 +692,8 @@ void update(Position& pos, Move m, Piece moved, PieceType captured) {
     PieceType from_pt = promo ? PAWN : moved_pt;
     PieceType to_pt   = promo ? PieceType(m.promotion_type()) : moved_pt;
 
-    // Prefetch the feature weight rows that will be needed for the delta, OVERLAPPING
-    // with the 4KB copy below. This hides the L3→L1 latency (~100 cycles) behind the
-    // memcpy latency (~200 cycles). No engine does this — SF's flat layout doesn't need it,
-    // but our transposed layout has poor spatial locality per feature access.
+    // Prefetch the feature weight rows that the deltas below read, so their loads
+    // overlap the passes over the first perspective's lanes.
     {
         int wk = static_cast<int>(pos.king_sq(WHITE));
         int bk = static_cast<int>(pos.king_sq(BLACK));
@@ -711,8 +711,10 @@ void update(Position& pos, Move m, Piece moved, PieceType captured) {
         }
     }
 
-    acc_stack[ply] = acc_stack[ply - 1];   // copy parent → child (overlaps with prefetch)
-
+    // Each perspective's lanes are written once, from the parent's: no copy of
+    // the parent first. The own-king perspective after a king move is rebuilt
+    // by the refresh cache, which writes every lane and reads none of the child's.
+    const Accumulator& parent = acc_stack[ply - 1];
     for (int p = 0; p < 2; ++p) {
         bool white_pov = (p == 0);
         bool our_king_moved = king_moved && ((us == WHITE) == white_pov);
@@ -724,13 +726,10 @@ void update(Position& pos, Move m, Piece moved, PieceType captured) {
         }
         long long inc_t0 = pr ? rdtsc() : 0;   // #51: independent incremental cost (closes last derived number)
         int ksq = static_cast<int>(pos.king_sq(white_pov ? WHITE : BLACK));
-        move_feature(a, p, ksq, from, to, make_piece(us, from_pt), make_piece(us, to_pt));
-        if (captured != PT_NONE && !ep)
-            remove_feature(a, p, ksq, to, make_piece(them, captured));
-        if (ep) {
-            Square cap_sq = Square(to - (us == WHITE ? 8 : -8));
-            remove_feature(a, p, ksq, cap_sq, make_piece(them, PAWN));
-        }
+        const int16_t* to_row   = feature_row(white_pov, ksq, to, make_piece(us, to_pt));
+        const int16_t* from_row = feature_row(white_pov, ksq, from, make_piece(us, from_pt));
+        const int16_t* par = parent.v[p];
+        int16_t* child = a.v[p];
         if (castling) {
             Square rfrom, rto;
             if (to == (us == WHITE ? Square(G1) : Square(G8))) {
@@ -740,8 +739,18 @@ void update(Position& pos, Move m, Piece moved, PieceType captured) {
                 rfrom = us == WHITE ? Square(A1) : Square(A8);
                 rto   = us == WHITE ? Square(D1) : Square(D8);
             }
-            remove_feature(a, p, ksq, rfrom, make_piece(us, ROOK));
-            add_feature(a, p, ksq, rto,   make_piece(us, ROOK));
+            delta_rows<true, true>(par, child, to_row, from_row,
+                                   feature_row(white_pov, ksq, rfrom, make_piece(us, ROOK)),
+                                   feature_row(white_pov, ksq, rto, make_piece(us, ROOK)));
+        } else if (ep) {
+            Square cap_sq = Square(to - (us == WHITE ? 8 : -8));
+            delta_rows<true, false>(par, child, to_row, from_row,
+                                    feature_row(white_pov, ksq, cap_sq, make_piece(them, PAWN)), nullptr);
+        } else if (captured != PT_NONE) {
+            delta_rows<true, false>(par, child, to_row, from_row,
+                                    feature_row(white_pov, ksq, to, make_piece(them, captured)), nullptr);
+        } else {
+            delta_rows<false, false>(par, child, to_row, from_row, nullptr, nullptr);
         }
         if (pr) { st_incremental.cyc += rdtsc() - inc_t0; st_incremental.n++; }
     }
