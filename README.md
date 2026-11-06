@@ -11,9 +11,11 @@ relabeled by deep Stockfish search — the same public training data Stockfish
 itself uses; the loss weights positions by what the search actually consumes:
 quiet nodes) — and ships with a self-engineered hand-crafted evaluation (HCE)
 as an always-available fallback and tuning testbed. Estimated strength:
-~3030 Elo blitz (−105 ± 20 against Stash 29, CCRL Blitz 3137, over 1,004
-games on OpenBench; the v6.3.0 ladder placed it ahead of Stash 26 and level
-with Stash 27).
+~3255 Elo blitz. On OpenBench the v6.5.0 candidate climbed the Stash ladder
+one version at a time, 1,000 games a step: +104 ± 20 against Stash 29 (CCRL
+Blitz 3137), +79 against Stash 30, +40 against Stash 31 and +8 ± 18 against
+Stash 32 (3252), then 48% against Stash 33 (3286), where the ladder stops.
+Against v6.4.0 it scores +145 ± 12 over 2,020 games.
 
 ## Download
 
@@ -50,7 +52,7 @@ go movetime 1000
 
 | Option | Default | Description |
 |--------|---------|-------------|
-| `Hash` | 256 | Transposition-table size in MB |
+| `Hash` | 256 | Transposition-table size in MB (allocated at the first `isready` or search) |
 | `Threads` | 1 | Search threads (lazy SMP; each thread owns its NNUE accumulator) |
 | `MultiPV` | 1 | Number of principal variations reported |
 | `UCI_ShowWDL` | false | Append `wdl W D L` (per mille, approximate model) to info lines |
@@ -119,7 +121,7 @@ src/
   luminex.h          # Core types and constants
   types.h            # Value types, enums, MoveFlag encoding
   bitboard.h         # Bitboard operations
-  magic.cpp          # Magic bitboard generation
+  magic.cpp          # Magic bitboard tables (precomputed multipliers)
   board.h / cpp      # Position representation, make/unmake
   movegen.h / cpp    # Legal move generation
   evaluation.h / cpp # Hand-crafted evaluation (HCE)
