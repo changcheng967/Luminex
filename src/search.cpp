@@ -1268,11 +1268,11 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
                 pos.undo_move(m);
                 return false;
             }
-            // Re-search with full window if LMR found improvement. The
-            // re-search depth follows the reduced score: far above the
-            // current best says the move is likely genuinely good and
-            // deserves extra depth; barely above alpha says the improvement
-            // may be noise and can be confirmed shallower.
+            // A reduced move that beats alpha is searched again unreduced
+            // with a zero window. Its depth follows the reduced score: far
+            // above the current best earns a ply more, barely above alpha a
+            // ply less. Only a PV node whose score lands inside (alpha, beta)
+            // then pays for the full window, as a PV child.
             if (value > alpha) {
                 g_stats.lmr_researches++;
                 int r_depth = full_depth;
@@ -1280,10 +1280,17 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
                     r_depth++;
                 else if (value < alpha + 8 && r_depth > 1)
                     r_depth--;
-                value = -search_worker(pos, ss + 1, -beta, -alpha, r_depth, !cut_node);
+                value = -search_worker(pos, ss + 1, -alpha - 1, -alpha, r_depth, !cut_node);
                 if (stop.load(std::memory_order_relaxed)) {
                     pos.undo_move(m);
                     return false;
+                }
+                if (pv_node && value > alpha && value < beta) {
+                    value = -search_worker(pos, ss + 1, -beta, -alpha, r_depth, false);
+                    if (stop.load(std::memory_order_relaxed)) {
+                        pos.undo_move(m);
+                        return false;
+                    }
                 }
             }
         } else if (moves_played > 0) {
