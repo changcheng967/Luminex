@@ -211,6 +211,7 @@ static std::vector<int8_t> l2_w_i8, l3_w_i8, out_w_i8;
 static float g_s2 = 1.0f, g_s3 = 1.0f, g_so = 1.0f;  // weight quant scales
 static bool g_loaded = false;
 static bool g_l3_batched = false;   // l3_w_i8 interleaved for batched VNNI L3
+static bool g_l2_by_input = false;  // l2_w_i8 in 64-byte input-chunk blocks for VNNI L2
 
 static bool g_enabled = true;
 static uint32_t g_net_id = 0;   // incremented by every successful load(); keys the refresh cache
@@ -289,6 +290,7 @@ bool load(const std::string& path) {
     // leave a half-loaded net marked usable.
     g_loaded = false;
     g_l3_batched = false;
+    g_l2_by_input = false;
     g_int8 = (mg == "LNI8");
     g_L1 = L1; g_L2 = L2; g_L3 = L3;
     std::vector<float> ft_w_raw;
@@ -325,6 +327,19 @@ bool load(const std::string& path) {
                     std::memcpy(&tmp[(static_cast<size_t>(o) * 4 + j) * 4], &l3_w_i8[static_cast<size_t>(o) * L2 + j * 4], 4);
             l3_w_i8 = std::move(tmp);
             g_l3_batched = true;
+        }
+        // Input-chunk L2 layout: block c (64 bytes) holds, for each of the 16
+        // outputs, its 4 weights for inputs 4c..4c+3, so one VPDPBUSD of a
+        // broadcast 4-byte input chunk updates all 16 output sums at once.
+        if (L2 == 16 && (2 * L1) % 4 == 0) {
+            const int total_in = 2 * L1;
+            std::vector<int8_t> tmp(static_cast<size_t>(L2) * total_in);
+            for (int c = 0; c < total_in / 4; ++c)
+                for (int o = 0; o < L2; ++o)
+                    std::memcpy(&tmp[(static_cast<size_t>(c) * L2 + o) * 4],
+                                &l2_w_i8[static_cast<size_t>(o) * total_in + c * 4], 4);
+            l2_w_i8 = std::move(tmp);
+            g_l2_by_input = true;
         }
 #endif
         if (!read_tensor(f, l3_b, L3)) return false;
@@ -758,7 +773,35 @@ Value evaluate(const Position& pos) {
         uint8_t h_i8[2 * NNUE_L1_MAX];
         const __m256 sc127 = _mm256_set1_ps(127.0f);  // shared for quant8 (L3/out)
 #if defined(__AVX512F__)
-        // AVX-512: 16 floats/instruction → 2x throughput over AVX2
+        // AVX-512, 64 lanes per pass. Clamping to the SCReLU window [0, 8192]
+        // in int16 and then rounding fl(fl(a*a) * 127*2^-26) gives the same
+        // bytes as the float clamp-square-scale below: scaling by a power of
+        // two never rounds, so both round the same product (all 8193 window
+        // values checked). Packing 4 vectors at a time replaces two narrowing
+        // converts per 16 lanes.
+        if (L1 % 64 == 0) {
+            const __m512i lo16 = _mm512_setzero_si512(), hi16 = _mm512_set1_epi16(8192);
+            const __m512 k = _mm512_set1_ps(127.0f / 67108864.0f);   // 127 * 2^-26, exact
+            // packs/packus work inside 128-bit lanes; this dword permute (a 4x4
+            // transpose of 4-byte groups) restores input order
+            const __m512i order = _mm512_setr_epi32(0, 4, 8, 12, 1, 5, 9, 13, 2, 6, 10, 14, 3, 7, 11, 15);
+            auto act16 = [&](__m256i v) {   // 16 clamped int16 -> 16 int32 in [0, 127]
+                const __m512 f = _mm512_cvtepi32_ps(_mm512_cvtepi16_epi32(v));
+                return _mm512_cvtps_epi32(_mm512_mul_ps(_mm512_mul_ps(f, f), k));
+            };
+            for (int side = 0; side < 2; ++side) {
+                const int16_t* in = side == 0 ? acc_stm : acc_nstm;
+                uint8_t* out = h_i8 + side * L1;
+                for (int l = 0; l < L1; l += 64) {
+                    const __m512i x0 = _mm512_min_epi16(_mm512_max_epi16(_mm512_loadu_si512(in + l), lo16), hi16);
+                    const __m512i x1 = _mm512_min_epi16(_mm512_max_epi16(_mm512_loadu_si512(in + l + 32), lo16), hi16);
+                    const __m512i q0 = act16(_mm512_castsi512_si256(x0)), q1 = act16(_mm512_extracti64x4_epi64(x0, 1));
+                    const __m512i q2 = act16(_mm512_castsi512_si256(x1)), q3 = act16(_mm512_extracti64x4_epi64(x1, 1));
+                    const __m512i b = _mm512_packus_epi16(_mm512_packs_epi32(q0, q1), _mm512_packs_epi32(q2, q3));
+                    _mm512_storeu_si512(out + l, _mm512_permutexvar_epi32(order, b));
+                }
+            }
+        } else {
         const __m512 z16 = _mm512_setzero_ps(), one16 = _mm512_set1_ps(1.0f), sc16 = _mm512_set1_ps(127.0f);
         const __m512 winv16 = _mm512_set1_ps(FT_WINV);
         for (int l = 0; l < L1; l += 16) {
@@ -779,6 +822,7 @@ Value evaluate(const Position& pos) {
             i16 = _mm512_cvtepi32_epi16(i32);
             i8 = _mm256_cvtepi16_epi8(i16);
             _mm_storeu_si128((__m128i*)(h_i8 + L1 + l), i8);
+        }
         }
 #else
         const __m256 z = _mm256_setzero_ps(), one = _mm256_set1_ps(1.0f), winv8 = _mm256_set1_ps(FT_WINV);
@@ -804,6 +848,30 @@ Value evaluate(const Position& pos) {
         const float ics2 = 1.0f / cs2, ics3 = 1.0f / cs3, icso = 1.0f / cso;
         float h2[NNUE_L1_MAX];
 #if defined(__AVX512VNNI__)
+        if (g_l2_by_input) {
+            // One VPDPBUSD per 4 inputs adds their products to all 16 output sums
+            // (lane o = output o), so no per-output horizontal sum is needed.
+            // Integer adds associate: each sum equals the per-output dot exactly.
+            const int n4 = 2 * L1 / 4;
+            const int8_t* w = l2_w_i8.data();
+            auto chunk = [&](int c) {
+                int32_t v; std::memcpy(&v, h_i8 + 4 * c, 4);
+                return _mm512_set1_epi32(v);
+            };
+            __m512i s0 = _mm512_setzero_si512(), s1 = s0, s2 = s0, s3 = s0;
+            int c = 0;
+            for (; c + 4 <= n4; c += 4) {
+                s0 = _mm512_dpbusd_epi32(s0, chunk(c + 0), _mm512_loadu_si512(w + 64 * (c + 0)));
+                s1 = _mm512_dpbusd_epi32(s1, chunk(c + 1), _mm512_loadu_si512(w + 64 * (c + 1)));
+                s2 = _mm512_dpbusd_epi32(s2, chunk(c + 2), _mm512_loadu_si512(w + 64 * (c + 2)));
+                s3 = _mm512_dpbusd_epi32(s3, chunk(c + 3), _mm512_loadu_si512(w + 64 * (c + 3)));
+            }
+            for (; c < n4; ++c)
+                s0 = _mm512_dpbusd_epi32(s0, chunk(c), _mm512_loadu_si512(w + 64 * c));
+            alignas(64) int32_t d[16];
+            _mm512_store_si512(d, _mm512_add_epi32(_mm512_add_epi32(s0, s1), _mm512_add_epi32(s2, s3)));
+            for (int o = 0; o < 16; ++o) h2[o] = clip01(l2_b[o] + d[o] * ics2);
+        } else
         // VPDPBUSD: 64 MACs/instruction. Per-output dot (output-major weights, no reorder).
         for (int o = 0; o < L2; ++o)
             h2[o] = clip01(l2_b[o] + dot_i8_vnni(&l2_w_i8[static_cast<size_t>(o) * 2 * L1], h_i8, 2 * L1) * ics2);
