@@ -52,6 +52,12 @@ jobs:
 
   build-windows:
     runs-on: windows-2022  # pin: windows-latest image no longer exposes a VS instance to cmake
+    # cmd, as in build.yml's Windows jobs, so CI runs these exact command
+    # lines. PowerShell, the default, splits an unquoted argument such as
+    # -DLUMINEX_EMBED_NET=net/luminex_sfq_i8.nnue at the dot.
+    defaults:
+      run:
+        shell: cmd
     strategy:
       matrix:
         include:
