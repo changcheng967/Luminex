@@ -1727,9 +1727,12 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
         if (best_value >= beta) bound = BOUND_LOWER;
         else if (best_value > original_alpha) bound = BOUND_EXACT;  // PV node improved alpha
         else bound = BOUND_UPPER;
-        // Use best_move_found instead of ss->pv[ss->ply] to avoid stale PV corruption
+        // A fail-low node has no best move: every move failed, and the one that
+        // failed least is noise. It stores none, so the entry keeps the move an
+        // earlier search found (TTEntry::save preserves it).
         if (TT.should_store(tte, found, depth))
-            tte->save(pos.key(), value_to_tt(best_value, ss->ply), pv_node, bound, depth, best_move_found, tt_store_eval, TT.generation());
+            tte->save(pos.key(), value_to_tt(best_value, ss->ply), pv_node, bound, depth,
+                      bound == BOUND_UPPER ? MOVE_NONE : best_move_found, tt_store_eval, TT.generation());
 
         // Update multi-table correction history: learn from the difference between
         // search result and static eval, indexed by multiple position aspects.
