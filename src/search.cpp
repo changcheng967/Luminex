@@ -78,13 +78,16 @@ constexpr int MAX_PLY_PLUS_6 = MAX_PLY + 6;
 
 // Correction history: multiple tables for more precise eval correction (from Stash).
 // Each table captures eval errors correlated with a different aspect of the position.
+// The errors are side-to-move relative, like the eval they correct, so every table
+// keeps one half per side to move: White to move and Black to move in the same
+// structure have opposite-signed errors and would cancel in a shared entry.
 constexpr int CORRHIST_SIZE = 16384;
 constexpr int CORRHIST_GRAIN = 256;       // Internal scaling: stored = actual * GRAIN
 constexpr int CORRHIST_MAX = 256 * 32;    // ±32 cp per table after dividing by GRAIN
 constexpr int CORRHIST_WEIGHT_SCALE = 256;
 
 struct CorrHistTable {
-    int16_t data[CORRHIST_SIZE];
+    int16_t data[2][CORRHIST_SIZE];  // [side to move][key]
 };
 
 struct SearchWorker {
@@ -142,8 +145,8 @@ constexpr int EVAL_CACHE_SIZE = 65536;  // 64K entries — measured best (32K to
 // is lost that the TT doesn't already provide).
 static thread_local std::vector<EvalCacheEntry> eval_cache(EVAL_CACHE_SIZE);
 
-inline int16_t corrhist_score(const CorrHistTable& table, uint64_t key) {
-    return table.data[uint32_t(key) & (CORRHIST_SIZE - 1)] / CORRHIST_GRAIN;
+inline int16_t corrhist_score(const CorrHistTable& table, Color stm, uint64_t key) {
+    return table.data[stm][uint32_t(key) & (CORRHIST_SIZE - 1)] / CORRHIST_GRAIN;
 }
 
 inline uint64_t kingpawns_key(const Position& pos) {
@@ -154,16 +157,17 @@ inline uint64_t kingpawns_key(const Position& pos) {
 
 inline int get_total_correction(const Position& pos) {
     const SearchWorker* w = worker;
-    return corrhist_score(w->corrhist_pawn, pos.pawn_key())
-         + corrhist_score(w->corrhist_nonpawn[0], pos.nonpawn_key(WHITE))
-         + corrhist_score(w->corrhist_nonpawn[1], pos.nonpawn_key(BLACK))
-         + corrhist_score(w->corrhist_minor, pos.minor_key())
-         + corrhist_score(w->corrhist_major, pos.major_key())
-         + corrhist_score(w->corrhist_kingpawns, kingpawns_key(pos));
+    const Color stm = pos.side_to_move();
+    return corrhist_score(w->corrhist_pawn, stm, pos.pawn_key())
+         + corrhist_score(w->corrhist_nonpawn[0], stm, pos.nonpawn_key(WHITE))
+         + corrhist_score(w->corrhist_nonpawn[1], stm, pos.nonpawn_key(BLACK))
+         + corrhist_score(w->corrhist_minor, stm, pos.minor_key())
+         + corrhist_score(w->corrhist_major, stm, pos.major_key())
+         + corrhist_score(w->corrhist_kingpawns, stm, kingpawns_key(pos));
 }
 
-inline void corrhist_update(CorrHistTable& table, uint64_t key, int16_t weight, int32_t error) {
-    int16_t& entry = table.data[uint32_t(key) & (CORRHIST_SIZE - 1)];
+inline void corrhist_update(CorrHistTable& table, Color stm, uint64_t key, int16_t weight, int32_t error) {
+    int16_t& entry = table.data[stm][uint32_t(key) & (CORRHIST_SIZE - 1)];
     int32_t scaled_diff = error * CORRHIST_GRAIN;
     int32_t update = (int32_t)entry * (CORRHIST_WEIGHT_SCALE - weight)
                    + scaled_diff * (int32_t)weight;
@@ -174,13 +178,14 @@ inline void corrhist_update(CorrHistTable& table, uint64_t key, int16_t weight, 
 
 inline void update_all_corrections(const Position& pos, int depth, int error) {
     SearchWorker* w = worker;
+    const Color stm = pos.side_to_move();
     int16_t weight = (int16_t)std::min(16, depth + 1);
-    corrhist_update(w->corrhist_pawn, pos.pawn_key(), weight, error);
-    corrhist_update(w->corrhist_nonpawn[0], pos.nonpawn_key(WHITE), weight, error);
-    corrhist_update(w->corrhist_nonpawn[1], pos.nonpawn_key(BLACK), weight, error);
-    corrhist_update(w->corrhist_minor, pos.minor_key(), weight, error);
-    corrhist_update(w->corrhist_major, pos.major_key(), weight, error);
-    corrhist_update(w->corrhist_kingpawns, kingpawns_key(pos), weight, error);
+    corrhist_update(w->corrhist_pawn, stm, pos.pawn_key(), weight, error);
+    corrhist_update(w->corrhist_nonpawn[0], stm, pos.nonpawn_key(WHITE), weight, error);
+    corrhist_update(w->corrhist_nonpawn[1], stm, pos.nonpawn_key(BLACK), weight, error);
+    corrhist_update(w->corrhist_minor, stm, pos.minor_key(), weight, error);
+    corrhist_update(w->corrhist_major, stm, pos.major_key(), weight, error);
+    corrhist_update(w->corrhist_kingpawns, stm, kingpawns_key(pos), weight, error);
 }
 
 // |correction| distribution probe (NNUE_CORR_STATS=1): samples the correction
@@ -1438,6 +1443,15 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
                     && TT.should_store(tte, found, depth)) {
                     tte->save(pos.key(), value_to_tt(value, ss->ply), pv_node, BOUND_LOWER, depth, m, tt_store_eval, TT.generation());
                 }
+                // A cutoff proves the node is worth at least `value`. Above the
+                // static eval, that says the eval was too low here, so cut nodes
+                // teach the correction history too, not only fail-low ends.
+                if (!stop.load(std::memory_order_relaxed) && !ss->excluded_move && !pv_node
+                    && !pos.is_check() && !m.is_capture() && value > eval
+                    && std::abs(value) < VALUE_KNOWN_WIN && std::abs(eval) < VALUE_KNOWN_WIN
+                    && depth >= 2) {
+                    update_all_corrections(pos, depth, value - eval);
+                }
                 if (moves_played_before == 0) g_stats.first_move_cutoffs++;
                 return true;  // beta cutoff
                 }
@@ -1736,10 +1750,12 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
 
         // Update multi-table correction history: learn from the difference between
         // search result and static eval, indexed by multiple position aspects.
-        // Skip when: in check, best move is capture (tactical, noisy),
-        // or when result is consistent with static eval (no learning signal).
+        // Skip when: in check, best move is capture (tactical, noisy).
+        // Every move failed low here, so best_value is only an upper bound: it
+        // proves the eval too high when it lies below it, and proves nothing
+        // when it lies above (the true score may be anywhere beneath it).
         bool best_is_capture = best_move_found.is_capture();
-        if (!pv_node && !pos.is_check() && !best_is_capture
+        if (!pv_node && !pos.is_check() && !best_is_capture && best_value < eval
             && abs(best_value) < VALUE_KNOWN_WIN && abs(eval) < VALUE_KNOWN_WIN
             && moves_played > 0 && depth >= 2) {
             update_all_corrections(pos, depth, best_value - eval);
