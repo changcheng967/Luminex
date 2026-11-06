@@ -473,6 +473,16 @@ bool load_embedded() {
 
 static inline float clip01(float x) { float c = x < 0.0f ? 0.0f : (x > 1.0f ? 1.0f : x); return c * c; }
 
+// std::llround for a finite float, without the libm call: half away from zero.
+// x - trunc(x) is exact (Sterbenz: trunc(x) <= x < trunc(x) + 1 <= 2 trunc(x)
+// for x >= 1, and x itself below 1), so the comparison with 0.5 decides as
+// llround does; at |x| >= 2^23 every float is an integer and the fraction is 0.
+static inline long long round_half_away(float x) {
+    const float t = std::trunc(x);
+    const float f = x - t;
+    return static_cast<long long>(t) + (f >= 0.5f) - (f <= -0.5f);
+}
+
 // ClippedReLU on a x8192-domain lane, requantized to the u8 dense input
 // (min(in>>6, 127) — 8192>>6 = 128 caps at 127).
 static inline uint8_t crelu_q8(int v) {
@@ -1103,7 +1113,7 @@ Value evaluate(const Position& pos) {
         for (int l = 0; l < L3; l += 8) quant8(h3 + l, h3_i8 + l, sc127);
         float ov = out_b + dot_i8(out_w_i8.data(), h3_i8, L3) * icso;
 #endif
-        Value v = static_cast<Value>(std::llround(ov * OUT_SCALE));
+        Value v = static_cast<Value>(round_half_away(ov * OUT_SCALE));
         if (pr) { st_eval.cyc += rdtsc() - t0; st_eval.n++; }
         return v;
     }
