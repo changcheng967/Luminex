@@ -127,7 +127,10 @@ size_t TranspositionTable::hashfull() const {
 
 void TranspositionTable::prefetch(uint64_t key) const {
 #if defined(__GNUC__) || defined(__clang__)
-    __builtin_prefetch(&table[(size_t)key & (table.size() - 1)], 0, 3);
+    // do_move prefetches before the table exists too (perft, bench's perft):
+    // an empty table has no entry to index.
+    if (!table.empty())
+        __builtin_prefetch(&table[(size_t)key & (table.size() - 1)], 0, 3);
 #endif
 }
 
