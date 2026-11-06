@@ -94,71 +94,47 @@ Bitboard slow_bishop_attacks(Square s, Bitboard occupied) {
     return attacks;
 }
 
-// PRNG for magic number search
-class PRNG {
-    uint64_t s;
-public:
-    explicit PRNG(uint64_t seed) : s(seed) {}
-    uint64_t next64() {
-        s ^= s >> 12;
-        s ^= s << 25;
-        s ^= s >> 27;
-        return s * 2685821657736338717ULL;
-    }
-    Bitboard sparse64() { return next64() & next64() & next64(); }
+// Magic multipliers, one per square. They are the numbers the deterministic
+// per-square search (seeded xorshift, sparse candidates, verified over every
+// occupancy subset) used to find at every start, which took seconds; the
+// attack tables they build are identical.
+constexpr Bitboard RookMagicNumbers[64] = {
+    0x4080004000102080ULL, 0x8040004020001000ULL, 0x4A00084082001020ULL, 0x2900100005000920ULL,
+    0x0600200422003008ULL, 0xE200100802000481ULL, 0x0200082281140A00ULL, 0x4200042301408204ULL,
+    0x2020801020804000ULL, 0x0020802000904000ULL, 0x1000808020001000ULL, 0x01A0040081004200ULL,
+    0x1002800400080080ULL, 0x0402000804020010ULL, 0xC011002900140200ULL, 0x00010020810016C2ULL,
+    0x2010208010804002ULL, 0x4090004000402000ULL, 0x0020010010204101ULL, 0x0001010008100020ULL,
+    0x0000808004000800ULL, 0x0094818002000400ULL, 0x10000400C8010210ULL, 0x4000020021008044ULL,
+    0xB000800080204000ULL, 0x0040200040005000ULL, 0x060816C100200102ULL, 0x0880240900100100ULL,
+    0x0625000500080090ULL, 0x040C000480800200ULL, 0x0400304400110882ULL, 0xBB402A4200010194ULL,
+    0x8830400020800080ULL, 0x0060100040400020ULL, 0x0000200080801000ULL, 0x0290040811002100ULL,
+    0x0080040801001100ULL, 0x4802800400800200ULL, 0x0005080204000110ULL, 0x2120009042000419ULL,
+    0x0301008200460024ULL, 0x0090004020004000ULL, 0x08A0008010008020ULL, 0x20202201400A0010ULL,
+    0x0901000408010010ULL, 0x000A000804010100ULL, 0x0180021190040028ULL, 0x1034208041120014ULL,
+    0x4080004000200040ULL, 0x2000802100400100ULL, 0xC000600150008280ULL, 0x0080100008008280ULL,
+    0x1040080004008080ULL, 0x4004004100020040ULL, 0x0028800100020080ULL, 0x8000800063000180ULL,
+    0x8081002043120182ULL, 0x100B810140041021ULL, 0x0104102001010841ULL, 0x8B4200C038201016ULL,
+    0x400A000408102002ULL, 0x0C02000108100482ULL, 0x1011004082000421ULL, 0x0001000031408601ULL,
 };
 
-// Verify a magic number works for all occupancy subsets
-bool verify_magic(Square sq, Bitboard mask, Bitboard magic, int shift, Bitboard* table, int size,
-                  bool is_rook) {
-    // Use a temporary used[] array
-    auto* used = new bool[size];
-    std::memset(used, 0, size * sizeof(bool));
-
-    Bitboard occ = 0;
-    bool ok = true;
-    do {
-        Bitboard attacks = is_rook ? slow_rook_attacks(sq, occ) : slow_bishop_attacks(sq, occ);
-        unsigned idx = unsigned((occ * magic) >> shift);
-
-        if (used[idx]) {
-            if (table[idx] != attacks) { ok = false; break; }
-        } else {
-            used[idx] = true;
-            table[idx] = attacks;
-        }
-
-        occ = (occ - mask) & mask;
-    } while (occ);
-
-    delete[] used;
-    return ok;
-}
-
-// Search for a magic number for a given square
-Bitboard search_magic(Square sq, Bitboard mask, bool is_rook) {
-    int bits = popcount(mask);
-    int size = 1 << bits;
-    unsigned shift = 64 - bits;
-
-    auto* table = new Bitboard[size];
-
-    PRNG rng(uint64_t(0x12345678) + uint64_t(sq) * 0x11111111);
-
-    for (int tries = 0; tries < 100000000; ++tries) {
-        Bitboard magic = rng.sparse64();
-
-        if (popcount((magic * mask) & 0xFF00000000000000ULL) < 6) continue;
-
-        if (verify_magic(sq, mask, magic, shift, table, size, is_rook)) {
-            delete[] table;
-            return magic;
-        }
-    }
-
-    delete[] table;
-    return 0; // Should never happen
-}
+constexpr Bitboard BishopMagicNumbers[64] = {
+    0x8A10010801004208ULL, 0x01A00808A3104600ULL, 0xA290008200540400ULL, 0x0491040080402800ULL,
+    0x18C40504003014A0ULL, 0x008A0A0220002001ULL, 0x2002209220300182ULL, 0x1840250100904040ULL,
+    0x610040A212020200ULL, 0x4000488210840100ULL, 0x004010A08083000CULL, 0xA000044400804040ULL,
+    0x00010404220041C0ULL, 0x00200A0910080000ULL, 0x900A040409082A40ULL, 0xC040044042101000ULL,
+    0x1020003220011902ULL, 0x1009041002008401ULL, 0x0031020208070900ULL, 0x0042001040114000ULL,
+    0x7402001420211484ULL, 0x0001000080414002ULL, 0x0002200048020850ULL, 0x0028440A86189004ULL,
+    0x1244208090600104ULL, 0x2110242811110200ULL, 0x0004020010082442ULL, 0x1904002104020880ULL,
+    0x1001010000104000ULL, 0x00040020D100A000ULL, 0x2808408001140100ULL, 0x0004008400220124ULL,
+    0x0010307000260400ULL, 0x043A022208109040ULL, 0x4400211000010400ULL, 0x0882008021020200ULL,
+    0x0900920200040108ULL, 0x0308020420041000ULL, 0x8821122204208800ULL, 0x8420810041010400ULL,
+    0x0204020840000411ULL, 0x001100822010100AULL, 0x8140140024100800ULL, 0x1000002058000900ULL,
+    0x4000080104002044ULL, 0x0911860802001540ULL, 0x0020020210402210ULL, 0x0002280241020290ULL,
+    0x0841084202202000ULL, 0x002A044402090208ULL, 0x4800620042087020ULL, 0x0C00001042020580ULL,
+    0x0400204090444000ULL, 0x10004048C141030CULL, 0xA422440400841000ULL, 0x0002280104108000ULL,
+    0x2502410410022200ULL, 0x0400002484500840ULL, 0x0810000110880410ULL, 0x0819200008420210ULL,
+    0x0008000040050104ULL, 0x6008041002100105ULL, 0x08080A1810540040ULL, 0x8102100202004200ULL,
+};
 
 // Initialize magic tables for one piece type
 void init_magics(Magic magics[], Bitboard table[], bool is_rook) {
@@ -172,8 +148,7 @@ void init_magics(Magic magics[], Bitboard table[], bool is_rook) {
         magics[sq].shift = 64 - bits;
         int size = 1 << bits;
 
-        // Search for magic number
-        Bitboard magic = search_magic(Square(sq), magics[sq].mask, is_rook);
+        Bitboard magic = is_rook ? RookMagicNumbers[sq] : BishopMagicNumbers[sq];
         magics[sq].magic = magic;
 
         // Now fill the table using the found magic

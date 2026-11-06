@@ -14,8 +14,9 @@ void init() {
     // SPSA overrides from the working directory; UCI options set later win
     SPSAParams::get().load("spsa_params.txt");
     init_search_params();
-    TT.resize(256); // 256 MB transposition table (adopted 2026-08-19: self-play +16.7 LOS 89%, vs StashV20 0.509 vs 0.504 at 128)
-    TT.clear();
+    // The transposition table (default TranspositionTable::DEFAULT_MB = 256 MB,
+    // adopted 2026-08-19: self-play +16.7 LOS 89% over 128 MB) is allocated
+    // on first use, so a GUI's Hash setting replaces it before it is touched.
 }
 
 // Perft for testing
@@ -151,6 +152,11 @@ int main(int argc, char* argv[]) {
             probe.set("rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1");
             Limits lim;
             lim.depth = 11;
+            // Allocate the hash table before the clock starts: the first search
+            // would otherwise allocate it inside the timed probe and report a
+            // speed that includes zeroing 256 MB, which OpenBench then scales
+            // every time control by.
+            TT.ensure_allocated();
             auto t0 = high_resolution_clock::now();
             search(probe, lim);
             auto sms = duration_cast<milliseconds>(high_resolution_clock::now() - t0).count();

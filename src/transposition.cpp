@@ -42,10 +42,8 @@ void TranspositionTable::resize(size_t mb) {
     entries = new_size * 3;
 
     if (new_size > 0) {
-        table.resize(new_size);
+        table.resize(new_size);  // value-initialized: already zero
     }
-
-    clear();
 }
 
 void TranspositionTable::clear() {

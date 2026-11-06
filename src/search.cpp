@@ -63,12 +63,14 @@ inline Value value_from_tt(Value v, int ply) {
 
 // Cutoff bonus / non-cutoff malus grow with depth and saturate: the quadratic
 // is capped past its depth-17 value instead of sign-flipping, so deep cutoffs
-// always reward and deep fails always punish.
+// always reward and deep fails always punish. A move that was searched and
+// failed loses exactly what a cutoff earns, so a score tracks how often a move
+// works rather than how often it was tried.
 inline int hist_bonus(Depth d) {
     return std::min(19 * d * d + 155 * d - 132, 8192);
 }
 inline int hist_malus(Depth d) {
-    return std::max(-(d * (d + 1) * 2 - 2), -8192);
+    return -hist_bonus(d);
 }
 
 // Per-thread search state for lazy SMP
@@ -1944,6 +1946,7 @@ Move search(Position& pos, Limits& lim) {
     // Initialize LMR reduction table (once)
     if (!reductions_initialized) init_reductions();
     // Age TT authority: each new "go" discounts entries from earlier searches
+    TT.ensure_allocated();
     TT.begin_search();
 
     // Reuse or create persistent main worker (history persists across searches)
@@ -2678,10 +2681,16 @@ void uci_info(const Position& pos, int depth, Value score, uint64_t node_count, 
     // Extract PV from TT (uses std::formatter<luminex::Move> for each move).
     // MultiPV lines are seeded with their own root move; the TT walk then
     // continues from the resulting position.
+    // The printed line stops at the first position where the game is over by
+    // the 50-move rule, repetition or insufficient material: moves past it are
+    // what fastchess reports as "PV continues after fifty-move rule". The walk
+    // itself runs on unchanged, because its TT probes refresh entry ages and
+    // stopping it early would change later searches.
     Position pv_pos = pos;
     Move pv_moves[64];
     int pv_count = 0;
     uint64_t pv_keys[64];
+    bool pv_game_over = false;
 
     if (seed_move != MOVE_NONE) {
         pv_keys[0] = pv_pos.key();
@@ -2689,6 +2698,7 @@ void uci_info(const Position& pos, int depth, Value score, uint64_t node_count, 
         pv_count = 1;
         std::format_to(std::back_inserter(line), " {}", seed_move);
         pv_pos.do_move(seed_move);
+        pv_game_over = pv_pos.is_draw();
     }
 
     for (int i = 0; i < 64 - pv_count; ++i) {
@@ -2708,8 +2718,9 @@ void uci_info(const Position& pos, int depth, Value score, uint64_t node_count, 
 
         pv_keys[pv_count] = pv_pos.key();
         pv_moves[pv_count++] = m;
-        std::format_to(std::back_inserter(line), " {}", m);
+        if (!pv_game_over) std::format_to(std::back_inserter(line), " {}", m);
         if (!pv_pos.do_move(m)) break;
+        if (!pv_game_over) pv_game_over = pv_pos.is_draw();
     }
 
     // Undo PV moves to restore position
