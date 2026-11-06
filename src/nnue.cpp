@@ -26,6 +26,7 @@
 #if defined(__linux__)
 #include <sys/mman.h>
 #endif
+#include <bit>
 #include <fstream>
 #include <istream>
 #include <streambuf>
@@ -138,6 +139,7 @@ namespace { struct Stat { long long n = 0, cyc = 0; }; }
 static Stat st_eval, st_update, st_refresh, st_king_refresh, st_incremental;
 static Stat st_catchup;   // make_current: bringing a ply up to date before an evaluation
 static long long g_act_nz = 0, g_act_tot = 0;   // activation sparsity (non-zero L1 outputs after SCReLU)
+static long long g_group_nz = 0, g_group_tot = 0;  // 4-input groups the first dense layer multiplies
 static long long g_sat_events = 0;              // exact accumulator leaving int16 range (self-check only)
 static bool g_profile = false;
 static bool g_profile_inited = false;
@@ -155,7 +157,7 @@ static inline long long rdtsc() {
 }
 void print_stats() {
     if (!profile_on()) return;
-    std::fprintf(stderr, "NNUE profile: evals=%lld (%.1fM cyc, %.0f cyc/eval) | updates=%lld (%.1fM cyc, %.0f cyc/upd) | king-refreshes=%lld (%.0f cyc/kr) | incrementals=%lld (%.0f cyc/inc) | refreshes=%lld (%.1fM cyc) | L1-act density=%.1f%% | sat_events=%lld | catch-ups=%lld (%.1fM cyc)\n",
+    std::fprintf(stderr, "NNUE profile: evals=%lld (%.1fM cyc, %.0f cyc/eval) | updates=%lld (%.1fM cyc, %.0f cyc/upd) | king-refreshes=%lld (%.0f cyc/kr) | incrementals=%lld (%.0f cyc/inc) | refreshes=%lld (%.1fM cyc) | L1-act density=%.1f%% | sat_events=%lld | catch-ups=%lld (%.1fM cyc) | L2-groups multiplied=%.1f%%\n",
                  st_eval.n, st_eval.cyc/1000000.0, st_eval.n ? double(st_eval.cyc)/st_eval.n : 0.0,
                  st_update.n, st_update.cyc/1000000.0, st_update.n ? double(st_update.cyc)/st_update.n : 0.0,
                  st_king_refresh.n, st_king_refresh.n ? double(st_king_refresh.cyc)/st_king_refresh.n : 0.0,
@@ -163,7 +165,8 @@ void print_stats() {
                  st_refresh.n, st_refresh.cyc/1000000.0,
                  g_act_tot ? 100.0*g_act_nz/g_act_tot : 0.0,
                  g_sat_events,
-                 st_catchup.n, st_catchup.cyc/1000000.0);
+                 st_catchup.n, st_catchup.cyc/1000000.0,
+                 g_group_tot ? 100.0*g_group_nz/g_group_tot : 100.0);
 }
 
 constexpr int NUM_SQ = 64;
@@ -992,16 +995,38 @@ Value evaluate(const Position& pos) {
                 int32_t v; std::memcpy(&v, h_i8 + 4 * c, 4);
                 return _mm512_set1_epi32(v);
             };
-            __m512i s0 = _mm512_setzero_si512(), s1 = s0, s2 = s0, s3 = s0;
-            int c = 0;
-            for (; c + 4 <= n4; c += 4) {
-                s0 = _mm512_dpbusd_epi32(s0, chunk(c + 0), _mm512_loadu_si512(w + 64 * (c + 0)));
-                s1 = _mm512_dpbusd_epi32(s1, chunk(c + 1), _mm512_loadu_si512(w + 64 * (c + 1)));
-                s2 = _mm512_dpbusd_epi32(s2, chunk(c + 2), _mm512_loadu_si512(w + 64 * (c + 2)));
-                s3 = _mm512_dpbusd_epi32(s3, chunk(c + 3), _mm512_loadu_si512(w + 64 * (c + 3)));
+            // About half the activations are zero, so whole groups of 4 often
+            // are too, and such a group adds nothing. List the groups with a
+            // non-zero input first, 16 per compare (compress into a register,
+            // then a plain store: a compressing store to memory is slow on some
+            // cores), and multiply only those. Integer adds associate, so every
+            // sum is the one over all groups.
+            alignas(64) int32_t nnz[2 * NNUE_L1_MAX / 4 + 16];
+            int count = 0;
+            if (n4 % 16 == 0) {
+                __m512i idx = _mm512_setr_epi32(0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15);
+                const __m512i step = _mm512_set1_epi32(16);
+                for (int c = 0; c < n4; c += 16) {
+                    const __m512i v = _mm512_loadu_si512(h_i8 + 4 * c);
+                    const __mmask16 m = _mm512_test_epi32_mask(v, v);
+                    _mm512_storeu_si512(nnz + count, _mm512_maskz_compress_epi32(m, idx));
+                    count += std::popcount(static_cast<unsigned>(m));
+                    idx = _mm512_add_epi32(idx, step);
+                }
+            } else {
+                for (int c = 0; c < n4; ++c) nnz[count++] = c;
             }
-            for (; c < n4; ++c)
-                s0 = _mm512_dpbusd_epi32(s0, chunk(c), _mm512_loadu_si512(w + 64 * c));
+            if (pr) { g_group_nz += count; g_group_tot += n4; }
+            __m512i s0 = _mm512_setzero_si512(), s1 = s0, s2 = s0, s3 = s0;
+            int k = 0;
+            for (; k + 4 <= count; k += 4) {
+                s0 = _mm512_dpbusd_epi32(s0, chunk(nnz[k + 0]), _mm512_loadu_si512(w + 64 * nnz[k + 0]));
+                s1 = _mm512_dpbusd_epi32(s1, chunk(nnz[k + 1]), _mm512_loadu_si512(w + 64 * nnz[k + 1]));
+                s2 = _mm512_dpbusd_epi32(s2, chunk(nnz[k + 2]), _mm512_loadu_si512(w + 64 * nnz[k + 2]));
+                s3 = _mm512_dpbusd_epi32(s3, chunk(nnz[k + 3]), _mm512_loadu_si512(w + 64 * nnz[k + 3]));
+            }
+            for (; k < count; ++k)
+                s0 = _mm512_dpbusd_epi32(s0, chunk(nnz[k]), _mm512_loadu_si512(w + 64 * nnz[k]));
             alignas(64) int32_t d[16];
             _mm512_store_si512(d, _mm512_add_epi32(_mm512_add_epi32(s0, s1), _mm512_add_epi32(s2, s3)));
             for (int o = 0; o < 16; ++o) h2[o] = clip01(l2_b[o] + d[o] * ics2);
