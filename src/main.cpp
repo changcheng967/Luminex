@@ -152,6 +152,11 @@ int main(int argc, char* argv[]) {
             probe.set("rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1");
             Limits lim;
             lim.depth = 11;
+            // Allocate the hash table before the clock starts: the first search
+            // would otherwise allocate it inside the timed probe and report a
+            // speed that includes zeroing 256 MB, which OpenBench then scales
+            // every time control by.
+            TT.ensure_allocated();
             auto t0 = high_resolution_clock::now();
             search(probe, lim);
             auto sms = duration_cast<milliseconds>(high_resolution_clock::now() - t0).count();
