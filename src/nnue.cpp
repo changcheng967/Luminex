@@ -513,21 +513,6 @@ static inline void add_row(int16_t* acc, const int16_t* w) {
     for (int l = 0; l < g_L1; ++l) acc[l] = int16_t(std::max(-32768, std::min(32767, int(acc[l]) + int(w[l]))));
 #endif
 }
-static inline void sub_row(int16_t* acc, const int16_t* w) {
-#if defined(__AVX512F__)
-    for (int l = 0; l < g_L1; l += 32)
-        _mm512_storeu_si512((__m512i*)(acc + l), _mm512_subs_epi16(
-            _mm512_loadu_si512((const __m512i*)(acc + l)),
-            _mm512_loadu_si512((const __m512i*)(w + l))));
-#elif defined(__AVX2__)
-    for (int l = 0; l < g_L1; l += 16)
-        _mm256_storeu_si256((__m256i*)(acc + l), _mm256_subs_epi16(
-            _mm256_loadu_si256((const __m256i*)(acc + l)),
-            _mm256_loadu_si256((const __m256i*)(w + l))));
-#else
-    for (int l = 0; l < g_L1; ++l) acc[l] = int16_t(std::max(-32768, std::min(32767, int(acc[l]) - int(w[l]))));
-#endif
-}
 
 static inline void add_feature(Accumulator& a, int p, int ksq, int sq, Piece piece) {
     add_row(a.v[p], feature_row(p == 0, ksq, sq, piece));
@@ -535,7 +520,7 @@ static inline void add_feature(Accumulator& a, int p, int ksq, int sq, Piece pie
 
 // One perspective of a child accumulator, written in a single pass from the
 // parent's lanes: +add0 -sub0, then -sub1 (S1), then +add1 (A1). The SIMD
-// builds saturate after every step, as add_row and sub_row do; the scalar build
+// builds saturate after every step, as add_row does; the scalar build
 // clamps once over the first pair and then after each later step. These are the
 // steps, order and saturation of the copy-then-update-in-place sequence this
 // replaced, so the lanes are bit-identical to it. Saturating adds and subtracts
@@ -899,8 +884,8 @@ Value evaluate(const Position& pos) {
                 float ref_a = std::min(1.0f, std::max(0.0f, ref * FT_WINV));
                 float inc_a = std::min(1.0f, std::max(0.0f, inc.v[p][l] * FT_WINV));
                 if (std::fabs(ref_a - inc_a) > 1.0f/127.0f + 1e-6) {
-                    std::fprintf(stderr, "NNUE ACC MISMATCH ply=%d p=%d l=%d ref=%.4f inc=%.4f\n",
-                                 pos.state_ply(), p, l, ref, inc.v[p][l]);
+                    std::fprintf(stderr, "NNUE ACC MISMATCH ply=%d p=%d l=%d ref=%d inc=%d\n",
+                                 pos.state_ply(), p, l, int(ref), int(inc.v[p][l]));
                     std::abort();
                 }
             }
