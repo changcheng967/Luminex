@@ -1157,25 +1157,17 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
             }
         }
 
-        // Late move pruning: prune quiet moves after examining a reasonable number
-        // Improving positions can tolerate more pruning (more likely to recover)
-        // BUT: moves with strong history should never be pruned (they're likely good)
+        // Late move pruning: past a depth-dependent move count, quiet moves
+        // other than the killers are not searched. Positions that are
+        // improving, or whose opponent is worsening, keep one more move.
+        // Quiets arrive ordered by history, so the skipped moves are the
+        // ones it rates lowest.
         int lmp_base = (ss->improving || opponent_worsening) ? 3 : 2;
         int lmp_threshold = lmp_base + depth * depth;
-        if (is_quiet && !pv_node && ss->ply > 0 && depth <= 8 && moves_played >= lmp_threshold) {
-            // History escape: if the move has strong positive combined history,
-            // it has been good in similar positions — don't prune it
-            // When eval is uncertain, relax the escape threshold (more moves survive)
-            Piece pc = pos.piece_on(m.from());
-            bool has_good_history = false;
-            if (pc != NO_PIECE) {
-                int hist_threshold = eval_uncertainty > 80 ? -3000 : 0;
-                has_good_history = combined_history(worker, ss, pc, m.to()) > hist_threshold;
-            }
-            if (!has_good_history && m != worker->killers[ss->ply][0] && m != worker->killers[ss->ply][1]) {
-                g_stats.lmp_prunes++;
-                return false;  // No good history and not killer: prune
-            }
+        if (is_quiet && !pv_node && ss->ply > 0 && depth <= 8 && moves_played >= lmp_threshold
+            && m != worker->killers[ss->ply][0] && m != worker->killers[ss->ply][1]) {
+            g_stats.lmp_prunes++;
+            return false;
         }
 
         // Futility pruning: skip quiet moves that can't improve alpha
