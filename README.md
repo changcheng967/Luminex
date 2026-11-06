@@ -33,11 +33,15 @@ Take the modern build unless the CPU lacks AVX2; most x86 CPUs from 2013 on
 have it. Every build runs the network: the modern ones with AVX2 kernels, the
 others with a portable int8 path (NEON dot-product on Apple silicon).
 
-Each release also attaches the current network (`luminex_sfq_i8.nnue`).
-Place it next to the binary or in the working directory and it loads
-automatically at the first `isready` or `go`; the `NNUEFile` option overrides
-it. Without a loadable network the engine says so with an `info string` and
-uses the hand-crafted evaluation.
+Every release binary carries the current network (`luminex_sfq_i8.nnue`)
+inside it, so the binary alone plays at full strength; it loads at the first
+`isready` or `go`. To play with another network, point `NNUEFile` at its
+file, which is looked for as given and then next to the binary. Left at its
+default name, `NNUEFile` selects the built-in network. Each release also
+attaches the network as a separate file, for builds without one inside, which
+look for it in the working directory and next to the binary. Without a
+loadable network the engine says so with an `info string` and uses the
+hand-crafted evaluation.
 
 ## Usage
 
@@ -58,7 +62,7 @@ go movetime 1000
 | `UCI_ShowWDL` | false | Append `wdl W D L` (per mille, approximate model) to info lines |
 | `Ponder` | false | Allow pondering (`go ponder` / `ponderhit`) |
 | `UseNNUE` | true | NNUE evaluation (automatic HCE fallback if unavailable) |
-| `NNUEFile` | `luminex_sfq_i8.nnue` | Path to the `.nnue` network file |
+| `NNUEFile` | `luminex_sfq_i8.nnue` | Network file to load; the default name selects the built-in network |
 | `Contempt` | 0 | Draw avoidance (centipawns) |
 | `Move Overhead` | 30 | Time-management safety margin (ms) |
 | `BookFile` | `<empty>` | Polyglot opening-book path |
@@ -103,6 +107,16 @@ Requires a C++23 compiler (GCC 13+, Clang 15+, MSVC 2022+) and CMake 3.20+.
 
 ```bash
 cmake -B build -DCMAKE_BUILD_TYPE=Release
+cmake --build build --config Release
+```
+
+That binary has no network inside and loads `luminex_sfq_i8.nnue` from the
+working directory or its own directory. To build the network in, as the
+releases do, fetch the pinned file and name it at configure time:
+
+```bash
+bash .github/scripts/fetch-net.sh
+cmake -B build -DCMAKE_BUILD_TYPE=Release -DLUMINEX_EMBED_NET=net/luminex_sfq_i8.nnue
 cmake --build build --config Release
 ```
 

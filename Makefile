@@ -63,9 +63,10 @@ ifeq ($(shell test $(GCC_MAJOR) -ge 13 2>/dev/null && echo ok),)
 endif
 endif
 
-# EVALFILE is accepted and ignored: Luminex loads .nnue at runtime through the
-# EvalFile UCI option, not by embedding it at build time. The OpenBench client
-# is patched to inject that option (see ../LUMINEX_INTEGRATION.md).
+# EVALFILE is accepted and ignored: this build carries no network inside
+# (CMake's LUMINEX_EMBED_NET stays empty) and loads the .nnue at runtime
+# through the NNUEFile UCI option. The OpenBench client is patched to inject
+# that option (see ../LUMINEX_INTEGRATION.md).
 EVALFILE  ?=
 
 .PHONY: all clean

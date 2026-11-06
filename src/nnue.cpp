@@ -13,6 +13,7 @@
 // HalfKAv2_hm feature indexer mirrored EXACTLY from nnue/luminex_nnue_train.py.
 #include "nnue.h"
 #include "board.h"
+#include "embedded_net.h"
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
@@ -26,6 +27,8 @@
 #include <sys/mman.h>
 #endif
 #include <fstream>
+#include <istream>
+#include <streambuf>
 #include <string>
 #include <vector>
 #if defined(__x86_64__) || defined(__i386__) || defined(_M_X64) || defined(_M_IX86)
@@ -244,7 +247,7 @@ bool enabled() { return g_loaded && g_enabled; }
 void set_enabled(bool on) { g_enabled = on; }
 int l1() { return g_L1; }
 
-static bool read_tensor(std::ifstream& f, std::vector<float>& v, int expected) {
+static bool read_tensor(std::istream& f, std::vector<float>& v, int expected) {
     int32_t n = 0;
     f.read(reinterpret_cast<char*>(&n), 4);
     if (n != expected) { std::fprintf(stderr, "nnue: size mismatch %d != %d\n", n, expected); return false; }
@@ -253,23 +256,11 @@ static bool read_tensor(std::ifstream& f, std::vector<float>& v, int expected) {
     return f.good();
 }
 
-static bool read_raw(std::ifstream& f, std::vector<float>& v, int n) {
-    v.resize(n);
-    f.read(reinterpret_cast<char*>(v.data()), (size_t)n * sizeof(float));
-    return f.good();
-}
-
-// Optional DOSL head tag (raw layout, no size prefix); rewinds when absent.
-static void read_optional_linh(std::ifstream& f) {
-}
-
-
-
 // l2_w(i8), l2_b(i32), l3_w(i8), l3_b(i32), out_w(i8), s_out(f32), out_b(i32).
 
-bool load(const std::string& path) {
-    std::ifstream f(path, std::ios::binary);
-    if (!f) { std::fprintf(stderr, "nnue: cannot open %s\n", path.c_str()); return false; }
+// Read a network from f, a file or the copy built into the binary; name is
+// what the report calls it.
+static bool load_stream(std::istream& f, const std::string& name) {
     char magic[4];
     f.read(magic, 4);
     std::string mg(magic, 4);
@@ -402,11 +393,51 @@ bool load(const std::string& path) {
 #endif
     // stdout carries UCI traffic, so the report is an info string.
     std::printf("info string NNUE evaluation using %s (%s L1=%d L2=%d L3=%d)\n",
-                path.c_str(), g_int8 ? "int8" : "float", L1, L2, L3);
+                name.c_str(), g_int8 ? "int8" : "float", L1, L2, L3);
     if (clamped > 0)
         std::printf("info string NNUE warning: %lld feature weights exceed the int16 range and were clamped\n",
                     clamped);
     return true;
+}
+
+bool load(const std::string& path) {
+    std::ifstream f(path, std::ios::binary);
+    if (!f) { std::fprintf(stderr, "nnue: cannot open %s\n", path.c_str()); return false; }
+    return load_stream(f, path);
+}
+
+namespace {
+// Read-only stream buffer over bytes already in memory, seekable because the
+// loader probes for an optional trailing section and rewinds when it is absent.
+class MemoryBuffer : public std::streambuf {
+public:
+    MemoryBuffer(const unsigned char* data, std::size_t size) {
+        char* p = reinterpret_cast<char*>(const_cast<unsigned char*>(data));
+        setg(p, p, p + size);
+    }
+
+protected:
+    pos_type seekoff(off_type off, std::ios_base::seekdir dir, std::ios_base::openmode which) override {
+        if (!(which & std::ios_base::in)) return pos_type(off_type(-1));
+        char* from = dir == std::ios_base::beg ? eback() : dir == std::ios_base::cur ? gptr() : egptr();
+        if (off < eback() - from || off > egptr() - from) return pos_type(off_type(-1));
+        setg(eback(), from + off, egptr());
+        return pos_type(off_type(gptr() - eback()));
+    }
+    pos_type seekpos(pos_type pos, std::ios_base::openmode which) override {
+        return seekoff(off_type(pos), std::ios_base::beg, which);
+    }
+};
+} // namespace
+
+bool has_embedded() { return embedded_net().size > 0; }
+
+bool load_embedded() {
+    const EmbeddedNet net = embedded_net();
+    if (net.size == 0) return false;
+    MemoryBuffer buf(net.data, net.size);
+    std::istream f(&buf);
+    return load_stream(f, std::string("built-in ") + DEFAULT_NET);
 }
 
 static inline float clip01(float x) { float c = x < 0.0f ? 0.0f : (x > 1.0f ? 1.0f : x); return c * c; }

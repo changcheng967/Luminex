@@ -13,13 +13,21 @@ namespace luminex::nnue {
 // accumulator buffers (float [2][NNUE_L1_MAX]) and h_i8/h2 stacks are sized from this.
 inline constexpr int NNUE_L1_MAX = 1024;
 
-// Network shipped with each release; loaded automatically when found in the
-// working directory or next to the engine binary.
+// Network shipped with each release. Release binaries carry it inside them
+// (CMake LUMINEX_EMBED_NET); a build without it loads the file of this name
+// from the working directory or next to the engine binary.
 inline constexpr const char* DEFAULT_NET = "luminex_sfq_i8.nnue";
 
 // Load a .nnue file. Returns true on success. A missing file or bad header
 // keeps the current net; a file that fails part-way leaves no net loaded.
 bool load(const std::string& path);
+
+// Load the network built into the binary, under the same rules as load().
+// False when the build carries none.
+bool load_embedded();
+
+// Whether the binary carries a built-in network.
+bool has_embedded();
 
 // True iff a net is loaded AND the user enabled UseNNUE. evaluate() checks this.
 bool enabled();
