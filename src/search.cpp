@@ -1970,6 +1970,8 @@ Move search(Position& pos, Limits& lim) {
 
         return MOVE_NONE;  // No move to make
     }
+    // A forced reply gains nothing from thought (1.3-1.4% of SPRT decisions)
+    const bool single_reply = initial_end - initial_moves == 1;
 
     // Initialize LMR reduction table (once)
     if (!reductions_initialized) init_reductions();
@@ -2012,6 +2014,23 @@ Move search(Position& pos, Limits& lim) {
             int mtg = std::max(1, limits.movestogo);
             ideal_time = time_left / mtg + time_inc - overhead;
             max_time = time_left / std::max(1, mtg / 2) + time_inc - overhead;
+        } else if (time_inc > 0 && params.time_schedule > 0) {
+            // Solved schedule: dynamic programming over own move number x
+            // clock, with the lengths of 16,732 SPRT games and a safety floor
+            // of ten increments, read back as a formula. The clock above the
+            // floor is spread over a horizon (in moves, x100 here) that
+            // shrinks with the move number, plus 90% of the increment; at the
+            // floor the engine moves at the increment's pace and the clock
+            // holds. The stop rule below spends about 0.86 of ideal_time on
+            // average, hence ideal_time = target / 0.86.
+            int move_no = pos.game_ply() / 2 + 1;
+            int excess  = std::max(0, time_left - overhead - 10 * time_inc);
+            int horizon = params.time_schedule == 1 ? std::max(800, 5200 - 72 * move_no)
+                                                    : std::max(1000, 4200 - 120 * move_no);
+            int target  = int(int64_t(excess) * 100 / horizon) + time_inc * 9 / 10;
+            int hard    = excess / 2 + time_inc * 9 / 10;
+            ideal_time  = std::min(target * 116 / 100, hard);
+            max_time    = std::min(hard, std::max(ideal_time * 2, time_inc + 50));
         } else {
             // Sudden death with increment-scaled reserve (the neryba flag:
             // +19.29 and mate-in-14 lost at 0:07). The reserve scales with
@@ -2084,6 +2103,7 @@ Move search(Position& pos, Limits& lim) {
     // iteration (which always read zero).
     uint64_t prev_depth_nodes = 0;
     uint64_t prev_best_nodes = 0;
+    int last_iteration_ms = 0;  // wall time of the last completed iteration
 
     for (root_depth = start_depth; root_depth <= effective_depth; ++root_depth) {
         // Check stop at the very start of each depth iteration
@@ -2111,6 +2131,13 @@ Move search(Position& pos, Limits& lim) {
             auto now = std::chrono::steady_clock::now();
             int elapsed = static_cast<int>(std::chrono::duration_cast<std::chrono::milliseconds>(
                 now - search_start).count());
+            // Solved schedules: a forced reply moves at once, and an iteration
+            // that would end past the hard limit even if it took no longer
+            // than the last one is not started (it would be cut off there and
+            // its result thrown away)
+            if (params.time_schedule > 0 && (single_reply || elapsed + last_iteration_ms > max_time)) {
+                break;
+            }
             // Reduce ideal time when best move is very stable
             int stability_reduction = (best_move_stability >= 4) ? ideal_time * 3 / 5
                                     : (best_move_stability >= 3) ? ideal_time * 3 / 4
@@ -2145,6 +2172,8 @@ Move search(Position& pos, Limits& lim) {
         // Check time before starting a new depth
         check_time();
         if (stop.load(std::memory_order_relaxed)) break;
+        const int iteration_start_ms = static_cast<int>(std::chrono::duration_cast<std::chrono::milliseconds>(
+            std::chrono::steady_clock::now() - search_start).count());
 
         // Aspiration window - use previous depth's score
         // Start with very wide window for stability
@@ -2418,6 +2447,7 @@ Move search(Position& pos, Limits& lim) {
         // Calculate elapsed time for NPS
         auto search_end = std::chrono::steady_clock::now();
         int time_ms = static_cast<int>(std::chrono::duration_cast<std::chrono::milliseconds>(search_end - search_start).count());
+        last_iteration_ms = time_ms - iteration_start_ms;
 
         // Send UCI info (global counter — helpers' nodes must be included)
         uci_info(pos, root_depth, depth_best_value, nodes.load(std::memory_order_relaxed), time_ms);

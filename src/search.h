@@ -46,6 +46,12 @@ struct SearchParams {
     int multi_pv = 1;
     bool show_wdl = false;      // UCI "UCI_ShowWDL": append wdl W D L to info
     int move_overhead_ms = 30;  // UCI "Move Overhead": latency safety margin (ms)
+    // UCI "TimeSchedule", sudden death with an increment: 0 = the reserve
+    // formula; 1 and 2 = schedules solved by dynamic programming over SPRT
+    // game lengths (1: every move worth the same, 2: early moves worth more).
+    // 1 and 2 also move at once with a single legal reply and never start an
+    // iteration that cannot finish before the hard limit.
+    int time_schedule = 0;
 };
 
 // Search statistics for debugging
