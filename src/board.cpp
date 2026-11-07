@@ -803,6 +803,11 @@ bool Position::do_move(Move m) {
     st_->key ^= Zobrist::side;
     side_to_move_ = them;
 
+    // The child's key is final: start loading its hash entry now, so that
+    // set_check_info and the network update below hide the memory latency and
+    // the child's probe finds the entry in cache.
+    TT.prefetch(st_->key);
+
 #ifndef NDEBUG
     // VALIDATION: Catch board corruption immediately (debug builds only)
     bool valid = validate_move(m, from, to, pc, captured);
@@ -1022,6 +1027,7 @@ void Position::do_null_move() {
     st_->ep_square = SQUARE_NONE;
     st_->key ^= Zobrist::side;
     side_to_move_ = Color(side_to_move_ ^ 1);
+    TT.prefetch(st_->key);  // as in do_move: the child's probe then hits the cache
 
     // checkers/pinned/block_checkers copied above describe the OLD side to
     // move; legal()'s fast path trusts them for the new one and would accept

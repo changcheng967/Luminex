@@ -6,6 +6,9 @@ on:
   pull_request:
     branches: [ main ]
 
+# Every build carries the shipped network (fetch-net.sh pins the file) and
+# must evaluate with it when run by itself from an empty directory
+# (check-net.sh), as the release binaries are.
 jobs:
   linux-modern:
     runs-on: ubuntu-latest
@@ -13,16 +16,18 @@ jobs:
     - uses: actions/checkout@v5
     - name: Install dependencies
       run: sudo apt-get update && sudo apt-get install -y ninja-build
+    - name: Fetch the network
+      run: bash .github/scripts/fetch-net.sh
     - name: Configure
-      run: cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DCI=ON -DCMAKE_CXX_COMPILER=g++-14 -DLUMINEX_MARCH=x86-64-v3
+      run: cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DCI=ON -DCMAKE_CXX_COMPILER=g++-14 -DLUMINEX_MARCH=x86-64-v3 -DLUMINEX_EMBED_NET=net/luminex_sfq_i8.nnue
     - name: Build
       run: cmake --build build --config Release
     - name: Check instruction set
       run: bash .github/scripts/check-isa.sh build/luminex avx2
     - name: Run Bench
       run: ./build/luminex bench
-    - name: Test UCI
-      run: printf 'uci\nisready\nquit\n' | ./build/luminex
+    - name: Check the built-in network
+      run: bash .github/scripts/check-net.sh build/luminex
 
   linux-compat:
     runs-on: ubuntu-latest
@@ -30,16 +35,18 @@ jobs:
     - uses: actions/checkout@v5
     - name: Install dependencies
       run: sudo apt-get update && sudo apt-get install -y ninja-build
+    - name: Fetch the network
+      run: bash .github/scripts/fetch-net.sh
     - name: Configure
-      run: cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DCI=ON -DCMAKE_CXX_COMPILER=g++-14 -DLUMINEX_MARCH=x86-64-v2
+      run: cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DCI=ON -DCMAKE_CXX_COMPILER=g++-14 -DLUMINEX_MARCH=x86-64-v2 -DLUMINEX_EMBED_NET=net/luminex_sfq_i8.nnue
     - name: Build
       run: cmake --build build --config Release
     - name: Check instruction set
       run: bash .github/scripts/check-isa.sh build/luminex baseline
     - name: Run Bench
       run: ./build/luminex bench
-    - name: Test UCI
-      run: printf 'uci\nisready\nquit\n' | ./build/luminex
+    - name: Check the built-in network
+      run: bash .github/scripts/check-net.sh build/luminex
 
   # glibc-2.35 build for older hosts (DCU pods, Ubuntu 22.04). gcc-13 ships on
   # the 22.04 runner image; static libstdc++/libgcc so no GLIBCXX_3.4.3x is
@@ -61,16 +68,18 @@ jobs:
       run: |
         sudo add-apt-repository -y ppa:ubuntu-toolchain-r/test
         sudo apt-get update && sudo apt-get install -y ninja-build g++-13
+    - name: Fetch the network
+      run: bash .github/scripts/fetch-net.sh
     - name: Configure
-      run: cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DCI=ON -DCMAKE_CXX_COMPILER=g++-13 -DLUMINEX_MARCH=${{ matrix.march }} -DCMAKE_CXX_FLAGS="-static-libstdc++ -static-libgcc"
+      run: cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DCI=ON -DCMAKE_CXX_COMPILER=g++-13 -DLUMINEX_MARCH=${{ matrix.march }} -DCMAKE_CXX_FLAGS="-static-libstdc++ -static-libgcc" -DLUMINEX_EMBED_NET=net/luminex_sfq_i8.nnue
     - name: Build
       run: cmake --build build --config Release
     - name: Check instruction set
       run: bash .github/scripts/check-isa.sh build/luminex ${{ matrix.level }}
     - name: Run Bench
       run: ./build/luminex bench
-    - name: Test UCI
-      run: printf 'uci\nisready\nquit\n' | ./build/luminex
+    - name: Check the built-in network
+      run: bash .github/scripts/check-net.sh build/luminex
     - uses: actions/upload-artifact@v4
       with:
         name: luminex-${{ matrix.suffix }}
@@ -84,8 +93,11 @@ jobs:
         shell: cmd
     steps:
     - uses: actions/checkout@v5
+    - name: Fetch the network
+      shell: bash
+      run: bash .github/scripts/fetch-net.sh
     - name: Configure
-      run: cmake -B build -G "Visual Studio 17 2022" -A x64 -T ClangCL -DLUMINEX_MSVC_ARCH=AVX2
+      run: cmake -B build -G "Visual Studio 17 2022" -A x64 -T ClangCL -DLUMINEX_MSVC_ARCH=AVX2 -DLUMINEX_EMBED_NET=net/luminex_sfq_i8.nnue
     - name: Build
       run: cmake --build build --config Release
     - name: Check instruction set
@@ -93,9 +105,9 @@ jobs:
       run: bash .github/scripts/check-isa.sh build/Release/luminex.exe avx2
     - name: Run Bench
       run: build\Release\luminex.exe bench
-    - name: Test UCI
-      run: |
-        (echo uci & echo isready & echo quit) | build\Release\luminex.exe
+    - name: Check the built-in network
+      shell: bash
+      run: bash .github/scripts/check-net.sh build/Release/luminex.exe
 
   windows-compat:
     runs-on: windows-2022  # pin: windows-latest image no longer exposes a VS instance to cmake
@@ -104,8 +116,11 @@ jobs:
         shell: cmd
     steps:
     - uses: actions/checkout@v5
+    - name: Fetch the network
+      shell: bash
+      run: bash .github/scripts/fetch-net.sh
     - name: Configure
-      run: cmake -B build -G "Visual Studio 17 2022" -A x64 -DLUMINEX_MSVC_ARCH=SSE2
+      run: cmake -B build -G "Visual Studio 17 2022" -A x64 -DLUMINEX_MSVC_ARCH=SSE2 -DLUMINEX_EMBED_NET=net/luminex_sfq_i8.nnue
     - name: Build
       run: cmake --build build --config Release
     - name: Check instruction set
@@ -113,9 +128,9 @@ jobs:
       run: bash .github/scripts/check-isa.sh build/Release/luminex.exe baseline
     - name: Run Bench
       run: build\Release\luminex.exe bench
-    - name: Test UCI
-      run: |
-        (echo uci & echo isready & echo quit) | build\Release\luminex.exe
+    - name: Check the built-in network
+      shell: bash
+      run: bash .github/scripts/check-net.sh build/Release/luminex.exe
 
   macos-arm64:
     runs-on: macos-latest
@@ -123,13 +138,15 @@ jobs:
     - uses: actions/checkout@v5
     - name: Install dependencies
       run: brew install ninja
+    - name: Fetch the network
+      run: bash .github/scripts/fetch-net.sh
     - name: Configure
-      run: cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
+      run: cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DLUMINEX_EMBED_NET=net/luminex_sfq_i8.nnue
     - name: Build
       run: cmake --build build --config Release
     - name: Check instruction set
       run: bash .github/scripts/check-isa.sh build/luminex dotprod
     - name: Run Bench
       run: ./build/luminex bench
-    - name: Test UCI
-      run: printf 'uci\nisready\nquit\n' | ./build/luminex
+    - name: Check the built-in network
+      run: bash .github/scripts/check-net.sh build/luminex
