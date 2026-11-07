@@ -1,9 +1,6 @@
 // spsa_params.h — Runtime-tunable search constants for SPSA optimization.
-// The first seven defaults are the SPSA-converged values for the quiet-trained
-// net (v6.3.0, tuned via self-play perturbation pairs, 61 iterations x 120
-// games). The rest are the constants the search used before they were exposed;
-// each default reproduces the old expression exactly, so the search is
-// unchanged until a tune moves one.
+// Every default is the rounded final value of OpenBench tune 45 (SPSA on all
+// 27 fields at once, 80,000 games at 10+0.1, run on main 5545f07's search).
 // Each field is also a UCI spin option (see uci.cpp), so OpenBench SPSA can
 // tune it directly. A spsa_params.txt in the working directory (the first 7
 // integers, one per line, in field order) is read once at startup; UCI options
@@ -14,18 +11,18 @@
 
 struct SPSAParams {
     // LMR reduction scale (reduction = scale^2 * ln(depth) * ln(moves) / 1024)
-    int lmr_scale_quiet  = 38;
+    int lmr_scale_quiet  = 31;
     // Null-move pruning reduction base: R = nmp_base + depth / 3 + min(margin / 200, 3)
-    int nmp_base         = 3;
+    int nmp_base         = 4;
     // Razoring: prune if eval + razor_base + depth^2 * razor_coeff < alpha
-    int razor_base       = 317;
-    int razor_coeff      = 56;
+    int razor_base       = 297;
+    int razor_coeff      = 54;
     // Reverse futility (static null move): prune if eval - rev_fut_coeff * depth >= beta
-    int rev_fut_coeff    = 103;
+    int rev_fut_coeff    = 97;
     // Aspiration window initial half-size
-    int aspiration_delta = 48;
+    int aspiration_delta = 41;
     // Singular extension margin: sBeta = tt_value - depth * _singular_margin / 320
-    int _singular_margin = 194;
+    int _singular_margin = 189;
 
     static constexpr int COUNT = 7;  // fields read from and written to spsa_params.txt
 
@@ -33,40 +30,40 @@ struct SPSAParams {
     int rfp_not_improving = 30;
     // Futility (quiet moves, depth <= 5): prune if eval + depth * fut_coeff
     // + (improving ? fut_improving : fut_base) < alpha
-    int fut_coeff        = 150;
-    int fut_base         = 100;
-    int fut_improving    = 30;
+    int fut_coeff        = 136;
+    int fut_base         = 98;
+    int fut_improving    = 28;
     // Late move pruning, in hundredths of a move: the count is
     // (lmp_base + 100 if improving + depth^2 * lmp_coeff) / 100
-    int lmp_base         = 200;
-    int lmp_coeff        = 100;
+    int lmp_base         = 222;
+    int lmp_coeff        = 98;
     // History pruning (quiets, depth <= 4): prune if combined history
     // < hist_prune_base - hist_prune_coeff * (depth - 1)
-    int hist_prune_base  = 783;
-    int hist_prune_coeff = 4872;
+    int hist_prune_base  = 924;
+    int hist_prune_coeff = 5095;
     // ProbCut: rbeta = beta + probcut_margin
-    int probcut_margin   = 175;
+    int probcut_margin   = 154;
     // Null-move R: the depth term is depth * 100 / nmp_depth_div, the eval
     // term min((eval - beta) / nmp_eval_div, 3)
-    int nmp_depth_div    = 300;
-    int nmp_eval_div     = 200;
+    int nmp_depth_div    = 291;
+    int nmp_eval_div     = 207;
     // LMR: history adjustment = clamp(history / lmr_hist_div, -3, 3); the
     // cut-node and ttPv adjustments are in 1024ths of a ply
-    int lmr_hist_div     = 4096;
-    int lmr_cut_node     = 1024;
-    int lmr_ttpv         = 2048;
+    int lmr_hist_div     = 4169;
+    int lmr_cut_node     = 1041;
+    int lmr_ttpv         = 2087;
     // Double singular extension when the verification fails by more than
     // depth * dext_margin / 16
-    int dext_margin      = 16;
+    int dext_margin      = 17;
     // History bonus: min(quad * d^2 + lin * d - offset, 8192); the malus is
     // its negative
     int hist_bonus_quad  = 19;
-    int hist_bonus_lin   = 155;
-    int hist_bonus_offset = 132;
+    int hist_bonus_lin   = 169;
+    int hist_bonus_offset = 126;
     // Qsearch skips captures with SEE below qs_see_coeff * depth (depth <= 0)
-    int qs_see_coeff     = 60;
+    int qs_see_coeff     = 53;
     // Correction history update weight: min(corr_weight_max, depth + 1) / 256
-    int corr_weight_max  = 16;
+    int corr_weight_max  = 13;
 
     // Load from file (COUNT ints, one per line, in field order). Returns true if loaded.
     bool load(const std::string& path) {
