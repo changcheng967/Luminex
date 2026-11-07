@@ -1,10 +1,13 @@
 // spsa_params.h — Runtime-tunable search constants for SPSA optimization.
-// Defaults are the SPSA-converged values for the quiet-trained net (v6.3.0,
-// tuned via self-play perturbation pairs, 61 iterations x 120 games).
+// The first seven defaults are the SPSA-converged values for the quiet-trained
+// net (v6.3.0, tuned via self-play perturbation pairs, 61 iterations x 120
+// games). The rest are the constants the search used before they were exposed;
+// each default reproduces the old expression exactly, so the search is
+// unchanged until a tune moves one.
 // Each field is also a UCI spin option (see uci.cpp), so OpenBench SPSA can
-// tune it directly. A spsa_params.txt in the working directory (7 integers,
-// one per line, in field order) is read once at startup; UCI options set
-// afterwards take precedence. Missing file -> defaults.
+// tune it directly. A spsa_params.txt in the working directory (the first 7
+// integers, one per line, in field order) is read once at startup; UCI options
+// set afterwards take precedence. Missing file -> defaults.
 #pragma once
 #include <cstdio>
 #include <string>
@@ -24,9 +27,48 @@ struct SPSAParams {
     // Singular extension margin: sBeta = tt_value - depth * _singular_margin / 320
     int _singular_margin = 194;
 
-    static constexpr int COUNT = 7;
+    static constexpr int COUNT = 7;  // fields read from and written to spsa_params.txt
 
-    // Load from file (7 ints, one per line, in field order). Returns true if loaded.
+    // Reverse futility: extra margin when neither side's eval trend helps us
+    int rfp_not_improving = 30;
+    // Futility (quiet moves, depth <= 5): prune if eval + depth * fut_coeff
+    // + (improving ? fut_improving : fut_base) < alpha
+    int fut_coeff        = 150;
+    int fut_base         = 100;
+    int fut_improving    = 30;
+    // Late move pruning, in hundredths of a move: the count is
+    // (lmp_base + 100 if improving + depth^2 * lmp_coeff) / 100
+    int lmp_base         = 200;
+    int lmp_coeff        = 100;
+    // History pruning (quiets, depth <= 4): prune if combined history
+    // < hist_prune_base - hist_prune_coeff * (depth - 1)
+    int hist_prune_base  = 783;
+    int hist_prune_coeff = 4872;
+    // ProbCut: rbeta = beta + probcut_margin
+    int probcut_margin   = 175;
+    // Null-move R: the depth term is depth * 100 / nmp_depth_div, the eval
+    // term min((eval - beta) / nmp_eval_div, 3)
+    int nmp_depth_div    = 300;
+    int nmp_eval_div     = 200;
+    // LMR: history adjustment = clamp(history / lmr_hist_div, -3, 3); the
+    // cut-node and ttPv adjustments are in 1024ths of a ply
+    int lmr_hist_div     = 4096;
+    int lmr_cut_node     = 1024;
+    int lmr_ttpv         = 2048;
+    // Double singular extension when the verification fails by more than
+    // depth * dext_margin / 16
+    int dext_margin      = 16;
+    // History bonus: min(quad * d^2 + lin * d - offset, 8192); the malus is
+    // its negative
+    int hist_bonus_quad  = 19;
+    int hist_bonus_lin   = 155;
+    int hist_bonus_offset = 132;
+    // Qsearch skips captures with SEE below qs_see_coeff * depth (depth <= 0)
+    int qs_see_coeff     = 60;
+    // Correction history update weight: min(corr_weight_max, depth + 1) / 256
+    int corr_weight_max  = 16;
+
+    // Load from file (COUNT ints, one per line, in field order). Returns true if loaded.
     bool load(const std::string& path) {
         FILE* f = std::fopen(path.c_str(), "r");
         if (!f) return false;
@@ -56,3 +98,47 @@ struct SPSAParams {
         return instance;
     }
 };
+
+// The UCI spin options, one per field. uci.cpp prints them and clamps values
+// set through them to [min, max], which also keeps every divisor above zero.
+struct SPSAOption {
+    const char* name;
+    int SPSAParams::* field;
+    int min, max;
+};
+
+inline constexpr SPSAOption SPSA_OPTIONS[] = {
+    {"LmrScale",        &SPSAParams::lmr_scale_quiet,    20,    70},
+    {"NmpBase",         &SPSAParams::nmp_base,            2,     6},
+    {"RazorBase",       &SPSAParams::razor_base,        150,   500},
+    {"RazorCoeff",      &SPSAParams::razor_coeff,        30,   120},
+    {"RfpCoeff",        &SPSAParams::rev_fut_coeff,      60,   160},
+    {"AspirationDelta", &SPSAParams::aspiration_delta,   20,   100},
+    {"SingularMargin",  &SPSAParams::_singular_margin,  100,   400},
+    {"RfpNotImproving", &SPSAParams::rfp_not_improving,   0,   100},
+    {"FutCoeff",        &SPSAParams::fut_coeff,          50,   300},
+    {"FutBase",         &SPSAParams::fut_base,            0,   250},
+    {"FutImproving",    &SPSAParams::fut_improving,       0,   200},
+    {"LmpBase",         &SPSAParams::lmp_base,           50,   600},
+    {"LmpCoeff",        &SPSAParams::lmp_coeff,          25,   300},
+    {"HistPruneBase",   &SPSAParams::hist_prune_base, -4000,  4000},
+    {"HistPruneCoeff",  &SPSAParams::hist_prune_coeff, 1000, 12000},
+    {"ProbcutMargin",   &SPSAParams::probcut_margin,     50,   400},
+    {"NmpDepthDiv",     &SPSAParams::nmp_depth_div,     150,   800},
+    {"NmpEvalDiv",      &SPSAParams::nmp_eval_div,       50,   600},
+    {"LmrHistDiv",      &SPSAParams::lmr_hist_div,     1024, 16384},
+    {"LmrCutNode",      &SPSAParams::lmr_cut_node,        0,  3072},
+    {"LmrTtPv",         &SPSAParams::lmr_ttpv,            0,  4096},
+    {"DoubleExtMargin", &SPSAParams::dext_margin,         0,    64},
+    {"HistBonusQuad",   &SPSAParams::hist_bonus_quad,     0,    64},
+    {"HistBonusLin",    &SPSAParams::hist_bonus_lin,      0,   400},
+    {"HistBonusOffset", &SPSAParams::hist_bonus_offset,   0,   400},
+    {"QsSeeCoeff",      &SPSAParams::qs_see_coeff,        0,   200},
+    {"CorrWeightMax",   &SPSAParams::corr_weight_max,     1,   128},
+};
+
+inline const SPSAOption* find_spsa_option(const std::string& name) {
+    for (const SPSAOption& o : SPSA_OPTIONS)
+        if (name == o.name) return &o;
+    return nullptr;
+}

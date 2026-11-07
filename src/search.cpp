@@ -67,7 +67,8 @@ inline Value value_from_tt(Value v, int ply) {
 // failed loses exactly what a cutoff earns, so a score tracks how often a move
 // works rather than how often it was tried.
 inline int hist_bonus(Depth d) {
-    return std::min(19 * d * d + 155 * d - 132, 8192);
+    const SPSAParams& sp = SPSAParams::get();
+    return std::min(sp.hist_bonus_quad * d * d + sp.hist_bonus_lin * d - sp.hist_bonus_offset, 8192);
 }
 inline int hist_malus(Depth d) {
     return -hist_bonus(d);
@@ -179,7 +180,7 @@ inline void corrhist_update(CorrHistTable& table, Color stm, uint64_t key, int16
 inline void update_all_corrections(const Position& pos, int depth, int error) {
     SearchWorker* w = worker;
     const Color stm = pos.side_to_move();
-    int16_t weight = (int16_t)std::min(16, depth + 1);
+    int16_t weight = (int16_t)std::min(SPSAParams::get().corr_weight_max, depth + 1);
     corrhist_update(w->corrhist_pawn, stm, pos.pawn_key(), weight, error);
     corrhist_update(w->corrhist_nonpawn[0], stm, pos.nonpawn_key(WHITE), weight, error);
     corrhist_update(w->corrhist_nonpawn[1], stm, pos.nonpawn_key(BLACK), weight, error);
@@ -519,7 +520,8 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
         // Skip losing captures with negative SEE (but keep queen promotions).
         // Threshold goes negative as depth drops: deeper in qsearch tolerates
         // increasingly losing captures. Exception: in check, try all evasions.
-        if (!in_check && !it->move.is_promotion() && !pos.see_ge(it->move, Value(60 * depth))) {
+        if (!in_check && !it->move.is_promotion()
+            && !pos.see_ge(it->move, Value(SPSAParams::get().qs_see_coeff * depth))) {
             continue;
         }
 
@@ -776,10 +778,13 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
         g_stats.iir_reductions++;
     }
 
+    // Tunable search constants (spsa_params.h); the move lambdas below use them too
+    const SPSAParams& sp = SPSAParams::get();
+
     // Reverse futility pruning (static null move): if eval is far above beta, prune immediately
     // Also less aggressive when eval is uncertain
     {
-        int rev_margin = SPSAParams::get().rev_fut_coeff * depth + ((ss->improving || opponent_worsening) ? 0 : 30);
+        int rev_margin = sp.rev_fut_coeff * depth + ((ss->improving || opponent_worsening) ? 0 : sp.rfp_not_improving);
         rev_margin += std::min(eval_uncertainty / 2, 80);  // Up to 80cp extra margin when uncertain
         if (!pv_node && !pos.is_check() && depth <= 8 && eval - rev_margin >= beta) {
             g_stats.rev_futility_prunes++;
@@ -789,7 +794,7 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
 
     // Razoring: at low depths, if eval is far below alpha, try qsearch to confirm
     if (!pv_node && !pos.is_check() && depth <= 4) {
-        Value razor_margin = SPSAParams::get().razor_base + depth * depth * SPSAParams::get().razor_coeff;
+        Value razor_margin = sp.razor_base + depth * depth * sp.razor_coeff;
         if (eval + razor_margin < alpha) {
             // qsearch fail-high against the (alpha-1, alpha) window returns
             // exactly alpha, which is an upper bound, not a confirmed fail-low
@@ -821,9 +826,8 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
         ss->reduction = 0;
         pos.do_null_move();
 
-        auto& sp = SPSAParams::get();
         int margin = std::max(int(eval) - int(beta), 0);
-        int R = sp.nmp_base + depth / 3 + std::min(margin / 200, 3);
+        int R = sp.nmp_base + depth * 100 / sp.nmp_depth_div + std::min(margin / sp.nmp_eval_div, 3);
 
         if (piece_count < 4) R -= 1;
 
@@ -858,7 +862,7 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
     // Skipped in excluded nodes: pruning the singular verification would
     // shortcut the very measurement the verification exists to make.
     if (!pv_node && depth >= 5 && !pos.is_check() && ss->ply >= 2 && !ss->excluded_move) {
-        Value rbeta = std::min(beta + 175, VALUE_INFINITE - 200);
+        Value rbeta = std::min(beta + sp.probcut_margin, VALUE_INFINITE - 200);
         int rdepth = depth - 3;
 
         // Dynamic SEE threshold: capture must gain enough to reach rbeta from eval
@@ -948,7 +952,7 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
         (tte->bound() & BOUND_LOWER) && abs(tt_value) < VALUE_KNOWN_WIN && !is_shuffling) {
         // Singular margin scales with depth; _singular_margin default 200
         // reproduces the prior depth*10/16 (= depth*200/320) exactly.
-        Value sBeta = Value(tt_value - depth * SPSAParams::get()._singular_margin / 320);
+        Value sBeta = Value(tt_value - depth * sp._singular_margin / 320);
         ss->excluded_move = tt_move;
         Value singular_value = search_worker(pos, ss, sBeta - 1, sBeta, (depth - 1) / 2, !cut_node);
         ss->excluded_move = MOVE_NONE;
@@ -956,7 +960,7 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
             singular_extension = 1;
             // Double extension: if move is EXTREMELY singular (fails by a lot),
             // double extension for strongly singular moves
-            if (singular_value < sBeta - depth) {
+            if (singular_value < sBeta - depth * sp.dext_margin / 16) {
                 singular_extension = 2;
             }
         } else if (singular_value >= beta) {
@@ -983,12 +987,18 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
         int m_idx = std::max(mp, 1);
         if (d_idx >= 64) d_idx = 63;
         if (m_idx >= 64) m_idx = 63;
-        int reduction = (red_table[d_idx] * red_table[m_idx] + LMR_DENOM / 2) / LMR_DENOM;
+        // The cut-node and ttPv (PV positions from TT get less reduction)
+        // adjustments are tunable in 1024ths of a ply, so they join the table
+        // product before the rounding division. The sum can go negative, so
+        // the division floors.
+        int reduction_1024 = red_table[d_idx] * red_table[m_idx] + LMR_DENOM / 2;
+        if (cut_node) reduction_1024 += sp.lmr_cut_node;
+        if (ttPv) reduction_1024 -= sp.lmr_ttpv;
+        int reduction = reduction_1024 >= 0 ? reduction_1024 / LMR_DENOM
+                                            : -((-reduction_1024 + LMR_DENOM - 1) / LMR_DENOM);
         if (!ss->improving && !opponent_worsening) reduction += 1;
         // Deep worsening: position declining over 4 plies, search less aggressively
         if (!ss->improving && !ss->improving_deep && !opponent_worsening) reduction += 1;
-        if (cut_node) reduction += 1;
-        if (ttPv) reduction -= 2; // PV positions from TT get less reduction
 
         // TT move gets less reduction
         if (m == tt_move) reduction -= 1;
@@ -999,7 +1009,7 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
             int history_score = combined_history(worker, ss, pc, m.to());
 
             // History influence on reduction, clamped to prevent extreme adjustments
-            reduction -= std::max(-3, std::min(3, history_score / 4096));
+            reduction -= std::max(-3, std::min(3, history_score / sp.lmr_hist_div));
         }
 
         // Reduce less for killer moves
@@ -1155,7 +1165,7 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
             if (pc != NO_PIECE) {
                 int hist_score = combined_history(worker, ss, pc, m.to());
                 // Prune if history is very negative (move has historically been bad)
-                if (hist_score < 783 - 4872 * (depth - 1)) {
+                if (hist_score < sp.hist_prune_base - sp.hist_prune_coeff * (depth - 1)) {
                     g_stats.history_prunes++;
                     return false;
                 }
@@ -1166,9 +1176,9 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
         // other than the killers are not searched. Positions that are
         // improving, or whose opponent is worsening, keep one more move.
         // Quiets arrive ordered by history, so the skipped moves are the
-        // ones it rates lowest.
-        int lmp_base = (ss->improving || opponent_worsening) ? 3 : 2;
-        int lmp_threshold = lmp_base + depth * depth;
+        // ones it rates lowest. The count is tunable in hundredths of a move.
+        int lmp_threshold = (sp.lmp_base + ((ss->improving || opponent_worsening) ? 100 : 0)
+                             + depth * depth * sp.lmp_coeff) / 100;
         if (is_quiet && !pv_node && ss->ply > 0 && depth <= 8 && moves_played >= lmp_threshold
             && m != worker->killers[ss->ply][0] && m != worker->killers[ss->ply][1]) {
             g_stats.lmp_prunes++;
@@ -1177,7 +1187,7 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
 
         // Futility pruning: skip quiet moves that can't improve alpha
         if (is_quiet && !pv_node && ss->ply > 0 && !pos.is_check() && depth <= 5) {
-            int margin = depth * 150 + (ss->improving ? 30 : 100);
+            int margin = depth * sp.fut_coeff + (ss->improving ? sp.fut_improving : sp.fut_base);
             margin += std::min(eval_uncertainty / 3, 50);  // Less pruning when eval uncertain
             if (eval + margin < alpha) {
                 g_stats.futility_prunes++;

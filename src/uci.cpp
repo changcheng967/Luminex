@@ -5,6 +5,7 @@
 #include "nnue.h"
 #include "book.h"
 #include "spsa_params.h"
+#include <algorithm>
 #include <chrono>
 #include <cstdarg>
 #include <format>
@@ -326,13 +327,9 @@ void handle_uci() {
     // Search constants (spsa_params.h), exposed for OpenBench SPSA tuning
     {
         const SPSAParams& sp = SPSAParams::get();
-        safe_output(std::format("option name LmrScale type spin default {} min 20 max 70\n", sp.lmr_scale_quiet));
-        safe_output(std::format("option name NmpBase type spin default {} min 2 max 6\n", sp.nmp_base));
-        safe_output(std::format("option name RazorBase type spin default {} min 150 max 500\n", sp.razor_base));
-        safe_output(std::format("option name RazorCoeff type spin default {} min 30 max 120\n", sp.razor_coeff));
-        safe_output(std::format("option name RfpCoeff type spin default {} min 60 max 160\n", sp.rev_fut_coeff));
-        safe_output(std::format("option name AspirationDelta type spin default {} min 20 max 100\n", sp.aspiration_delta));
-        safe_output(std::format("option name SingularMargin type spin default {} min 100 max 400\n", sp._singular_margin));
+        for (const SPSAOption& o : SPSA_OPTIONS)
+            safe_output(std::format("option name {} type spin default {} min {} max {}\n",
+                                    o.name, sp.*o.field, o.min, o.max));
     }
     safe_output("option name UCI_Elo type spin default 1320 min 1320 max 3190\n");
     safe_output("option name UCI_LimitStrength type check default false\n");
@@ -607,16 +604,11 @@ void handle_setoption(const std::string& cmd) {
     }
     else if (name == "SearchDepth") { g_search_depth = std::stoi(value); }
     else if (name == "NodesPerMove") { g_nodes_per_move = std::stoi(value); }
-    else if (name == "LmrScale") {
-        SPSAParams::get().lmr_scale_quiet = std::stoi(value);
-        init_search_params();  // the reduction table is derived from it
+    else if (const SPSAOption* o = find_spsa_option(name)) {
+        SPSAParams::get().*o->field = std::clamp(std::stoi(value), o->min, o->max);
+        if (o->field == &SPSAParams::lmr_scale_quiet)
+            init_search_params();  // the reduction table is derived from it
     }
-    else if (name == "NmpBase")         { SPSAParams::get().nmp_base = std::stoi(value); }
-    else if (name == "RazorBase")       { SPSAParams::get().razor_base = std::stoi(value); }
-    else if (name == "RazorCoeff")      { SPSAParams::get().razor_coeff = std::stoi(value); }
-    else if (name == "RfpCoeff")        { SPSAParams::get().rev_fut_coeff = std::stoi(value); }
-    else if (name == "AspirationDelta") { SPSAParams::get().aspiration_delta = std::stoi(value); }
-    else if (name == "SingularMargin")  { SPSAParams::get()._singular_margin = std::stoi(value); }
     else if (name == "Contempt" || name == "UCI_AnalyseMode") {
         if (name == "Contempt") {
             params.contempt = std::stoi(value);
