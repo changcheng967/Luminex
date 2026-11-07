@@ -637,8 +637,8 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
         return qsearch(pos, ss, alpha, beta, 0);
     }
 
-    // Transposition table lookup
-    TT.prefetch(pos.key());
+    // Transposition table lookup. do_move and do_null_move already prefetched
+    // this entry when they finished the key.
     bool found;
     g_stats.tt_probes++;
     TTEntry* tte = TT.probe(pos.key(), found);

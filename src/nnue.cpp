@@ -13,6 +13,7 @@
 // HalfKAv2_hm feature indexer mirrored EXACTLY from nnue/luminex_nnue_train.py.
 #include "nnue.h"
 #include "board.h"
+#include "embedded_net.h"
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
@@ -26,6 +27,8 @@
 #include <sys/mman.h>
 #endif
 #include <fstream>
+#include <istream>
+#include <streambuf>
 #include <string>
 #include <vector>
 #if defined(__x86_64__) || defined(__i386__) || defined(_M_X64) || defined(_M_IX86)
@@ -133,6 +136,7 @@ static inline int32_t dot_i8(const int8_t* w, const uint8_t* a, int n) {
 namespace { struct Stat { long long n = 0, cyc = 0; }; }
 
 static Stat st_eval, st_update, st_refresh, st_king_refresh, st_incremental;
+static Stat st_catchup;   // make_current: bringing a ply up to date before an evaluation
 static long long g_act_nz = 0, g_act_tot = 0;   // activation sparsity (non-zero L1 outputs after SCReLU)
 static long long g_sat_events = 0;              // exact accumulator leaving int16 range (self-check only)
 static bool g_profile = false;
@@ -151,14 +155,15 @@ static inline long long rdtsc() {
 }
 void print_stats() {
     if (!profile_on()) return;
-    std::fprintf(stderr, "NNUE profile: evals=%lld (%.1fM cyc, %.0f cyc/eval) | updates=%lld (%.1fM cyc, %.0f cyc/upd) | king-refreshes=%lld (%.0f cyc/kr) | incrementals=%lld (%.0f cyc/inc) | refreshes=%lld (%.1fM cyc) | L1-act density=%.1f%% | sat_events=%lld\n",
+    std::fprintf(stderr, "NNUE profile: evals=%lld (%.1fM cyc, %.0f cyc/eval) | updates=%lld (%.1fM cyc, %.0f cyc/upd) | king-refreshes=%lld (%.0f cyc/kr) | incrementals=%lld (%.0f cyc/inc) | refreshes=%lld (%.1fM cyc) | L1-act density=%.1f%% | sat_events=%lld | catch-ups=%lld (%.1fM cyc)\n",
                  st_eval.n, st_eval.cyc/1000000.0, st_eval.n ? double(st_eval.cyc)/st_eval.n : 0.0,
                  st_update.n, st_update.cyc/1000000.0, st_update.n ? double(st_update.cyc)/st_update.n : 0.0,
                  st_king_refresh.n, st_king_refresh.n ? double(st_king_refresh.cyc)/st_king_refresh.n : 0.0,
                  st_incremental.n, st_incremental.n ? double(st_incremental.cyc)/st_incremental.n : 0.0,
                  st_refresh.n, st_refresh.cyc/1000000.0,
                  g_act_tot ? 100.0*g_act_nz/g_act_tot : 0.0,
-                 g_sat_events);
+                 g_sat_events,
+                 st_catchup.n, st_catchup.cyc/1000000.0);
 }
 
 constexpr int NUM_SQ = 64;
@@ -235,6 +240,32 @@ static inline Accumulator* nnue_acc_stack() {
     return store.data();
 }
 
+// Lazy updates. do_move only records what its move changes; evaluate() brings
+// its own ply up to date first (make_current), so plies whose subtree never
+// evaluates are never computed. One record per state ply, beside the
+// accumulator stack; every do_move rewrites its own ply's record, so walking
+// back from the current ply only ever reads the current line's moves.
+struct PlyDelta {
+    Move move;
+    Piece moved = NO_PIECE;        // the moving piece before the move (a pawn for promotions)
+    PieceType captured = PT_NONE;
+    uint8_t ksq[2] = {0, 0};       // both kings' squares after the move
+    int8_t rebuild = -1;           // the side whose own king moved: rebuilt there, not updated
+    bool null_move = false;
+    bool current[2] = {false, false};
+};
+// The board after a king move, which the deferred rebuild of the mover's side reads.
+struct KingBoard { Bitboard pieces[2][6]; };
+
+static inline PlyDelta* nnue_deltas() {
+    thread_local std::vector<PlyDelta> store(NNUE_MAX_PLY);
+    return store.data();
+}
+static inline KingBoard* nnue_king_boards() {
+    thread_local std::vector<KingBoard> store(NNUE_MAX_PLY);
+    return store.data();
+}
+
 // at startpos (beyond int16's +-4.0 = 32767/8192) — the soft NNUE_ACC_REG did
 // not pull the extremes into int16 range, so saturating int16 adds corrupt
 // lanes that leave and re-enter the clip window (spec §3 fallback stands).
@@ -244,7 +275,7 @@ bool enabled() { return g_loaded && g_enabled; }
 void set_enabled(bool on) { g_enabled = on; }
 int l1() { return g_L1; }
 
-static bool read_tensor(std::ifstream& f, std::vector<float>& v, int expected) {
+static bool read_tensor(std::istream& f, std::vector<float>& v, int expected) {
     int32_t n = 0;
     f.read(reinterpret_cast<char*>(&n), 4);
     if (n != expected) { std::fprintf(stderr, "nnue: size mismatch %d != %d\n", n, expected); return false; }
@@ -253,23 +284,11 @@ static bool read_tensor(std::ifstream& f, std::vector<float>& v, int expected) {
     return f.good();
 }
 
-static bool read_raw(std::ifstream& f, std::vector<float>& v, int n) {
-    v.resize(n);
-    f.read(reinterpret_cast<char*>(v.data()), (size_t)n * sizeof(float));
-    return f.good();
-}
-
-// Optional DOSL head tag (raw layout, no size prefix); rewinds when absent.
-static void read_optional_linh(std::ifstream& f) {
-}
-
-
-
 // l2_w(i8), l2_b(i32), l3_w(i8), l3_b(i32), out_w(i8), s_out(f32), out_b(i32).
 
-bool load(const std::string& path) {
-    std::ifstream f(path, std::ios::binary);
-    if (!f) { std::fprintf(stderr, "nnue: cannot open %s\n", path.c_str()); return false; }
+// Read a network from f, a file or the copy built into the binary; name is
+// what the report calls it.
+static bool load_stream(std::istream& f, const std::string& name) {
     char magic[4];
     f.read(magic, 4);
     std::string mg(magic, 4);
@@ -402,11 +421,51 @@ bool load(const std::string& path) {
 #endif
     // stdout carries UCI traffic, so the report is an info string.
     std::printf("info string NNUE evaluation using %s (%s L1=%d L2=%d L3=%d)\n",
-                path.c_str(), g_int8 ? "int8" : "float", L1, L2, L3);
+                name.c_str(), g_int8 ? "int8" : "float", L1, L2, L3);
     if (clamped > 0)
         std::printf("info string NNUE warning: %lld feature weights exceed the int16 range and were clamped\n",
                     clamped);
     return true;
+}
+
+bool load(const std::string& path) {
+    std::ifstream f(path, std::ios::binary);
+    if (!f) { std::fprintf(stderr, "nnue: cannot open %s\n", path.c_str()); return false; }
+    return load_stream(f, path);
+}
+
+namespace {
+// Read-only stream buffer over bytes already in memory, seekable because the
+// loader probes for an optional trailing section and rewinds when it is absent.
+class MemoryBuffer : public std::streambuf {
+public:
+    MemoryBuffer(const unsigned char* data, std::size_t size) {
+        char* p = reinterpret_cast<char*>(const_cast<unsigned char*>(data));
+        setg(p, p, p + size);
+    }
+
+protected:
+    pos_type seekoff(off_type off, std::ios_base::seekdir dir, std::ios_base::openmode which) override {
+        if (!(which & std::ios_base::in)) return pos_type(off_type(-1));
+        char* from = dir == std::ios_base::beg ? eback() : dir == std::ios_base::cur ? gptr() : egptr();
+        if (off < eback() - from || off > egptr() - from) return pos_type(off_type(-1));
+        setg(eback(), from + off, egptr());
+        return pos_type(off_type(gptr() - eback()));
+    }
+    pos_type seekpos(pos_type pos, std::ios_base::openmode which) override {
+        return seekoff(off_type(pos), std::ios_base::beg, which);
+    }
+};
+} // namespace
+
+bool has_embedded() { return embedded_net().size > 0; }
+
+bool load_embedded() {
+    const EmbeddedNet net = embedded_net();
+    if (net.size == 0) return false;
+    MemoryBuffer buf(net.data, net.size);
+    std::istream f(&buf);
+    return load_stream(f, std::string("built-in ") + DEFAULT_NET);
 }
 
 static inline float clip01(float x) { float c = x < 0.0f ? 0.0f : (x > 1.0f ? 1.0f : x); return c * c; }
@@ -460,43 +519,41 @@ static inline void sub_row(int16_t* acc, const int16_t* w) {
 static inline void add_feature(Accumulator& a, int p, int ksq, int sq, Piece piece) {
     add_row(a.v[p], feature_row(p == 0, ksq, sq, piece));
 }
-static inline void remove_feature(Accumulator& a, int p, int ksq, int sq, Piece piece) {
-    sub_row(a.v[p], feature_row(p == 0, ksq, sq, piece));
-}
 
-// FUSED single-pass delta for the dominant quiet-move pattern remove(from)+add(to):
-// one accumulator read-modify-write instead of two. Net lane delta is (w_to - w_from).
-// Exactly the sequential remove+add pair whenever no lane saturates; saturating
-// add/sub do NOT commute, so on saturation the fused path can differ from a
-// sequential int16 pair (the self-check counts those events in g_sat_events —
-// range-constrained training must keep it at zero).
-static inline void move_feature(Accumulator& a, int p, int ksq, Square from, Square to, Piece pf, Piece pt) {
-    bool white_pov = (p == 0);
-    int f_idx = halfka_idx(white_pov, ksq, from, pf);
-    int t_idx = halfka_idx(white_pov, ksq, to, pt);
-    size_t fi = static_cast<size_t>(f_idx) * g_L1;
-    size_t ti = static_cast<size_t>(t_idx) * g_L1;
-    const int16_t* wf = &ft_w[fi];
-    const int16_t* wt = &ft_w[ti];
-    int16_t* acc = a.v[p];
+// One perspective of a child accumulator, written in a single pass from the
+// parent's lanes: +add0 -sub0, then -sub1 (S1), then +add1 (A1). The SIMD
+// builds saturate after every step, as add_row and sub_row do; the scalar build
+// clamps once over the first pair and then after each later step. These are the
+// steps, order and saturation of the copy-then-update-in-place sequence this
+// replaced, so the lanes are bit-identical to it. Saturating adds and subtracts
+// do not commute, so the order matters whenever a lane saturates.
+template <bool S1, bool A1>
+static inline void delta_rows(const int16_t* parent, int16_t* child, const int16_t* add0,
+                              const int16_t* sub0, const int16_t* sub1, const int16_t* add1) {
 #if defined(__AVX512F__)
     for (int l = 0; l < g_L1; l += 32) {
-        __m512i av = _mm512_loadu_si512((const __m512i*)(acc + l));
-        av = _mm512_adds_epi16(av, _mm512_loadu_si512((const __m512i*)(wt + l)));
-        av = _mm512_subs_epi16(av, _mm512_loadu_si512((const __m512i*)(wf + l)));
-        _mm512_storeu_si512((__m512i*)(acc + l), av);
+        __m512i v = _mm512_loadu_si512((const __m512i*)(parent + l));
+        v = _mm512_adds_epi16(v, _mm512_loadu_si512((const __m512i*)(add0 + l)));
+        v = _mm512_subs_epi16(v, _mm512_loadu_si512((const __m512i*)(sub0 + l)));
+        if constexpr (S1) v = _mm512_subs_epi16(v, _mm512_loadu_si512((const __m512i*)(sub1 + l)));
+        if constexpr (A1) v = _mm512_adds_epi16(v, _mm512_loadu_si512((const __m512i*)(add1 + l)));
+        _mm512_storeu_si512((__m512i*)(child + l), v);
     }
 #elif defined(__AVX2__)
     for (int l = 0; l < g_L1; l += 16) {
-        __m256i av = _mm256_loadu_si256((const __m256i*)(acc + l));
-        av = _mm256_adds_epi16(av, _mm256_loadu_si256((const __m256i*)(wt + l)));
-        av = _mm256_subs_epi16(av, _mm256_loadu_si256((const __m256i*)(wf + l)));
-        _mm256_storeu_si256((__m256i*)(acc + l), av);
+        __m256i v = _mm256_loadu_si256((const __m256i*)(parent + l));
+        v = _mm256_adds_epi16(v, _mm256_loadu_si256((const __m256i*)(add0 + l)));
+        v = _mm256_subs_epi16(v, _mm256_loadu_si256((const __m256i*)(sub0 + l)));
+        if constexpr (S1) v = _mm256_subs_epi16(v, _mm256_loadu_si256((const __m256i*)(sub1 + l)));
+        if constexpr (A1) v = _mm256_adds_epi16(v, _mm256_loadu_si256((const __m256i*)(add1 + l)));
+        _mm256_storeu_si256((__m256i*)(child + l), v);
     }
 #else
     for (int l = 0; l < g_L1; ++l) {
-        int v = int(acc[l]) + int(wt[l]) - int(wf[l]);
-        acc[l] = int16_t(std::max(-32768, std::min(32767, v)));
+        int v = std::max(-32768, std::min(32767, int(parent[l]) + int(add0[l]) - int(sub0[l])));
+        if constexpr (S1) v = std::max(-32768, std::min(32767, v - int(sub1[l])));
+        if constexpr (A1) v = std::max(-32768, std::min(32767, v + int(add1[l])));
+        child[l] = int16_t(v);
     }
 #endif
 }
@@ -597,9 +654,13 @@ static inline RefreshEntry* refresh_cache() {
     return store.data();
 }
 
-static void refresh_perspective_cached(const Position& pos, Accumulator& a, int p) {
+// Rebuild side p from the board `pieces` with its king on ksq, through the
+// refresh cache. The entry's int32 lanes are the exact sum for the board it
+// holds, so after the diff they are the exact sum for `pieces`, saturated once
+// here: the result does not depend on what the entry held before, which is
+// what lets a rebuild wait until an evaluation needs it.
+static void refresh_from_board(const Bitboard (&pieces)[2][6], int ksq, Accumulator& a, int p) {
     bool white_pov = (p == 0);
-    int ksq = static_cast<int>(pos.king_sq(white_pov ? WHITE : BLACK));
     RefreshEntry& e = refresh_cache()[p * NUM_SQ + ksq];
     if (e.net_id != g_net_id) {
         std::memcpy(e.acc, ft_b_i32.data(), sizeof(int32_t) * size_t(g_L1));
@@ -608,7 +669,7 @@ static void refresh_perspective_cached(const Position& pos, Accumulator& a, int 
     }
     for (int c = 0; c < 2; ++c)
         for (int pt = PAWN; pt <= KING; ++pt) {
-            Bitboard now = pos.pieces(Color(c), PieceType(pt));
+            Bitboard now = pieces[c][pt];
             Bitboard was = e.pieces[c][pt];
             if (now == was) continue;
             Piece pc = make_piece(Color(c), PieceType(pt));
@@ -621,6 +682,96 @@ static void refresh_perspective_cached(const Position& pos, Accumulator& a, int 
     store_saturated(a.v[p], e.acc);
 }
 
+// Sides [p_begin, p_end) of `child` from those of `parent` and the move
+// recorded in d (a ply that rebuilds none of these sides): the rows and step
+// order the eager update used, so the lanes are bit-identical to it. The move
+// is decoded once for both sides.
+static void apply_delta(const PlyDelta& d, const Accumulator& parent, Accumulator& child,
+                        int p_begin, int p_end) {
+    if (d.null_move) {
+        for (int p = p_begin; p < p_end; ++p)
+            std::memcpy(child.v[p], parent.v[p], sizeof(int16_t) * size_t(g_L1));
+        return;
+    }
+    const Move m = d.move;
+    const Square from = m.from(), to = m.to();
+    const Color us = color_of_piece(d.moved), them = ~us;
+    const PieceType moved_pt = piece_type_of(d.moved);
+    const bool promo = m.is_promotion(), ep = m.is_en_passant(), castling = m.is_castling();
+    const Piece from_pc = make_piece(us, promo ? PAWN : moved_pt);
+    const Piece to_pc   = make_piece(us, promo ? PieceType(m.promotion_type()) : moved_pt);
+    Square rfrom = SQUARE_NONE, rto = SQUARE_NONE, cap_sq = to;
+    Piece cap_pc = NO_PIECE;
+    if (castling) {
+        const bool kingside = to == (us == WHITE ? Square(G1) : Square(G8));
+        rfrom = kingside ? (us == WHITE ? Square(H1) : Square(H8)) : (us == WHITE ? Square(A1) : Square(A8));
+        rto   = kingside ? (us == WHITE ? Square(F1) : Square(F8)) : (us == WHITE ? Square(D1) : Square(D8));
+    } else if (ep) {
+        cap_sq = Square(to - (us == WHITE ? 8 : -8));
+        cap_pc = make_piece(them, PAWN);
+    } else if (d.captured != PT_NONE) {
+        cap_pc = make_piece(them, d.captured);
+    }
+    const Piece rook = make_piece(us, ROOK);
+    for (int p = p_begin; p < p_end; ++p) {
+        const bool white_pov = (p == 0);
+        const int ksq = d.ksq[p];
+        const int16_t* to_row   = feature_row(white_pov, ksq, to, to_pc);
+        const int16_t* from_row = feature_row(white_pov, ksq, from, from_pc);
+        if (castling)
+            delta_rows<true, true>(parent.v[p], child.v[p], to_row, from_row,
+                                   feature_row(white_pov, ksq, rfrom, rook), feature_row(white_pov, ksq, rto, rook));
+        else if (cap_pc != NO_PIECE)
+            delta_rows<true, false>(parent.v[p], child.v[p], to_row, from_row,
+                                    feature_row(white_pov, ksq, cap_sq, cap_pc), nullptr);
+        else
+            delta_rows<false, false>(parent.v[p], child.v[p], to_row, from_row, nullptr, nullptr);
+    }
+}
+
+// Bring both sides of the accumulator at pos's ply up to date. Each side walks
+// back to the latest ply that is computed or rebuilds that side (its own king
+// moved there) and rebuilds that one from its board snapshot if needed; then
+// the later plies are replayed in order, both sides together where both need
+// them, and marked computed so siblings reuse them.
+static void make_current(const Position& pos) {
+    const int ply = pos.state_ply();
+    PlyDelta* const ds = nnue_deltas();
+    if (ds[ply].current[0] && ds[ply].current[1]) return;
+    const bool pr = profile_on();
+    const long long t0 = pr ? rdtsc() : 0;
+    Accumulator* const acc_stack = nnue_acc_stack();
+    int start[2];
+    for (int p = 0; p < 2; ++p) {
+        int j = ply;
+        while (j > 0 && !ds[j].current[p] && ds[j].rebuild != p) --j;
+        if (!ds[j].current[p]) {
+            if (ds[j].rebuild != p) {
+                // Nothing below was ever computed on this thread (no refresh
+                // since the net loaded): rebuild this ply from the board.
+                refresh_perspective(pos, acc_stack[ply], p);
+                ds[ply].current[p] = true;
+                j = ply;
+            } else {
+                const long long kr_t0 = pr ? rdtsc() : 0;
+                refresh_from_board(nnue_king_boards()[j].pieces, ds[j].ksq[p], acc_stack[j], p);
+                ds[j].current[p] = true;
+                if (pr) { st_king_refresh.cyc += rdtsc() - kr_t0; st_king_refresh.n++; }
+            }
+        }
+        start[p] = j;
+    }
+    for (int i = std::min(start[0], start[1]) + 1; i <= ply; ++i) {
+        const int p_begin = start[0] < i ? 0 : 1;
+        const int p_end   = start[1] < i ? 2 : 1;
+        const long long inc_t0 = pr ? rdtsc() : 0;
+        apply_delta(ds[i], acc_stack[i - 1], acc_stack[i], p_begin, p_end);
+        for (int p = p_begin; p < p_end; ++p) ds[i].current[p] = true;
+        if (pr) { st_incremental.cyc += rdtsc() - inc_t0; st_incremental.n += p_end - p_begin; }
+    }
+    if (pr) { st_catchup.cyc += rdtsc() - t0; st_catchup.n++; }
+}
+
 void refresh(Position& pos) {
     if (!g_loaded) return;
     bool pr = profile_on();
@@ -629,14 +780,21 @@ void refresh(Position& pos) {
     Accumulator& a = acc_stack[pos.state_ply()];
     refresh_perspective(pos, a, 0);
     refresh_perspective(pos, a, 1);
+    PlyDelta& d = nnue_deltas()[pos.state_ply()];
+    d.null_move = false;
+    d.rebuild = -1;
+    d.current[0] = d.current[1] = true;
     if (pr) { st_refresh.cyc += rdtsc() - t0; st_refresh.n++; }
 }
 
 void copy_for_null(Position& pos) {
     if (!g_loaded) return;
-    Accumulator* const acc_stack = nnue_acc_stack();
-    int ply = pos.state_ply();
-    acc_stack[ply] = acc_stack[ply - 1];   // board unchanged → child = parent
+    // The board is unchanged: the child's lanes will be a copy of the parent's,
+    // made when an evaluation needs them.
+    PlyDelta& d = nnue_deltas()[pos.state_ply()];
+    d.null_move = true;
+    d.rebuild = -1;
+    d.current[0] = d.current[1] = false;
 }
 
 void update(Position& pos, Move m, Piece moved, PieceType captured) {
@@ -644,26 +802,34 @@ void update(Position& pos, Move m, Piece moved, PieceType captured) {
 
     bool pr = profile_on();
     long long t0 = pr ? rdtsc() : 0;
-    Accumulator* const acc_stack = nnue_acc_stack();
-    int ply = pos.state_ply();
-    Accumulator& a = acc_stack[ply];
+    const int ply = pos.state_ply();
+    const Color us = color_of_piece(moved);
+    const PieceType moved_pt = piece_type_of(moved);
+    const bool promo = m.is_promotion();
+    const PieceType from_pt = promo ? PAWN : moved_pt;
+    const PieceType to_pt   = promo ? PieceType(m.promotion_type()) : moved_pt;
 
-    Square from = m.from(), to = m.to();
-    Color us = color_of_piece(moved);
-    Color them = ~us;
-    PieceType moved_pt = piece_type_of(moved);
-    bool king_moved = (moved_pt == KING);
-    bool promo = m.is_promotion();
-    bool ep = m.is_en_passant();
-    bool castling = m.is_castling();
-    PieceType from_pt = promo ? PAWN : moved_pt;
-    PieceType to_pt   = promo ? PieceType(m.promotion_type()) : moved_pt;
+    // Record the move; make_current applies it when an evaluation needs this ply.
+    PlyDelta& d = nnue_deltas()[ply];
+    d.move = m;
+    d.moved = moved;
+    d.captured = captured;
+    d.ksq[0] = uint8_t(pos.king_sq(WHITE));
+    d.ksq[1] = uint8_t(pos.king_sq(BLACK));
+    d.rebuild = moved_pt == KING ? int8_t(us == WHITE ? 0 : 1) : int8_t(-1);
+    d.null_move = false;
+    d.current[0] = d.current[1] = false;
+    if (d.rebuild >= 0) {
+        KingBoard& kb = nnue_king_boards()[ply];
+        for (int c = 0; c < 2; ++c)
+            for (int pt = PAWN; pt <= KING; ++pt)
+                kb.pieces[c][pt] = pos.pieces(Color(c), PieceType(pt));
+    }
 
-    // Prefetch the feature weight rows that will be needed for the delta, OVERLAPPING
-    // with the 4KB copy below. This hides the L3→L1 latency (~100 cycles) behind the
-    // memcpy latency (~200 cycles). No engine does this — SF's flat layout doesn't need it,
-    // but our transposed layout has poor spatial locality per feature access.
+    // Prefetch the feature weight rows the delta reads: a child evaluated soon
+    // (most qsearch nodes) then finds them in cache.
     {
+        const Square from = m.from(), to = m.to();
         int wk = static_cast<int>(pos.king_sq(WHITE));
         int bk = static_cast<int>(pos.king_sq(BLACK));
         Piece dep_piece = make_piece(us, from_pt);
@@ -679,46 +845,14 @@ void update(Position& pos, Move m, Piece moved, PieceType captured) {
 #endif
         }
     }
-
-    acc_stack[ply] = acc_stack[ply - 1];   // copy parent → child (overlaps with prefetch)
-
-    for (int p = 0; p < 2; ++p) {
-        bool white_pov = (p == 0);
-        bool our_king_moved = king_moved && ((us == WHITE) == white_pov);
-        if (our_king_moved) {
-            long long kr_t0 = pr ? rdtsc() : 0;   // #51: independent king-refresh cost (not derived)
-            refresh_perspective_cached(pos, a, p);   // king_sq changed: rebuild via the refresh cache
-            if (pr) { st_king_refresh.cyc += rdtsc() - kr_t0; st_king_refresh.n++; }
-            continue;
-        }
-        long long inc_t0 = pr ? rdtsc() : 0;   // #51: independent incremental cost (closes last derived number)
-        int ksq = static_cast<int>(pos.king_sq(white_pov ? WHITE : BLACK));
-        move_feature(a, p, ksq, from, to, make_piece(us, from_pt), make_piece(us, to_pt));
-        if (captured != PT_NONE && !ep)
-            remove_feature(a, p, ksq, to, make_piece(them, captured));
-        if (ep) {
-            Square cap_sq = Square(to - (us == WHITE ? 8 : -8));
-            remove_feature(a, p, ksq, cap_sq, make_piece(them, PAWN));
-        }
-        if (castling) {
-            Square rfrom, rto;
-            if (to == (us == WHITE ? Square(G1) : Square(G8))) {
-                rfrom = us == WHITE ? Square(H1) : Square(H8);
-                rto   = us == WHITE ? Square(F1) : Square(F8);
-            } else {
-                rfrom = us == WHITE ? Square(A1) : Square(A8);
-                rto   = us == WHITE ? Square(D1) : Square(D8);
-            }
-            remove_feature(a, p, ksq, rfrom, make_piece(us, ROOK));
-            add_feature(a, p, ksq, rto,   make_piece(us, ROOK));
-        }
-        if (pr) { st_incremental.cyc += rdtsc() - inc_t0; st_incremental.n++; }
-    }
     if (pr) { st_update.cyc += rdtsc() - t0; st_update.n++; }
 }
 
 
 Value evaluate(const Position& pos) {
+    // Bring this ply's accumulator up to date first (lazy updates); its cost is
+    // timed apart from st_eval, so cyc/eval stays the forward pass alone.
+    make_current(pos);
     bool pr = profile_on();
     long long t0 = pr ? rdtsc() : 0;
     Accumulator* const acc_stack = nnue_acc_stack();
