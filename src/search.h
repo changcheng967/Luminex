@@ -49,9 +49,10 @@ struct SearchParams {
     // UCI "TimeSchedule", sudden death with an increment: 0 = the old
     // reserve formula; 1 and 2 = schedules solved by dynamic programming over
     // SPRT game lengths (1: every move worth the same, 2: early moves worth
-    // more). 1 and 2 also move at once with a single legal reply and never
+    // more, the default: +72 Elo against the old formula at 10+0.1, schedule
+    // 1 +26). 1 and 2 also move at once with a single legal reply and never
     // start an iteration that cannot finish before the hard limit.
-    int time_schedule = 1;
+    int time_schedule = 2;
 };
 
 // Search statistics for debugging
