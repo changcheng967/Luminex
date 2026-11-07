@@ -113,6 +113,7 @@ set(SOURCES
     src/tuner_params.cpp
     src/book.cpp
     src/nnue.cpp
+    src/embedded_net.cpp
 )
 
 set(HEADERS
@@ -126,11 +127,38 @@ set(HEADERS
     src/bitboard.h
     src/types.h
     src/book.h
+    src/embedded_net.h
 )
 
 add_executable(luminex ${SOURCES} ${HEADERS})
 
 target_include_directories(luminex PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
+
+# A network built into the binary, so it plays with NNUE on its own instead of
+# needing the .nnue file beside it; the release builds carry the shipped net.
+# The NNUEFile option still loads any other file. MSVC and clang-cl link it as
+# a resource, GCC and Clang assemble it in (src/embedded_net.cpp). Empty, the
+# default, builds without one, as OpenBench's Makefile build does.
+set(LUMINEX_EMBED_NET "" CACHE FILEPATH "Network file to build into the binary (empty: none)")
+if(LUMINEX_EMBED_NET)
+    get_filename_component(_lux_net "${LUMINEX_EMBED_NET}" ABSOLUTE BASE_DIR "${CMAKE_CURRENT_SOURCE_DIR}")
+    if(NOT EXISTS "${_lux_net}")
+        message(FATAL_ERROR "LUMINEX_EMBED_NET: ${_lux_net} does not exist")
+    endif()
+    if(MSVC)
+        enable_language(RC)
+        set(_lux_rc "${CMAKE_CURRENT_BINARY_DIR}/luminex_net.rc")
+        file(CONFIGURE OUTPUT "${_lux_rc}" CONTENT "LUMINEX_NET RCDATA \"@_lux_net@\"\n" @ONLY)
+        target_sources(luminex PRIVATE "${_lux_rc}")
+        target_compile_definitions(luminex PRIVATE LUMINEX_EMBED_NET_RC)
+        set_source_files_properties("${_lux_rc}" PROPERTIES OBJECT_DEPENDS "${_lux_net}")
+    else()
+        target_compile_definitions(luminex PRIVATE "LUMINEX_EMBED_NET_FILE=\"${_lux_net}\"")
+        # .incbin is invisible to the compiler's dependency scan.
+        set_source_files_properties(src/embedded_net.cpp PROPERTIES OBJECT_DEPENDS "${_lux_net}")
+    endif()
+    message(STATUS "Building in the network ${_lux_net}")
+endif()
 
 # Optimize for the BUILD machine. The NNUE AVX-512/VNNI paths only compile in
 # with the right -march level; measured +12% nps on Xeon 2.6GHz (688K -> 770K).
@@ -164,6 +192,7 @@ if(BUILD_FEATURIZER)
         src/movegen.cpp
         src/evaluation.cpp
         src/nnue.cpp
+        src/embedded_net.cpp
         src/magic.cpp
         src/transposition.cpp
     )
@@ -182,6 +211,7 @@ if(BUILD_EVALTRACE)
         src/movegen.cpp
         src/evaluation.cpp
         src/nnue.cpp
+        src/embedded_net.cpp
         src/magic.cpp
         src/transposition.cpp
     )
@@ -200,6 +230,7 @@ if(BUILD_LC0PACK)
         src/movegen.cpp
         src/evaluation.cpp
         src/nnue.cpp
+        src/embedded_net.cpp
         src/magic.cpp
         src/transposition.cpp
     )

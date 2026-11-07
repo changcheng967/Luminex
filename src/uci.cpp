@@ -249,28 +249,52 @@ static void search_worker(Position pos_copy, Limits lim) {
     ponder_mode.store(false, std::memory_order_relaxed);
 }
 
-// Load the configured net, falling back to DEFAULT_NET, unless that was
-// already tried for the current setting. force reloads even when a net is
-// loaded (a new NNUEFile value). Search state learned under the previous
-// eval is cleared on every successful load.
+// Load the network file `name` (resolved as resolve_net_path does), saying
+// why when it cannot.
+static bool load_net_file(const std::string& name) {
+    std::string path = resolve_net_path(name);
+    if (path.empty()) {
+        safe_output("info string NNUEFile " + name + " not found\n");
+        return false;
+    }
+    if (!nnue::load(path)) {
+        safe_output("info string NNUE network " + path + " failed to load\n");
+        return false;
+    }
+    return true;
+}
+
+// The default network: the one built into the binary, or for a build without
+// one, the DEFAULT_NET file in the working directory or next to the binary.
+static bool load_default_net() {
+    if (nnue::has_embedded()) {
+        if (nnue::load_embedded()) return true;
+        safe_output("info string the built-in NNUE network failed to load\n");
+    }
+    std::string path = resolve_net_path(nnue::DEFAULT_NET);
+    if (path.empty()) return false;
+    if (!nnue::load(path)) {
+        safe_output("info string NNUE network " + path + " failed to load\n");
+        return false;
+    }
+    return true;
+}
+
+// Load the configured net unless that was already tried for the current
+// setting; force reloads even when a net is loaded (a new NNUEFile value).
+// NNUEFile empty or at its default name selects the default network; any
+// other value names a file. A file that will not load leaves the net in use
+// in place, or the default when there is none yet. Search state learned
+// under the previous eval is cleared on every successful load.
 static void ensure_net_loaded(bool force = false) {
     if (!g_use_nnue) return;
     if (!force && (g_net_attempted || nnue::loaded())) return;
     g_net_attempted = true;
 
-    // The configured file first; the shipped default only while no net is loaded.
-    for (int i = 0; i < 2; ++i) {
-        const std::string name = i == 0 ? g_net_option : std::string(nnue::DEFAULT_NET);
-        if (name.empty() || (i == 1 && (nnue::loaded() || name == g_net_option))) continue;
-        std::string path = resolve_net_path(name);
-        if (path.empty()) {
-            if (i == 0) safe_output("info string NNUEFile " + name + " not found\n");
-            continue;
-        }
-        if (!nnue::load(path)) {
-            safe_output("info string NNUE network " + path + " failed to load\n");
-            continue;
-        }
+    const bool wants_default = g_net_option.empty() || g_net_option == nnue::DEFAULT_NET;
+    bool ok = !wants_default && load_net_file(g_net_option);
+    if (!ok && (wants_default || !nnue::loaded())) ok = load_default_net();
+    if (ok) {
         TT.clear();
         TT.new_search();
         clear_correction_history();
@@ -575,9 +599,11 @@ void handle_setoption(const std::string& cmd) {
         nnue::set_enabled(g_use_nnue);
     }
     else if (name == "NNUEFile") {
+        // Every value loads now, the empty one too: it selects the default
+        // network, which must replace a file loaded under an earlier value.
         g_net_option = (value == "<empty>") ? std::string() : value;
         g_net_attempted = false;
-        if (!g_net_option.empty()) ensure_net_loaded(true);
+        ensure_net_loaded(true);
     }
     else if (name == "SearchDepth") { g_search_depth = std::stoi(value); }
     else if (name == "NodesPerMove") { g_nodes_per_move = std::stoi(value); }
