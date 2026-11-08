@@ -812,7 +812,7 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
     // verification search's ply window.
     int piece_count = popcount(pos.pieces()) - popcount(pos.pieces(PAWN)) - 2;
     bool null_move_ok = !pv_node && !pos.is_check() && depth >= 2 && piece_count >= 1 &&
-                          eval >= beta + (depth <= 5 ? 60 : 0) &&
+                          eval >= beta + (depth <= sp.nmp_shallow_depth ? sp.nmp_shallow_margin : 0) &&
                           ss->ply >= 1 && !ss->excluded_move &&
                           (ss - 1)->current_move != MOVE_NULL &&
                           ss->ply >= worker->nmp_disabled_ply;
