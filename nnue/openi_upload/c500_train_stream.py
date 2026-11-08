@@ -55,11 +55,25 @@ def _find_file(name):
         if name in fn: return os.path.join(dp, name)
     return None
 
+def _resolve(path):
+    """A path that does not exist as given is looked up by its file name under
+    the search roots: OpenI puts code and datasets under /tmp/code and
+    /tmp/dataset, at task-dependent subpaths that prepare() fills only once
+    this script runs, so a start command cannot know them in advance."""
+    if not path or path == "0" or os.path.exists(path):
+        return path
+    found = _find_file(os.path.basename(path))
+    if found:
+        print(f"[path] {path} -> {found}", flush=True)
+        return found
+    return path
+
+
 # SF-relabel binpack path: NNUE_FENEVAL_FILE points at a fen<TAB>white_cp tsv;
 # featurize --fen-eval streams 140B records exactly like the frame pipeline.
 # The gamepack frame search below walks /tmp and may extract a tar, so it runs
 # only when no fen-eval file is given.
-_FENEVAL = os.environ.get("NNUE_FENEVAL_FILE")
+_FENEVAL = _resolve(os.environ.get("NNUE_FENEVAL_FILE"))
 if _FENEVAL:
     FRAMES = [_FENEVAL]
 else:
@@ -165,7 +179,7 @@ print(f"loss: power={os.environ.get('NNUE_LOSS_POWER', '2.6')} in sigmoid(cp/{SC
 model = LNNUE(L1=L1).to(device)
 gstep = 0  # must exist before resume check (fresh runs would NameError otherwise)
 _ck = None  # resume checkpoint dict (kept for SWA state restore further below)
-_resume = os.environ.get("NNUE_RESUME") or os.path.join(os.path.dirname(__file__) or ".", OUT_BASE + ".pt")
+_resume = _resolve(os.environ.get("NNUE_RESUME")) or os.path.join(os.path.dirname(__file__) or ".", OUT_BASE + ".pt")
 _opt_state = None  # deferred: optimizer doesn't exist yet at resume time
 # An explicit NNUE_RESUME must load; only the implicit OUT_BASE.pt may be absent.
 _resume_explicit = os.environ.get("NNUE_RESUME", "") not in ("", "0")
