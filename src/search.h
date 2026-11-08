@@ -59,8 +59,8 @@ struct SearchParams {
     // is decided), the default: +8.3 Elo against 0 at 10+0.1
     int time_stability = 1;
     // UCI "TimeZeroInc", sudden death without an increment: 0 = the old
-    // formula; 1 = the clock above a reserve of 20 move overheads spread over
-    // the value-weighted horizon (value_horizon() in search.cpp)
+    // formula; 1 = the clock above a reserve (1 s, or 30 move overheads)
+    // spread over the value-weighted horizon (value_horizon() in search.cpp)
     int time_zero_inc = 0;
     // UCI "TimeMovesToGo", controls with moves to go: 0 = the old formula
     // (time_left / movestogo); 1 = the clock above a small reserve spread over

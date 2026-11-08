@@ -2046,11 +2046,12 @@ Move search(Position& pos, Limits& lim) {
 
         if (limits.movestogo > 0 && params.time_moves_to_go > 0) {
             // Moves to go: the clock above a small reserve (it refills after
-            // this block) spread over the value-weighted horizon to the
-            // block's last move, plus 90% of any increment. Before the last
-            // move of the block, one move takes at most 2/3 of the excess.
+            // this block; 0.1 s at the default overhead) spread over the
+            // value-weighted horizon to the block's last move, plus 90% of
+            // any increment. Before the last move of the block, one move takes
+            // at most 2/3 of the excess.
             int mtg     = std::max(1, limits.movestogo);
-            int excess  = std::max(0, time_left - overhead - std::max(50, 2 * overhead));
+            int excess  = std::max(0, time_left - overhead - std::max(100, 3 * overhead));
             int target  = int(excess / value_horizon(move_no, move_no + mtg - 1)) + time_inc * 9 / 10;
             int hard    = (mtg > 1 ? excess * 2 / 3 : excess) + time_inc * 9 / 10;
             ideal_time  = std::min(target * 116 / 100, hard);
@@ -2060,11 +2061,12 @@ Move search(Position& pos, Limits& lim) {
             ideal_time = time_left / mtg + time_inc - overhead;
             max_time = time_left / std::max(1, mtg / 2) + time_inc - overhead;
         } else if (time_inc == 0 && params.time_zero_inc > 0) {
-            // No increment: the clock above a reserve for a long game's tail
-            // at minimum time (20 move overheads, 0.6 s at the default; at
-            // least 0.3 s) spread over the value-weighted horizon to the end
-            // of the game.
-            int excess  = std::max(0, time_left - overhead - std::max(300, 20 * overhead));
+            // No increment: the clock above a reserve spread over the
+            // value-weighted horizon to the end of the game. The reserve pays
+            // for a long game's tail at minimum time (~12 ms a move): 1 s, or
+            // 30 move overheads if more, kept 0.5 s at move 150 on the model
+            // (a 169-move game flagged with 0.6 s).
+            int excess  = std::max(0, time_left - overhead - std::max(1000, 30 * overhead));
             int target  = int(excess / value_horizon(move_no, 0));
             int hard    = excess / 2;
             ideal_time  = std::min(target * 116 / 100, hard);
