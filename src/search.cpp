@@ -274,6 +274,39 @@ static std::chrono::steady_clock::time_point search_start;
 static int ideal_time = 0;  // Ideal time to use for this search
 static int max_time = 0;    // Maximum time to use
 
+// Value-weighted horizon for the controls without a per-move increment to
+// pace the late game (TimeZeroInc, TimeMovesToGo): the expected number of own
+// moves still to be played from own move m through own move last (0 = to the
+// end of the game), each weighted by what thinking time is worth there
+// relative to move m. Spending the clock above a reserve over this horizon
+// matched the dynamic-programming optimum on the SPRT game lengths (10+0:
+// 474.4 against 474.6 for the optimum and 467.0 for the old formula; 40 moves
+// in 10 s: 573.2 against 573.0 and 562.4, in units of 1/1000 expected score x
+// doublings per game). Value of time: schedule 2's tempered phase values,
+// linear between the phase midpoints. Survival: the game ends after own move k
+// with probability 3.2% x clamp((k - 20) / 50, 0, 1), fitted to 16,732 SPRT
+// game lengths (reaches move 60 / 100 / 150: 0.60 / 0.17 / 0.03, measured
+// 0.62 / 0.17 / 0.03).
+static double value_horizon(int m, int last) {
+    static constexpr double AT[] = {8, 23, 40, 65, 100};
+    static constexpr double BV[] = {1.25, 1.55, 0.80, 0.60, 0.60};
+    auto value = [](int k) {
+        if (k <= AT[0]) return BV[0];
+        for (int i = 1; i < 5; ++i)
+            if (k <= AT[i])
+                return BV[i - 1] + (BV[i] - BV[i - 1]) * (k - AT[i - 1]) / (AT[i] - AT[i - 1]);
+        return BV[4];
+    };
+    m = std::max(1, m);
+    int end = last > 0 ? last : m + 400;
+    double h = 0.0, survive = 1.0, vm = value(m);
+    for (int j = m; j <= end && survive > 1e-4; ++j) {
+        h += survive * value(j) / vm;
+        survive *= 1.0 - 0.032 * std::clamp((j - 20) / 50.0, 0.0, 1.0);
+    }
+    return std::max(1.0, h);
+}
+
 // Check time - returns true if time limit exceeded
 bool check_time() {
     // Check volatile stop flag first for fastest response
@@ -2009,11 +2042,35 @@ Move search(Position& pos, Limits& lim) {
         if (time_inc < 0) time_inc = 0;
 
         int overhead = std::max(0, params.move_overhead_ms);
+        int move_no  = pos.game_ply() / 2 + 1;
 
-        if (limits.movestogo > 0) {
+        if (limits.movestogo > 0 && params.time_moves_to_go > 0) {
+            // Moves to go: the clock above a small reserve (it refills after
+            // this block; 0.1 s at the default overhead) spread over the
+            // value-weighted horizon to the block's last move, plus 90% of
+            // any increment. Before the last move of the block, one move takes
+            // at most 2/3 of the excess.
+            int mtg     = std::max(1, limits.movestogo);
+            int excess  = std::max(0, time_left - overhead - std::max(100, 3 * overhead));
+            int target  = int(excess / value_horizon(move_no, move_no + mtg - 1)) + time_inc * 9 / 10;
+            int hard    = (mtg > 1 ? excess * 2 / 3 : excess) + time_inc * 9 / 10;
+            ideal_time  = std::min(target * 116 / 100, hard);
+            max_time    = std::min(hard, std::max(ideal_time * 2, time_inc + 50));
+        } else if (limits.movestogo > 0) {
             int mtg = std::max(1, limits.movestogo);
             ideal_time = time_left / mtg + time_inc - overhead;
             max_time = time_left / std::max(1, mtg / 2) + time_inc - overhead;
+        } else if (time_inc == 0 && params.time_zero_inc > 0) {
+            // No increment: the clock above a reserve spread over the
+            // value-weighted horizon to the end of the game. The reserve pays
+            // for a long game's tail at minimum time (~12 ms a move): 1 s, or
+            // 30 move overheads if more, kept 0.5 s at move 150 on the model
+            // (a 169-move game flagged with 0.6 s).
+            int excess  = std::max(0, time_left - overhead - std::max(1000, 30 * overhead));
+            int target  = int(excess / value_horizon(move_no, 0));
+            int hard    = excess / 2;
+            ideal_time  = std::min(target * 116 / 100, hard);
+            max_time    = std::min(hard, std::max(ideal_time * 2, 50));
         } else if (time_inc > 0 && params.time_schedule > 0) {
             // Solved schedule: dynamic programming over own move number x
             // clock, with the lengths of 16,732 SPRT games and a safety floor
@@ -2023,7 +2080,6 @@ Move search(Position& pos, Limits& lim) {
             // floor the engine moves at the increment's pace and the clock
             // holds. The stop rule below spends about 0.86 of ideal_time on
             // average, hence ideal_time = target / 0.86.
-            int move_no = pos.game_ply() / 2 + 1;
             int excess  = std::max(0, time_left - overhead - 10 * time_inc);
             int horizon = params.time_schedule == 1 ? std::max(800, 5200 - 72 * move_no)
                                                     : std::max(1000, 4200 - 120 * move_no);

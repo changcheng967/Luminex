@@ -58,6 +58,16 @@ struct SearchParams {
     // after the best move changes, much less once it has held or the game
     // is decided), the default: +8.3 Elo against 0 at 10+0.1
     int time_stability = 1;
+    // UCI "TimeZeroInc", sudden death without an increment: 0 = the old
+    // formula; 1 = the clock above a reserve (1 s, or 30 move overheads)
+    // spread over the value-weighted horizon (value_horizon() in search.cpp),
+    // the default: +5.6 Elo against 0 at 10+0
+    int time_zero_inc = 1;
+    // UCI "TimeMovesToGo", controls with moves to go: 0 = the old formula
+    // (time_left / movestogo); 1 = the clock above a small reserve spread over
+    // the value-weighted horizon to the last move before the next control,
+    // the default: +11.0 Elo against 0 at 40 moves in 10 s
+    int time_moves_to_go = 1;
 };
 
 // Search statistics for debugging
