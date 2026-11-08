@@ -910,9 +910,28 @@ a third of our decisions at 100K nodes are near-ties, and on near-tie pairs
 Stockfish's search can separate (>= 0.05), our static eval picks the better
 child 48.9% of the time against Stockfish's static eval 62.5% (88 pairs).
 
-**Decisions** (nnue/V3-GEN768R.md): gen768r = the revived tail through 8
-output buckets, tail weights at 4x, the FT unchanged; data about 0.8B unique
-positions for one pass, the data screen re-run on gen768r before any scale-
-up; next, a sibling-ranking term in the loss, trained on our own game
-positions with deep labels. Accuracy has to come without NPS cost: most of
-the loss is search-limited.
+**Decisions** (the architecture itself: nnue/V3-GEN768R.md).
+- *Architecture: gen768r*, the revived tail routed through 8 output buckets,
+  the FT unchanged; the cost per eval is one popcount. Most of the loss is
+  search-limited, so accuracy must not cost nodes: capacity goes where the
+  net is narrowest, and each phase gets its own scale. Gate: a net-only SPRT
+  against the shipped net.
+- *Training:* warm start from the revived T0 net; T0's recipe with the tail
+  weights at 4x, because the revived units' outgoing weights start at zero.
+- *Data:* T0's dose, 6,000 x 131,072 = 786M samples, on the t91 May shard
+  (about 400-560M positions, all new to T0, which was trained on the t80
+  relabel): 1.4-2 passes, inside the measured plateau. Not a few million
+  (18.9M FT weights, about a million updates each at this dose); not 100B
+  (a C500 session trains about 0.8B samples, and nothing measured says this
+  capacity could use more). The 1x-vs-2x unique-data screen runs again on
+  gen768r before any scale-up.
+- *Next, each decided by a rule:* L2 = 32 per bucket if the trained
+  middlegame buckets use >= 12 of their 16 L2 dimensions (99% of variance),
+  shipped only if the fixed-node gain beats the NPS loss; a sibling-ranking
+  term in the loss, on our own game positions with deep labels (near-tie
+  pairs: our top two moves at 100K nodes, both scored by Stockfish), gated on
+  held-out near-tie ordering and then games; new inputs only for a knowledge
+  hole the forensics name (none so far).
+- *Not by itself past Stockfish:* its static eval errs half as much as ours
+  and ranks near-ties where ours guesses; 39% of our loss is fixed by 8x or
+  64x the nodes and 12% is a search defect.
