@@ -2023,13 +2023,9 @@ Move search(Position& pos, Limits& lim) {
             // floor the engine moves at the increment's pace and the clock
             // holds. The stop rule below spends about 0.86 of ideal_time on
             // average, hence ideal_time = target / 0.86.
-            // Schedule 3 uses the value of thinking time per game phase as
-            // measured, without tempering toward equal: still more of the
-            // clock in moves 10-25, and the increment's pace from move ~38.
             int move_no = pos.game_ply() / 2 + 1;
             int excess  = std::max(0, time_left - overhead - 10 * time_inc);
             int horizon = params.time_schedule == 1 ? std::max(800, 5200 - 72 * move_no)
-                        : params.time_schedule == 3 ? std::max(550, 4040 - 138 * move_no)
                                                     : std::max(1000, 4200 - 120 * move_no);
             int target  = int(int64_t(excess) * 100 / horizon) + time_inc * 9 / 10;
             int hard    = excess / 2 + time_inc * 9 / 10;
