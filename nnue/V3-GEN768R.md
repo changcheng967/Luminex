@@ -177,8 +177,9 @@ adds capacity at zero NPS cost exactly where the net is narrowest (evidence 3)
 and gives each phase its own scale (evidence 4). Gate: net-only SPRT against
 the shipped net, dev_network vs base_network on one commit.
 
-**D2. Data: about 0.8B unique positions, one pass (T0's dose).** t91 April +
-May (Leela self-play, Stockfish-relabelled), 6,000 steps x 131,072. Basis:
+**D2. Data: T0's dose, about 0.8B samples (6,000 steps x 131,072), over
+0.4-0.8B unique t91 positions** (Leela self-play, Stockfish-relabelled; the
+run uses the May shard, which T0 read only in part). Basis:
 - T0's dose sits on the measured plateau (6,000-12,000 steps); fewer steps
   lose (-57 at 0.65x), more passes over fixed data fall off a cliff between
   2.6 and 4.45 epochs;
