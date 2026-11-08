@@ -314,6 +314,48 @@ class LNNUE(nn.Module):
                     sd[k % b] = v.clone()
         return sd
 
+    def tail_liveness(self, w_idx, b_idx, stm):
+        """Count the dense tail's units that can no longer learn: dead (L2 or L3
+        pre-activation <= 0 on every one of these positions) or stuck (>= 1 on
+        every one). SCReLU passes no gradient to either kind, so a unit in such a
+        state never leaves it by itself (revive_tail.py redraws them without
+        changing the network). Bucket tails are probed on their own positions
+        and summed. Returns (dead2, stuck2, dead3, stuck3, units2, units3)."""
+        with torch.no_grad():
+            if self.ft_mode == 'gather':
+                wt = self.ft.weight.t()
+                wi = w_idx.clamp(max=NUM_INPUTS - 1); wm = (w_idx < NUM_INPUTS).unsqueeze(-1).to(wt.dtype)
+                bi = b_idx.clamp(max=NUM_INPUTS - 1); bm = (b_idx < NUM_INPUTS).unsqueeze(-1).to(wt.dtype)
+                acc_w = (wt[wi] * wm).sum(dim=1) + self.ft_bias
+                acc_b = (wt[bi] * bm).sum(dim=1) + self.ft_bias
+            else:
+                acc_w = self.ft(w_idx) + self.ft_bias
+                acc_b = self.ft(b_idx) + self.ft_bias
+            if self.pairwise:
+                L = self.L1
+                pw = lambda a: torch.clamp(a[:, :L], 0.0, 1.0) * torch.clamp(a[:, L:], 0.0, 1.0)
+                acc_w, acc_b = pw(acc_w), pw(acc_b)
+            m = stm.view(-1, 1).float()
+            h = torch.cat([m * acc_w + (1 - m) * acc_b, (1 - m) * acc_w + m * acc_b], dim=1).float()
+            if not self.pairwise:
+                h = torch.clamp(h, 0.0, 1.0) ** 2
+            if self.num_buckets > 1:
+                mat = (w_idx < NUM_INPUTS).sum(dim=1).long()
+                bucket = ((mat - 1) * self.num_buckets // 32).clamp(0, self.num_buckets - 1)
+                tails = [(self.bl2[b], self.bl3[b], bucket == b) for b in range(self.num_buckets)]
+            else:
+                tails = [(self.l2, self.l3, None)]
+            d2 = s2 = d3 = s3 = n2 = n3 = 0
+            for l2, l3, sel in tails:
+                x = h if sel is None else h[sel]
+                if x.shape[0] == 0:
+                    continue
+                p2 = l2(x)
+                p3 = l3(torch.clamp(p2, 0.0, 1.0) ** 2)
+                d2 += int((p2 <= 0).all(0).sum()); s2 += int((p2 >= 1).all(0).sum()); n2 += p2.shape[1]
+                d3 += int((p3 <= 0).all(0).sum()); s3 += int((p3 >= 1).all(0).sum()); n3 += p3.shape[1]
+            return d2, s2, d3, s3, n2, n3
+
     def probe_ft(self, device):
         """v7-postmortem guard (embbag/gather drift): the active FT path must equal a
         manual per-bag sum of the same embedding rows. Any drift here poisoned a full

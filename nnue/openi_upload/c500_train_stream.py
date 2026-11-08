@@ -795,7 +795,17 @@ for epoch in range(EPOCHS):
                         _pad = ""
                         try: _pad = f" pad|max|={float(model.ft.weight[NUM_INPUTS].abs().max().item()):.1e}"
                         except Exception: pass   # gather mode has no pad row
-                    _health = f"MAE={_mae:.1f}cp{_lmae} predSTD={_ps:.0f} tgtSTD={_ts:.0f}{_pad} | {_wn}"
+                        # Units that can no longer learn (dead or stuck on every one
+                        # of up to 32K positions of this part): a count that grows
+                        # during a run means the recipe is killing tail capacity.
+                        _tl = ""
+                        try:
+                            _k = min(_m, 32768)
+                            _d2, _s2, _d3, _s3, _n2, _n3 = model.tail_liveness(w[:_k].long(), b[:_k].long(), s[:_k])
+                            _tl = f" | tail dead/stuck L2 {_d2}/{_s2} of {_n2}, L3 {_d3}/{_s3} of {_n3}"
+                        except Exception as _e2:
+                            _tl = f" | tail liveness unavailable ({_e2})"
+                    _health = f"MAE={_mae:.1f}cp{_lmae} predSTD={_ps:.0f} tgtSTD={_ts:.0f}{_pad} | {_wn}{_tl}"
             except Exception as _e:
                 _health = f"unavailable ({_e})"
             # VRAM store decision: keep this frame's tensors for later epochs
