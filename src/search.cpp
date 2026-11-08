@@ -2023,9 +2023,13 @@ Move search(Position& pos, Limits& lim) {
             // floor the engine moves at the increment's pace and the clock
             // holds. The stop rule below spends about 0.86 of ideal_time on
             // average, hence ideal_time = target / 0.86.
+            // Schedule 3 uses the value of thinking time per game phase as
+            // measured, without tempering toward equal: still more of the
+            // clock in moves 10-25, and the increment's pace from move ~38.
             int move_no = pos.game_ply() / 2 + 1;
             int excess  = std::max(0, time_left - overhead - 10 * time_inc);
             int horizon = params.time_schedule == 1 ? std::max(800, 5200 - 72 * move_no)
+                        : params.time_schedule == 3 ? std::max(550, 4040 - 138 * move_no)
                                                     : std::max(1000, 4200 - 120 * move_no);
             int target  = int(int64_t(excess) * 100 / horizon) + time_inc * 9 / 10;
             int hard    = excess / 2 + time_inc * 9 / 10;
@@ -2142,6 +2146,20 @@ Move search(Position& pos, Limits& lim) {
             int stability_reduction = (best_move_stability >= 4) ? ideal_time * 3 / 5
                                     : (best_move_stability >= 3) ? ideal_time * 3 / 4
                                     : ideal_time;
+            if (params.time_stability > 0) {
+                // Measured stop rule: on 6,000 positions from SPRT games, each
+                // searched to 2M nodes with every iteration's move scored by
+                // Stockfish 19, the gain of doubling the time fell from 3.6x
+                // the average right after the best move changed to 0.15x once
+                // it had held for six iterations, and was exactly 0 beyond
+                // +-400 cp. The soft limit follows the square root of those
+                // ratios, scaled x1.25 so the average spend matches the old
+                // rule on the recorded searches (200-400K-node budgets).
+                static constexpr int STAB_PCT[] = {240, 170, 140, 105, 90, 90, 50};
+                stability_reduction = int(int64_t(ideal_time) * STAB_PCT[std::min(best_move_stability, 6)] / 100);
+                if (std::abs(int(best_value)) > 4 * PAWN_VALUE)
+                    stability_reduction /= 2;   // decided: more time changes nothing
+            }
             // Node-effort: if the best move dominated the PREVIOUS
             // iteration's effort (>80%), this position is easy — save time
             if (prev_depth_nodes > 0 && prev_best_nodes * 100 / prev_depth_nodes > 80) {

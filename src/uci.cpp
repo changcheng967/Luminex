@@ -319,7 +319,8 @@ void handle_uci() {
     safe_output("option name Clear Hash type button\n");
     safe_output("option name BookFile type string default <empty>\n");
     safe_output("option name Move Overhead type spin default 30 min 0 max 5000\n");
-    safe_output("option name TimeSchedule type spin default 2 min 0 max 2\n");
+    safe_output("option name TimeSchedule type spin default 2 min 0 max 3\n");
+    safe_output("option name TimeStability type spin default 0 min 0 max 1\n");
     safe_output("option name SyzygyPath type string default <empty>\n");
     safe_output("option name Skill Level type spin default 20 min 0 max 20\n");
     safe_output("option name UCI_ShowWDL type check default false\n");
@@ -593,7 +594,10 @@ void handle_setoption(const std::string& cmd) {
         params.move_overhead_ms = ov;
     }
     else if (name == "TimeSchedule") {
-        params.time_schedule = std::clamp(std::stoi(value), 0, 2);
+        params.time_schedule = std::clamp(std::stoi(value), 0, 3);
+    }
+    else if (name == "TimeStability") {
+        params.time_stability = std::clamp(std::stoi(value), 0, 1);
     }
     else if (name == "UseNNUE") {
         g_use_nnue = (value == "true");

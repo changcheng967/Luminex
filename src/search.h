@@ -50,9 +50,15 @@ struct SearchParams {
     // reserve formula; 1 and 2 = schedules solved by dynamic programming over
     // SPRT game lengths (1: every move worth the same, 2: early moves worth
     // more, the default: +72 Elo against the old formula at 10+0.1, schedule
-    // 1 +26). 1 and 2 also move at once with a single legal reply and never
+    // 1 +32; 3: the measured phase values untempered, more front-loaded
+    // still). 1-3 also move at once with a single legal reply and never
     // start an iteration that cannot finish before the hard limit.
     int time_schedule = 2;
+    // UCI "TimeStability": 0 = the old soft-limit factors for best-move
+    // stability; 1 = factors measured on recorded searches (more time right
+    // after the best move changes, much less once it has held or the game
+    // is decided)
+    int time_stability = 0;
 };
 
 // Search statistics for debugging
