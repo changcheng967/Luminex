@@ -75,6 +75,8 @@ and time management solved from measured data.
 | Search stopped by measured best-move stability (#45) | +8.3 ± 5.3 |
 | Margin over beta for shallow null moves (#41) | +4.0 ± 3.1 |
 | New time management against the old formulas, at 60+0.6 | +37.5 ± 11.0 |
+| Zero-increment clocks spent by value of time, at 10+0 (#47) | +5.6 ± 4.2 |
+| Moves-to-go clocks spent by value of time, at 40 moves in 10 s (#47) | +11.0 ± 6.2 |
 
 ## Download
 
@@ -129,6 +131,8 @@ go movetime 1000
 | `Move Overhead` | 30 | Time-management safety margin per move (ms) |
 | `TimeSchedule` | 2 | Clock schedule with an increment: 0 = the old formula, 1 and 2 = schedules solved by dynamic programming (2: early moves are worth more) |
 | `TimeStability` | 1 | When to stop searching: 0 = the old best-move-stability factors, 1 = factors measured on recorded searches |
+| `TimeZeroInc` | 1 | Clock schedule without an increment: 0 = the old formula, 1 = the value-weighted horizon |
+| `TimeMovesToGo` | 1 | Clock schedule with moves to go: 0 = the old formula, 1 = the value-weighted horizon to the next control |
 | `BookFile` | `<empty>` | Polyglot opening-book path |
 | `SearchDepth` | 0 | If > 0, fixed-depth search (overrides the time control) |
 | `NodesPerMove` | 0 | If > 0, fixed node budget per move |
@@ -203,12 +207,12 @@ formulas:
    iterations, and halved when the game is decided. It gained **+8.3 Elo**.
 4. **Long time control.** At 60+0.6 the two together score **+37.5 Elo**
    against the old formulas.
-
-Controls without an increment, and controls with moves to go, are next. The
-same dynamic program has a closed form for them: divide the clock by the
-expected number of moves left, each weighted by its value of thinking time.
-They are being tested on OpenBench as `TimeZeroInc` and `TimeMovesToGo` in
-[#47](https://github.com/changcheng967/Luminex/pull/47).
+5. **Controls without an increment, and with moves to go** (`TimeZeroInc 1`,
+   `TimeMovesToGo 1`). The same dynamic program has a closed form for them:
+   divide the clock above a small reserve by the expected number of moves
+   left, each weighted by its value of thinking time. They gained **+5.6 Elo**
+   at 10+0 and **+11.0 Elo** at 40 moves in 10 s
+   ([#47](https://github.com/changcheng967/Luminex/pull/47)).
 
 ## Testing
 
