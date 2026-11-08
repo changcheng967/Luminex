@@ -788,6 +788,24 @@ for epoch in range(EPOCHS):
                     print(f">>> BUDGET hit at step {gstep} - saving & stopping", flush=True)
                     _save_final("budget")
             total_pos += N
+            # Budget guard for a pinned schedule (NNUE_T_MAX_STEPS): after every
+            # part, project the steps that still fit in the budget at the pace so
+            # far (featurizing included) and keep the cosine's end there when that
+            # is short of the pinned T_max, so the LR has annealed to zero when
+            # the budget stops the run instead of saving a net at high LR. Never
+            # beyond the pinned value: a run the budget does not bind is unchanged.
+            if BUDGET > 0 and _T_MAX_FIXED > 0:
+                _el = time.time() - t0
+                _sess = gstep - _SEG0
+                if _sess >= 100:
+                    # 60 s covers the final save; with no time left the schedule
+                    # ends at the next step rather than past the budget.
+                    _fit = int(_sess + (_sess / max(_el, 1.0)) * max(0.0, BUDGET - _el - 60))
+                    _new = min(_T_MAX_FIXED, max(_sess + 1, _fit))
+                    if _new != _T_MAX_LIVE:
+                        print(f"  [sched] budget guard: T_max {_T_MAX_LIVE:,} -> {_new:,} steps "
+                              f"({_sess / max(_el, 1.0):.2f} st/s so far, featurizing included)", flush=True)
+                        _T_MAX_LIVE = _new
             # v8 health line: computed BEFORE the tensors are freed below.
             # Catches failure-archive signatures loss alone missed (v7-run4
             # weight-growth saturation, eval-scale compression, silent stall).
