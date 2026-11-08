@@ -321,6 +321,8 @@ void handle_uci() {
     safe_output("option name Move Overhead type spin default 30 min 0 max 5000\n");
     safe_output("option name TimeSchedule type spin default 2 min 0 max 2\n");
     safe_output("option name TimeStability type spin default 1 min 0 max 1\n");
+    safe_output("option name TimeZeroInc type spin default 0 min 0 max 1\n");
+    safe_output("option name TimeMovesToGo type spin default 0 min 0 max 1\n");
     safe_output("option name SyzygyPath type string default <empty>\n");
     safe_output("option name Skill Level type spin default 20 min 0 max 20\n");
     safe_output("option name UCI_ShowWDL type check default false\n");
@@ -598,6 +600,12 @@ void handle_setoption(const std::string& cmd) {
     }
     else if (name == "TimeStability") {
         params.time_stability = std::clamp(std::stoi(value), 0, 1);
+    }
+    else if (name == "TimeZeroInc") {
+        params.time_zero_inc = std::clamp(std::stoi(value), 0, 1);
+    }
+    else if (name == "TimeMovesToGo") {
+        params.time_moves_to_go = std::clamp(std::stoi(value), 0, 1);
     }
     else if (name == "UseNNUE") {
         g_use_nnue = (value == "true");
