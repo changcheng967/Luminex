@@ -910,6 +910,18 @@ a third of our decisions at 100K nodes are near-ties, and on near-tie pairs
 Stockfish's search can separate (>= 0.05), our static eval picks the better
 child 48.9% of the time against Stockfish's static eval 62.5% (88 pairs).
 
+**The search defects are not one rule.** Of the 161 search-defect mistakes
+(our static eval prefers Stockfish's move, our search at 64x still plays the
+losing one; mostly quiet moves that give up material whose compensation only
+Stockfish's search finds), the current search (main c9f8fed, cold, 6.4M
+nodes) already fixes 70. The other 91 were searched once with each of 19
+pruning and reduction rules switched off (debug build, `forensics/
+ablate.patch`): every rule "fixes" 8-26 of them, most 21-26 - but so does a
+harmless change of hash size (15), while 3% more nodes, which leaves the
+tree identical up to 6.4M, fixes 2. These are fragile decisions that flip
+with any change to the tree, not a pruning bug; nothing in the search to
+repair, and the lever is the eval at the end of those lines.
+
 **Decisions** (the architecture itself: nnue/V3-GEN768R.md).
 - *Architecture: gen768r*, the revived tail routed through 8 output buckets,
   the FT unchanged; the cost per eval is one popcount. Most of the loss is
