@@ -64,7 +64,7 @@ and time management solved from measured data.
 | Stash 30 | +79 |
 | Stash 31 | +40 |
 | Stash 32 (3252) | +8 ± 18 |
-| Stash 33 (3286) | 48% (the ladder stops here) |
+| Stash 33 (3286) | −14 (48%; the ladder stops here) |
 
 **Gains on `main` since v6.5.1.** Each is an SPRT on OpenBench, at 10+0.1 unless noted:
 
@@ -135,9 +135,9 @@ go movetime 1000
 | `Clear Hash` | button | Clear the transposition table |
 
 Tuning options:
-- **27 search constants** (`LmrScale`, `NmpBase`, `FutCoeff`, `SingularMargin`, …).
-  These are the parameters SPSA tunes on OpenBench; their ranges are in
-  [`src/spsa_params.h`](src/spsa_params.h).
+- **Search constants** (`LmrScale`, `NmpBase`, `FutCoeff`, `SingularMargin`, …).
+  These are the parameters SPSA tunes on OpenBench; the full list and their
+  ranges are in [`src/spsa_params.h`](src/spsa_params.h).
 - **24 HCE parameters** (`BishopPairMG`, `RookOpenMG`, `PawnShieldCenter`, …),
   for evaluation experiments; see [`src/uci.cpp`](src/uci.cpp).
 
@@ -162,7 +162,6 @@ Two interchangeable evaluation functions, selected at runtime with `UseNNUE`:
     change is applied when a position is actually evaluated (many nodes are
     answered by the hash table first). King moves rebuild from a per-square
     refresh cache.
-  - Speed: up to ~1.2M single-threaded nodes per second on AVX-512 VNNI hardware.
 - **HCE (fallback).** Material, piece-square tables, mobility, passed-pawn
   path decomposition, king safety and a multi-table correction history. It
   needs no network file.
