@@ -172,6 +172,7 @@ _resume_explicit = os.environ.get("NNUE_RESUME", "") not in ("", "0")
 if _resume_explicit and not os.path.exists(_resume):
     raise SystemExit(f"FATAL: NNUE_RESUME={_resume} does not exist")
 if os.path.exists(_resume) and os.environ.get("NNUE_RESUME", "1") != "0":
+    _fresh_opt = False
     try:
         if _resume.endswith(".nnue"):
             # Warm start from an engine-format float net (LNN1): rebuild a trainer
@@ -190,6 +191,7 @@ if os.path.exists(_resume) and os.environ.get("NNUE_RESUME", "1") != "0":
             LNNUE.net2net_widen(model, _ck["model"], _ck_L1)
             gstep = _ck.get("gstep", 0)
             _opt_state = None  # old moments are shape-incompatible — fresh optimizer
+            _fresh_opt = True
             print(f"[NET2NET] widened {_ck_L1} -> {L1} from {_resume} at gstep={gstep} (optimizer fresh)", flush=True)
         elif (
             _ck["model"]["ft.weight"].shape != tuple(model.ft.weight.shape)
@@ -203,6 +205,7 @@ if os.path.exists(_resume) and os.environ.get("NNUE_RESUME", "1") != "0":
             LNNUE.v2_expand(model, _ck["model"])
             gstep = _ck.get("gstep", 0)
             _opt_state = None
+            _fresh_opt = True
             print(f"[V2] expanded warm start from {_resume} at gstep={gstep} (optimizer fresh)", flush=True)
         else:
             _miss = model.load_state_dict(_ck["model"], strict=False)
@@ -218,7 +221,9 @@ if os.path.exists(_resume) and os.environ.get("NNUE_RESUME", "1") != "0":
                 model.ft.weight.data[NUM_INPUTS].zero_()
         except Exception:
             pass
-        _opt_state = _ck.get("opt") if _ck_L1 == L1 else None  # only same-width resumes carry moments
+        # only same-shape resumes carry moments (a widened, pairwise or bucket-seeded
+        # model has different parameters, so its optimizer starts fresh)
+        _opt_state = None if _fresh_opt else (_ck.get("opt") if _ck_L1 == L1 else None)
         if _opt_state: print(f"[RESUME] + optimizer state ({len(_opt_state['state'])} params) — no warm-up loss", flush=True)
         print(f"[RESUME] loaded {_resume} at gstep={gstep}", flush=True)
     except Exception as _e:
@@ -753,7 +758,7 @@ for epoch in range(EPOCHS):
                 if gstep % 50 == 0:
                     # loss.item() ONLY here — a per-step .item() syncs the GPU queue
                     # every step and costs ~10-20% throughput
-                    try: _l2 = f" L2|max|={float(model.l2.weight.detach().abs().max().item()):.2f}"
+                    try: _l2 = f" L2|max|={max(float(m.weight.detach().abs().max().item()) for m in (model.bl2 if getattr(model, 'num_buckets', 1) > 1 else [model.l2])):.2f}"
                     except Exception: _l2 = ""
                     dt = time.time() - t0
                     print(f"  e{epoch} f{fi+1}p{part} step {gstep} loss={loss.item():.5f}{_l2} | {total_pos/1e6:.0f}M+{i/1e6:.0f}M | {gstep/max(dt,1):.1f} steps/s", flush=True)
