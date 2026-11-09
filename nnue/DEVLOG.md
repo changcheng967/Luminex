@@ -837,3 +837,113 @@ removing cross-thread cache-line contention on 2x2.36 MB tables — is a
 multithread effect and moves to the 4-thread gate (CCRL conditions),
 queued next on the same arena. The fix is kept regardless: it is the
 correct lazy-SMP semantics either way.
+
+## 17. The frozen tail, and where the Elo goes (Nov 8)
+
+**The tail is half frozen, and has been since before gen768.** Neuron
+statistics of the shipped net on 6,343 positions from our games: the feature
+transformer is healthy (no dead units, about half its lanes live, 360-475
+effective dimensions at 90% of variance), but 7 of the 16 L2 units are below
+zero on every position, 1 is saturated on every one, and 10 of the 32 L3
+units are below zero on every one. SCReLU passes no gradient in either
+state, so these units never learn again. What is left of L2 spans 4 effective
+dimensions (6 at 99%): the whole feature transformer reaches the output
+through about six numbers. The September gen768 net has almost the same
+counts (7 + 2 and 11), as do gen768sf (6 + 2, 9) and gen768sf_full (7 + 1, 9): the units died in the
+512-wide era and every widening and fine-tune since inherited them. Tails
+started from the default initialization lose about half their units within
+a few epochs (8/16 and 20/32 on a frozen-FT test), which is the likely
+origin.
+
+This reframes three closures in this log. "FT-1024 rejected", "J32 null"
+and the redundancy screen's tie (300M vs 597M unique, +11 +- 21) were all
+measured on a net whose tail could use six dimensions of whatever the FT
+learned; none of them tested a tail that could learn.
+
+**Revival (#50).** `revive_tail.py` redraws each frozen unit live and zeroes
+its outgoing weights (a stuck unit's constant folded into the next bias), so
+the network is unchanged: max output change 0.0002 cp, and with the stuck
+unit left alone the quantized net's evals are bit-identical on 6,000/6,000
+positions. The trainer's health line now counts frozen tail units. A CPU dry
+run of the C500 trainer from the revived net with 8 buckets works end to end
+and kills no unit; the revived units' outgoing weights grow slowly from zero
+at T0's tail rate (0.0007-0.004 after 300 steps, live columns 0.28 / 0.61),
+hence `NNUE_TAIL_LR_MULT=4` for the bucket run.
+
+**Game forensics (the instrument that works).** Stockfish 19 refereed every
+position of 300 equal-node games (100K nodes each side) against Stash 37:
+expected-score loss per move from SF's WDL, per game and per category, for
+us and for Stash in the same games.
+
+| loss per game | Luminex | Stash 37 |
+|---|---|---|
+| total | 1.27 | 1.20 |
+| in winning positions (SF > 85%) | **0.59** | 0.12 |
+| in balanced positions | 0.66 | 1.00 |
+| 29-32 men | 0.21 | 0.32 |
+| 17-24 men | 0.50 | 0.37 |
+| <= 16 men | 0.26 | 0.19 |
+| rook moves | 0.28 | 0.18 |
+
+We reach winning positions three times as often as Stash and give five times
+as much back from them: conversion is our largest single weakness. Our own
+search scores against the referee's show why it is hard for us: big
+advantages read compressed (+352 for SF's +448, +492 for +749), with little
+ordering inside a winning bin (correlation 0.24-0.42); Stash expands them.
+Our static eval compresses about twice as much as Stockfish's static eval
+against the same truth, but its error is about twice Stockfish's in every
+group (1.84-1.99x with and without passed pawns): no single knowledge hole,
+a general capacity gap.
+
+**Search or eval.** Each of our 1,604 mistakes was replayed cold at 1x, 8x
+and 64x the game's nodes and re-scored by Stockfish from the same root
+(1,267 confirmed): 32.8% of the loss is gone with a cold re-search at the
+same nodes, 20.7% with 8x, 17.9% with 64x; 11.7% persists although our own
+static eval prefers the right move (search defects, mostly active moves
+that leave a piece hanging whose compensation only Stockfish's search
+finds); 16.9% is the eval's alone (6.3% that Stockfish's static eval gets
+right, 7.1% that only its depth-9 search gets right, 3.5% beyond our
+labels). The same split holds in winning positions and in every phase.
+The cold re-search row is not a hash bug: on 1,500 random moves the cold
+move differs 36% of the time and is not better (-0.012 +- 0.010). More than
+a third of our decisions at 100K nodes are near-ties, and on near-tie pairs
+Stockfish's search can separate (>= 0.05), our static eval picks the better
+child 48.9% of the time against Stockfish's static eval 62.5% (88 pairs).
+
+**The search defects are not one rule.** Of the 161 search-defect mistakes
+(our static eval prefers Stockfish's move, our search at 64x still plays the
+losing one; mostly quiet moves that give up material whose compensation only
+Stockfish's search finds), the current search (main c9f8fed, cold, 6.4M
+nodes) already fixes 70. The other 91 were searched once with each of 19
+pruning and reduction rules switched off (debug build, `forensics/
+ablate.patch`): every rule "fixes" 8-26 of them, most 21-26 - but so does a
+harmless change of hash size (15), while 3% more nodes, which leaves the
+tree identical up to 6.4M, fixes 2. These are fragile decisions that flip
+with any change to the tree, not a pruning bug; nothing in the search to
+repair, and the lever is the eval at the end of those lines.
+
+**Decisions** (the architecture itself: nnue/V3-GEN768R.md).
+- *Architecture: gen768r*, the revived tail routed through 8 output buckets,
+  the FT unchanged; the cost per eval is one popcount. Most of the loss is
+  search-limited, so accuracy must not cost nodes: capacity goes where the
+  net is narrowest, and each phase gets its own scale. Gate: a net-only SPRT
+  against the shipped net.
+- *Training:* warm start from the revived T0 net; T0's recipe with the tail
+  weights at 4x, because the revived units' outgoing weights start at zero.
+- *Data:* T0's dose, 6,000 x 131,072 = 786M samples, on the t91 May shard
+  (about 400-560M positions, all new to T0, which was trained on the t80
+  relabel): 1.4-2 passes, inside the measured plateau. Not a few million
+  (18.9M FT weights, about a million updates each at this dose); not 100B
+  (a C500 session trains about 0.8B samples, and nothing measured says this
+  capacity could use more). The 1x-vs-2x unique-data screen runs again on
+  gen768r before any scale-up.
+- *Next, each decided by a rule:* L2 = 32 per bucket if the trained
+  middlegame buckets use >= 12 of their 16 L2 dimensions (99% of variance),
+  shipped only if the fixed-node gain beats the NPS loss; a sibling-ranking
+  term in the loss, on our own game positions with deep labels (near-tie
+  pairs: our top two moves at 100K nodes, both scored by Stockfish), gated on
+  held-out near-tie ordering and then games; new inputs only for a knowledge
+  hole the forensics name (none so far).
+- *Not by itself past Stockfish:* its static eval errs half as much as ours
+  and ranks near-ties where ours guesses; 39% of our loss is fixed by 8x or
+  64x the nodes and 12% is a search defect.

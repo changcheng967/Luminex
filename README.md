@@ -242,6 +242,15 @@ The training and data tooling lives in `nnue/` and `src/`:
 - validation-split tools;
 - the SPSA search tuner.
 
+Networks are named `luminex_<architecture>_<NN>.nnue`. The architecture is
+the network name of its spec in `nnue/` (`gen768`, `gen768r`, ...), and `NN`
+numbers that architecture's training runs in order, starting at `01`. The
+trainer writes the float network under that name and its checkpoint as the
+matching `.pt`; the quantized network the engine loads adds `_i8`
+(`luminex_gen768r_01_i8.nnue`). The built-in network is pinned by name in
+`src/nnue.h` (`DEFAULT_NET`) and by URL and sha256 in
+`.github/scripts/fetch-net.sh`.
+
 ## Build
 
 Requires a C++23 compiler (GCC 13+, Clang 15+, MSVC 2022+) and CMake 3.20+.
