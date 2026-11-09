@@ -1,27 +1,28 @@
 #!/usr/bin/env python3
 """pfetch.py -- download one file over several connections at once, resumably.
 
-usage: pfetch.py URL OUT SIZE CONN [CONN_FILE]
+usage: pfetch.py URL OUT SIZE CONN
        pfetch.py --selftest
 
 The file is cut into pieces of PFETCH_PIECE bytes (64 MiB), fetched with HTTP
 range requests over CONN connections and written in place. Finished pieces are
 listed in OUT.pieces, so a stopped download resumes where it was, and a partial
 file left by a plain sequential download (curl -C -) counts as done up to its
-last whole piece.
+last whole piece. Progress goes to stdout every PFETCH_REPORT seconds (30); the
+exit code is 0 only when every piece arrived.
 
-CONN "auto" measures while it downloads: one connection for PFETCH_STEP
-seconds, then twice as many, and so on while the speed still grows by 10%. It
-keeps the fastest count and writes it to CONN_FILE, so the next files start
-there. The bytes fetched while measuring are kept.
-
-Why: one connection to Hugging Face's Xet bridge gave the Blackwell box 1-11
-MB/s (about 7 on average), and a t91 month is a 4-18 GB file.
+Why: on the Blackwell box one connection to Hugging Face's Xet bridge gave
+1-11 MB/s in 30-second windows, about 7 on average, and a t91 month is a 4-18
+GB file. Eight connections fetched the March, April and May files at 21.0,
+20.9 and 25.1 MB/s, in 30-second windows of 11 to 37 MB/s. Choosing the count
+automatically (doubling it every 12 s while the speed grew by 10%) was tried
+and dropped: a new connection's first bytes take seconds, and it settled on 2
+connections for March (7.3 MB/s against 7.0 on one).
 
 --selftest serves a random file from a local server that redirects like
 Hugging Face and caps the speed per connection and in total, then checks a
-fresh "auto" download, a resume after a kill, a sequential partial file, and
-that a server ignoring ranges is refused.
+fresh download, a resume after a kill, a sequential partial file, and that a
+server ignoring ranges is refused.
 """
 import hashlib
 import os
@@ -31,14 +32,11 @@ import time
 import urllib.request
 
 PIECE = int(os.environ.get("PFETCH_PIECE", 64 << 20))
-STEP = float(os.environ.get("PFETCH_STEP", 12))
 REPORT = float(os.environ.get("PFETCH_REPORT", 30))
 TRIES = int(os.environ.get("PFETCH_TRIES", 12))
-MAX_CONN = 64
-GAIN = 1.10
 
 
-def download(url, out, size, conn, conn_file=None):
+def download(url, out, size, conn):
     name = os.path.basename(out)
     n = (size + PIECE - 1) // PIECE
 
@@ -61,12 +59,10 @@ def download(url, out, size, conn, conn_file=None):
         log.write("".join(f"{i}\n" for i in sorted(fresh)))
         log.flush()
     todo = [i for i in range(n - 1, -1, -1) if i not in done]   # pop() takes the lowest piece
-    tuning = conn == "auto"
-    st = {"target": 1 if tuning else max(1, int(conn)), "active": 0, "recv": 0,
-          "failed": False, "errors": 0, "last_error": ""}
+    st = {"active": 0, "recv": 0, "failed": False, "errors": 0, "last_error": ""}
     lock = threading.Lock()
     print(f"  pfetch: {name}: {len(done)} of {n} pieces already here, fetching {len(todo)} "
-          f"over {'auto' if tuning else st['target']} connections", flush=True)
+          f"over {conn} connections", flush=True)
 
     def fetch_piece(i):
         s = i * PIECE
@@ -100,7 +96,7 @@ def download(url, out, size, conn, conn_file=None):
     def worker():
         while True:
             with lock:
-                if st["failed"] or not todo or st["active"] > st["target"]:
+                if st["failed"] or not todo:
                     st["active"] -= 1
                     return
                 i = todo.pop()
@@ -113,44 +109,18 @@ def download(url, out, size, conn, conn_file=None):
                 else:
                     st["failed"] = True
 
-    def spawn(k):
-        with lock:
-            st["active"] += k
-        for _ in range(k):
-            threading.Thread(target=worker, daemon=True).start()
-
-    t0 = last_t = phase_t = time.time()
-    last_recv = phase_recv = 0
-    results = []
-    cut = False
-    spawn(st["target"])
+    st["active"] = conn
+    for _ in range(conn):
+        threading.Thread(target=worker, daemon=True).start()
+    t0 = last_t = time.time()
+    last_recv = 0
     while True:
         time.sleep(0.1)
         now = time.time()
         with lock:
-            active, recv, left, target = st["active"], st["recv"], len(todo), st["target"]
+            active, recv = st["active"], st["recv"]
         if active == 0:
             break
-        if tuning and now - phase_t >= STEP:
-            results.append((target, (recv - phase_recv) / (now - phase_t) / 1e6))
-            grows = len(results) == 1 or results[-1][1] >= results[-2][1] * GAIN
-            if not left:   # the file ran out of pieces, so connections sat idle: no verdict
-                tuning, cut = False, True
-            elif grows and target * 2 <= MAX_CONN:
-                with lock:
-                    st["target"] = target * 2      # first, or the new workers retire at once
-                spawn(target)
-                phase_t, phase_recv = now, recv
-            else:
-                best = max(results, key=lambda x: x[1])[0]
-                with lock:
-                    st["target"] = best
-                tuning = False
-                print("  pfetch: measured " + ", ".join(f"{c} conn {r:.1f} MB/s" for c, r in results)
-                      + f" -> {best} connections", flush=True)
-                if conn_file:
-                    with open(conn_file, "w") as f:
-                        f.write(str(best))
         if now - last_t >= REPORT:
             with lock:
                 have = sum(plen(i) for i in done)
@@ -160,9 +130,6 @@ def download(url, out, size, conn, conn_file=None):
     os.close(fd)
     log.close()
     secs = max(time.time() - t0, 1e-9)
-    if (tuning or cut) and results:
-        print("  pfetch: measured " + ", ".join(f"{c} conn {r:.1f} MB/s" for c, r in results)
-              + " (the file ended while measuring; the next file measures again)", flush=True)
     missing = n - len(done)
     if missing:
         print(f"  pfetch: FAIL {name}: {missing} of {n} pieces missing after {TRIES} tries each; "
@@ -231,10 +198,10 @@ def selftest():
         srv.daemon_threads = True
         threading.Thread(target=srv.serve_forever, daemon=True).start()
         base = f"http://127.0.0.1:{srv.server_address[1]}"
-        env = dict(os.environ, PFETCH_PIECE=str(1 << 20), PFETCH_STEP="0.4", PFETCH_REPORT="1000")
+        env = dict(os.environ, PFETCH_PIECE=str(1 << 20), PFETCH_REPORT="1000")
 
         def start(out, conn, path="/r/src.bin", tries="12"):
-            cmd = [sys.executable, os.path.abspath(__file__), base + path, out, str(size), conn, out + ".conn"]
+            cmd = [sys.executable, os.path.abspath(__file__), base + path, out, str(size), conn]
             return subprocess.Popen(cmd, env=dict(env, PFETCH_TRIES=tries), stdout=subprocess.PIPE,
                                     stderr=subprocess.STDOUT, text=True)
 
@@ -255,11 +222,12 @@ def selftest():
             if not ok:
                 raise AssertionError(what + ("\n" + text if text else ""))
 
-        # 1. a fresh download that measures the connection count
+        # 1. a fresh download
         out = os.path.join(tmp, "fresh.bin")
-        rc, text = run(out, "auto")
-        check(rc == 0 and file_sha(out) == want, "fresh auto download differs", text)
-        measured = re.search(r"measured (.*)", text)
+        t1 = time.time()
+        rc, text = run(out, "8")
+        rate = size / 1e6 / (time.time() - t1)
+        check(rc == 0 and file_sha(out) == want, "fresh download differs", text)
         # 2. killed part-way, then resumed
         out = os.path.join(tmp, "resume.bin")
         p = start(out, "4")
@@ -283,9 +251,9 @@ def selftest():
         # 4. a server that ignores Range must be refused, not written in place
         rc, text = run(os.path.join(tmp, "norange.bin"), "4", path="/norange/src.bin", tries="1")
         check(rc != 0 and "HTTP 200 to a range request" in text, "a server ignoring ranges was accepted", text)
-        print(f"  pfetch self-test: ok in {time.time() - t_start:.1f} s (fresh auto download, resume after a kill, "
-              f"sequential partial file, range refusal; local server capped at 6 MB/s a connection, 30 in all: "
-              f"{measured[1] if measured else 'file ended while measuring'})", flush=True)
+        print(f"  pfetch self-test: ok in {time.time() - t_start:.1f} s (fresh download at {rate:.1f} MB/s over "
+              f"8 connections from a local server capped at 6 MB/s a connection and 30 in all, resume after a "
+              f"kill, sequential partial file, range refusal)", flush=True)
         return 0
     except AssertionError as e:
         print(f"  pfetch self-test: FAIL: {e}", flush=True)
@@ -299,7 +267,6 @@ def selftest():
 if __name__ == "__main__":
     if sys.argv[1:] == ["--selftest"]:
         sys.exit(selftest())
-    if len(sys.argv) not in (5, 6):
+    if len(sys.argv) != 5:
         sys.exit(__doc__)
-    sys.exit(download(sys.argv[1], sys.argv[2], int(sys.argv[3]), sys.argv[4],
-                      sys.argv[5] if len(sys.argv) > 5 else None))
+    sys.exit(download(sys.argv[1], sys.argv[2], int(sys.argv[3]), max(1, int(sys.argv[4]))))

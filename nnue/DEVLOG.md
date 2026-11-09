@@ -1058,3 +1058,23 @@ positions lie beyond 1500). The dump runs at 1.1M positions/s.
   target clip and the capture weight are measured settings.
 - *Next Blackwell runs* use `resident_train.py`, on PyTorch 2.11; test runs
   go in notebook cells, installs in the terminal.
+
+**Feb-May, prepared on the box.** `binpack2lcr` turned four t91 months into
+2,500,510,275 LCR1 records straight from the binpacks, with no text step
+and nothing dropped (this replaces the TSV re-dump above): February
+948,251,195, March 509,076,351, April 433,470,115 and May 609,712,614
+positions, at 40-65M positions/s on 20 threads; 80.0 GB. Quiet positions
+labelled beyond +800: a piece up 45% (of 188,589), a rook up 91% (of
+88,597), a queen up 99% (of 111,727), as on the mscope slice. The records
+sit on the sandbox's disk, not in its RAM (0.6 of 160 GB in use with all of
+them written), and big files have not survived into a new sandbox (twice),
+so each session prepares its data again.
+
+**Downloads.** One connection to Hugging Face's Xet bridge gave 1-11 MB/s
+in 30-second windows, about 7 on average. `pfetch.py` fetches 64 MiB pieces
+with range requests over 8 connections: the March, April and May files came
+at 21.0, 20.9 and 25.1 MB/s (30-second windows from 11 to 37 MB/s), so the
+23.4 GB take about 18 minutes instead of about an hour. Choosing the count
+automatically was dropped: in 12-second windows a new connection's first
+bytes take seconds, and it settled on 2 connections for March (7.3 MB/s
+against 7.0 on one). The count is a setting of the data cell.
