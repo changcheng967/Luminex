@@ -254,6 +254,44 @@ def fwd_loss(model, rec):
     return batch_loss(pred.float(), tgt.clamp(-TARGET_CLIP, TARGET_CLIP), flag)
 
 
+# Positions with a known large advantage for White to move. Held-out data
+# shares its source's selection bias (the t91 dump dropped |score| >= 800,
+# so material-up positions there are labelled near zero), so the network's
+# value of material is checked against these instead of against labels.
+PROBE = (("Q", "4r1k1/1p3ppp/p7/3Q4/8/1P4P1/P4P1P/3R2K1 w - - 0 30"),      # queen up
+         ("R", "8/8/4k3/8/2R5/8/4K3/8 w - - 0 1"),                        # K+R vs K
+         ("Rp", "6k1/5ppp/8/8/8/8/5PPP/3R2K1 w - - 0 1"),                 # rook up with pawns
+         ("N", "2r2rk1/pp3ppp/2n1p3/3pP3/3P4/P1N2N2/1P3PPP/2R2RK1 w - - 0 18"))   # knight up
+PIECE = {c: i for i, c in enumerate("PNBRQKpnbrqk")}   # src/types.h Piece: WHITE_PAWN = 0 .. BLACK_KING = 11
+
+
+def fen_record(fen):
+    """One LCR1 record for a FEN (target 0), as luminex-featurize --compact writes it."""
+    board, stm = fen.split()[:2]
+    sqpc, r, f = {}, 7, 0
+    for ch in board:
+        if ch == "/":
+            r, f = r - 1, 0
+        elif ch.isdigit():
+            f += int(ch)
+        else:
+            sqpc[r * 8 + f] = PIECE[ch]
+            f += 1
+    occ, nib = 0, bytearray(16)
+    for k, sq in enumerate(sorted(sqpc)):
+        occ |= 1 << sq
+        nib[k >> 1] |= sqpc[sq] << (4 * (k & 1))
+    return occ.to_bytes(8, "little") + bytes(nib) + bytes([0, 0, 1 if stm == "w" else 0, len(sqpc)]) + bytes(4)
+
+
+@torch.no_grad()
+def material_probe(model):
+    rec = torch.tensor(list(b"".join(fen_record(f) for _, f in PROBE)), dtype=torch.uint8, device=dev).view(-1, REC)
+    wf, bf, stm, _, _, cnt = expand(rec)
+    p = forward(model, wf, bf, stm, cnt).float().tolist()
+    return " ".join(f"{name} {v:+.0f}" for (name, _), v in zip(PROBE, p))
+
+
 # ---------------------------------------------------------------------------
 # Validation: the numbers that name our measured weaknesses
 # ---------------------------------------------------------------------------
@@ -291,7 +329,7 @@ def evaluate(model, val, gstep):
     print(f"[HEALTH step {gstep}] val loss={loss:.6f} MAE={float(err.mean()):.1f}cp ({by_class}) "
           f"slope={slope:.3f} calib={calib:.3f} predSTD={float(p.std()):.0f} tgtSTD={float(t.std()):.0f} | "
           f"won (pred/target) {' '.join(bins)} corr={corr:.3f} | "
-          f"tail dead/stuck L2 {d2}/{s2} of {n2}, L3 {d3}/{s3} of {n3}", flush=True)
+          f"tail dead/stuck L2 {d2}/{s2} of {n2}, L3 {d3}/{s3} of {n3} | material (cp) {material_probe(model)}", flush=True)
 
 
 # ---------------------------------------------------------------------------

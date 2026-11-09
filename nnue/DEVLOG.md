@@ -1003,16 +1003,33 @@ shipped net's evals run about 17% wider than the t91 scale, the scale the
 search margins were tuned on. Inside the won range neither net orders
 positions (correlation 0.17).
 
-**The labels stop at 800.** The t91 dump keeps |score| < 800
-(`sf_binpack_dump.cpp`), so no training position is clearly won, and 1% of
-positions have |cp| >= 700. The largest share of our game loss (46%, §17)
-is in won positions.
+**The t91 data teaches that material is worth nothing.** The t91 dump
+drops every position labelled beyond +-800 (`sf_binpack_dump.cpp`: "|score|
+< 800 cp"). That removes nearly every position where extra material
+actually wins, so the material-up positions left are mid-exchange
+transients and positions with compensation, labelled near zero. On a
+200K-position sample, by White's material edge:
+
+| edge (pawns) | +1 | +2 | +3 | +5 | +9 |
+|---|---|---|---|---|---|
+| positions | 33,342 | 6,521 | 3,333 | 715 | 343 |
+| mean label (cp, White) | +85 | +130 | +35 | +41 | +14 |
+
+Both nets trained on t91 learned it. Static evals (cp) from the engine,
+the shipped net against gen768r_01 (C500) and gen768r_02 (Blackwell): a
+queen up 927 / 280 / 271, a rook up (K+R vs K) 197 / 113 / 71, a knight
+up in a middlegame 546 / 433 / 375. The net-only SPRT of gen768r_01
+against the shipped net (test 59, main eea8b8d, 10+0.1) stood at 6 wins,
+79 losses and 11 draws after 96 games, with no crashes or time losses,
+and was stopped there. gen768r_02 has the same defect and gets no SPRT.
+The held-out validation could not see it, because it comes from the same
+filtered data: there gen768r_02 looked better than the shipped net.
 
 **Decisions.**
+- *Data:* t91 as dumped is not training data. The next dump keeps every
+  position (targets clipped in the loss, not positions dropped), and any
+  dataset is checked for label against material edge before a run.
+- *Trainer:* validation adds positions with a known large advantage, so a
+  net that has stopped valuing material shows up in the run, not in games.
 - *Next Blackwell runs* use `resident_train.py`, on PyTorch 2.11; test runs
   go in notebook cells, installs in the terminal.
-- *Data:* the next dump keeps the won range (targets clipped in the loss
-  instead of positions dropped); judged by the won-range order and then
-  games.
-- *Gate:* gen768r_01 (C500) and gen768r_02 (Blackwell) each get a net-only
-  SPRT against the shipped net.
