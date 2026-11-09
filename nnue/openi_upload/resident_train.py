@@ -9,7 +9,10 @@ Network, loss, optimizer groups, learning-rate schedule and output files are
 those of c500_train_stream.py: a .pt from either trainer resumes in the other.
 
 Environment (default in brackets):
-  NNUE_DATA          LCR1 file; built from NNUE_FENEVAL_FILE first when missing
+  NNUE_DATA          LCR1 file(s): a path, or a comma-separated list of paths and
+                     globs (binpack2lcr's OUT.*.lcr parts); a single missing path is
+                     built from NNUE_FENEVAL_FILE first
+  NNUE_MAX_POS [all] load at most this many positions (to fit the card)
   NNUE_FENEVAL_FILE  fen<TAB>cp[<TAB>flag] lines (.xz, .zst or plain text)
   NNUE_DATA_VIA_FILE [0]  1: decompress to a temporary text file, then featurize
                      file to file (no pipe at all)
@@ -114,34 +117,95 @@ def build_data(src, dst):
     print(f"[data] {os.path.getsize(dst) // REC:,} positions in {time.time() - t:.0f} s", flush=True)
 
 
-def load_data(path):
-    """LCR1 file -> (train, val) uint8 [n, 32] on the GPU. Positions whose FEN hash
-    falls below VAL_FRAC * 2^32 form the validation set; the rest are packed into
-    one training tensor, chunk by chunk, so the GPU never holds a second copy."""
-    size = os.path.getsize(path)
-    if size % REC:
-        raise SystemExit(f"FAIL: {path} is {size} bytes, not a whole number of {REC}-byte records")
-    n = size // REC
+def data_files(spec):
+    """NNUE_DATA: one LCR1 file, or a comma-separated list of files and glob
+    patterns (binpack2lcr writes one part per thread: OUT.000.lcr, ...)."""
+    import glob as _glob
+    files = []
+    for item in [s.strip() for s in spec.split(",") if s.strip()]:
+        hits = sorted(_glob.glob(item)) if any(ch in item for ch in "*?[") else [item]
+        files += hits
+    return files
+
+
+def load_data(paths):
+    """LCR1 files -> (train, val) uint8 [n, 32] on the GPU. Positions whose hash
+    field falls below VAL_FRAC * 2^32 form the validation set; the rest are packed
+    into one training tensor, chunk by chunk, so the GPU never holds a second copy.
+    NNUE_MAX_POS caps the positions loaded (the files' order is kept)."""
+    sizes = []
+    for p in paths:
+        s = os.path.getsize(p)
+        if s % REC:
+            raise SystemExit(f"FAIL: {p} is {s} bytes, not a whole number of {REC}-byte records")
+        sizes.append(s // REC)
+    n = sum(sizes)
+    cap = int(float(env("NNUE_MAX_POS", "0"))) or n
+    n = min(n, cap)
     thr = np.uint32(min(int(VAL_FRAC * 2 ** 32), 2 ** 32 - 1))
     train = torch.empty((n, REC), dtype=torch.uint8, device=dev)
-    vals, nt, t = [], 0, time.time()
+    vals, nt, nread, t = [], 0, 0, time.time()
     chunk = 1 << 25   # records per read: 1 GiB
-    with open(path, "rb") as f:
-        while True:
-            a = np.fromfile(f, dtype=np.uint8, count=chunk * REC)
-            if a.size == 0:
-                break
-            a = a.reshape(-1, REC)
-            held = a[:, 28:32].copy().view(np.uint32).reshape(-1) < thr
-            if held.any():
-                vals.append(a[held])
-            keep = a[~held]
-            train[nt:nt + len(keep)].copy_(torch.from_numpy(keep))
-            nt += len(keep)
+    for p in paths:
+        with open(p, "rb") as f:
+            while nread < n:
+                a = np.fromfile(f, dtype=np.uint8, count=min(chunk, n - nread) * REC)
+                if a.size == 0:
+                    break
+                a = a.reshape(-1, REC)
+                nread += len(a)
+                held = a[:, 28:32].copy().view(np.uint32).reshape(-1) < thr
+                if held.any():
+                    vals.append(a[held])
+                keep = a[~held]
+                train[nt:nt + len(keep)].copy_(torch.from_numpy(keep))
+                nt += len(keep)
+        if nread >= n:
+            break
     val = torch.from_numpy(np.concatenate(vals)).to(dev) if vals else train[:0]
-    print(f"[data] {n:,} positions -> VRAM in {time.time() - t:.0f} s: train {nt:,}, "
-          f"validation {len(val):,} ({VAL_FRAC:.2%} by FEN hash), {n * REC / 1e9:.1f} GB", flush=True)
+    print(f"[data] {nread:,} positions from {len(paths)} file(s) -> VRAM in {time.time() - t:.0f} s: "
+          f"train {nt:,}, validation {len(val):,} ({VAL_FRAC:.2%} by hash), {nread * REC / 1e9:.1f} GB"
+          f"{f' (capped at NNUE_MAX_POS {cap:,})' if cap < sum(sizes) else ''}", flush=True)
     return train[:nt], val
+
+
+class HostShuffle:
+    """Each pass's permutation of the training positions, made on the CPU in a
+    background thread while the GPU trains the previous pass. torch.randperm on the
+    GPU needs several times the permutation's size in temporary VRAM, which would
+    cap the data at about 1.3B positions on a 96 GB card; this costs 4 bytes a
+    position of pinned host memory and none of the VRAM."""
+
+    def __init__(self, n, seed):
+        import threading
+        assert n < 2 ** 32, "uint32 permutation"
+        self.n, self.seed, self.epoch = n, seed, 0
+        self._next, self._thread = None, None
+        self._threading = threading
+        self._start()
+
+    def _make(self, epoch):
+        p = np.arange(self.n, dtype=np.uint32)
+        np.random.default_rng([self.seed, epoch]).shuffle(p)
+        t = torch.from_numpy(p.view(np.int32))
+        self._next = t.pin_memory() if torch.cuda.is_available() else t
+
+    def _start(self):
+        self._thread = self._threading.Thread(target=self._make, args=(self.epoch,), daemon=True)
+        self._thread.start()
+
+    def next_pass(self):
+        """The next pass's permutation; starts making the one after."""
+        self._thread.join()
+        perm = self._next
+        self.epoch += 1
+        self._start()
+        return perm
+
+    @staticmethod
+    def batch(perm, i, bs):
+        """Indices i..i+bs of a pass as int64 on the GPU (uint32 values travel as int32)."""
+        return perm[i:i + bs].to(dev, non_blocking=True).to(torch.int64) & 0xFFFFFFFF
 
 
 KB = [-1, -1, -1, -1, 31, 30, 29, 28, -1, -1, -1, -1, 27, 26, 25, 24,
@@ -346,12 +410,15 @@ def main():
             raise SystemExit("FAIL: set NNUE_DATA (LCR1 file) or NNUE_FENEVAL_FILE")
         data = os.path.join(os.path.dirname(os.path.abspath(src)),
                             os.path.basename(src).split(".tsv")[0] + ".lcr")
-    if not os.path.exists(data):
-        if not src:
-            raise SystemExit(f"FAIL: {data} missing and no NNUE_FENEVAL_FILE to build it from")
+    files = data_files(data)
+    if not files or not all(os.path.exists(p) for p in files):
+        if not src or len(files) > 1:
+            raise SystemExit(f"FAIL: NNUE_DATA {data} not found and no NNUE_FENEVAL_FILE to build it from")
         build_data(src, data)
-    train, val = load_data(data)
+        files = [data]
+    train, val = load_data(files)
     n = len(train)
+    shuffle = HostShuffle(n, SEED)
 
     model = LNNUE(L1=L1).to(dev)
     gstep, opt_state = 0, None
@@ -436,9 +503,9 @@ def main():
     seg0, t0, last_t, last_s = gstep, time.time(), time.time(), gstep
     epoch, done = 0, None
     while done is None:
-        perm = torch.randperm(n, device=dev)
+        perm = shuffle.next_pass()
         for i in range(0, steps_per_pass * BS, BS):
-            loss = step_fn(model, train[perm[i:i + BS]])
+            loss = step_fn(model, train[HostShuffle.batch(perm, i, BS)])
             opt.zero_grad(set_to_none=True)
             loss.backward()
             if GRAD_CLIP > 0:
