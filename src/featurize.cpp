@@ -72,6 +72,21 @@ using namespace luminex;
 // ============================================================================
 // HalfKAv2_hm feature indexer — copied VERBATIM from nnue.cpp (== trainer).
 // ============================================================================
+// --compact (fen-eval mode): LCR1 records of 32 bytes instead of the 140-byte
+// feature records. The GPU-resident trainer (resident_train.py) keeps every
+// position in VRAM in this form and computes the HalfKAv2_hm indices itself.
+struct CompactRec {
+    uint64_t occ;       // occupied squares, bit = square (A1 = 0)
+    uint8_t  pcs[16];   // Piece (0..11) of the k-th occupied square, ascending; k even = low nibble
+    int16_t  target;    // side-to-move-relative centipawns, clamped to +-32767
+    uint8_t  flags;     // bit 0: white to move; bits 1-2: 0 quiet, 1 capture-best, 2 in-check
+    uint8_t  npieces;   // popcount(occ)
+    uint32_t fenhash;   // crc32 of the FEN text: a deterministic train/validation split
+};
+static_assert(sizeof(CompactRec) == 32, "LCR1 records are 32 bytes");
+static bool g_compact = false;
+static size_t g_rec_bytes = 140;
+
 constexpr int NUM_SQ = 64;
 constexpr int NUM_PLANES = NUM_SQ * 12;            // 768
 constexpr int NUM_INPUTS = NUM_PLANES * 32;        // 24576 per half
@@ -217,6 +232,27 @@ static bool fen_eval_one(Position& pos, const char* ls, const char* le, uint32_t
     // quiet flag: column value if present, else derived from the FEN —
     // in-check positions carry pure label noise for a static eval.
     if (quiet == 0 && pos.checkers()) quiet = 2;
+    if (g_compact) {
+        Bitboard occ = pos.pieces();
+        if (popcount(occ) > MAX_PIECES) return false;
+        CompactRec r;
+        std::memset(&r, 0, sizeof r);
+        r.occ = occ;
+        int k = 0;
+        for (Bitboard bb = occ; bb; ++k) {
+            Square sq = pop_lsb(bb);
+            r.pcs[k >> 1] |= (uint8_t)((int)pos.piece_on(sq) << (4 * (k & 1)));
+        }
+        bool white = (pos.side_to_move() == WHITE);
+        float t = white ? cp : -cp;   // white-relative column -> stm-relative, as below
+        r.target = (int16_t)std::max(-32767.0f, std::min(32767.0f, t));
+        r.flags = (uint8_t)((white ? 1 : 0) | ((quiet & 3) << 1));
+        r.npieces = (uint8_t)k;
+        r.fenhash = crc32_ieee(ls, (size_t)(cp_col - ls));
+        const char* rp = reinterpret_cast<const char*>(&r);
+        out.insert(out.end(), rp, rp + sizeof r);
+        return true;
+    }
     int wk = (int)pos.king_sq(WHITE), bk = (int)pos.king_sq(BLACK);
     int16_t wfeat[MAX_PIECES], bfeat[MAX_PIECES]; int nw = 0, nb = 0;
 #ifdef FAST_HALFKA
@@ -266,6 +302,7 @@ static void fen_eval_mode(long max_pos, double skip_hash_frac, int nthreads) {
     // Job buffers are multi-MB; keep them on the heap instead of per-allocation
     // mmap/munmap (measured 40s of system time churning page faults otherwise).
     mallopt(M_MMAP_THRESHOLD, 64 * 1024 * 1024);
+    crc32_ieee("", 0);   // build the CRC table here: the worker threads only read it
     const uint32_t skip_thresh = (uint32_t)(skip_hash_frac * 4294967296.0);
     if (skip_hash_frac > 0.0)
         std::fprintf(stderr, "fen-eval: skipping FEN hashes below %u (%.4f%% held out)\n",
@@ -325,7 +362,7 @@ static void fen_eval_mode(long max_pos, double skip_hash_frac, int nthreads) {
                 {
                     std::lock_guard<std::mutex> lw(wm);
                     std::fwrite(out.data(), 1, out.size(), stdout);
-                    n += (long)(out.size() / 140);
+                    n += (long)(out.size() / g_rec_bytes);
                     progress(false);
                 }
                 delete b;
@@ -382,6 +419,7 @@ int main(int argc, char** argv) {
     signal(SIGABRT, crash_handler);
     const char* out_dir = "/tmp/feat";
     const char* in_path = nullptr;          // nullptr => stdin
+    const char* out_path = nullptr;         // --output (fen-eval): records to this file, not stdout
     long max_pos = 0;                        // 0 = no limit
     bool stream_mode = false;                // --stream: emit 140-byte records to stdout (no .npy)
     bool fen_eval = false;                   // --fen-eval: read "fen<tab>cp" lines, emit 140-byte records
@@ -397,12 +435,20 @@ int main(int argc, char** argv) {
         else if (a == "--stream")  stream_mode = true;
         else if (a == "--fen-eval") fen_eval = true;
         else if (a == "--skip-hash-frac") skip_hash_frac = std::atof(next("0"));
+        else if (a == "--compact") { g_compact = true; g_rec_bytes = sizeof(CompactRec); }
+        else if (a == "--output")  out_path = next("");
         else { std::fprintf(stderr, "unknown arg: %s\n", a.c_str()); return 2; }
     }
 
     init_magic_bitboards();
     init_line_tables();
-    if (fen_eval) { fen_eval_mode(max_pos, skip_hash_frac, nthreads); return 0; }
+    if (fen_eval) {
+        // --input / --output read and write files directly instead of stdin/stdout.
+        if (in_path && *in_path && !std::freopen(in_path, "rb", stdin)) { std::perror(in_path); return 1; }
+        if (out_path && *out_path && !std::freopen(out_path, "wb", stdout)) { std::perror(out_path); return 1; }
+        fen_eval_mode(max_pos, skip_hash_frac, nthreads);
+        return 0;
+    }
 
     if (!stream_mode) mkdir(out_dir, 0755);   // create output dir if missing (fopen "wb" won't)
     init_line_tables();   // CRITICAL: populates BetweenBB/LineBB; without it pin detection
