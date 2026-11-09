@@ -27,6 +27,8 @@ Environment (default in brackets):
   NNUE_COMPILE [0]   1: torch.compile the step from the expanded batch to the loss
   NNUE_LIVE_CLAMP [0]  tail activations pass this gradient slope outside [0, 1];
                      the forward pass (and so the engine's net) is unchanged
+  NNUE_TARGET_CLIP [1500]  |target| cap inside the loss (mates and big scores stay
+                     in the data and train as "winning"; 1500 = 97.7% in the loss)
   NNUE_LOSS_WIDE ["" ]  "scale,weight": add weight * the same loss at a wider
                      sigmoid scale, which keeps a gradient in won positions
   NNUE_OUT_DIR [.]  NNUE_OUT_NAME [luminex_resident.nnue]
@@ -45,7 +47,7 @@ import torch.nn.functional as F
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 os.environ.setdefault("NNUE_BUCKETS", "8")
-from luminex_nnue_train import (LNNUE, LOSS_SCALE, NUM_INPUTS, TARGET_CLIP,  # noqa: E402
+from luminex_nnue_train import (LNNUE, LOSS_SCALE, NUM_INPUTS,  # noqa: E402
                                 parse_quiet_loss, save_nnue, stm_split_gate)
 
 REC = 32   # LCR1 record bytes (src/featurize.cpp CompactRec)
@@ -72,6 +74,7 @@ SAVE_EVERY = int(env("NNUE_SAVE_EVERY", "3000"))
 COMPILE = env("NNUE_COMPILE", "0") == "1"
 LIVE = float(env("NNUE_LIVE_CLAMP", "0"))
 WIDE = [float(x) for x in env("NNUE_LOSS_WIDE", "").split(",")] if env("NNUE_LOSS_WIDE", "") else None
+TARGET_CLIP = float(env("NNUE_TARGET_CLIP", "1500"))   # |target| cap in the loss; data keeps raw scores
 OUT_DIR = env("NNUE_OUT_DIR", ".")
 OUT = env("NNUE_OUT_NAME", "luminex_resident.nnue")
 OUT_BASE = OUT[:-5] if OUT.endswith(".nnue") else OUT
@@ -402,7 +405,9 @@ def main():
     with torch.no_grad():   # the label-convention gate of c500_train_stream.py, on held-out positions
         if res and len(val) >= 8192:
             wf, bf, stm, tgt, _, _ = expand(val[:8192])
-            print(f"  [DATA] stm-split correlation {stm_split_gate(model, wf, bf, stm, tgt)} (gate passed)", flush=True)
+            # clipped as in the loss: raw mate scores (up to ~26,600) would swamp a correlation
+            gate = stm_split_gate(model, wf, bf, stm, tgt.clamp(-TARGET_CLIP, TARGET_CLIP))
+            print(f"  [DATA] stm-split correlation {gate} (gate passed)", flush=True)
         wf, bf, stm, tgt, flag, cnt = expand(train[:BS])
         print(f"  [DATA] w {int(wf.min())}..{int(wf.max())} | b {int(bf.min())}..{int(bf.max())} | "
               f"pieces {int(cnt.min())}..{int(cnt.max())} | white to move {float(stm.mean()):.3f} | "

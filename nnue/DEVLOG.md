@@ -1025,11 +1025,36 @@ and was stopped there. gen768r_02 has the same defect and gets no SPRT.
 The held-out validation could not see it, because it comes from the same
 filtered data: there gen768r_02 looked better than the shipped net.
 
+**The raw data is sound; the cut was the bias.** The first 27.7M positions
+of the April binpack, dumped twice, with nothing dropped and with the old
+filter (|score| <= 800, ply 8-200):
+
+| quiet positions, White's edge | +3 (piece) | +5 (rook) | +9 (queen) |
+|---|---|---|---|
+| raw: positions / beyond +-800 | 416,194 / 47% | 189,548 / 91% | 224,872 / 99% |
+| old filter: positions kept / mean label | 173,456 / +95 | 16,446 / +56 | 1,118 / +42 |
+
+The cut removed 12.7% of all positions, but 99% of the quiet positions a
+queen up and 91% of those a rook up. The shipped net's data
+(`sf_train_full_q`) carries the same cut and still labels a quiet piece up
++179 and a rook up +195, because its labels run on a smaller scale and
+fewer of its won positions crossed 800.
+
+**Settings, from the same positions.** Nothing is dropped: opening plies
+(7.3% of positions, 168,729 distinct, each seen about 12 times) stay,
+because they are real positions our engine evaluates; scores stay raw,
+mates included (6.3% of positions, up to 26,624; int16 holds them). Large
+scores are a training choice, not a deletion: the loss clips targets at
++-1500 (`NNUE_TARGET_CLIP`), where the win probability in the loss is
+97.7% (non-mate scores: median 46, p95 1,174, p99 4,155; 10.1% of
+positions lie beyond 1500). The dump runs at 1.1M positions/s.
+
 **Decisions.**
-- *Data:* t91 as dumped is not training data. The next dump keeps every
-  position (targets clipped in the loss, not positions dropped), and any
-  dataset is checked for label against material edge before a run.
-- *Trainer:* validation adds positions with a known large advantage, so a
-  net that has stopped valuing material shows up in the run, not in games.
+- *Data:* t91 April and May are re-dumped on mscope with nothing dropped
+  (`sf_train_t91_aprmay_all_q.tsv.xz`), checked for label against material
+  edge before any run.
+- *Trainer:* validation evaluates positions with a known large advantage,
+  so a net that has stopped valuing material shows up in the run; the
+  target clip and the capture weight are measured settings.
 - *Next Blackwell runs* use `resident_train.py`, on PyTorch 2.11; test runs
   go in notebook cells, installs in the terminal.
