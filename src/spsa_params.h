@@ -1,6 +1,7 @@
 // spsa_params.h — Runtime-tunable search constants for SPSA optimization.
-// Every default is the rounded final value of OpenBench tune 45 (SPSA on all
-// 27 fields at once, 80,000 games at 10+0.1, run on main 5545f07's search).
+// Every default but the shallow null-move pair is the rounded final value of
+// OpenBench tune 45 (SPSA on those 27 fields at once, 80,000 games at 10+0.1,
+// run on main 5545f07's search); the pair is the setting #41's SPRT tested.
 // Each field is also a UCI spin option (see uci.cpp), so OpenBench SPSA can
 // tune it directly. A spsa_params.txt in the working directory (the first 7
 // integers, one per line, in field order) is read once at startup; UCI options
@@ -64,6 +65,11 @@ struct SPSAParams {
     int qs_see_coeff     = 53;
     // Correction history update weight: min(corr_weight_max, depth + 1) / 256
     int corr_weight_max  = 13;
+
+    // Null-move pruning at depth <= nmp_shallow_depth needs the static eval
+    // at least nmp_shallow_margin above beta (deeper: at beta)
+    int nmp_shallow_margin = 60;
+    int nmp_shallow_depth  = 5;
 
     // Load from file (COUNT ints, one per line, in field order). Returns true if loaded.
     bool load(const std::string& path) {
@@ -132,6 +138,8 @@ inline constexpr SPSAOption SPSA_OPTIONS[] = {
     {"HistBonusOffset", &SPSAParams::hist_bonus_offset,   0,   400},
     {"QsSeeCoeff",      &SPSAParams::qs_see_coeff,        0,   200},
     {"CorrWeightMax",   &SPSAParams::corr_weight_max,     1,   128},
+    {"NmpShallowMargin", &SPSAParams::nmp_shallow_margin, 0,  300},
+    {"NmpShallowDepth", &SPSAParams::nmp_shallow_depth,   0,   12},
 };
 
 inline const SPSAOption* find_spsa_option(const std::string& name) {
