@@ -25,9 +25,18 @@ Environment (default in brackets):
   NNUE_BUDGET_SEC    [0 = none] wall-clock budget; the horizon shrinks to fit it
   NNUE_LOSS_POWER [2.6]  NNUE_QUIET_LOSS ["" = unweighted, e.g. 1,0.3,0]
   NNUE_VAL_FRAC [0.002]  share of positions held out by FEN hash (never trained on)
+  NNUE_VAL_DATA      LCR1 file(s) or globs from games the run never trains on (another
+                     month): a [DISJOINT] line beside each [HEALTH] line. The hash split
+                     shares games with the training data, so only these positions show
+                     a net memorising games or fitting a biased corpus
+  NNUE_VAL_MAX [5e6] positions of NNUE_VAL_DATA to load
   NNUE_EVAL_EVERY [1000] steps between [HEALTH] validation lines
   NNUE_SAVE_EVERY [3000] steps between checkpoint saves
+  NNUE_KEEP_EVERY [0 = off] steps between numbered copies of the float net
+                     (<name>_s<step>.nnue in NNUE_OUT_DIR), so checkpoints along the
+                     run can be gated
   NNUE_COMPILE [0]   1: torch.compile the step from the expanded batch to the loss
+  NNUE_DEVICE [cuda] cpu runs every code path slowly, for a dry run without a GPU
   NNUE_LIVE_CLAMP [0]  tail activations pass this gradient slope outside [0, 1];
                      the forward pass (and so the engine's net) is unchanged
   NNUE_TARGET_CLIP [1500]  |target| cap inside the loss (mates and big scores stay
@@ -72,8 +81,11 @@ BUDGET = float(env("NNUE_BUDGET_SEC", "0"))
 POWER = float(env("NNUE_LOSS_POWER", "2.6"))
 QW = parse_quiet_loss(env("NNUE_QUIET_LOSS", ""))
 VAL_FRAC = float(env("NNUE_VAL_FRAC", "0.002"))
+VAL_DATA = env("NNUE_VAL_DATA", "")
+VAL_MAX = int(float(env("NNUE_VAL_MAX", "5e6")))
 EVAL_EVERY = int(env("NNUE_EVAL_EVERY", "1000"))
 SAVE_EVERY = int(env("NNUE_SAVE_EVERY", "3000"))
+KEEP_EVERY = int(env("NNUE_KEEP_EVERY", "0"))
 COMPILE = env("NNUE_COMPILE", "0") == "1"
 LIVE = float(env("NNUE_LIVE_CLAMP", "0"))
 WIDE = [float(x) for x in env("NNUE_LOSS_WIDE", "").split(",")] if env("NNUE_LOSS_WIDE", "") else None
@@ -81,7 +93,7 @@ TARGET_CLIP = float(env("NNUE_TARGET_CLIP", "1500"))   # |target| cap in the los
 OUT_DIR = env("NNUE_OUT_DIR", ".")
 OUT = env("NNUE_OUT_NAME", "luminex_resident.nnue")
 OUT_BASE = OUT[:-5] if OUT.endswith(".nnue") else OUT
-dev = "cuda"
+dev = env("NNUE_DEVICE", "cuda")   # cpu: a slow dry run of every code path on a machine without a GPU
 
 
 # ---------------------------------------------------------------------------
@@ -169,6 +181,24 @@ def load_data(paths):
     return train[:nt], val
 
 
+def load_records(paths, cap):
+    """LCR1 files -> one uint8 [n, 32] tensor on the GPU, at most cap positions
+    in file order (the game-disjoint validation set)."""
+    parts, n = [], 0
+    for p in paths:
+        if n >= cap:
+            break
+        a = np.fromfile(p, dtype=np.uint8, count=(cap - n) * REC)
+        if a.size % REC:
+            raise SystemExit(f"FAIL: {p} is not a whole number of {REC}-byte records")
+        parts.append(a.reshape(-1, REC))
+        n += len(parts[-1])
+    rec = (torch.from_numpy(np.concatenate(parts)).to(dev) if parts
+           else torch.empty((0, REC), dtype=torch.uint8, device=dev))
+    print(f"[data] game-disjoint validation: {len(rec):,} positions from {len(paths)} file(s)", flush=True)
+    return rec
+
+
 class HostShuffle:
     """Each pass's permutation of the training positions, made on the CPU in a
     background thread while the GPU trains the previous pass. torch.randperm on the
@@ -214,6 +244,7 @@ KB = [-1, -1, -1, -1, 31, 30, 29, 28, -1, -1, -1, -1, 27, 26, 25, 24,
       -1, -1, -1, -1, 7, 6, 5, 4, -1, -1, -1, -1, 3, 2, 1, 0]
 KB_T = torch.tensor(KB, dtype=torch.int64, device=dev).clamp(min=0)
 SQ64 = torch.arange(64, dtype=torch.int64, device=dev)
+PV_T = torch.tensor([1, 3, 3, 5, 9, 0, -1, -3, -3, -5, -9, 0], dtype=torch.int64, device=dev)   # by piece code
 QW_T = torch.tensor(QW, device=dev) if QW is not None else None   # made once: a per-step copy would sync
 
 
@@ -246,6 +277,15 @@ def expand(rec):
     target = rec[:, 24:26].contiguous().view(torch.int16).view(n).float()
     flags = rec[:, 26].to(torch.int64)
     return wf, bf, (flags & 1).float(), target, (flags >> 1) & 3, cnt
+
+
+def material_edge(rec):
+    """White's material edge in pawns (1/3/3/5/9) of each LCR1 record."""
+    n = rec.shape[0]
+    nb = rec[:, 8:24].to(torch.int64)
+    codes = torch.stack((nb & 15, nb >> 4), dim=2).view(n, 32)
+    valid = SQ64[:32].view(1, 32) < rec[:, 27].to(torch.int64).view(n, 1)
+    return (PV_T[codes] * valid).sum(1)
 
 
 # ---------------------------------------------------------------------------
@@ -399,6 +439,41 @@ def evaluate(model, val, gstep):
           f"tail dead/stuck L2 {d2}/{s2} of {n2}, L3 {d3}/{s3} of {n3} | material (cp) {material_probe(model)}", flush=True)
 
 
+@torch.no_grad()
+def evaluate_disjoint(model, dval, gstep):
+    """The game-disjoint set (NNUE_VAL_DATA): the training loss and errors on
+    games the run never sees, the correlation where labels still order
+    positions (|target| < 800), and, for quiet positions a piece, rook or queen
+    up, the mean prediction against the mean label from the stronger side."""
+    if dval is None or len(dval) == 0:
+        return
+    P, T, FL, E = [], [], [], []
+    for i in range(0, len(dval), BS):
+        r = dval[i:i + BS]
+        wf, bf, stm, tgt, flag, cnt = expand(r)
+        with torch.autocast(device_type="cuda", dtype=torch.bfloat16):
+            P.append(forward(model, wf, bf, stm, cnt).float())
+        T.append(tgt.clamp(-TARGET_CLIP, TARGET_CLIP))
+        FL.append(flag)
+        E.append(material_edge(r) * torch.where(stm > 0.5, 1, -1))   # the side to move's edge
+    p, t, fl, e = torch.cat(P), torch.cat(T), torch.cat(FL), torch.cat(E)
+    loss = float(batch_loss(p, t, fl))
+    err = (p - t).abs()
+    by_class = " ".join(f"{nm}={float(err[fl == c].mean()):.1f}" for nm, c in (("q", 0), ("c", 1), ("i", 2))
+                        if bool((fl == c).any()))
+    m = t.abs() < 800
+    corr = float(torch.corrcoef(torch.stack([p[m], t[m]]))[0, 1]) if int(m.sum()) > 100 else float("nan")
+    mat = []
+    for k, nm in ((3, "piece"), (5, "rook"), (9, "queen")):
+        q = (e.abs() == k) & (fl == 0)
+        if int(q.sum()) >= 100:
+            s = torch.sign(e[q]).float()
+            mat.append(f"{nm} {float((p[q] * s).mean()):+.0f}/{float((t[q] * s).mean()):+.0f}")
+    print(f"[DISJOINT step {gstep}] loss={loss:.6f} MAE={float(err.mean()):.1f}cp ({by_class}) "
+          f"corr(|t|<800)={corr:.3f} | quiet material up, pred/label: {' '.join(mat) or '-'} | "
+          f"{len(dval):,} positions", flush=True)
+
+
 # ---------------------------------------------------------------------------
 def main():
     t_start = time.time()
@@ -417,6 +492,16 @@ def main():
         build_data(src, data)
         files = [data]
     train, val = load_data(files)
+    dval = None
+    if VAL_DATA:
+        vfiles = data_files(VAL_DATA)
+        if not vfiles or not all(os.path.exists(p) for p in vfiles):
+            raise SystemExit(f"FAIL: NNUE_VAL_DATA {VAL_DATA} not found")
+        shared = set(map(os.path.realpath, vfiles)) & set(map(os.path.realpath, files))
+        if shared:
+            raise SystemExit(f"FAIL: NNUE_VAL_DATA shares {len(shared)} file(s) with NNUE_DATA, "
+                             f"e.g. {sorted(shared)[0]}: those positions are trained on")
+        dval = load_records(vfiles, VAL_MAX)
     n = len(train)
     shuffle = HostShuffle(n, SEED)
 
@@ -499,7 +584,16 @@ def main():
         os.replace(pt_path + ".tmp", pt_path)
         print(f"  [save] {reason}: {nn_path} + .pt at step {gstep}", flush=True)
 
+    def keep():
+        """A numbered copy of the float net, so checkpoints along the run can be gated."""
+        os.makedirs(OUT_DIR, exist_ok=True)
+        path = os.path.join(OUT_DIR, f"{OUT_BASE}_s{gstep}.nnue")
+        save_nnue(model, path + ".tmp")
+        os.replace(path + ".tmp", path)
+        print(f"  [keep] {path} at step {gstep}", flush=True)
+
     evaluate(model, val, gstep)   # the starting point, for the curve
+    evaluate_disjoint(model, dval, gstep)
     seg0, t0, last_t, last_s = gstep, time.time(), time.time(), gstep
     epoch, done = 0, None
     while done is None:
@@ -530,8 +624,11 @@ def main():
                     state["t_live"] = new
             if sess % EVAL_EVERY == 0:
                 evaluate(model, val, gstep)
+                evaluate_disjoint(model, dval, gstep)
             if sess % SAVE_EVERY == 0:
                 save("checkpoint")
+            if KEEP_EVERY > 0 and gstep % KEEP_EVERY == 0:
+                keep()
             if sess >= state["t_live"]:
                 done = "tmax"
                 break
@@ -540,6 +637,7 @@ def main():
                 break
         epoch += 1
     evaluate(model, val, gstep)
+    evaluate_disjoint(model, dval, gstep)
     save("final")
     print(f"DONE ({done}) - {OUT}: {gstep} steps, {(gstep - seg0) * BS:,} positions in "
           f"{time.time() - t_start:.0f} s ({(gstep - seg0) / (time.time() - t0):.2f} steps/s)", flush=True)
