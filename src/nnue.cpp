@@ -208,15 +208,33 @@ static std::vector<int32_t> ft_b_i32;   // integer-domain FT bias (b*FT_WSCALE)
 // Weights stored in 1/32 cp units: a queen feature (~900cp) still fits int16.
 
 static std::vector<float> ft_b;   // (L1,)
-static std::vector<float> l2_w, l2_b, l3_w, l3_b, out_w;
-static float out_b = 0.0f;
-// int8 path (LNI8): L2/L3/out weights as int8 + per-layer scales. FT stays float.
+static std::vector<float> l2_w, l3_w, out_w;   // float dense weights (LNN1 nets)
 static bool g_int8 = false;
-static std::vector<int8_t> l2_w_i8, l3_w_i8, out_w_i8;
-static float g_s2 = 1.0f, g_s3 = 1.0f, g_so = 1.0f;  // weight quant scales
 static bool g_loaded = false;
-static bool g_l3_batched = false;   // l3_w_i8 interleaved for batched VNNI L3
-static bool g_l2_by_input = false;  // l2_w_i8 in 64-byte input-chunk blocks for VNNI L2
+
+// The dense tail after the feature transformer: L2/L3/out biases, and for int8
+// nets the int8 weights with their per-layer scales (the FT stays float on
+// disk). LNN1 and LNI8 nets have one tail; LNB8 nets have one per output
+// bucket, chosen by the number of pieces on the board (bucket_of).
+struct DenseTail {
+    std::vector<int8_t> l2_w_i8, l3_w_i8, out_w_i8;
+    std::vector<float> l2_b, l3_b;
+    float s2 = 1.0f, s3 = 1.0f, so = 1.0f;   // weight quant scales
+    float out_b = 0.0f;
+    bool l3_batched = false;    // l3_w_i8 interleaved for batched VNNI L3
+    bool l2_by_input = false;   // l2_w_i8 in 64-byte input-chunk blocks for VNNI L2
+};
+constexpr int MAX_BUCKETS = 16;
+static std::vector<DenseTail> g_tails(1);
+static int g_buckets = 1;
+
+// Output bucket: (pieces on the board, kings included, minus 1) x buckets / 32,
+// so 8 buckets split 2-4, 5-8, ..., 29-32 pieces. The trainer uses the same rule.
+static inline int bucket_of(const Position& pos) {
+    if (g_buckets == 1) return 0;
+    int b = (popcount(pos.pieces()) - 1) * g_buckets / 32;
+    return b < 0 ? 0 : (b >= g_buckets ? g_buckets - 1 : b);
+}
 
 static bool g_enabled = true;
 static uint32_t g_net_id = 0;   // incremented by every successful load(); keys the refresh cache
@@ -292,11 +310,18 @@ static bool load_stream(std::istream& f, const std::string& name) {
     char magic[4];
     f.read(magic, 4);
     std::string mg(magic, 4);
-    if (mg != "LNN1" && mg != "LNI8") { std::fprintf(stderr, "nnue: bad magic\n"); return false; }
+    // LNN1: float tail. LNI8: int8 tail. LNB8: int8 tails, one per output
+    // bucket; its header carries the bucket count after the four sizes.
+    if (mg != "LNN1" && mg != "LNI8" && mg != "LNB8") { std::fprintf(stderr, "nnue: bad magic\n"); return false; }
     int32_t hdr[4];
     f.read(reinterpret_cast<char*>(hdr), sizeof(hdr));
     if (!f) { std::fprintf(stderr, "nnue: truncated header\n"); return false; }
     int L1 = hdr[0], L2 = hdr[1], L3 = hdr[2], NI = hdr[3];
+    int32_t NB = 1;
+    if (mg == "LNB8") {
+        f.read(reinterpret_cast<char*>(&NB), 4);
+        if (!f || NB < 1 || NB > MAX_BUCKETS) { std::fprintf(stderr, "nnue: bucket count %d out of range\n", NB); return false; }
+    }
     if (NI != NUM_INPUTS) { std::fprintf(stderr, "nnue: NUM_INPUTS mismatch %d\n", NI); return false; }
     if (L1 <= 0 || L1 > NNUE_L1_MAX) { std::fprintf(stderr, "nnue: L1=%d out of range (max %d)\n", L1, NNUE_L1_MAX); return false; }
     // The SIMD loops step L1 in 32-lane blocks and L2/L3 in 8-lane blocks, and
@@ -308,9 +333,9 @@ static bool load_stream(std::istream& f, const std::string& name) {
     // From here on the globals are overwritten; a failure part-way must not
     // leave a half-loaded net marked usable.
     g_loaded = false;
-    g_l3_batched = false;
-    g_l2_by_input = false;
-    g_int8 = (mg == "LNI8");
+    g_int8 = (mg != "LNN1");
+    g_tails.assign(NB, DenseTail{});
+    g_buckets = NB;
     g_L1 = L1; g_L2 = L2; g_L3 = L3;
     std::vector<float> ft_w_raw;
     if (!read_tensor(f, ft_w_raw, L1 * NUM_INPUTS)) return false;
@@ -327,15 +352,16 @@ static bool load_stream(std::istream& f, const std::string& name) {
     ft_b_i32.resize(L1);
     for (int l = 0; l < L1; ++l) ft_b_i32[l] = std::lround(ft_b[l] * FT_WSCALE);
     if (g_int8) {
-        // LNI8: int8 weights + float bias + float scale, per layer.
+        // LNI8 / LNB8: per tail, int8 weights + float bias + float scale per layer.
         auto read_i8 = [&](std::vector<int8_t>& v, int expected) -> bool {
             int32_t n = 0; f.read(reinterpret_cast<char*>(&n), 4);
             if (n != expected) { std::fprintf(stderr, "nnue: i8 size %d != %d\n", n, expected); return false; }
             v.resize(n); f.read(reinterpret_cast<char*>(v.data()), n); return f.good(); };
-        if (!read_i8(l2_w_i8, L2 * 2 * L1)) return false;
-        if (!read_tensor(f, l2_b, L2)) return false;
-        f.read(reinterpret_cast<char*>(&g_s2), 4);
-        if (!read_i8(l3_w_i8, L3 * L2)) return false;
+        for (DenseTail& t : g_tails) {
+        if (!read_i8(t.l2_w_i8, L2 * 2 * L1)) return false;
+        if (!read_tensor(f, t.l2_b, L2)) return false;
+        f.read(reinterpret_cast<char*>(&t.s2), 4);
+        if (!read_i8(t.l3_w_i8, L3 * L2)) return false;
 #if defined(__AVX512VNNI__)
         // Batched-L3 layout: dpbusd lane (o*4+j) accumulates h2-slice j against
         // l3_w[o] slice j — one interleaved row per 4 outputs, 2 dpbusd for all 32.
@@ -343,9 +369,9 @@ static bool load_stream(std::istream& f, const std::string& name) {
             std::vector<int8_t> tmp(static_cast<size_t>(L3) * L2);
             for (int o = 0; o < L3; ++o)
                 for (int j = 0; j < 4; ++j)
-                    std::memcpy(&tmp[(static_cast<size_t>(o) * 4 + j) * 4], &l3_w_i8[static_cast<size_t>(o) * L2 + j * 4], 4);
-            l3_w_i8 = std::move(tmp);
-            g_l3_batched = true;
+                    std::memcpy(&tmp[(static_cast<size_t>(o) * 4 + j) * 4], &t.l3_w_i8[static_cast<size_t>(o) * L2 + j * 4], 4);
+            t.l3_w_i8 = std::move(tmp);
+            t.l3_batched = true;
         }
         // Input-chunk L2 layout: block c (64 bytes) holds, for each of the 16
         // outputs, its 4 weights for inputs 4c..4c+3, so one VPDPBUSD of a
@@ -356,21 +382,21 @@ static bool load_stream(std::istream& f, const std::string& name) {
             for (int c = 0; c < total_in / 4; ++c)
                 for (int o = 0; o < L2; ++o)
                     std::memcpy(&tmp[(static_cast<size_t>(c) * L2 + o) * 4],
-                                &l2_w_i8[static_cast<size_t>(o) * total_in + c * 4], 4);
-            l2_w_i8 = std::move(tmp);
-            g_l2_by_input = true;
+                                &t.l2_w_i8[static_cast<size_t>(o) * total_in + c * 4], 4);
+            t.l2_w_i8 = std::move(tmp);
+            t.l2_by_input = true;
         }
 #endif
-        if (!read_tensor(f, l3_b, L3)) return false;
-        f.read(reinterpret_cast<char*>(&g_s3), 4);
-        if (!read_i8(out_w_i8, L3)) return false;
+        if (!read_tensor(f, t.l3_b, L3)) return false;
+        f.read(reinterpret_cast<char*>(&t.s3), 4);
+        if (!read_i8(t.out_w_i8, L3)) return false;
         std::vector<float> ob;
         if (!read_tensor(f, ob, 1)) return false;
-        out_b = ob[0];
-        f.read(reinterpret_cast<char*>(&g_so), 4);
+        t.out_b = ob[0];
+        f.read(reinterpret_cast<char*>(&t.so), 4);
+        if (!f) { std::fprintf(stderr, "nnue: truncated dense tail\n"); return false; }
         // Reorder L2 weights for AVX2 SF-style chunk access (not needed for AVX-512 VNNI).
 #if defined(__AVX2__) && !defined(__AVX512VNNI__)
-        // Old: [output][chunk]  →  New: [chunk][output]  (each chunk's 16 weight rows contiguous)
         // Old: [output][chunk]  →  New: [chunk][output]  (each chunk's 16 weight rows contiguous)
         {
             int total_in = 2 * L1;
@@ -379,22 +405,24 @@ static bool load_stream(std::istream& f, const std::string& name) {
             for (int c = 0; c < chunks; ++c)
                 for (int o = 0; o < L2; ++o)
                     std::memcpy(&tmp[(static_cast<size_t>(c) * L2 + o) * 32],
-                                &l2_w_i8[static_cast<size_t>(o) * total_in + c * 32], 32);
-            l2_w_i8 = std::move(tmp);
+                                &t.l2_w_i8[static_cast<size_t>(o) * total_in + c * 32], 32);
+            t.l2_w_i8 = std::move(tmp);
         }
 #endif // !__AVX512VNNI__
+        }
     } else {
+        DenseTail& t = g_tails[0];
         if (!read_tensor(f, l2_w, L2 * 2 * L1)) return false;
-        if (!read_tensor(f, l2_b, L2)) return false;
+        if (!read_tensor(f, t.l2_b, L2)) return false;
         if (!read_tensor(f, l3_w, L3 * L2)) return false;
-        if (!read_tensor(f, l3_b, L3)) return false;
+        if (!read_tensor(f, t.l3_b, L3)) return false;
         std::vector<float> out_w_raw;
         if (!read_tensor(f, out_w_raw, L3)) return false;
         out_w = out_w_raw;
         int32_t ob_n;
         f.read(reinterpret_cast<char*>(&ob_n), 4);
         if (ob_n != 1) { std::fprintf(stderr, "nnue: out.bias size %d\n", ob_n); return false; }
-        f.read(reinterpret_cast<char*>(&out_b), sizeof(float));
+        f.read(reinterpret_cast<char*>(&t.out_b), sizeof(float));
     }
     // Optional DOSL linear head (older nets simply end here).
     {
@@ -420,8 +448,12 @@ static bool load_stream(std::istream& f, const std::string& name) {
     madvise(ft_w.data(), (ft_w.size() * sizeof(int16_t) + 0xFFFFF) & ~0xFFFFF, MADV_HUGEPAGE);
 #endif
     // stdout carries UCI traffic, so the report is an info string.
-    std::printf("info string NNUE evaluation using %s (%s L1=%d L2=%d L3=%d)\n",
-                name.c_str(), g_int8 ? "int8" : "float", L1, L2, L3);
+    if (NB > 1)
+        std::printf("info string NNUE evaluation using %s (int8 L1=%d L2=%d L3=%d, %d output buckets)\n",
+                    name.c_str(), L1, L2, L3, NB);
+    else
+        std::printf("info string NNUE evaluation using %s (%s L1=%d L2=%d L3=%d)\n",
+                    name.c_str(), g_int8 ? "int8" : "float", L1, L2, L3);
     if (clamped > 0)
         std::printf("info string NNUE warning: %lld feature weights exceed the int16 range and were clamped\n",
                     clamped);
@@ -899,6 +931,17 @@ Value evaluate(const Position& pos) {
     bool stm_white = (pos.side_to_move() == WHITE);
     const int16_t* acc_stm  = stm_white ? a.v[0] : a.v[1];
     const int16_t* acc_nstm = stm_white ? a.v[1] : a.v[0];
+    // This position's dense tail (the only one unless the net has output
+    // buckets), bound to the names the kernels below use.
+    const DenseTail& tail = g_tails[bucket_of(pos)];
+    const std::vector<int8_t>& l2_w_i8 = tail.l2_w_i8;
+    const std::vector<int8_t>& l3_w_i8 = tail.l3_w_i8;
+    const std::vector<int8_t>& out_w_i8 = tail.out_w_i8;
+    const std::vector<float>& l2_b = tail.l2_b;
+    const std::vector<float>& l3_b = tail.l3_b;
+    [[maybe_unused]] const float g_s2 = tail.s2, g_s3 = tail.s3, g_so = tail.so;
+    const float out_b = tail.out_b;
+    [[maybe_unused]] const bool g_l3_batched = tail.l3_batched, g_l2_by_input = tail.l2_by_input;
 
 
 #if defined(__AVX2__)

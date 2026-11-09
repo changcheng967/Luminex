@@ -125,6 +125,18 @@ class LNNUE(nn.Module):
             self.bl2 = nn.ModuleList(bl2)
             self.bl3 = nn.ModuleList(bl3)
             self.bout = nn.ModuleList(bout)
+        # FT init N(0, 0.2): ~32 active features per half put the accumulator
+        # std near 1, inside the SCReLU window (the default N(0, 1) saturates it).
+        nn.init.normal_(self.ft.weight, mean=0.0, std=0.2)
+        if ft_mode != 'gather':
+            with torch.no_grad():
+                self.ft.weight[NUM_INPUTS].zero_()     # padding row
+            # Export drops the padding row, so it must never train; enforce at
+            # grad level for backends that do not honour padding_idx.
+            def _freeze_pad(grad):
+                grad[NUM_INPUTS].zero_()
+                return grad
+            self.ft.weight.register_hook(_freeze_pad)
 
     # ---------------------------------------------------------------
     # Net2Net widening (Gen v1.3 Step 0): expand L1 from old_L1 to
@@ -267,43 +279,40 @@ class LNNUE(nn.Module):
     # ---------------------------------------------------------------
     @staticmethod
     def load_lnn1_state(path):
+        """State dict from a float LNN1 net, or an LNB1 net with one tail per
+        output bucket (bucket 0 also fills the plain tail, so the resume checks
+        and v2_expand see the usual keys)."""
         import struct as _struct
         import torch as _t
         with open(path, 'rb') as f:
-            assert f.read(4) == b'LNN1', f"{path} is not a float LNN1 net"
+            magic = f.read(4)
+            assert magic in (b'LNN1', b'LNB1'), f"{path} is not a float LNN1/LNB1 net"
             L1, L2, L3, NI = _struct.unpack('iiii', f.read(16))
+            NB = _struct.unpack('i', f.read(4))[0] if magic == b'LNB1' else 1
 
             def rt():
                 (n,) = _struct.unpack('i', f.read(4))
-                import numpy as _np
                 return _t.frombuffer(bytearray(f.read(n * 4)), dtype=_t.float32).clone()
 
             ft_w = rt().reshape(L1, NI)         # channel-major [L1, NI] (exporter transpose)
             ft_b = rt()
-            l2_w = rt().reshape(L2, 2 * L1); l2_b = rt()
-            l3_w = rt().reshape(L3, L2);     l3_b = rt()
-            out_w = rt().reshape(1, L3);     out_b = rt()
+            tails = []
+            for _ in range(NB):
+                l2_w = rt().reshape(L2, 2 * L1); l2_b = rt()
+                l3_w = rt().reshape(L3, L2);     l3_b = rt()
+                out_w = rt().reshape(1, L3);     out_b = rt()
+                tails.append((l2_w, l2_b, l3_w, l3_b, out_w, out_b.view(1)))
         pad = _t.zeros(1, L1)
-        return {
-            'ft.weight': _t.cat([ft_w.t(), pad], dim=0),   # [NI+1, L1], pad row zero
-            'ft_bias': ft_b,
-            'l2.weight': l2_w, 'l2.bias': l2_b,
-            'l3.weight': l3_w, 'l3.bias': l3_b,
-            'out.weight': out_w, 'out.bias': out_b.view(1),
-        }
-        # FT init: effective fan-in ~32 active features/half (not NUM_INPUTS=24576).
-        # std=1/sqrt(32) -> accumulator std ~1 (active SCReLU range).
-        nn.init.normal_(self.ft.weight, mean=0.0, std=0.2)
-        if ft_mode != 'gather':
-            self.ft.weight.data[NUM_INPUTS].zero_()    # padding row (idx NUM_INPUTS) stays zero
-            # padding_idx freezes the row in standard PyTorch, but mcPyTorch's
-            # EmbeddingBag backward is a reimplementation — enforce it at grad level
-            # too. If the pad row ever trains, export (which drops it) silently
-            # splits the training model from the engine.
-            def _freeze_pad(grad):
-                grad[NUM_INPUTS].zero_()
-                return grad
-            self.ft.weight.register_hook(_freeze_pad)
+        sd = {'ft.weight': _t.cat([ft_w.t(), pad], dim=0),   # [NI+1, L1], pad row zero
+              'ft_bias': ft_b}
+        for k, v in zip(('l2.weight', 'l2.bias', 'l3.weight', 'l3.bias', 'out.weight', 'out.bias'), tails[0]):
+            sd[k] = v
+        if magic == b'LNB1':
+            for b, t in enumerate(tails):
+                for k, v in zip(('bl2.%d.weight', 'bl2.%d.bias', 'bl3.%d.weight', 'bl3.%d.bias',
+                                 'bout.%d.weight', 'bout.%d.bias'), t):
+                    sd[k % b] = v.clone()
+        return sd
 
     def probe_ft(self, device):
         """v7-postmortem guard (embbag/gather drift): the active FT path must equal a
@@ -313,9 +322,10 @@ class LNNUE(nn.Module):
             print(f"  [probe_ft] skipped (mode={self.ft_mode}: explicit-sum path, no bag to verify)", flush=True)
             return
         import torch as _t
-        _t.manual_seed(0)
+        g = _t.Generator(device=device)
+        g.manual_seed(0)          # private stream: the global RNG keeps the training seed
         N, F = 4096, 24
-        idx = _t.randint(0, self.ft.weight.shape[0], (N * F,), device=device)
+        idx = _t.randint(0, self.ft.weight.shape[0], (N * F,), device=device, generator=g)
         offs = _t.arange(0, N * F, F, device=device)
         with _t.no_grad():
             got = self.ft(idx, offs)
@@ -350,9 +360,11 @@ class LNNUE(nn.Module):
         if not self.pairwise:
             h = torch.clamp(h, 0.0, 1.0) ** 2
         if self.num_buckets > 1:
-            # material count from active features (non-pad indices)
-            mat = (w_idx < NUM_INPUTS).sum(dim=1).long()  # 0..32
-            bucket = (mat * self.num_buckets // 33).clamp(0, self.num_buckets - 1)
+            # Pieces on the board (kings included) = active features (non-pad
+            # indices). The engine's rule (src/nnue.cpp bucket_of):
+            # (pieces - 1) * buckets / 32, so 8 buckets split 2-4, 5-8, ..., 29-32.
+            mat = (w_idx < NUM_INPUTS).sum(dim=1).long()  # 2..32
+            bucket = ((mat - 1) * self.num_buckets // 32).clamp(0, self.num_buckets - 1)
             # scatter per-bucket: compute each bucket's tail only for its batch rows
             out = torch.zeros(h.shape[0], device=h.device, dtype=h.dtype)
             for b in range(self.num_buckets):
@@ -366,6 +378,98 @@ class LNNUE(nn.Module):
         h = torch.clamp(self.l2(h), 0.0, 1.0) ** 2
         h = torch.clamp(self.l3(h), 0.0, 1.0) ** 2
         return self.out(h).squeeze(-1) * 300.0
+
+
+# ============================================================================
+# Training helpers shared by c500_train_stream.py and blackwell_train.py
+# ============================================================================
+LOSS_SCALE = 400.0     # cp per sigmoid unit in the loss
+TARGET_CLIP = 1500.0   # |target| cap (mate scores, parse glitches)
+# Featurizer record (src/featurize.cpp), 140 bytes:
+#   int16 w[32] | int16 b[32] | f32 stm (1 = white) | f32 target (stm-relative cp)
+#   | f32 flag (fen-eval: 0 quiet, 1 capture-best, 2 in-check; gamepack: result)
+REC = 140
+
+
+def decode_records(a):
+    """uint8 [n, REC] featurizer rows -> numpy copies (w, b, stm, target, flag)."""
+    return (a[:, 0:64].copy().view(np.int16).reshape(-1, 32),
+            a[:, 64:128].copy().view(np.int16).reshape(-1, 32),
+            a[:, 128:132].copy().view(np.float32).reshape(-1),
+            a[:, 132:136].copy().view(np.float32).reshape(-1),
+            a[:, 136:140].copy().view(np.float32).reshape(-1))
+
+
+def sanitize_targets(t, clip=TARGET_CLIP):
+    """Non-finite targets -> 0 / +-clip (one NaN poisons every weight), then clamp."""
+    if not torch.isfinite(t).all():
+        t = torch.nan_to_num(t, nan=0.0, posinf=clip, neginf=-clip)
+    return t.clamp(-clip, clip)
+
+
+def parse_quiet_loss(spec):
+    """NNUE_QUIET_LOSS 'w_quiet,w_capture,w_check' -> tuple; None if unset or malformed."""
+    if not spec:
+        return None
+    try:
+        return tuple(([float(x) for x in spec.split(",")] + [0.0] * 3)[:3])
+    except ValueError:
+        return None
+
+
+def quiet_weights(flag, weights):
+    """Per-sample loss weights from the flag column; None when weighting is off
+    or the column holds game results (no in-check rows)."""
+    if weights is None or not bool((flag == 2.0).any()):
+        return None
+    wq, wc, wi = weights
+    return torch.where(flag == 0.0, wq, torch.where(flag == 1.0, wc, wi))
+
+
+def power_terms(pred, target, power, scale=LOSS_SCALE):
+    """Per-sample |sigmoid(pred/scale) - sigmoid(target/scale)|^power."""
+    return (torch.sigmoid(pred / scale) - torch.sigmoid(target / scale)).abs() ** power
+
+
+def weighted_mean(terms, w=None):
+    """Weight-normalized mean; plain mean when w is None."""
+    return terms.mean() if w is None else (terms * w).sum() / w.sum()
+
+
+def make_optimizer(model, lr, tail_wd=1e-2, tail_lr_mult=1.0):
+    """AdamW with amsgrad over three groups, in checkpoint order: FT weight and
+    bias (no decay), tail weights (decay tail_wd, lr * tail_lr_mult), tail
+    biases (no decay). A model with output buckets trains its bucket tails;
+    its plain tail is only the warm-start seed and is left out."""
+    if getattr(model, 'num_buckets', 1) > 1:
+        tails = [(model.bl2[b], model.bl3[b], model.bout[b]) for b in range(model.num_buckets)]
+    else:
+        tails = [(model.l2, model.l3, model.out)]
+    return torch.optim.AdamW([
+        {"params": [model.ft.weight, model.ft_bias], "weight_decay": 0.0},
+        {"params": [m.weight for t in tails for m in t],
+         "weight_decay": tail_wd, "lr": lr * tail_lr_mult},
+        {"params": [m.bias for t in tails for m in t], "weight_decay": 0.0},
+    ], lr=lr, amsgrad=True)
+
+
+def stm_split_gate(model, w, b, stm, target, n=8192, min_half=512, min_corr=0.3):
+    """A warm-started net must correlate positively with the targets inside each
+    side-to-move half; a flipped stm or label convention turns one half negative.
+    Returns {half: corr} for the halves checked, raises AssertionError on failure."""
+    with torch.no_grad():
+        g = min(n, w.shape[0])
+        p = model(w[:g], b[:g], stm[:g]).float()
+    out = {}
+    for name, mask in (("WTM", stm[:g] > 0.5), ("BTM", stm[:g] < 0.5)):
+        if int(mask.sum()) < min_half:
+            continue
+        c = float(torch.corrcoef(torch.stack([p[mask], target[:g][mask].float()]))[0, 1])
+        out[name] = c
+        assert c > min_corr, (
+            f"LABEL CONVENTION FAIL: corr(pred,target) on {name} = {c:+.3f} "
+            f"(negative => the cp column's stm convention is flipped for this half)")
+    return out
 
 
 # ============================================================================
@@ -558,16 +662,21 @@ def main():
 def save_nnue(model, path):
     """Export weights as float32 binary (C++ loader reads this). Quantization
     to int8/int16 happens in the C++ inference / a separate export step."""
+    model = getattr(model, '_orig_mod', model)   # torch.compile wrapper -> module
     if getattr(model, 'pairwise', False):
         # The engine does not know the pairwise activation yet — a binary export
         # would load with wrong semantics. Checkpoint (.pt) remains complete.
         print(f"  [export] pairwise model: skipping {os.path.basename(path)} "
               f"(engine loader lacks pairwise support; use the .pt)", flush=True)
         return
+    nb = getattr(model, 'num_buckets', 1)
     with open(path, 'wb') as f:
-        # header: magic + architecture dims
-        f.write(b'LNN1')
+        # header: magic + architecture dims; LNB1 adds the bucket count and then
+        # holds one float tail per output bucket (quantize_i8.py -> LNB8)
+        f.write(b'LNB1' if nb > 1 else b'LNN1')
         f.write(struct.pack('iiii', model.L1, model.L2, model.L3, NUM_INPUTS))
+        if nb > 1:
+            f.write(struct.pack('i', nb))
         # FT first (engine reads ft.weight [L1, NUM_INPUTS], then ft.bias [L1]).
         if getattr(model, 'ft_mode', 'embbag') == 'gather':
             ft_w = model.ft.weight.detach().cpu().numpy().astype(np.float32)            # [L1, NUM_INPUTS]
@@ -577,10 +686,14 @@ def save_nnue(model, path):
         for arr in [ft_w, ft_b]:
             f.write(struct.pack('i', arr.size))
             f.write(arr.tobytes())
-        for name in ['l2.weight', 'l2.bias', 'l3.weight', 'l3.bias', 'out.weight', 'out.bias']:
-            t = dict(model.named_parameters())[name].detach().cpu().numpy().astype(np.float32)
-            f.write(struct.pack('i', t.size))
-            f.write(t.tobytes())
+        params = dict(model.named_parameters())
+        prefixes = [('bl2.%d.' % b, 'bl3.%d.' % b, 'bout.%d.' % b) for b in range(nb)] if nb > 1 \
+            else [('l2.', 'l3.', 'out.')]
+        for p2, p3, po in prefixes:
+            for name in [p2 + 'weight', p2 + 'bias', p3 + 'weight', p3 + 'bias', po + 'weight', po + 'bias']:
+                t = params[name].detach().cpu().numpy().astype(np.float32)
+                f.write(struct.pack('i', t.size))
+                f.write(t.tobytes())
         # DOSL linear head (optional section "LINH"; older loaders stop cleanly at EOF).
         # Per-feature scalar weight + bias, both float32, white-perspective layout
         # (sum over a perspective's active features = that side's score from its

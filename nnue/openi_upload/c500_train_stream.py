@@ -27,11 +27,19 @@ import os, sys, subprocess, time, glob, copy
 os.environ.setdefault("PYTORCH_DEFAULT_NCHW", "1")
 os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")   # anti-fragmentation
 import numpy as np, torch
+# NNUE_SEED seeds torch/numpy/random (weight init, per-part permutations).
+# Unset keeps PyTorch's default generator state.
+if os.environ.get("NNUE_SEED"):
+    import random as _rnd_seed
+    _seed = int(os.environ["NNUE_SEED"])
+    _rnd_seed.seed(_seed); np.random.seed(_seed); torch.manual_seed(_seed)
+    print(f"[seed] NNUE_SEED={_seed}", flush=True)
 try:
     from c2net.context import prepare, upload_output
     ctx = prepare(); out_dir = ctx.output_path
 except Exception:   # non-OpenI environment (smoke test / local box)
-    class _Ctx: output_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "out")
+    class _Ctx: output_path = (os.environ.get("NNUE_OUT_DIR")
+                               or os.path.join(os.path.dirname(os.path.abspath(__file__)), "out"))
     ctx = _Ctx(); out_dir = ctx.output_path
     os.makedirs(out_dir, exist_ok=True)
     upload_output = lambda *a, **k: None
@@ -47,25 +55,27 @@ def _find_file(name):
         if name in fn: return os.path.join(dp, name)
     return None
 
-FRAMES_DIR = os.environ.get("NNUE_FRAMES_DIR", "/tmp/code/frames")
-FRAMES = sorted(glob.glob(os.path.join(FRAMES_DIR, "frame_*.zst")) + glob.glob(os.path.join(FRAMES_DIR, "frame_*.xz")))
-if not FRAMES:
-    for dp, _ in _walk():
-        FRAMES += sorted(glob.glob(os.path.join(dp, "frame_*.zst")) + glob.glob(os.path.join(dp, "frame_*.xz")))
-    FRAMES = sorted(set(FRAMES))
-if not FRAMES:
-    tar = _find_file("gamepack.tar")
-    if tar:
-        os.makedirs(FRAMES_DIR, exist_ok=True)
-        print(f"  extracting {tar} -> {FRAMES_DIR}", flush=True)
-        subprocess.run(f"tar xf '{tar}' -C '{FRAMES_DIR}'", shell=True)
-        FRAMES = sorted(glob.glob(os.path.join(FRAMES_DIR, "frame_*.zst")) + glob.glob(os.path.join(FRAMES_DIR, "frame_*.xz")))
 # SF-relabel binpack path: NNUE_FENEVAL_FILE points at a fen<TAB>white_cp tsv;
 # featurize --fen-eval streams 140B records exactly like the frame pipeline.
+# The gamepack frame search below walks /tmp and may extract a tar, so it runs
+# only when no fen-eval file is given.
 _FENEVAL = os.environ.get("NNUE_FENEVAL_FILE")
 if _FENEVAL:
     FRAMES = [_FENEVAL]
 else:
+    FRAMES_DIR = os.environ.get("NNUE_FRAMES_DIR", "/tmp/code/frames")
+    FRAMES = sorted(glob.glob(os.path.join(FRAMES_DIR, "frame_*.zst")) + glob.glob(os.path.join(FRAMES_DIR, "frame_*.xz")))
+    if not FRAMES:
+        for dp, _ in _walk():
+            FRAMES += sorted(glob.glob(os.path.join(dp, "frame_*.zst")) + glob.glob(os.path.join(dp, "frame_*.xz")))
+        FRAMES = sorted(set(FRAMES))
+    if not FRAMES:
+        tar = _find_file("gamepack.tar")
+        if tar:
+            os.makedirs(FRAMES_DIR, exist_ok=True)
+            print(f"  extracting {tar} -> {FRAMES_DIR}", flush=True)
+            subprocess.run(f"tar xf '{tar}' -C '{FRAMES_DIR}'", shell=True)
+            FRAMES = sorted(glob.glob(os.path.join(FRAMES_DIR, "frame_*.zst")) + glob.glob(os.path.join(FRAMES_DIR, "frame_*.xz")))
     assert FRAMES, "no frame_*.zst/.xz found and no gamepack.tar"
 # Pass-2+ (warm restart): shuffle frame order to break the temporal bias of the
 # newest-first dataset (with cosine annealing, the LAST frames dominate the
@@ -80,7 +90,9 @@ if os.environ.get("NNUE_FRAME_SHUFFLE", "0") == "1":
 if any(f.endswith(".zst") for f in FRAMES) and not os.path.exists("/usr/bin/zstd"):
     subprocess.run("apt-get install -y zstd >/dev/null 2>&1 || pip install -q zstandard", shell=True)
 
-train_mod = _find_file("luminex_nnue_train.py")
+# The helper module next to this file wins: a /tmp search could import a stale copy.
+_HERE_MOD = os.path.join(os.path.dirname(os.path.abspath(__file__)), "luminex_nnue_train.py")
+train_mod = _HERE_MOD if os.path.exists(_HERE_MOD) else _find_file("luminex_nnue_train.py")
 CODE_DIR = os.environ.get("CODE_DIR") or (os.path.dirname(train_mod) if train_mod else "/tmp/code")
 sys.path.insert(0, CODE_DIR)
 FEAT = os.environ.get("FEAT") or _find_file("luminex-featurize") or os.path.join(CODE_DIR, "luminex-featurize")
@@ -90,7 +102,10 @@ try:  # OpenI's code preparation strips execute bits; restore rather than crash
 except OSError:
     pass
 assert os.path.exists(FEAT), f"featurizer missing: {FEAT}"
-from luminex_nnue_train import LNNUE, save_nnue, NUM_INPUTS
+from luminex_nnue_train import (LNNUE, save_nnue, NUM_INPUTS, REC, LOSS_SCALE as SCALE,
+                                decode_records, sanitize_targets, parse_quiet_loss,
+                                quiet_weights, power_terms, weighted_mean, make_optimizer,
+                                stm_split_gate)
 _ANCHOR_W = float(os.environ.get("NNUE_ANCHOR_W", "0"))
 
 L1   = int(os.environ.get("NNUE_L1", "512"))
@@ -113,13 +128,7 @@ _POS_W2 = float(os.environ.get("NNUE_POS_W2", "0.5"))  # SF default
 # Quiet-robust loss (round 3): NNUE_QUIET_LOSS="quiet,capture,check" — weights
 # per position class from the dump's flag column. The engine consumes eval at
 # quiet nodes only; the tactical tail is label noise (the sf1-vs-full law).
-_QUIET_MODE = bool(os.environ.get("NNUE_QUIET_LOSS"))
-try:
-    _QUIET_WQ, _QUIET_WC, _QUIET_WI = (
-        [float(x) for x in os.environ["NNUE_QUIET_LOSS"].split(",")] + [0.0] * 3)[:3]
-except (KeyError, ValueError):
-    _QUIET_MODE = False
-    _QUIET_WQ = _QUIET_WC = _QUIET_WI = 0.0
+_QUIET_W = parse_quiet_loss(os.environ.get("NNUE_QUIET_LOSS"))
 _QUIET_FIRST_PRINT = True
 # DOSL dual-head (Step-0): aux linear head trained alongside the full net so it is
 # a standalone-usable qsearch stand-pat. Warmup at lam=1.0 (head alone must be a
@@ -134,7 +143,7 @@ _CAL_STEPS = 60   # calibration steps to measure throughput
 _FEAT_CACHE = os.environ.get("NNUE_FEAT_CACHE", "0") == "1"  # OFF by default: single-pass
 # never re-reads a frame, and full-data caching would need ~2.2TB of /tmp. Opt-in
 # (still disk-guarded below) only makes sense for small-subset multi-epoch runs.
-REC  = 140; SCALE = 400.0   # 140 = w64|b64|stm4|target4|result4 (result: white-rel -1/0/+1, 0 on v1 frames)
+# REC (record layout) and SCALE (loss sigmoid scale) come from luminex_nnue_train.
 # C5 WDL mixing: t' = lam*eval + (1-lam)*RESULT_CP*result_stm, lam annealed
 # linearly from NNUE_WDL_LAMBDA to NNUE_WDL_LAMBDA_END over NNUE_WDL_ANNEAL
 # steps. Default 1.0 = off (bit-identical to the pre-C5 trainer). result==0
@@ -158,7 +167,12 @@ gstep = 0  # must exist before resume check (fresh runs would NameError otherwis
 _ck = None  # resume checkpoint dict (kept for SWA state restore further below)
 _resume = os.environ.get("NNUE_RESUME") or os.path.join(os.path.dirname(__file__) or ".", OUT_BASE + ".pt")
 _opt_state = None  # deferred: optimizer doesn't exist yet at resume time
+# An explicit NNUE_RESUME must load; only the implicit OUT_BASE.pt may be absent.
+_resume_explicit = os.environ.get("NNUE_RESUME", "") not in ("", "0")
+if _resume_explicit and not os.path.exists(_resume):
+    raise SystemExit(f"FATAL: NNUE_RESUME={_resume} does not exist")
 if os.path.exists(_resume) and os.environ.get("NNUE_RESUME", "1") != "0":
+    _fresh_opt = False
     try:
         if _resume.endswith(".nnue"):
             # Warm start from an engine-format float net (LNN1): rebuild a trainer
@@ -177,6 +191,7 @@ if os.path.exists(_resume) and os.environ.get("NNUE_RESUME", "1") != "0":
             LNNUE.net2net_widen(model, _ck["model"], _ck_L1)
             gstep = _ck.get("gstep", 0)
             _opt_state = None  # old moments are shape-incompatible — fresh optimizer
+            _fresh_opt = True
             print(f"[NET2NET] widened {_ck_L1} -> {L1} from {_resume} at gstep={gstep} (optimizer fresh)", flush=True)
         elif (
             _ck["model"]["ft.weight"].shape != tuple(model.ft.weight.shape)
@@ -190,6 +205,7 @@ if os.path.exists(_resume) and os.environ.get("NNUE_RESUME", "1") != "0":
             LNNUE.v2_expand(model, _ck["model"])
             gstep = _ck.get("gstep", 0)
             _opt_state = None
+            _fresh_opt = True
             print(f"[V2] expanded warm start from {_resume} at gstep={gstep} (optimizer fresh)", flush=True)
         else:
             _miss = model.load_state_dict(_ck["model"], strict=False)
@@ -205,10 +221,14 @@ if os.path.exists(_resume) and os.environ.get("NNUE_RESUME", "1") != "0":
                 model.ft.weight.data[NUM_INPUTS].zero_()
         except Exception:
             pass
-        _opt_state = _ck.get("opt") if _ck_L1 == L1 else None  # only same-width resumes carry moments
+        # only same-shape resumes carry moments (a widened, pairwise or bucket-seeded
+        # model has different parameters, so its optimizer starts fresh)
+        _opt_state = None if _fresh_opt else (_ck.get("opt") if _ck_L1 == L1 else None)
         if _opt_state: print(f"[RESUME] + optimizer state ({len(_opt_state['state'])} params) — no warm-up loss", flush=True)
         print(f"[RESUME] loaded {_resume} at gstep={gstep}", flush=True)
     except Exception as _e:
+        if _resume_explicit:
+            raise SystemExit(f"FATAL: NNUE_RESUME={_resume} failed to load ({_e})")
         print(f"[RESUME] FAILED ({_e}) - training from scratch", flush=True)
 model.probe_ft(device)   # EmbeddingBag FT
 # DOSL warmup baseline: on a CONTINUATION the global gstep already exceeds the
@@ -219,26 +239,12 @@ print(f"  [LNNUE] ft_mode={model.ft_mode} (compile OFF)", flush=True)
 # a resumed run's global gstep dwarfs the threshold, so the trigger must count
 # from this session's start (pass-4 averaged its whole pass by accident).
 _swa_sess0 = gstep
-# Phase 0 root-cause L2 fix: decay ONLY the tail WEIGHTS (where L2/SCReLU feedback
-# grows weights), NOT the FT (protects rare king/piece/square buckets from uniform-decay
-# undertraining, #45) and NOT any bias (biases are activation operating points).
-# Group by NAME: the old numel()>100K split put ft_bias in the decayed tail group and
-# would flip l2.weight into the no-decay FT group at L2>=128.
-# + AMSGrad (bounds effective LR per-param, prevents any single weight running away).
-_ft_params = [model.ft.weight, model.ft_bias]
-_tail_w    = [model.l2.weight, model.l3.weight, model.out.weight]
-_tail_b    = [model.l2.bias, model.l3.bias, model.out.bias]
+# Optimizer (luminex_nnue_train.make_optimizer): AdamW + amsgrad; decay ONLY the
+# tail weights (where L2/SCReLU feedback grows weights), not the FT (rare
+# king/piece/square rows) and not any bias. Group order MUST match _group_lrs.
 _tail_wd = float(os.environ.get("NNUE_TAIL_WD", "1e-2"))
-# Per-group LR multipliers (pass-4 levers): the FT is converged after 3 passes,
-# the tiny tail can still move (tail mult), and a FRESH DOSL head needs to train
-# fast within its warmup window (lin mult). Group order below MUST match _group_lrs.
 _TAIL_LR_MULT = float(os.environ.get("NNUE_TAIL_LR_MULT", "1.0"))
-opt = torch.optim.AdamW([
-    {"params": _ft_params, "weight_decay": 0.0},        # NO decay on FT (rare-bucket protection)
-    {"params": _tail_w,    "weight_decay": _tail_wd,    # tail weight decay (fixes L2 SCReLU feedback)
-                         "lr": LR * _TAIL_LR_MULT},
-    {"params": _tail_b,    "weight_decay": 0.0},        # biases are operating points — never decay
-], lr=LR, amsgrad=True)
+opt = make_optimizer(model, LR, _tail_wd, _TAIL_LR_MULT)
 _group_lrs = [1.0, _TAIL_LR_MULT, 1.0]
 if _opt_state:
     try:
@@ -252,7 +258,7 @@ if _opt_state:
         print("  [opt] AdamW moments restored, LR reset to base (per-group mults kept)", flush=True)
     except Exception as _e:
         print(f"  [opt] state restore FAILED ({_e}) — rebuilding (1K-step warm-up)", flush=True)
-print(f"  [opt] FT params={sum(p.numel() for p in _ft_params):,} (wd=0, lr=x1) | tail params={sum(p.numel() for p in _tail_w + _tail_b):,} (wd={_tail_wd}, lr=x{_TAIL_LR_MULT}) | amsgrad=True", flush=True)
+print(f"  [opt] FT params={sum(p.numel() for p in opt.param_groups[0]['params']):,} (wd=0, lr=x1) | tail params={sum(p.numel() for g in opt.param_groups[1:] for p in g['params']):,} (wd={_tail_wd}, lr=x{_TAIL_LR_MULT}) | amsgrad=True", flush=True)
 
 # Wipe tripwire: fingerprint the loaded weights; any code path that rebuilds
 # the model between resume and training (calibration reset was one such bug)
@@ -295,14 +301,7 @@ if gstep == 0 and _ck is None:  # fresh runs only — warm starts skip calibrati
     _sps = _CAL_STEPS / (_t.time() - _cal_t0)
     print(f"  [calibrate] {_sps:.1f} steps/s (BS={BS})", flush=True)
     model = LNNUE(L1=L1).to(device)  # reset — calibration dirtied the weights
-    # re-init optimizer (fresh model params) — same name-based groups as above
-    _tw2 = [model.l2.weight, model.l3.weight, model.out.weight]
-    _tb2 = [model.l2.bias, model.l3.bias, model.out.bias]
-    opt = torch.optim.AdamW([
-        {"params": [model.ft.weight, model.ft_bias], "weight_decay": 0.0},
-        {"params": _tw2, "weight_decay": _tail_wd},
-        {"params": _tb2, "weight_decay": 0.0},
-    ], lr=LR, amsgrad=True)
+    opt = make_optimizer(model, LR, _tail_wd, _TAIL_LR_MULT)   # fresh params, same groups
 
 # BUDGET<=0 means "no time limit": size the LR schedule for effectively-unlimited
 # time — the max(600,...) fallback silently turned that into a 600s schedule
@@ -433,14 +432,24 @@ def _save_final(reason):
     """Unified exit save. .nnue comes from the BEST weights (SWA average if active);
     .pt keeps the RAW model + its own Adam moments — SWA-averaged weights paired
     with pre-average moments would desync the next resume block."""
-    if _swa_model is not None and _swa_n > 0:
+    _export = _swa_model if (_swa_model is not None and _swa_n > 0) else model
+    if _export is _swa_model:
         print(f"  [swa] exporting averaged weights ({_swa_n} updates)", flush=True)
-        save_nnue(_swa_model, os.path.join(out_dir, OUT))
-    else:
-        save_nnue(model, os.path.join(out_dir, OUT))
+    save_nnue(_export, os.path.join(out_dir, OUT))
     torch.save({"model": model.state_dict(), "gstep": gstep, "opt": opt.state_dict(),
                 "swa": ({"model": _swa_model.state_dict(), "n": _swa_n} if _swa_model is not None else None)},
                os.path.join(out_dir, OUT_BASE + ".pt"))
+    if _val_tensors is not None:
+        # val MAE of the exported weights (the per-frame [VAL f] lines predate a tmax stop)
+        with torch.no_grad():
+            _m = min(200000, len(_val_tensors[3]))
+            _vp = _export(_val_tensors[0][:_m], _val_tensors[1][:_m], _val_tensors[2][:_m]).float()
+            _ve = (_vp - _val_tensors[3][:_m].clamp(-1500.0, 1500.0)).abs()
+            _vf = _val_tensors[4][:_m]
+            _vc = " ".join(f"{_cn}={float(_ve[_vf == _cv].mean()):.1f}"
+                           for _cn, _cv in (("quiet", 0.0), ("capture", 1.0), ("check", 2.0))
+                           if bool((_vf == _cv).any()))
+        print(f"  [VAL final] MAE={float(_ve.mean()):.1f}cp by class (cp): {_vc}", flush=True)
     upload_output()
     print(f"DONE ({reason}) - {OUT}: {gstep} steps, {total_pos:,} pos in {time.time()-t0:.0f}s", flush=True)
     sys.exit(0)
@@ -466,7 +475,7 @@ _val_tensors = None
 _val_path = os.environ.get("NNUE_FENEVAL_VAL_FILE")
 if _val_path and _FENEVAL:
     _vd = "xz -dc" if _val_path.endswith(".xz") else "cat"
-    _vproc = subprocess.Popen(["bash", "-c", f"{_vd} {_val_path} | {FEAT} --fen-eval --threads {NTH}"],
+    _vproc = subprocess.Popen(["bash", "-c", f"set -o pipefail; {_vd} {_val_path} | {FEAT} --fen-eval --threads {NTH}"],
                               stdout=subprocess.PIPE, bufsize=0, stderr=None)
     _recs = bytearray()
     while True:
@@ -474,23 +483,38 @@ if _val_path and _FENEVAL:
         if not _d:
             break
         _recs += _d
-    try:
-        _vproc.stdout.close(); _vproc.wait()
-    except Exception:
-        pass
-    _va = np.frombuffer(bytes(_recs), dtype=np.uint8).reshape(-1, REC)
+    _vproc.stdout.close(); _vproc.wait()
+    if _vproc.returncode != 0 or not _recs or len(_recs) % REC:
+        raise SystemExit(f"FATAL: featurizing {_val_path} failed "
+                         f"(exit {_vproc.returncode}, {len(_recs)} bytes)")
+    # 5th column: quiet flag (0 quiet / 1 capture-best / 2 in-check) — gates
+    # the quiet-subset val MAE, the round-3 metric.
+    _vw, _vb, _vs, _vt, _vf = decode_records(np.frombuffer(_recs, dtype=np.uint8).reshape(-1, REC))
     del _recs
-    _val_tensors = (
-        torch.from_numpy(_va[:, :64].copy().view(np.int16).reshape(-1, 32)).long().to(device),
-        torch.from_numpy(_va[:, 64:128].copy().view(np.int16).reshape(-1, 32)).long().to(device),
-        torch.from_numpy(_va[:, 128:132].copy().view(np.float32).reshape(-1)).to(device),
-        torch.from_numpy(_va[:, 132:136].copy().view(np.float32).reshape(-1)).to(device),
-        # 5th column: quiet flag (0 quiet / 1 capture-best / 2 in-check) when the
-        # dump carries it — gates the quiet-subset val MAE, the round-3 metric.
-        torch.from_numpy(_va[:, 136:140].copy().view(np.float32).reshape(-1)).to(device),
-    )
-    del _va
+    _val_tensors = (torch.from_numpy(_vw).long().to(device), torch.from_numpy(_vb).long().to(device),
+                    torch.from_numpy(_vs).to(device), torch.from_numpy(_vt).to(device),
+                    torch.from_numpy(_vf).to(device))
+    del _vw, _vb, _vs, _vt, _vf
     print(f"[VAL] held out {len(_val_tensors[3]):,} positions from {_val_path}", flush=True)
+
+# Decompress-once raw text cache for compressed fen-eval data. The name is keyed
+# by the source's path, size and mtime; epoch 0 writes <name>.partial and renames
+# it only after a clean pipeline exit, so a cut-short dump or a different file
+# with the same basename is never reused.
+_raw_cache = _raw_tmp = None
+if _FENEVAL and _FENEVAL.endswith((".xz", ".zst")):
+    import zlib as _zlib, atexit as _atexit
+    _st = os.stat(_FENEVAL)
+    _raw_key = _zlib.crc32(f"{os.path.abspath(_FENEVAL)}|{_st.st_size}|{_st.st_mtime_ns}".encode())
+    _raw_cache = f"/tmp/feneval_raw_{os.path.basename(_FENEVAL)}.{_raw_key:08x}"
+    _raw_tmp = _raw_cache + ".partial"
+    def _drop_raw_tmp():
+        try:
+            os.remove(_raw_tmp)
+        except OSError:
+            pass
+    _drop_raw_tmp()                  # leftover of a killed run
+    _atexit.register(_drop_raw_tmp)  # tmax/budget exits stop mid-pipeline
 
 for epoch in range(EPOCHS):
     for fi, frame_path in enumerate(FRAMES):
@@ -514,18 +538,22 @@ for epoch in range(EPOCHS):
         # decompress-once raw cache: xz decode is single-threaded (~0.5M pos/s)
         # but the MT featurizer does 3.6M/s on plain text; teeing epoch 0's
         # decompression to /tmp makes later epochs ~7x cheaper. Guarded by disk.
-        _raw_cache = f"/tmp/feneval_raw_{os.path.basename(str(frame_path))}"
-        try:
-            import shutil as _sh2
-            _need_raw = int(os.path.getsize(_FENEVAL) * (8 if _FENEVAL.endswith(".xz") else 3 if _FENEVAL.endswith(".zst") else 0))
-            _raw_cache_ok = _need_raw > 0 and _sh2.disk_usage("/tmp").free > _need_raw * 1.1
-        except Exception:
-            _raw_cache_ok = False
+        _raw_cache_ok = False
+        if _raw_cache:
+            try:
+                import shutil as _sh2
+                _need_raw = int(os.path.getsize(_FENEVAL) * (8 if _FENEVAL.endswith(".xz") else 3))
+                _raw_cache_ok = _sh2.disk_usage("/tmp").free > _need_raw * 1.1
+            except Exception:
+                pass
+        _raw_writing = False
         _fc = f"/tmp/featcache2_{os.path.basename(frame_path)}.raw"
         # Featurizer progress goes to stderr; pass it through so featurize
         # phases are visible instead of silently swallowed by the pipeline.
         _pass_err = None if os.environ.get("NNUE_QUIET") else None
-        if _FENEVAL and _FEAT_CACHE and epoch == 0:
+        if _skip_featurize:
+            p = None   # VRAM cache hit: no featurize subprocess
+        elif _FENEVAL and _FEAT_CACHE and epoch == 0:
             dec = ("xz -T0 -dc" if _FENEVAL.endswith(".xz") else "zstd -dc") if _FENEVAL.endswith((".xz", ".zst")) else "cat"
             cmd = f"{dec} {_FENEVAL} | {FEAT} --fen-eval --threads {NTH}{_skip} | tee {_fc}"
             p = subprocess.Popen(["bash", "-c", cmd], stdout=subprocess.PIPE, bufsize=0, stderr=None)
@@ -533,19 +561,20 @@ for epoch in range(EPOCHS):
             # big fen-eval sets re-featurize per epoch otherwise (~15min for 300M pos)
             print(f"  [cache] reading {os.path.basename(_fc)} ({os.path.getsize(_fc)/1e6:.0f}MB)", flush=True)
             p = subprocess.Popen(["cat", _fc], stdout=subprocess.PIPE, bufsize=0)
-        elif _FENEVAL and _FENEVAL.endswith((".xz", ".zst")) and os.path.exists(_raw_cache) and os.path.getsize(_raw_cache) > 1e8:
-            # raw text cached by epoch 0's tee: cat + MT featurize runs ~3.6M pos/s
-            # vs ~0.5M/s through single-threaded xz decode
+        elif _raw_cache and os.path.exists(_raw_cache):
+            # raw text cached by a completed epoch-0 tee of this exact file:
+            # cat + MT featurize runs ~3.6M pos/s vs ~0.5M/s through xz decode
             print(f"  [raw-cache] reading {os.path.basename(_raw_cache)} "
                   f"({os.path.getsize(_raw_cache)/1e9:.1f}GB)", flush=True)
             cmd = f"cat {_raw_cache} | {FEAT} --fen-eval --threads {NTH}{_skip}"
             p = subprocess.Popen(["bash", "-c", cmd], stdout=subprocess.PIPE, bufsize=0, stderr=None)
-        elif _FENEVAL and _FENEVAL.endswith((".xz", ".zst")) and _raw_cache_ok and epoch == 0:
+        elif _raw_cache and _raw_cache_ok and epoch == 0:
             # epoch 0: tee the decompressed text to /tmp while featurizing at the
             # xz-bound rate (the tee adds no wall time; later epochs skip xz entirely)
             dec = "xz -T0 -dc" if _FENEVAL.endswith(".xz") else "zstd -dc"
-            cmd = f"{dec} {_FENEVAL} | tee {_raw_cache} | {FEAT} --fen-eval --threads {NTH}{_skip}"
+            cmd = f"set -o pipefail; {dec} {_FENEVAL} | tee {_raw_tmp} | {FEAT} --fen-eval --threads {NTH}{_skip}"
             p = subprocess.Popen(["bash", "-c", cmd], stdout=subprocess.PIPE, bufsize=0, stderr=None)
+            _raw_writing = True
         elif _FENEVAL:
             dec = ("xz -T0 -dc" if _FENEVAL.endswith(".xz") else "zstd -dc") if _FENEVAL.endswith((".xz", ".zst")) else "cat"
             cmd = f"{dec} {_FENEVAL} | {FEAT} --fen-eval --threads {NTH}{_skip}"
@@ -598,11 +627,8 @@ for epoch in range(EPOCHS):
                     m = len(data) // REC
                     if m == 0: break
                     a = np.frombuffer(bytes(data[:m * REC]), dtype=np.uint8).reshape(m, REC)
-                    ws.append(torch.from_numpy(a[:, :64].copy().view(np.int16).reshape(m, 32)).to(device))
-                    bs.append(torch.from_numpy(a[:, 64:128].copy().view(np.int16).reshape(m, 32)).to(device))
-                    ss.append(torch.from_numpy(a[:, 128:132].copy().view(np.float32).reshape(m)).to(device))
-                    ts.append(torch.from_numpy(a[:, 132:136].copy().view(np.float32).reshape(m)).to(device))
-                    rsl.append(torch.from_numpy(a[:, 136:140].copy().view(np.float32).reshape(m)).to(device))
+                    for _lst, _col in zip((ws, bs, ss, ts, rsl), decode_records(a)):
+                        _lst.append(torch.from_numpy(_col).to(device))
                     got += m
                 if got == 0: break
                 part += 1
@@ -625,9 +651,7 @@ for epoch in range(EPOCHS):
                 # backward pass would poison every weight in the net), then clamp
                 # extremes (mate scores, parse glitches) instead of dropping them
                 # (dropping loses decisive positions) or letting them saturate sigmoid
-                if not torch.isfinite(ti).all():
-                    ti = torch.nan_to_num(ti, nan=0.0, posinf=1500.0, neginf=-1500.0)
-                ti = ti.clamp(-1500.0, 1500.0)
+                ti = sanitize_targets(ti)
                 if part == 1 and i == 0:
                     # One-time data gate per frame: an endian/padding/viewpoint bug in
                     # the C featurizer would otherwise train SILENTLY on garbage
@@ -647,17 +671,7 @@ for epoch in range(EPOCHS):
                     # within EACH side-to-move half. A stm-vs-white-relative score
                     # mix flips one half negative — detectable before any training.
                     if _ck is not None:
-                        with torch.no_grad():
-                            _g = min(8192, wi.shape[0])
-                            _gp = model(wi[:_g], bi[:_g], si[:_g]).float()
-                        for _nm, _mask in (("WTM", si[:_g] > 0.5), ("BTM", si[:_g] < 0.5)):
-                            if int(_mask.sum()) < 512:
-                                continue
-                            _c = float(torch.corrcoef(torch.stack(
-                                [_gp[_mask], ti[:_g][_mask]]))[0, 1])
-                            assert _c > 0.3, (
-                                f"LABEL CONVENTION FAIL: corr(pred,target) on {_nm} = {_c:+.3f} "
-                                f"(negative ⇒ the cp column's stm convention is flipped for this half)")
+                        stm_split_gate(model, wi, bi, si, ti)
                         print("  [DATA] stm-split correlation gate PASS (labels consistent)", flush=True)
                 # Smart FEN skip: drop positions where |target| is extreme (>800cp)
                 # — these are usually won/lost positions where eval adds noise
@@ -674,10 +688,7 @@ for epoch in range(EPOCHS):
                 # quiet-robust weights (NNUE_QUIET_LOSS="w_q,w_c,w_i", e.g. "1,0.15,0"):
                 # per-sample weights from the flag channel; None when disabled or the
                 # data carries game results (-1/0/+1) instead of quiet flags.
-                _qw = None
-                if _QUIET_MODE and (ri == 2.0).any():
-                    _qw = torch.where(ri == 0.0, _QUIET_WQ,
-             torch.where(ri == 1.0, _QUIET_WC, _QUIET_WI))
+                _qw = quiet_weights(ri, _QUIET_W)
                 if os.environ.get("NNUE_AUTOCAST", "1") != "0":
                     ctx_ac = torch.autocast(device_type=device, dtype=torch.bfloat16)
                 else:
@@ -690,8 +701,7 @@ for epoch in range(EPOCHS):
                     # NOT raw cp space — raw cp gradients are ~6500x larger and
                     # get annihilated by gradient clipping (the bug that caused
                     # loss to flatline at ~230K with zero effective learning)
-                    _sdiff = (torch.sigmoid(pred / SCALE) - torch.sigmoid(ti / SCALE)).abs()
-                    _pterms = _sdiff ** _POWER
+                    _pterms = power_terms(pred, ti, _POWER, SCALE)
                     # print on the FIRST weighted batch and every 500 steps after;
                     # a warm-resumed gstep (e.g. 163076) may not hit a multiple of
                     # 500 inside a short pilot at all
@@ -713,16 +723,14 @@ for epoch in range(EPOCHS):
                         # the loss scale stays comparable to the unweighted run.
                         _pf = torch.sigmoid(ti / SCALE)
                         _pw = 1.0 + (2.0 ** _POS_W1 - 1.0) * ((_pf - 0.5) ** 2 * _pf * (1.0 - _pf)) ** _POS_W2
-                        loss = (_pterms * _pw).sum() / _pw.sum()
-                    elif _qw is not None:
+                        loss = weighted_mean(_pterms, _pw)
+                    else:
                         # Round-3 quiet-robust loss: weight-normalized per-sample
                         # weights from the quiet flag channel (0 quiet / 1 capture /
-                        # 2 in-check). The engine consumes eval at quiet nodes only;
-                        # this stops capacity flowing into the tactical tail where
-                        # labels are noise (the sf1-vs-full law).
-                        loss = (_pterms * _qw).sum() / _qw.sum()
-                    else:
-                        loss = _pterms.mean()
+                        # 2 in-check); plain mean when _qw is None. The engine
+                        # consumes eval at quiet nodes only; this stops capacity
+                        # flowing into the tactical tail where labels are noise.
+                        loss = weighted_mean(_pterms, _qw)
                 else:
                     loss = ((torch.sigmoid(pred / SCALE) - torch.sigmoid(ti / SCALE)) ** 2).mean()
                 if _ANCHOR_W > 0:
@@ -742,15 +750,15 @@ for epoch in range(EPOCHS):
                 opt.step()
                 if _wc > 0:   # hard weight clamp: stops bf16-driven L2 drift (|W| can't exceed _wc)
                     with torch.no_grad():
-                        for p in model.parameters():
-                            p.clamp_(-_wc, _wc)
+                        for _wp in model.parameters():   # not `p`: that is the featurizer pipe
+                            _wp.clamp_(-_wc, _wc)
                 sched.step(); gstep += 1
                 if _swa_model is not None and _swa_active():
                     _swa_update()
                 if gstep % 50 == 0:
                     # loss.item() ONLY here — a per-step .item() syncs the GPU queue
                     # every step and costs ~10-20% throughput
-                    try: _l2 = f" L2|max|={float(model.l2.weight.detach().abs().max().item()):.2f}"
+                    try: _l2 = f" L2|max|={max(float(m.weight.detach().abs().max().item()) for m in (model.bl2 if getattr(model, 'num_buckets', 1) > 1 else [model.l2])):.2f}"
                     except Exception: _l2 = ""
                     dt = time.time() - t0
                     print(f"  e{epoch} f{fi+1}p{part} step {gstep} loss={loss.item():.5f}{_l2} | {total_pos/1e6:.0f}M+{i/1e6:.0f}M | {gstep/max(dt,1):.1f} steps/s", flush=True)
@@ -806,6 +814,16 @@ for epoch in range(EPOCHS):
         if not _skip_featurize:
             try: p.stdout.close(); p.wait()
             except Exception: pass
+            if _raw_writing:
+                try:
+                    if p.returncode != 0:
+                        raise OSError(f"pipeline exit {p.returncode}")
+                    os.replace(_raw_tmp, _raw_cache)
+                    print(f"  [raw-cache] stored {os.path.basename(_raw_cache)} "
+                          f"({os.path.getsize(_raw_cache)/1e9:.1f}GB)", flush=True)
+                except OSError as _e:
+                    _drop_raw_tmp()
+                    print(f"  [raw-cache] not stored ({_e})", flush=True)
         # cached epochs now reach the shared health block inside the loop, so
         # _health is real per-epoch MAE — no placeholder. If it's still None the
         # frame genuinely produced nothing and the FATAL below must fire.
