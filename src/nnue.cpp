@@ -213,13 +213,16 @@ static bool g_int8 = false;
 static bool g_loaded = false;
 
 // The dense tail after the feature transformer: L2/L3/out biases, and for int8
-// nets the int8 weights with their per-layer scales (the FT stays float on
-// disk). LNN1 and LNI8 nets have one tail; LNB8 nets have one per output
-// bucket, chosen by the number of pieces on the board (bucket_of).
+// nets the int8 weights with their dequantization factors (the FT stays float
+// on disk). LNN1, LNI8 and LNIR nets have one tail; LNB8 and LNBR nets have
+// one per output bucket, chosen by the number of pieces on the board
+// (bucket_of). ics2/ics3/icso are 1 / (scale * 127) per output neuron: LNI8 and
+// LNB8 store one scale per matrix (every row gets it), LNIR and LNBR one per row.
 struct DenseTail {
     std::vector<int8_t> l2_w_i8, l3_w_i8, out_w_i8;
     std::vector<float> l2_b, l3_b;
-    float s2 = 1.0f, s3 = 1.0f, so = 1.0f;   // weight quant scales
+    std::vector<float> ics2, ics3;
+    float icso = 1.0f;
     float out_b = 0.0f;
     bool l3_batched = false;    // l3_w_i8 interleaved for batched VNNI L3
     bool l2_by_input = false;   // l2_w_i8 in 64-byte input-chunk blocks for VNNI L2
@@ -312,13 +315,17 @@ static bool load_stream(std::istream& f, const std::string& name) {
     std::string mg(magic, 4);
     // LNN1: float tail. LNI8: int8 tail. LNB8: int8 tails, one per output
     // bucket; its header carries the bucket count after the four sizes.
-    if (mg != "LNN1" && mg != "LNI8" && mg != "LNB8") { std::fprintf(stderr, "nnue: bad magic\n"); return false; }
+    // LNIR / LNBR: LNI8 / LNB8 with one scale per output neuron of each matrix.
+    if (mg != "LNN1" && mg != "LNI8" && mg != "LNB8" && mg != "LNIR" && mg != "LNBR") {
+        std::fprintf(stderr, "nnue: bad magic\n"); return false;
+    }
+    const bool per_row = (mg == "LNIR" || mg == "LNBR");
     int32_t hdr[4];
     f.read(reinterpret_cast<char*>(hdr), sizeof(hdr));
     if (!f) { std::fprintf(stderr, "nnue: truncated header\n"); return false; }
     int L1 = hdr[0], L2 = hdr[1], L3 = hdr[2], NI = hdr[3];
     int32_t NB = 1;
-    if (mg == "LNB8") {
+    if (mg == "LNB8" || mg == "LNBR") {
         f.read(reinterpret_cast<char*>(&NB), 4);
         if (!f || NB < 1 || NB > MAX_BUCKETS) { std::fprintf(stderr, "nnue: bucket count %d out of range\n", NB); return false; }
     }
@@ -353,14 +360,29 @@ static bool load_stream(std::istream& f, const std::string& name) {
     for (int l = 0; l < L1; ++l) ft_b_i32[l] = std::lround(ft_b[l] * FT_WSCALE);
     if (g_int8) {
         // LNI8 / LNB8: per tail, int8 weights + float bias + float scale per layer.
+        // LNIR / LNBR: the scale is a tensor with one float per output neuron.
         auto read_i8 = [&](std::vector<int8_t>& v, int expected) -> bool {
             int32_t n = 0; f.read(reinterpret_cast<char*>(&n), 4);
             if (n != expected) { std::fprintf(stderr, "nnue: i8 size %d != %d\n", n, expected); return false; }
             v.resize(n); f.read(reinterpret_cast<char*>(v.data()), n); return f.good(); };
+        auto read_scales = [&](std::vector<float>& ics, int rows) -> bool {
+            std::vector<float> sc;
+            if (per_row) {
+                if (!read_tensor(f, sc, rows)) return false;
+            } else {
+                float one = 1.0f;
+                f.read(reinterpret_cast<char*>(&one), 4);
+                sc.assign(rows, one);
+            }
+            ics.resize(rows);
+            // The same float operations as the per-eval 1.0f / (s * 127.0f) they replace.
+            for (int o = 0; o < rows; ++o) ics[o] = 1.0f / (sc[o] * 127.0f);
+            return f.good();
+        };
         for (DenseTail& t : g_tails) {
         if (!read_i8(t.l2_w_i8, L2 * 2 * L1)) return false;
         if (!read_tensor(f, t.l2_b, L2)) return false;
-        f.read(reinterpret_cast<char*>(&t.s2), 4);
+        if (!read_scales(t.ics2, L2)) return false;
         if (!read_i8(t.l3_w_i8, L3 * L2)) return false;
 #if defined(__AVX512VNNI__)
         // Batched-L3 layout: dpbusd lane (o*4+j) accumulates h2-slice j against
@@ -388,12 +410,16 @@ static bool load_stream(std::istream& f, const std::string& name) {
         }
 #endif
         if (!read_tensor(f, t.l3_b, L3)) return false;
-        f.read(reinterpret_cast<char*>(&t.s3), 4);
+        if (!read_scales(t.ics3, L3)) return false;
         if (!read_i8(t.out_w_i8, L3)) return false;
         std::vector<float> ob;
         if (!read_tensor(f, ob, 1)) return false;
         t.out_b = ob[0];
-        f.read(reinterpret_cast<char*>(&t.so), 4);
+        {
+            std::vector<float> io;
+            if (!read_scales(io, 1)) return false;
+            t.icso = io[0];
+        }
         if (!f) { std::fprintf(stderr, "nnue: truncated dense tail\n"); return false; }
         // Reorder L2 weights for AVX2 SF-style chunk access (not needed for AVX-512 VNNI).
 #if defined(__AVX2__) && !defined(__AVX512VNNI__)
@@ -449,11 +475,11 @@ static bool load_stream(std::istream& f, const std::string& name) {
 #endif
     // stdout carries UCI traffic, so the report is an info string.
     if (NB > 1)
-        std::printf("info string NNUE evaluation using %s (int8 L1=%d L2=%d L3=%d, %d output buckets)\n",
-                    name.c_str(), L1, L2, L3, NB);
+        std::printf("info string NNUE evaluation using %s (int8 L1=%d L2=%d L3=%d, %d output buckets%s)\n",
+                    name.c_str(), L1, L2, L3, NB, per_row ? ", per-neuron scales" : "");
     else
-        std::printf("info string NNUE evaluation using %s (%s L1=%d L2=%d L3=%d)\n",
-                    name.c_str(), g_int8 ? "int8" : "float", L1, L2, L3);
+        std::printf("info string NNUE evaluation using %s (%s L1=%d L2=%d L3=%d%s)\n",
+                    name.c_str(), g_int8 ? "int8" : "float", L1, L2, L3, per_row ? ", per-neuron scales" : "");
     if (clamped > 0)
         std::printf("info string NNUE warning: %lld feature weights exceed the int16 range and were clamped\n",
                     clamped);
@@ -939,7 +965,10 @@ Value evaluate(const Position& pos) {
     const std::vector<int8_t>& out_w_i8 = tail.out_w_i8;
     const std::vector<float>& l2_b = tail.l2_b;
     const std::vector<float>& l3_b = tail.l3_b;
-    [[maybe_unused]] const float g_s2 = tail.s2, g_s3 = tail.s3, g_so = tail.so;
+    // Dequantization factors per output neuron (int8 nets): 1 / (scale * 127).
+    [[maybe_unused]] const float* ics2 = tail.ics2.data();
+    [[maybe_unused]] const float* ics3 = tail.ics3.data();
+    [[maybe_unused]] const float icso = tail.icso;
     const float out_b = tail.out_b;
     [[maybe_unused]] const bool g_l3_batched = tail.l3_batched, g_l2_by_input = tail.l2_by_input;
 
@@ -1019,10 +1048,7 @@ Value evaluate(const Position& pos) {
         }
 #endif
         if (pr) { for (int i = 0; i < 2*L1; ++i) g_act_nz += (h_i8[i] != 0); g_act_tot += 2*L1; }
-        const float cs2 = g_s2 * 127.0f, cs3 = g_s3 * 127.0f, cso = g_so * 127.0f;
-        // 49 float divisions per eval -> 3 + 46 multiplies (sub-ULP diff, far below
-        // the 1/127 activation quantization step; fingerprint-verified).
-        const float ics2 = 1.0f / cs2, ics3 = 1.0f / cs3, icso = 1.0f / cso;
+        // ics2/ics3/icso were computed at load (1.0f / (s * 127.0f), as here before).
         float h2[NNUE_L1_MAX];
 #if defined(__AVX512VNNI__)
         if (g_l2_by_input) {
@@ -1047,11 +1073,11 @@ Value evaluate(const Position& pos) {
                 s0 = _mm512_dpbusd_epi32(s0, chunk(c), _mm512_loadu_si512(w + 64 * c));
             alignas(64) int32_t d[16];
             _mm512_store_si512(d, _mm512_add_epi32(_mm512_add_epi32(s0, s1), _mm512_add_epi32(s2, s3)));
-            for (int o = 0; o < 16; ++o) h2[o] = clip01(l2_b[o] + d[o] * ics2);
+            for (int o = 0; o < 16; ++o) h2[o] = clip01(l2_b[o] + d[o] * ics2[o]);
         } else
         // VPDPBUSD: 64 MACs/instruction. Per-output dot (output-major weights, no reorder).
         for (int o = 0; o < L2; ++o)
-            h2[o] = clip01(l2_b[o] + dot_i8_vnni(&l2_w_i8[static_cast<size_t>(o) * 2 * L1], h_i8, 2 * L1) * ics2);
+            h2[o] = clip01(l2_b[o] + dot_i8_vnni(&l2_w_i8[static_cast<size_t>(o) * 2 * L1], h_i8, 2 * L1) * ics2[o]);
 #else
         // AVX2 SF-style chunk L2 (chunk-major weights, reordered at load).
         const __m256i ones = _mm256_set1_epi16(1);
@@ -1076,7 +1102,7 @@ Value evaluate(const Position& pos) {
                 __m128i hi = _mm256_extracti128_si256(acc8[o], 1);
                 __m128i sv = _mm_hadd_epi32(_mm_add_epi32(lo, hi), _mm_setzero_si128());
                 int32_t d = _mm_cvtsi128_si32(_mm_hadd_epi32(sv, sv));
-                h2[base_o + o] = clip01(l2_b[base_o + o] + d * ics2);
+                h2[base_o + o] = clip01(l2_b[base_o + o] + d * ics2[base_o + o]);
             }
         }
 #endif // AVX2 SF-L2 vs AVX512 VNNI L2
@@ -1103,20 +1129,20 @@ Value evaluate(const Position& pos) {
                 __m512i t2 = _mm512_add_epi32(t1, _mm512_permutexvar_epi32(groupswap, t1));
                 // t2 lane 4k = dot for output (v*4 + k)
                 __m128i sums = _mm512_castsi512_si128(_mm512_permutexvar_epi32(pick0408, t2));
-                h3[o+0] = clip01(l3_b[o+0] + _mm_extract_epi32(sums, 0) * ics3);
-                h3[o+1] = clip01(l3_b[o+1] + _mm_extract_epi32(sums, 1) * ics3);
-                h3[o+2] = clip01(l3_b[o+2] + _mm_extract_epi32(sums, 2) * ics3);
-                h3[o+3] = clip01(l3_b[o+3] + _mm_extract_epi32(sums, 3) * ics3);
+                h3[o+0] = clip01(l3_b[o+0] + _mm_extract_epi32(sums, 0) * ics3[o+0]);
+                h3[o+1] = clip01(l3_b[o+1] + _mm_extract_epi32(sums, 1) * ics3[o+1]);
+                h3[o+2] = clip01(l3_b[o+2] + _mm_extract_epi32(sums, 2) * ics3[o+2]);
+                h3[o+3] = clip01(l3_b[o+3] + _mm_extract_epi32(sums, 3) * ics3[o+3]);
             }
         } else
         for (int o = 0; o < L3; ++o)
-            h3[o] = clip01(l3_b[o] + dot_i8_vnni_small(&l3_w_i8[static_cast<size_t>(o) * L2], h2_i8, L2) * ics3);
+            h3[o] = clip01(l3_b[o] + dot_i8_vnni_small(&l3_w_i8[static_cast<size_t>(o) * L2], h2_i8, L2) * ics3[o]);
         uint8_t h3_i8[NNUE_L1_MAX];
         for (int l = 0; l < L3; l += 8) quant8(h3 + l, h3_i8 + l, sc127);
         float ov = out_b + dot_i8_vnni_small(out_w_i8.data(), h3_i8, L3) * icso;
 #else
         for (int o = 0; o < L3; ++o)
-            h3[o] = clip01(l3_b[o] + dot_i8(&l3_w_i8[static_cast<size_t>(o) * L2], h2_i8, L2) * ics3);
+            h3[o] = clip01(l3_b[o] + dot_i8(&l3_w_i8[static_cast<size_t>(o) * L2], h2_i8, L2) * ics3[o]);
         uint8_t h3_i8[NNUE_L1_MAX];
         for (int l = 0; l < L3; l += 8) quant8(h3 + l, h3_i8 + l, sc127);
         float ov = out_b + dot_i8(out_w_i8.data(), h3_i8, L3) * icso;
@@ -1201,8 +1227,6 @@ Value evaluate(const Position& pos) {
             u8 = vqmovun_s16(i16);
             vst1_u8(h_i8 + L1 + l, u8);
         }
-        const float cs2 = g_s2 * 127.0f, cs3 = g_s3 * 127.0f, cso = g_so * 127.0f;
-        const float ics2 = 1.0f / cs2, ics3 = 1.0f / cs3, icso = 1.0f / cso;
         const int total_in = 2 * L1;
         float h2[NNUE_L1_MAX];
         // L2: output-major dots via SDOT (int8 weights × uint8 activations)
@@ -1215,7 +1239,7 @@ Value evaluate(const Position& pos) {
                 acc = vdotq_s32(acc, wv, hv);
             }
             int32_t dot = vaddvq_s32(acc);
-            float s = l2_b[o] + dot * ics2;
+            float s = l2_b[o] + dot * ics2[o];
             float c = s < 0 ? 0 : (s > 1 ? 1 : s);
             h2[o] = c * c;  // SCReLU: square after clamp, matching the x86 path
         }
@@ -1232,7 +1256,7 @@ Value evaluate(const Position& pos) {
                 acc = vdotq_s32(acc, wv, hv);
             }
             int32_t dot = vaddvq_s32(acc);
-            float s = l3_b[o] + dot * ics3;
+            float s = l3_b[o] + dot * ics3[o];
             float c = s < 0 ? 0 : (s > 1 ? 1 : s);
             h3[o] = c * c;  // SCReLU: square after clamp, matching the x86 path
         }
@@ -1256,15 +1280,13 @@ Value evaluate(const Position& pos) {
             float s2 = acc_nstm[l] * FT_WINV; float c2 = s2 < 0 ? 0 : (s2 > 1 ? 1 : s2);
             h_i8[L1 + l]   = (uint8_t)std::lrintf(c2 * c2 * 127.0f);
         }
-        const float cs2 = g_s2 * 127.0f, cs3 = g_s3 * 127.0f, cso = g_so * 127.0f;
-        const float ics2 = 1.0f / cs2, ics3 = 1.0f / cs3, icso = 1.0f / cso;
         const int total_in = 2 * L1;
         float h2[NNUE_L1_MAX];
         for (int o = 0; o < L2; ++o) {
             int32_t acc = 0;
             const int8_t* w = &l2_w_i8[static_cast<size_t>(o) * total_in];
             for (int i = 0; i < total_in; ++i) acc += w[i] * h_i8[i];
-            float s = l2_b[o] + acc * ics2;
+            float s = l2_b[o] + acc * ics2[o];
             float c = s < 0 ? 0 : (s > 1 ? 1 : s);
             h2[o] = c * c;  // SCReLU: square after clamp, matching the x86 path
         }
@@ -1275,7 +1297,7 @@ Value evaluate(const Position& pos) {
             int32_t acc = 0;
             const int8_t* w = &l3_w_i8[static_cast<size_t>(o) * L2];
             for (int i = 0; i < L2; ++i) acc += w[i] * h2_i8[i];
-            float s = l3_b[o] + acc * ics3;
+            float s = l3_b[o] + acc * ics3[o];
             float c = s < 0 ? 0 : (s > 1 ? 1 : s);
             h3[o] = c * c;  // SCReLU: square after clamp, matching the x86 path
         }

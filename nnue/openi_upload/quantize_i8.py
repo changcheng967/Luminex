@@ -4,6 +4,7 @@ loads. Pure numpy, runs on CPU:
 
     python quantize_i8.py luminex_v2.nnue luminex_v6_i8.nnue
     python quantize_i8.py net.nnue net_i8.nnue --calib 'held_out.*.lcr'
+    python quantize_i8.py net.nnue net_i8.nnue --per-neuron --calib 'held_out.*.lcr'
 
 A float LNN1 net (one dense tail) becomes LNI8; an LNB1 net (one tail per
 output bucket, NNUE_BUCKETS > 1) becomes LNB8, each bucket's tail quantized
@@ -21,6 +22,11 @@ bucket where the float unit is in its active window (0, 1), with the layers
 before it already corrected; the output bias then takes each bucket's mean
 eval offset. Give positions the net was not trained on (LCR1 records, e.g. a
 held-out month). Without --calib the output is the same bytes as before.
+
+--per-neuron gives every output neuron of each tail matrix its own scale, set by
+that neuron's largest weight (LNIR / LNBR: the scale is a tensor of one float per
+row); the engine applies it at no extra cost. On the shipped net and on
+gen768r_03 this more than halves the rounding error.
 """
 import argparse
 import glob
@@ -42,7 +48,11 @@ def rt(f):
     return np.frombuffer(f.read(n * 4), dtype=np.float32).copy()
 
 
-def q(w):
+def q(w, per_row=False):
+    """int8 weights and their scale: one per matrix, or one per output row."""
+    if per_row:
+        s = 127.0 / np.maximum(np.abs(w).max(1).astype(np.float64), 1e-8)
+        return np.round(w * s[:, None]).clip(-127, 127).astype(np.int8), s.astype(np.float32)
     s = 127.0 / max(float(np.abs(w).max()), 1e-8)
     return np.round(w * s).clip(-127, 127).astype(np.int8), np.float32(s)
 
@@ -100,10 +110,10 @@ def first_layer(ft_t, ft_b, wf, bf, stm, int16):
 def dense_q(x8, w8, b, s):
     """The engine's int8 layer: exact integer dot of bytes and int8 weights,
     then bias + dot * (1 / (scale * 127)) in float32 (fused multiply-add, as
-    GCC contracts it at -O3 on FMA hardware)."""
+    GCC contracts it at -O3 on FMA hardware); s is one scale or one per output."""
     d = x8.astype(np.float64) @ w8.astype(np.float64).T          # exact: |d| < 2^53
-    ics = np.float32(1.0) / (np.float32(s) * np.float32(127.0))
-    return (d * np.float64(ics) + np.asarray(b, np.float64)).astype(np.float32)
+    ics = np.float32(1.0) / (np.asarray(s, dtype=np.float32) * np.float32(127.0))
+    return (d * ics.astype(np.float64) + np.asarray(b, np.float64)).astype(np.float32)
 
 
 def act_bytes(pre):
@@ -147,7 +157,7 @@ def correct_tail(h_f, x8, tail, qt):
     return b2, b3, bo, float((ovf - ov0).mean() * OUT_SCALE), float((ovf - ov1).mean() * OUT_SCALE)
 
 
-def calibrate(ft_w, ft_b, ni, tails, pattern, cmax):
+def calibrate(ft_w, ft_b, ni, tails, pattern, cmax, per_row=False):
     files = sorted(f for p in pattern.split(",") for f in glob.glob(p.strip()))
     if not files:
         raise SystemExit(f"--calib {pattern}: no files")
@@ -174,7 +184,7 @@ def calibrate(ft_w, ft_b, ni, tails, pattern, cmax):
         h_f = first_layer(ft_t, ft_b, wf[sel], bf[sel], stm[sel], False)
         x8 = first_layer(ftq, bq, wf[sel], bf[sel], stm[sel], True)
         l2_w, l2_b, l3_w, l3_b, out_w, out_b = tail
-        b2, b3, bo, off0, off1 = correct_tail(h_f, x8, tail, (q(l2_w), q(l3_w), q(out_w)))
+        b2, b3, bo, off0, off1 = correct_tail(h_f, x8, tail, (q(l2_w, per_row), q(l3_w, per_row), q(out_w, per_row)))
         print(f"  bucket {b}: {n:,} positions, eval offset (float - int8) {off0:+.1f} cp -> {off1:+.1f} cp; "
               f"mean bias shift L2 {np.abs(b2 - l2_b).mean():.4f}, L3 {np.abs(b3 - l3_b).mean():.4f}, "
               f"out {abs(float(bo) - float(out_b)) * OUT_SCALE:.1f} cp")
@@ -189,6 +199,7 @@ def main():
     ap.add_argument("--calib", help="LCR1 files (globs, comma-separated) of held-out positions: correct the "
                                     "tail biases for rounding along the engine's int8 path")
     ap.add_argument("--calib-max", type=int, default=200000, help="positions to calibrate on [200000]")
+    ap.add_argument("--per-neuron", action="store_true", help="one scale per output neuron (LNIR / LNBR)")
     a = ap.parse_args()
     with open(a.src, 'rb') as f:
         magic = f.read(4)
@@ -210,24 +221,30 @@ def main():
             linh = np.frombuffer(f.read(n * 4), dtype=np.float32).copy()
             assert n == NI
     if a.calib:
-        tails = calibrate(ft_w, ft_b, NI, tails, a.calib, a.calib_max)
+        tails = calibrate(ft_w, ft_b, NI, tails, a.calib, a.calib_max, a.per_neuron)
     with open(a.dst, 'wb') as f:
-        f.write(b'LNB8' if nb > 1 else b'LNI8'); f.write(struct.pack('iiii', L1q, L2, L3, NI))
+        magic = (b'LNBR' if nb > 1 else b'LNIR') if a.per_neuron else (b'LNB8' if nb > 1 else b'LNI8')
+        f.write(magic); f.write(struct.pack('iiii', L1q, L2, L3, NI))
         if nb > 1:
             f.write(struct.pack('i', nb))
         for arr in [ft_w, ft_b]:
             f.write(struct.pack('i', arr.size)); f.write(arr.astype(np.float32).tobytes())
         for l2_w, l2_b, l3_w, l3_b, out_w, out_b in tails:
-            l2w, s2 = q(l2_w); l3w, s3 = q(l3_w); outw, so = q(out_w)
+            pr = a.per_neuron
+            l2w, s2 = q(l2_w, pr); l3w, s3 = q(l3_w, pr); outw, so = q(out_w, pr)
             for w8, b, s in [(l2w, l2_b, s2), (l3w, l3_b, s3), (outw, np.array([out_b], np.float32), so)]:
                 f.write(struct.pack('i', w8.size)); f.write(w8.tobytes())
                 f.write(struct.pack('i', b.size)); f.write(b.astype(np.float32).tobytes())
-                f.write(struct.pack('f', float(s)))
+                if pr:
+                    f.write(struct.pack('i', s.size)); f.write(s.astype(np.float32).tobytes())
+                else:
+                    f.write(struct.pack('f', float(s)))
         if linh is not None:
             f.write(b'LINH'); f.write(struct.pack('i', linh.size)); f.write(linh.astype(np.float32).tobytes())
     kind = f"{nb} output buckets" if nb > 1 else "one tail"
     print(f"wrote {a.dst}: L1={L1q} L2={L2} L3={L3}, {kind}  (FT float, L2/L3/out int8)"
-          f"{' +lin' if linh is not None else ''}{', biases corrected' if a.calib else ''}")
+          f"{' +lin' if linh is not None else ''}{', per-neuron scales' if a.per_neuron else ''}"
+          f"{', biases corrected' if a.calib else ''}")
 
 
 if __name__ == "__main__":
