@@ -55,11 +55,25 @@ def _find_file(name):
         if name in fn: return os.path.join(dp, name)
     return None
 
+def _resolve(path):
+    """A path that does not exist as given is looked up by its file name under
+    the search roots: OpenI puts code and datasets under /tmp/code and
+    /tmp/dataset, at task-dependent subpaths that prepare() fills only once
+    this script runs, so a start command cannot know them in advance."""
+    if not path or path == "0" or os.path.exists(path):
+        return path
+    found = _find_file(os.path.basename(path))
+    if found:
+        print(f"[path] {path} -> {found}", flush=True)
+        return found
+    return path
+
+
 # SF-relabel binpack path: NNUE_FENEVAL_FILE points at a fen<TAB>white_cp tsv;
 # featurize --fen-eval streams 140B records exactly like the frame pipeline.
 # The gamepack frame search below walks /tmp and may extract a tar, so it runs
 # only when no fen-eval file is given.
-_FENEVAL = os.environ.get("NNUE_FENEVAL_FILE")
+_FENEVAL = _resolve(os.environ.get("NNUE_FENEVAL_FILE"))
 if _FENEVAL:
     FRAMES = [_FENEVAL]
 else:
@@ -165,7 +179,7 @@ print(f"loss: power={os.environ.get('NNUE_LOSS_POWER', '2.6')} in sigmoid(cp/{SC
 model = LNNUE(L1=L1).to(device)
 gstep = 0  # must exist before resume check (fresh runs would NameError otherwise)
 _ck = None  # resume checkpoint dict (kept for SWA state restore further below)
-_resume = os.environ.get("NNUE_RESUME") or os.path.join(os.path.dirname(__file__) or ".", OUT_BASE + ".pt")
+_resume = _resolve(os.environ.get("NNUE_RESUME")) or os.path.join(os.path.dirname(__file__) or ".", OUT_BASE + ".pt")
 _opt_state = None  # deferred: optimizer doesn't exist yet at resume time
 # An explicit NNUE_RESUME must load; only the implicit OUT_BASE.pt may be absent.
 _resume_explicit = os.environ.get("NNUE_RESUME", "") not in ("", "0")
@@ -774,6 +788,24 @@ for epoch in range(EPOCHS):
                     print(f">>> BUDGET hit at step {gstep} - saving & stopping", flush=True)
                     _save_final("budget")
             total_pos += N
+            # Budget guard for a pinned schedule (NNUE_T_MAX_STEPS): after every
+            # part, project the steps that still fit in the budget at the pace so
+            # far (featurizing included) and keep the cosine's end there when that
+            # is short of the pinned T_max, so the LR has annealed to zero when
+            # the budget stops the run instead of saving a net at high LR. Never
+            # beyond the pinned value: a run the budget does not bind is unchanged.
+            if BUDGET > 0 and _T_MAX_FIXED > 0:
+                _el = time.time() - t0
+                _sess = gstep - _SEG0
+                if _sess >= 100:
+                    # 60 s covers the final save; with no time left the schedule
+                    # ends at the next step rather than past the budget.
+                    _fit = int(_sess + (_sess / max(_el, 1.0)) * max(0.0, BUDGET - _el - 60))
+                    _new = min(_T_MAX_FIXED, max(_sess + 1, _fit))
+                    if _new != _T_MAX_LIVE:
+                        print(f"  [sched] budget guard: T_max {_T_MAX_LIVE:,} -> {_new:,} steps "
+                              f"({_sess / max(_el, 1.0):.2f} st/s so far, featurizing included)", flush=True)
+                        _T_MAX_LIVE = _new
             # v8 health line: computed BEFORE the tensors are freed below.
             # Catches failure-archive signatures loss alone missed (v7-run4
             # weight-growth saturation, eval-scale compression, silent stall).
@@ -795,7 +827,17 @@ for epoch in range(EPOCHS):
                         _pad = ""
                         try: _pad = f" pad|max|={float(model.ft.weight[NUM_INPUTS].abs().max().item()):.1e}"
                         except Exception: pass   # gather mode has no pad row
-                    _health = f"MAE={_mae:.1f}cp{_lmae} predSTD={_ps:.0f} tgtSTD={_ts:.0f}{_pad} | {_wn}"
+                        # Units that can no longer learn (dead or stuck on every one
+                        # of up to 32K positions of this part): a count that grows
+                        # during a run means the recipe is killing tail capacity.
+                        _tl = ""
+                        try:
+                            _k = min(_m, 32768)
+                            _d2, _s2, _d3, _s3, _n2, _n3 = model.tail_liveness(w[:_k].long(), b[:_k].long(), s[:_k])
+                            _tl = f" | tail dead/stuck L2 {_d2}/{_s2} of {_n2}, L3 {_d3}/{_s3} of {_n3}"
+                        except Exception as _e2:
+                            _tl = f" | tail liveness unavailable ({_e2})"
+                    _health = f"MAE={_mae:.1f}cp{_lmae} predSTD={_ps:.0f} tgtSTD={_ts:.0f}{_pad} | {_wn}{_tl}"
             except Exception as _e:
                 _health = f"unavailable ({_e})"
             # VRAM store decision: keep this frame's tensors for later epochs
