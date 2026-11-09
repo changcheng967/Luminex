@@ -37,6 +37,9 @@ Environment (default in brackets):
                      run can be gated
   NNUE_COMPILE [0]   1: torch.compile the step from the expanded batch to the loss
   NNUE_DEVICE [cuda] cpu runs every code path slowly, for a dry run without a GPU
+  NNUE_CONTINUE [0] 1: a resumed .pt keeps its schedule. NNUE_T_MAX_STEPS then counts
+                     from the run's first step, so the cosine and the stop carry on
+                     where the checkpoint left off (a run cut short resumes as planned)
   NNUE_LIVE_CLAMP [0]  tail activations pass this gradient slope outside [0, 1];
                      the forward pass (and so the engine's net) is unchanged
   NNUE_TARGET_CLIP [1500]  |target| cap inside the loss (mates and big scores stay
@@ -86,6 +89,7 @@ VAL_MAX = int(float(env("NNUE_VAL_MAX", "5e6")))
 EVAL_EVERY = int(env("NNUE_EVAL_EVERY", "1000"))
 SAVE_EVERY = int(env("NNUE_SAVE_EVERY", "3000"))
 KEEP_EVERY = int(env("NNUE_KEEP_EVERY", "0"))
+CONTINUE = env("NNUE_CONTINUE", "0") == "1"
 COMPILE = env("NNUE_COMPILE", "0") == "1"
 LIVE = float(env("NNUE_LIVE_CLAMP", "0"))
 WIDE = [float(x) for x in env("NNUE_LOSS_WIDE", "").split(",")] if env("NNUE_LOSS_WIDE", "") else None
@@ -545,14 +549,15 @@ def main():
     if opt_state:
         opt.load_state_dict(opt_state)
         for g, mult in zip(opt.param_groups, (1.0, TAIL_LR_MULT, 1.0)):
-            g["lr"] = LR * mult
+            g["lr"] = g["initial_lr"] = LR * mult   # the scheduler would keep the checkpoint's initial_lr
     params = [p for g in opt.param_groups for p in g["params"]]
 
     steps_per_pass = n // BS
     t_max = T_MAX if T_MAX > 0 else steps_per_pass
+    off = gstep if CONTINUE else 0   # schedule steps already done by the run this checkpoint came from
     state = {"t_live": t_max}
     sched = torch.optim.lr_scheduler.LambdaLR(
-        opt, lambda s: 0.5 * (1.0 + math.cos(math.pi * min(1.0, s / max(1, state["t_live"])))))
+        opt, lambda s: 0.5 * (1.0 + math.cos(math.pi * min(1.0, (s + off) / max(1, state["t_live"])))))
 
     with torch.no_grad():   # the label-convention gate of c500_train_stream.py, on held-out positions
         if res and len(val) >= 8192:
@@ -566,7 +571,8 @@ def main():
               f"target {float(tgt.min()):.0f}..{float(tgt.max()):.0f} std {float(tgt.std()):.0f} | "
               f"flags q/c/i {int((flag == 0).sum())}/{int((flag == 1).sum())}/{int((flag == 2).sum())}", flush=True)
     print(f"[train] {n:,} positions, {steps_per_pass:,} steps per pass of {BS:,} | horizon {t_max:,} steps "
-          f"({t_max / max(1, steps_per_pass):.2f} passes) | lr {LR} tail x{TAIL_LR_MULT} | "
+          f"({t_max / max(1, steps_per_pass):.2f} passes){f', continuing from step {off:,}' if off else ''} | "
+          f"lr {LR} tail x{TAIL_LR_MULT} (now {opt.param_groups[0]['lr']:.4g}) | "
           f"loss power {POWER}{' + wide ' + str(WIDE) if WIDE else ''} | quiet weights {QW} | "
           f"live clamp {LIVE} | compile {COMPILE} | budget {BUDGET:.0f} s", flush=True)
 
@@ -616,8 +622,8 @@ def main():
                 last_t, last_s = now, gstep
             if sess % 200 == 0 and BUDGET > 0:
                 el = time.time() - t0
-                fit = int(sess + sess / max(el, 1.0) * max(0.0, BUDGET - (time.time() - t_start) - 90))
-                new = min(t_max, max(sess + 1, fit))
+                fit = int(off + sess + sess / max(el, 1.0) * max(0.0, BUDGET - (time.time() - t_start) - 90))
+                new = min(t_max, max(off + sess + 1, fit))
                 if new != state["t_live"]:
                     print(f"  [sched] budget guard: horizon {state['t_live']:,} -> {new:,} steps "
                           f"({sess / max(el, 1.0):.2f} steps/s)", flush=True)
@@ -629,7 +635,7 @@ def main():
                 save("checkpoint")
             if KEEP_EVERY > 0 and gstep % KEEP_EVERY == 0:
                 keep()
-            if sess >= state["t_live"]:
+            if off + sess >= state["t_live"]:
                 done = "tmax"
                 break
             if BUDGET > 0 and time.time() - t_start >= BUDGET:
