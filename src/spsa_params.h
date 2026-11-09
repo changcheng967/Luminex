@@ -14,52 +14,52 @@ struct SPSAParams {
     // LMR reduction scale (reduction = scale^2 * ln(depth) * ln(moves) / 1024)
     int lmr_scale_quiet  = 31;
     // Null-move pruning reduction base: R = nmp_base + depth / 3 + min(margin / 200, 3)
-    int nmp_base         = 4;
+    int nmp_base         = 5;
     // Razoring: prune if eval + razor_base + depth^2 * razor_coeff < alpha
-    int razor_base       = 297;
-    int razor_coeff      = 54;
+    int razor_base       = 301;
+    int razor_coeff      = 56;
     // Reverse futility (static null move): prune if eval - rev_fut_coeff * depth >= beta
-    int rev_fut_coeff    = 97;
+    int rev_fut_coeff    = 88;
     // Aspiration window initial half-size
-    int aspiration_delta = 41;
+    int aspiration_delta = 40;
     // Singular extension margin: sBeta = tt_value - depth * _singular_margin / 320
-    int _singular_margin = 189;
+    int _singular_margin = 190;
 
     static constexpr int COUNT = 7;  // fields read from and written to spsa_params.txt
 
     // Reverse futility: extra margin when neither side's eval trend helps us
-    int rfp_not_improving = 30;
+    int rfp_not_improving = 28;
     // Futility (quiet moves, depth <= 5): prune if eval + depth * fut_coeff
     // + (improving ? fut_improving : fut_base) < alpha
-    int fut_coeff        = 136;
-    int fut_base         = 98;
-    int fut_improving    = 28;
+    int fut_coeff        = 138;
+    int fut_base         = 102;
+    int fut_improving    = 27;
     // Late move pruning, in hundredths of a move: the count is
     // (lmp_base + 100 if improving + depth^2 * lmp_coeff) / 100
-    int lmp_base         = 222;
-    int lmp_coeff        = 98;
+    int lmp_base         = 223;
+    int lmp_coeff        = 96;
     // History pruning (quiets, depth <= 4): prune if combined history
     // < hist_prune_base - hist_prune_coeff * (depth - 1)
-    int hist_prune_base  = 924;
-    int hist_prune_coeff = 5095;
+    int hist_prune_base  = 866;
+    int hist_prune_coeff = 5034;
     // ProbCut: rbeta = beta + probcut_margin
-    int probcut_margin   = 154;
+    int probcut_margin   = 140;
     // Null-move R: the depth term is depth * 100 / nmp_depth_div, the eval
     // term min((eval - beta) / nmp_eval_div, 3)
-    int nmp_depth_div    = 291;
+    int nmp_depth_div    = 283;
     int nmp_eval_div     = 207;
     // LMR: history adjustment = clamp(history / lmr_hist_div, -3, 3); the
     // cut-node and ttPv adjustments are in 1024ths of a ply
-    int lmr_hist_div     = 4169;
-    int lmr_cut_node     = 1041;
-    int lmr_ttpv         = 2087;
+    int lmr_hist_div     = 4014;
+    int lmr_cut_node     = 1006;
+    int lmr_ttpv         = 2003;
     // Double singular extension when the verification fails by more than
     // depth * dext_margin / 16
     int dext_margin      = 17;
     // History bonus: min(quad * d^2 + lin * d - offset, 8192); the malus is
     // its negative
-    int hist_bonus_quad  = 19;
-    int hist_bonus_lin   = 169;
+    int hist_bonus_quad  = 20;
+    int hist_bonus_lin   = 185;
     int hist_bonus_offset = 126;
     // Qsearch skips captures with SEE below qs_see_coeff * depth (depth <= 0)
     int qs_see_coeff     = 53;
