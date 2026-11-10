@@ -42,12 +42,12 @@ Environment (default in brackets):
                      where the checkpoint left off (a run cut short resumes as planned)
   NNUE_LIVE_CLAMP [0]  tail activations pass this gradient slope outside [0, 1];
                      the forward pass (and so the engine's net) is unchanged
-  NNUE_QAT [0]       1: train the tail the way the engine runs it. Each bucket's L2, L3
-                     and output weights are rounded to int8 with quantize_i8.py's scale
-                     (127 / max|w|), every activation into them to the engine's 1/127
-                     steps, and gradients pass straight through the rounding. The tail
-                     runs in fp32, so the network trained is the network the engine
-                     loads after quantize_i8.py
+  NNUE_QAT [0]       1: train the network the way the engine runs it. The first layer
+                     is rounded to the engine's int16 grid (x8192); each bucket's L2, L3
+                     and output weights to int8 with quantize_i8.py's scale (127 / max|w|);
+                     every activation into them to the engine's 1/127 steps. Gradients
+                     pass straight through the rounding and the tail runs in fp32, so the
+                     network trained is the network the engine loads after quantize_i8.py
   NNUE_TARGET_CLIP [1500]  |target| cap inside the loss (mates and big scores stay
                      in the data and train as "winning"; 1500 = 97.7% in the loss)
   NNUE_LOSS_WIDE ["" ]  "scale,weight": add weight * the same loss at a wider
@@ -367,8 +367,15 @@ def forward(model, wf, bf, stm, cnt):
     """LNNUE.forward with the per-bucket loop replaced by one matmul per layer
     over all buckets and a gather of each position's own bucket: same values,
     static shapes, no host synchronization."""
-    acc_w = model.ft(wf) + model.ft_bias
-    acc_b = model.ft(bf) + model.ft_bias
+    if QAT:   # the first layer on the engine's int16 grid (src/nnue.cpp FT_WSCALE = 8192)
+        w = model.ft.weight
+        wq = w + (torch.round(w * 8192.0) / 8192.0 - w).detach()
+        bq = model.ft_bias + (torch.round(model.ft_bias * 8192.0) / 8192.0 - model.ft_bias).detach()
+        acc_w = F.embedding_bag(wf, wq, mode="sum", padding_idx=NUM_INPUTS) + bq
+        acc_b = F.embedding_bag(bf, wq, mode="sum", padding_idx=NUM_INPUTS) + bq
+    else:
+        acc_w = model.ft(wf) + model.ft_bias
+        acc_b = model.ft(bf) + model.ft_bias
     s = stm.view(-1, 1) > 0.5
     h = torch.cat([torch.where(s, acc_w, acc_b), torch.where(s, acc_b, acc_w)], 1)
     h = torch.clamp(h, 0.0, 1.0).square()
