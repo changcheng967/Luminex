@@ -4,13 +4,14 @@
 #
 #   fetch-net.sh [DIR]   (default: net)
 #
-# The pin is the v6.5.0 release asset. Shipping a new network means attaching
-# it to a release and moving url and sha256 here; the name must stay
-# DEFAULT_NET (src/nnue.h).
+# The pin is gen768r_03 (luminex_gen768r_03_i8.nnue on the engine-archives
+# pre-release). Shipping a new network means attaching it to a release and
+# moving url and sha256 here; whatever the asset is called, the file is saved
+# as DEFAULT_NET (src/nnue.h), the name the engine loads.
 set -euo pipefail
 name=luminex_sfq_i8.nnue
-url=https://github.com/changcheng967/Luminex/releases/download/v6.5.0/$name
-sha256=1f42c03d417239782b6c1f7a593083417a4d588de3cc4c7375649ae4f22c3626
+url=https://github.com/changcheng967/Luminex/releases/download/engine-archives/luminex_gen768r_03_i8.nnue
+sha256=5bbd5cc136463ef7352e4a3f380639c4ef33ad1175782a72f364537f0458dcde
 dir=${1:-net}
 out=$dir/$name
 mkdir -p "$dir"
