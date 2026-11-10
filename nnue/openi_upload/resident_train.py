@@ -13,6 +13,11 @@ Environment (default in brackets):
                      globs (binpack2lcr's OUT.*.lcr parts); a single missing path is
                      built from NNUE_FENEVAL_FILE first
   NNUE_MAX_POS [all] load at most this many positions (to fit the card)
+  NNUE_VRAM_POS [0 = all] keep at most this many training positions in VRAM and the
+                     rest in host RAM: each batch draws from both pools in proportion
+                     (a background thread gathers the host-RAM rows a few batches
+                     ahead), and each pass's order comes from a keyed permutation that
+                     stores nothing, so the data can exceed the card and 2^32 positions
   NNUE_FENEVAL_FILE  fen<TAB>cp[<TAB>flag] lines (.xz, .zst or plain text)
   NNUE_DATA_VIA_FILE [0]  1: decompress to a temporary text file, then featurize
                      file to file (no pipe at all)
@@ -56,9 +61,11 @@ Environment (default in brackets):
 """
 import math
 import os
+import queue
 import re
 import subprocess
 import sys
+import threading
 import time
 
 import numpy as np
@@ -90,6 +97,7 @@ BUDGET = float(env("NNUE_BUDGET_SEC", "0"))
 POWER = float(env("NNUE_LOSS_POWER", "2.6"))
 QW = parse_quiet_loss(env("NNUE_QUIET_LOSS", ""))
 VAL_FRAC = float(env("NNUE_VAL_FRAC", "0.002"))
+VRAM_POS = int(float(env("NNUE_VRAM_POS", "0")))
 VAL_DATA = env("NNUE_VAL_DATA", "")
 VAL_MAX = int(float(env("NNUE_VAL_MAX", "5e6")))
 EVAL_EVERY = int(env("NNUE_EVAL_EVERY", "1000"))
@@ -152,10 +160,12 @@ def data_files(spec):
 
 
 def load_data(paths):
-    """LCR1 files -> (train, val) uint8 [n, 32] on the GPU. Positions whose hash
-    field falls below VAL_FRAC * 2^32 form the validation set; the rest are packed
-    into one training tensor, chunk by chunk, so the GPU never holds a second copy.
-    NNUE_MAX_POS caps the positions loaded (the files' order is kept)."""
+    """LCR1 files -> (train, host, val). train: uint8 [n, 32] on the GPU; host: the
+    training positions beyond NNUE_VRAM_POS, a uint8 [m, 32] CPU tensor (None when
+    everything fits in VRAM). Positions whose hash field falls below VAL_FRAC * 2^32
+    form the validation set (on the GPU); the rest are packed chunk by chunk, VRAM
+    first, so neither pool ever holds a second copy. NNUE_MAX_POS caps the positions
+    loaded (the files' order is kept)."""
     sizes = []
     for p in paths:
         s = os.path.getsize(p)
@@ -165,9 +175,11 @@ def load_data(paths):
     n = sum(sizes)
     cap = int(float(env("NNUE_MAX_POS", "0"))) or n
     n = min(n, cap)
+    n_gpu = min(n, VRAM_POS) if VRAM_POS > 0 else n
     thr = np.uint32(min(int(VAL_FRAC * 2 ** 32), 2 ** 32 - 1))
-    train = torch.empty((n, REC), dtype=torch.uint8, device=dev)
-    vals, nt, nread, t = [], 0, 0, time.time()
+    train = torch.empty((n_gpu, REC), dtype=torch.uint8, device=dev)
+    host = np.empty((n - n_gpu, REC), dtype=np.uint8) if n > n_gpu else None
+    vals, nt, nh, nread, t = [], 0, 0, 0, time.time()
     chunk = 1 << 25   # records per read: 1 GiB
     for p in paths:
         with open(p, "rb") as f:
@@ -181,15 +193,21 @@ def load_data(paths):
                 if held.any():
                     vals.append(a[held])
                 keep = a[~held]
-                train[nt:nt + len(keep)].copy_(torch.from_numpy(keep))
-                nt += len(keep)
+                k = min(len(keep), n_gpu - nt)
+                if k > 0:
+                    train[nt:nt + k].copy_(torch.from_numpy(keep[:k]))
+                    nt += k
+                if len(keep) > k:
+                    host[nh:nh + len(keep) - k] = keep[k:]
+                    nh += len(keep) - k
         if nread >= n:
             break
     val = torch.from_numpy(np.concatenate(vals)).to(dev) if vals else train[:0]
-    print(f"[data] {nread:,} positions from {len(paths)} file(s) -> VRAM in {time.time() - t:.0f} s: "
-          f"train {nt:,}, validation {len(val):,} ({VAL_FRAC:.2%} by hash), {nread * REC / 1e9:.1f} GB"
-          f"{f' (capped at NNUE_MAX_POS {cap:,})' if cap < sum(sizes) else ''}", flush=True)
-    return train[:nt], val
+    where = f"VRAM {nt:,} + host RAM {nh:,}" if host is not None else f"{nt:,}"
+    print(f"[data] {nread:,} positions from {len(paths)} file(s) -> {'VRAM and host RAM' if host is not None else 'VRAM'} "
+          f"in {time.time() - t:.0f} s: train {where}, validation {len(val):,} ({VAL_FRAC:.2%} by hash), "
+          f"{nread * REC / 1e9:.1f} GB{f' (capped at NNUE_MAX_POS {cap:,})' if cap < sum(sizes) else ''}", flush=True)
+    return train[:nt], (torch.from_numpy(host[:nh]) if host is not None and nh else None), val
 
 
 def load_records(paths, cap):
@@ -247,6 +265,114 @@ class HostShuffle:
     def batch(perm, i, bs):
         """Indices i..i+bs of a pass as int64 on the GPU (uint32 values travel as int32)."""
         return perm[i:i + bs].to(dev, non_blocking=True).to(torch.int64) & 0xFFFFFFFF
+
+
+class KeyedShuffle:
+    """A different pseudo-random order of 0..n-1 each pass that stores nothing: a
+    4-round Feistel network on an even number of bits >= log2(n), keyed by
+    (seed, pass), walking cycles past values >= n. It is a bijection, so each pass
+    still visits every position exactly once, for any n (HostShuffle's permutation
+    needs 4 bytes a position and n < 2^32)."""
+
+    def __init__(self, n, seed):
+        self.n, self.seed = n, seed
+        bits = max(2, (n - 1).bit_length())
+        bits += bits & 1
+        self.h = np.uint64(bits // 2)
+        self.mask = np.uint64((1 << (bits // 2)) - 1)
+
+    def _keys(self, epoch):
+        rng = np.random.default_rng([self.seed, epoch, 0x51CE])
+        return [np.uint64(k) for k in rng.integers(0, 2 ** 63, size=4, dtype=np.uint64)]
+
+    def _round(self, r, k):
+        x = (r ^ k) * np.uint64(0x9E3779B97F4A7C15)   # wraps mod 2^64 (array arithmetic)
+        x ^= x >> np.uint64(29)
+        x *= np.uint64(0xBF58476D1CE4E5B9)
+        x ^= x >> np.uint64(32)
+        return x & self.mask
+
+    def _perm(self, x, ks):
+        left, right = x >> self.h, x & self.mask
+        for k in ks:
+            left, right = right, left ^ self._round(right, k)
+        return (left << self.h) | right
+
+    def indices(self, epoch, start, count):
+        """Positions start..start+count-1 of pass `epoch`'s order (uint64 numpy)."""
+        ks = self._keys(epoch)
+        y = self._perm(np.arange(start, start + count, dtype=np.uint64), ks)
+        out = y >= np.uint64(self.n)
+        while out.any():
+            y[out] = self._perm(y[out], ks)
+            out = y >= np.uint64(self.n)
+        return y
+
+
+class PoolFeeder:
+    """Training batches drawn from a VRAM pool and a host-RAM pool together. A
+    background thread takes each batch's positions from a KeyedShuffle over both
+    pools, gathers the host-RAM rows into pinned memory and copies them and the VRAM
+    indices to the GPU on a side stream, up to DEPTH batches ahead; next() waits on
+    that copy and returns the [bs, 32] batch. A batch has bs positions; the share
+    from each pool follows the pools' sizes."""
+
+    DEPTH = 3
+
+    def __init__(self, gpu_pool, host_pool, seed, bs):
+        self.g, self.hp = gpu_pool, host_pool
+        self.ng, self.n = len(gpu_pool), len(gpu_pool) + len(host_pool)
+        self.bs, self.steps_per_pass = bs, (len(gpu_pool) + len(host_pool)) // bs
+        self.shuffle = KeyedShuffle(self.n, seed)
+        cuda = str(dev).startswith("cuda")
+        self.stream = torch.cuda.Stream() if cuda else None
+        nslot = self.DEPTH + 2
+        self.pins = [torch.empty((bs, REC), dtype=torch.uint8, pin_memory=cuda) for _ in range(nslot)]
+        self.done_ev = [None] * nslot
+        self.q = queue.Queue(maxsize=self.DEPTH)
+        self.err = None
+        threading.Thread(target=self._run, daemon=True).start()
+
+    def _run(self):
+        try:
+            epoch, k, slot = 0, 0, 0
+            while True:
+                idx = self.shuffle.indices(epoch, k * self.bs, self.bs)
+                in_gpu = idx < np.uint64(self.ng)
+                gi = torch.from_numpy(idx[in_gpu].astype(np.int64))
+                hi = torch.from_numpy((idx[~in_gpu] - np.uint64(self.ng)).astype(np.int64))
+                if self.done_ev[slot] is not None:
+                    self.done_ev[slot].synchronize()        # this slot's last copy has landed
+                pin = self.pins[slot][:len(hi)]
+                torch.index_select(self.hp, 0, hi, out=pin)
+                if self.stream is not None:
+                    with torch.cuda.stream(self.stream):
+                        g_idx = gi.pin_memory().to(dev, non_blocking=True)
+                        h_rows = pin.to(dev, non_blocking=True)
+                        ev = torch.cuda.Event()
+                        ev.record(self.stream)
+                    self.done_ev[slot] = ev
+                else:
+                    g_idx, h_rows, ev = gi, pin.clone(), None
+                self.q.put((g_idx, h_rows, ev, epoch))
+                slot = (slot + 1) % len(self.pins)
+                k += 1
+                if k == self.steps_per_pass:
+                    k, epoch = 0, epoch + 1
+        except Exception as e:   # surface in next(), never hang the trainer
+            self.err = e
+            self.q.put(None)
+
+    def next(self):
+        item = self.q.get()
+        if item is None:
+            raise RuntimeError(f"PoolFeeder thread failed: {self.err!r}")
+        g_idx, h_rows, ev, epoch = item
+        if ev is not None:
+            torch.cuda.current_stream().wait_event(ev)
+            g_idx.record_stream(torch.cuda.current_stream())
+            h_rows.record_stream(torch.cuda.current_stream())
+        return torch.cat([self.g[g_idx], h_rows]), epoch
 
 
 KB = [-1, -1, -1, -1, 31, 30, 29, 28, -1, -1, -1, -1, 27, 26, 25, 24,
@@ -550,7 +676,7 @@ def main():
             raise SystemExit(f"FAIL: NNUE_DATA {data} not found and no NNUE_FENEVAL_FILE to build it from")
         build_data(src, data)
         files = [data]
-    train, val = load_data(files)
+    train, host, val = load_data(files)
     dval = None
     if VAL_DATA:
         vfiles = data_files(VAL_DATA)
@@ -561,8 +687,9 @@ def main():
             raise SystemExit(f"FAIL: NNUE_VAL_DATA shares {len(shared)} file(s) with NNUE_DATA, "
                              f"e.g. {sorted(shared)[0]}: those positions are trained on")
         dval = load_records(vfiles, VAL_MAX)
-    n = len(train)
-    shuffle = HostShuffle(n, SEED)
+    n = len(train) + (len(host) if host is not None else 0)
+    feeder = PoolFeeder(train, host, SEED, BS) if host is not None else None
+    shuffle = HostShuffle(n, SEED) if feeder is None else None
 
     model = LNNUE(L1=L1).to(dev)
     gstep, opt_state = 0, None
@@ -658,9 +785,10 @@ def main():
     seg0, t0, last_t, last_s = gstep, time.time(), time.time(), gstep
     epoch, done = 0, None
     while done is None:
-        perm = shuffle.next_pass()
+        perm = shuffle.next_pass() if feeder is None else None
         for i in range(0, steps_per_pass * BS, BS):
-            loss = step_fn(model, train[HostShuffle.batch(perm, i, BS)])
+            batch = feeder.next()[0] if feeder is not None else train[HostShuffle.batch(perm, i, BS)]
+            loss = step_fn(model, batch)
             opt.zero_grad(set_to_none=True)
             loss.backward()
             if GRAD_CLIP > 0:
