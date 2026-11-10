@@ -12,8 +12,11 @@
 // occupied squares in ascending order as 4-bit codes (src/types.h Piece:
 // WHITE_PAWN = 0 .. BLACK_KING = 11) | i16 side-to-move-relative score |
 // u8 flags (bit 0 white to move, bits 1-2: 0 quiet, 1 capture-best,
-// 2 in-check) | u8 piece count | u32 position hash (the validation split; the
-// featurizer path stores a crc32 of the FEN there instead).
+// 2 in-check, bit 3 game result known, bits 4-5 the game's result for the side
+// to move + 1: 0 loss, 1 draw, 2 win) | u8 piece count | u32 position hash
+// (the validation split; the featurizer path stores a crc32 of the FEN there
+// instead). Readers mask the bits they use, so records written before the
+// result bits existed read as "result unknown" (bit 3 clear).
 //
 // Build (against a checkout of official-stockfish/nnue-pytorch):
 //   g++ -O2 -std=c++20 -pthread -I <nnue-pytorch>/data_loader/cpp \
@@ -95,7 +98,7 @@ int main(int argc, char** argv) {
     }
     if (threads > static_cast<int>(chunks.size())) threads = static_cast<int>(chunks.size());
 
-    std::atomic<long long> total{0}, quiet{0}, capture{0}, check{0};
+    std::atomic<long long> total{0}, quiet{0}, capture{0}, check{0}, wins{0}, draws{0}, losses{0};
     std::atomic<int> failed{0};
     std::vector<std::thread> pool;
     for (int t = 0; t < threads; ++t) {
@@ -108,7 +111,7 @@ int main(int argc, char** argv) {
             std::vector<char> obuf(1 << 24);
             std::setvbuf(f, obuf.data(), _IOFBF, obuf.size());
             std::vector<unsigned char> chunk;
-            long long n = 0, nq = 0, nc = 0, ni = 0;
+            long long n = 0, nq = 0, nc = 0, ni = 0, nw = 0, nd = 0, nl = 0;
             for (std::size_t c = c0; c < c1; ++c) {
                 const unsigned char* p = base + chunks[c].first;
                 chunk.assign(p, p + chunks[c].second);
@@ -129,8 +132,9 @@ int main(int argc, char** argv) {
                     if (k > 32) { failed = 2; continue; }   // not a chess position; never seen
                     const bool white = e.pos.sideToMove() == chess::Color::White;
                     const int q = !e.pos.checkers().isEmpty() ? 2 : (e.isCapturingMove() ? 1 : 0);
+                    const int res = e.result > 0 ? 2 : (e.result < 0 ? 0 : 1);   // side to move's game result + 1
                     r.target = e.score;                       // side-to-move relative already
-                    r.flags = static_cast<std::uint8_t>((white ? 1 : 0) | (q << 1));
+                    r.flags = static_cast<std::uint8_t>((white ? 1 : 0) | (q << 1) | (1 << 3) | (res << 4));
                     r.npieces = static_cast<std::uint8_t>(k);
                     std::uint64_t lo, hi;
                     std::memcpy(&lo, r.pcs, 8);
@@ -139,10 +143,12 @@ int main(int argc, char** argv) {
                     std::fwrite(&r, sizeof r, 1, f);
                     ++n;
                     nq += q == 0; nc += q == 1; ni += q == 2;
+                    nl += res == 0; nd += res == 1; nw += res == 2;
                 }
             }
             if (std::fclose(f) != 0) failed = 3;
             total += n; quiet += nq; capture += nc; check += ni;
+            wins += nw; draws += nd; losses += nl;
         });
     }
     for (auto& t : pool) t.join();
@@ -153,9 +159,9 @@ int main(int argc, char** argv) {
         std::fprintf(stderr, "FAIL: code %d\n", failed.load());
         return 1;
     }
-    std::fprintf(stderr, "DONE %lld positions (quiet %lld, capture %lld, check %lld) from %zu chunks "
-                         "in %.1f s (%.1fM positions/s, %d threads)\n",
-                 total.load(), quiet.load(), capture.load(), check.load(), chunks.size(), sec,
-                 total.load() / 1e6 / (sec > 0 ? sec : 1), threads);
+    std::fprintf(stderr, "DONE %lld positions (quiet %lld, capture %lld, check %lld; side to move "
+                         "won %lld, drew %lld, lost %lld) from %zu chunks in %.1f s (%.1fM positions/s, %d threads)\n",
+                 total.load(), quiet.load(), capture.load(), check.load(), wins.load(), draws.load(),
+                 losses.load(), chunks.size(), sec, total.load() / 1e6 / (sec > 0 ? sec : 1), threads);
     return 0;
 }
