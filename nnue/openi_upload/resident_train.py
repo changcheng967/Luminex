@@ -383,7 +383,9 @@ def ft_plan(idx, tile):
     bucket into tiles of `tile` rows, each bucket padded to whole tiles: at most
     ceil(n / tile) + 32 tiles, so shapes are static and nothing syncs with the host.
     Returns X [ntile, tile, 768] (fp32, 0/1), row [n] (each position's row in the
-    tiles) and tile_kb [ntile] (each tile's bucket; unused tiles are all zero)."""
+    tiles), src [ntile * tile] (each tile row's position; padding rows name position
+    0, harmless because their X rows are zero) and tile_kb [ntile] (each tile's
+    bucket; unused tiles are all zero)."""
     n, dv = idx.shape[0], idx.device
     nkb = NUM_INPUTS // PSQ
     ntile = (n + tile - 1) // tile + nkb
@@ -398,11 +400,16 @@ def ft_plan(idx, tile):
     row_sorted = start_pad[kb_s] + torch.arange(n, device=dv) - start_cnt[kb_s]
     row = torch.empty_like(row_sorted)
     row[order] = row_sorted
+    src = torch.zeros(ntile * tile, dtype=row.dtype, device=dv)
+    src[row_sorted] = order
     tile_kb = torch.searchsorted(end_pad, torch.arange(ntile, device=dv) * tile, right=True).clamp(max=nkb - 1)
-    X = torch.zeros(ntile * tile * PSQ, dtype=torch.float32, device=dv)
-    flat = (row.view(-1, 1) * PSQ + torch.where(valid, idx % PSQ, 0)).view(-1)
-    X.index_put_((flat,), valid.view(-1).to(torch.float32), accumulate=True)   # padding slots add 0
-    return X.view(ntile, tile, PSQ), row, tile_kb
+    # A plain scatter of ones: a position's features are distinct, so only the spare
+    # slot at the end, which takes every padding slot, is written twice. (Scattering
+    # with accumulate=True instead runs PyTorch's sort-based kernel: ~1 ms a side.)
+    size = ntile * tile * PSQ
+    X = torch.zeros(size + 1, dtype=torch.float32, device=dv)
+    X[torch.where(valid, row.view(-1, 1) * PSQ + idx % PSQ, size).view(-1)] = 1.0
+    return X[:size].view(ntile, tile, PSQ), row, src, tile_kb
 
 
 class DenseFT(torch.autograd.Function):
@@ -414,28 +421,27 @@ class DenseFT(torch.autograd.Function):
 
     @staticmethod
     def forward(ctx, idx, weight, dense_fwd):
-        X, row, tile_kb = ft_plan(idx, FT_TILE)
-        ctx.save_for_backward(X, row, tile_kb)
+        X, row, src, tile_kb = ft_plan(idx, FT_TILE)
+        ctx.save_for_backward(X, src, tile_kb)
         ctx.nrows = weight.shape[0]
         if not dense_fwd:
             return F.embedding_bag(idx, weight, mode="sum", padding_idx=NUM_INPUTS)
         L1 = weight.shape[1]
-        Wt = weight[:NUM_INPUTS].view(-1, PSQ, L1)[tile_kb]          # [ntile, 768, L1]
         dt = torch.bfloat16 if X.is_cuda else torch.float32
-        out = torch.bmm(X.to(dt), Wt.to(dt)).view(-1, L1)
+        Wt = weight[:NUM_INPUTS].to(dt).view(-1, PSQ, L1)[tile_kb]   # [ntile, 768, L1]: cast the table once, then copy blocks
+        out = torch.bmm(X.to(dt), Wt).view(-1, L1)
         return out[row].float()
 
     @staticmethod
     def backward(ctx, g):
-        X, row, tile_kb = ctx.saved_tensors
+        X, src, tile_kb = ctx.saved_tensors
         ntile, tile, _ = X.shape
         L1 = g.shape[1]
-        G = torch.zeros((ntile * tile, L1), dtype=torch.float32, device=g.device)
-        G[row] = g.float()
+        G = g.float()[src].view(ntile, tile, L1)   # one gather; padding rows meet zero rows of X
         tf32 = torch.backends.cuda.matmul.allow_tf32
         torch.backends.cuda.matmul.allow_tf32 = FT_TF32
         try:
-            dWt = torch.bmm(X.transpose(1, 2), G.view(ntile, tile, L1))   # [ntile, 768, L1]
+            dWt = torch.bmm(X.transpose(1, 2), G)   # [ntile, 768, L1]
         finally:
             torch.backends.cuda.matmul.allow_tf32 = tf32
         dW = torch.zeros((NUM_INPUTS // PSQ, PSQ, L1), dtype=torch.float32, device=g.device)
