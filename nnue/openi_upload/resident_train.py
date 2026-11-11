@@ -52,7 +52,8 @@ Environment (default in brackets):
                      (positions sorted by bucket into tiles; X 0/1 times the bucket's
                      768 x L1 block) instead of EmbeddingBag: 1 = the weight gradient
                      only (the forward stays EmbeddingBag's, bit-identical), 2 = the
-                     forward too (bf16 inputs, fp32 accumulation)
+                     forward too (bf16 inputs, fp32 accumulation; with NNUE_QAT in
+                     exact fp32, so it still equals the engine's int16 sums)
   NNUE_FT_TILE [1024]  rows per tile of the dense feature layer
   NNUE_FT_TF32 [1]   the dense gradient matmul in TF32 (0: exact fp32, slower)
   NNUE_TARGET_CLIP [1500]  |target| cap inside the loss (mates and big scores stay
@@ -417,7 +418,13 @@ class DenseFT(torch.autograd.Function):
     with its weight gradient, and with NNUE_FT_DENSE=2 its forward too, done as one
     batched matmul per tile on tensor cores instead of EmbeddingBag's sort and segment
     sums. NNUE_FT_DENSE=1 keeps EmbeddingBag's forward, so the forward pass is
-    bit-identical to the default and only the gradient's summation order changes."""
+    bit-identical to the default and only the gradient's summation order changes.
+
+    The dense forward runs in bf16 on the GPU, except under NNUE_QAT (and on the
+    CPU), where it runs in exact fp32 with autocast and TF32 off: QAT's weights sit
+    on the engine's int16 grid (k / 8192), and any sum of a position's 32 of them is
+    exact in fp32, so the layer equals the engine's integer sums. bf16 would round
+    each weight to 8 significant bits and undo what QAT trains for."""
 
     @staticmethod
     def forward(ctx, idx, weight, dense_fwd):
@@ -427,9 +434,18 @@ class DenseFT(torch.autograd.Function):
         if not dense_fwd:
             return F.embedding_bag(idx, weight, mode="sum", padding_idx=NUM_INPUTS)
         L1 = weight.shape[1]
-        dt = torch.bfloat16 if X.is_cuda else torch.float32
-        Wt = weight[:NUM_INPUTS].to(dt).view(-1, PSQ, L1)[tile_kb]   # [ntile, 768, L1]: cast the table once, then copy blocks
-        out = torch.bmm(X.to(dt), Wt).view(-1, L1)
+        if QAT or not X.is_cuda:
+            Wt = weight[:NUM_INPUTS].float().view(-1, PSQ, L1)[tile_kb]   # [ntile, 768, L1]
+            tf32 = torch.backends.cuda.matmul.allow_tf32
+            torch.backends.cuda.matmul.allow_tf32 = False
+            try:
+                with torch.autocast(device_type=X.device.type, enabled=False):
+                    out = torch.bmm(X, Wt).view(-1, L1)
+            finally:
+                torch.backends.cuda.matmul.allow_tf32 = tf32
+            return out[row]
+        Wt = weight[:NUM_INPUTS].to(torch.bfloat16).view(-1, PSQ, L1)[tile_kb]   # cast the table once, then copy blocks
+        out = torch.bmm(X.to(torch.bfloat16), Wt).view(-1, L1)
         return out[row].float()
 
     @staticmethod
