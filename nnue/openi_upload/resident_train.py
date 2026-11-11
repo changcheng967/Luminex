@@ -42,6 +42,12 @@ Environment (default in brackets):
                      where the checkpoint left off (a run cut short resumes as planned)
   NNUE_LIVE_CLAMP [0]  tail activations pass this gradient slope outside [0, 1];
                      the forward pass (and so the engine's net) is unchanged
+  NNUE_QAT [0]       1: train the network the way the engine runs it. The first layer
+                     is rounded to the engine's int16 grid (x8192); each bucket's L2, L3
+                     and output weights to int8 with quantize_i8.py's scale (127 / max|w|);
+                     every activation into them to the engine's 1/127 steps. Gradients
+                     pass straight through the rounding and the tail runs in fp32, so the
+                     network trained is the network the engine loads after quantize_i8.py
   NNUE_TARGET_CLIP [1500]  |target| cap inside the loss (mates and big scores stay
                      in the data and train as "winning"; 1500 = 97.7% in the loss)
   NNUE_LOSS_WIDE ["" ]  "scale,weight": add weight * the same loss at a wider
@@ -92,6 +98,7 @@ KEEP_EVERY = int(env("NNUE_KEEP_EVERY", "0"))
 CONTINUE = env("NNUE_CONTINUE", "0") == "1"
 COMPILE = env("NNUE_COMPILE", "0") == "1"
 LIVE = float(env("NNUE_LIVE_CLAMP", "0"))
+QAT = env("NNUE_QAT", "0") == "1"
 WIDE = [float(x) for x in env("NNUE_LOSS_WIDE", "").split(",")] if env("NNUE_LOSS_WIDE", "") else None
 TARGET_CLIP = float(env("NNUE_TARGET_CLIP", "1500"))   # |target| cap in the loss; data keeps raw scores
 OUT_DIR = env("NNUE_OUT_DIR", ".")
@@ -317,15 +324,63 @@ def tail_act(x):
     return LiveSCReLU.apply(x, LIVE) if LIVE > 0 else torch.clamp(x, 0.0, 1.0).square()
 
 
+def fq_w(w, groups):
+    """`w` as the engine holds it: each of `groups` equal blocks of rows (one per output
+    bucket) rounded to int8 with quantize_i8.py's scale 127 / max|w|, then scaled back.
+    The scale is a constant and the gradient passes straight through the rounding."""
+    g = w.view(groups, -1)
+    s = 127.0 / g.detach().abs().amax(dim=1, keepdim=True).clamp_min(1e-8)
+    q = torch.round(g * s).clamp(-127.0, 127.0) / s
+    return (g + (q - g).detach()).view_as(w)
+
+
+def fq_a(a):
+    """An activation in [0, 1] on the engine's 1/127 steps (src/nnue.cpp quant8 and the
+    first layer's exact rounding), with a straight-through gradient."""
+    return a + (torch.round(a * 127.0) / 127.0 - a).detach()
+
+
+def forward_tail_qat(model, h, cnt):
+    """The tail of `forward` with NNUE_QAT: int8 weights and 1/127 activations, in fp32.
+    Products of the rounded values are exact in fp32, so up to the order of float sums
+    this is the int8 net quantize_i8.py writes, as the engine computes it."""
+    nbk = model.num_buckets
+    with torch.autocast(device_type="cuda", enabled=False):
+        h = fq_a(h.float())
+        if nbk == 1:
+            z = fq_a(tail_act(F.linear(h, fq_w(model.l2.weight, 1), model.l2.bias)))
+            z = fq_a(tail_act(F.linear(z, fq_w(model.l3.weight, 1), model.l3.bias)))
+            return F.linear(z, fq_w(model.out.weight, 1), model.out.bias).view(-1) * 300.0
+        n, L2, L3 = h.shape[0], model.L2, model.L3
+        bucket = ((cnt - 1) * nbk // 32).clamp(0, nbk - 1).view(n, 1)
+        W2 = fq_w(torch.cat([m.weight for m in model.bl2]), nbk); b2 = torch.cat([m.bias for m in model.bl2])
+        W3 = fq_w(torch.cat([m.weight for m in model.bl3]), nbk); b3 = torch.cat([m.bias for m in model.bl3])
+        Wo = fq_w(torch.cat([m.weight for m in model.bout]), nbk); bo = torch.cat([m.bias for m in model.bout])
+        z = F.linear(h, W2, b2).view(n, nbk, L2).gather(1, bucket.view(n, 1, 1).expand(n, 1, L2)).view(n, L2)
+        z = fq_a(tail_act(z))
+        z = F.linear(z, W3, b3).view(n, nbk, L3).gather(1, bucket.view(n, 1, 1).expand(n, 1, L3)).view(n, L3)
+        z = fq_a(tail_act(z))
+        return F.linear(z, Wo, bo).gather(1, bucket).view(n) * 300.0
+
+
 def forward(model, wf, bf, stm, cnt):
     """LNNUE.forward with the per-bucket loop replaced by one matmul per layer
     over all buckets and a gather of each position's own bucket: same values,
     static shapes, no host synchronization."""
-    acc_w = model.ft(wf) + model.ft_bias
-    acc_b = model.ft(bf) + model.ft_bias
+    if QAT:   # the first layer on the engine's int16 grid (src/nnue.cpp FT_WSCALE = 8192)
+        w = model.ft.weight
+        wq = w + (torch.round(w * 8192.0) / 8192.0 - w).detach()
+        bq = model.ft_bias + (torch.round(model.ft_bias * 8192.0) / 8192.0 - model.ft_bias).detach()
+        acc_w = F.embedding_bag(wf, wq, mode="sum", padding_idx=NUM_INPUTS) + bq
+        acc_b = F.embedding_bag(bf, wq, mode="sum", padding_idx=NUM_INPUTS) + bq
+    else:
+        acc_w = model.ft(wf) + model.ft_bias
+        acc_b = model.ft(bf) + model.ft_bias
     s = stm.view(-1, 1) > 0.5
     h = torch.cat([torch.where(s, acc_w, acc_b), torch.where(s, acc_b, acc_w)], 1)
     h = torch.clamp(h, 0.0, 1.0).square()
+    if QAT:
+        return forward_tail_qat(model, h, cnt)
     nbk = model.num_buckets
     if nbk == 1:
         z = tail_act(model.l2(h))
