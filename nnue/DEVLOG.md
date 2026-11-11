@@ -947,3 +947,134 @@ repair, and the lever is the eval at the end of those lines.
 - *Not by itself past Stockfish:* its static eval errs half as much as ours
   and ranks near-ties where ours guesses; 39% of our loss is fixed by 8x or
   64x the nodes and 12% is a search defect.
+
+## 18. The Blackwell box: where a run's time goes (Nov 9)
+
+**The run.** gen768r_02 trained on a molab RTX PRO 6000 Blackwell Server
+Edition (188 SMs, 96 GB GDDR7 at 1.6 TB/s, 128 MiB L2, 600 W cap; a
+20-core Intel CPU with AVX-512 and AMX, 160 GB RAM; a gVisor sandbox;
+PyTorch 2.11 cu130): the revived shipped net, 8 buckets, tail weights at
+lr x4, lr 1e-4 cosine over 18,000 steps of 131,072, three passes over the
+782.5M t91 April + May positions, 2,875 s. Afterwards 2/2 of 128 L2 and
+1/0 of 256 L3 units were dead/stuck, against 7/1 of 16 and 10/0 of 32 in
+the shipped tail.
+
+**Where the time went.** Each 60M-position part took 75 s: 27-30 s of
+featurizing with the GPU idle, then 48 s of training at 95% utilization
+but 260-298 W of the 600 W cap. The featurizer was not the limit (15M
+positions/s from a file to /dev/null, 12.6M/s into a pipe; shell pipes
+move 2 GB/s); the trainer's Python reader of 140-byte records was, at
+1.97M positions/s. The 92.4 ms step itself: the per-bucket tail loop took
+29.8 ms (one matmul per layer over all buckets: 4.9 ms, identical output),
+the EmbeddingBag feature transformer 40.6 ms (12 forward, 29 backward),
+and elementwise work plus the loop's and loss checks' host
+synchronizations the rest.
+
+**The resident trainer** (`resident_train.py`) keeps every position in
+VRAM as a 32-byte record (`luminex-featurize --compact`) and expands it to
+feature indices on the GPU (1.9 ms per batch; identical features to the
+140-byte path on 300K positions; the same net output to 0.0014 cp in fp32).
+The whole 782.5M positions build in 53 s file to file and load in 47 s
+(25 GB). With the batched tail, fused AdamW and no host synchronization a
+step takes 64.8 ms (15.4 steps/s), and 46.5 ms with torch.compile (21.5
+steps/s), against the run's 6.3 steps/s overall: 18,000 steps in about
+14 minutes instead of 48.
+
+**What does not help.** GEMM autotuning (max-autotune 46.4 ms against
+46.5): the dense layers are about 1 ms of the step, so a GEMM backend
+(NVGEMM, CuTeDSL, CUTLASS) has nothing to win. PyTorch 2.15 (cu132) is
+slower on this step: 80.8 ms eager and 62.8 ms compiled. A Triton
+feature-transformer backward with atomics takes 142 ms, 5x the
+EmbeddingBag's sorted backward. A Triton gather forward takes 2.9 ms for
+both perspectives against 12 ms: the 75 MB feature transformer sits in
+the 128 MiB L2, which is where the next speed lies (a backward that keeps
+its gradient tiles in L2 too).
+
+**Held-out positions** (0.2% of the data by FEN hash, 1.56M positions;
+gen768r_02 trained on them, the shipped net did not):
+
+| | MAE cp (quiet / capture / check) | pred on target | target on pred | spread pred / target | order in won range |
+|---|---|---|---|---|---|
+| shipped | 104.8 (94.2 / 138.3 / 126.6) | 0.501 | 0.83 | 153 / 197 | 0.170 |
+| gen768r_02 | 95.3 (88.0 / 117.3 / 114.1) | 0.464 | 0.99 | 135 / 197 | 0.172 |
+
+The new net is calibrated to these labels (target on pred 0.99); the
+shipped net's evals run about 17% wider than the t91 scale, the scale the
+search margins were tuned on. Inside the won range neither net orders
+positions (correlation 0.17).
+
+**The t91 data teaches that material is worth nothing.** The t91 dump
+drops every position labelled beyond +-800 (`sf_binpack_dump.cpp`: "|score|
+< 800 cp"). That removes nearly every position where extra material
+actually wins, so the material-up positions left are mid-exchange
+transients and positions with compensation, labelled near zero. On a
+200K-position sample, by White's material edge:
+
+| edge (pawns) | +1 | +2 | +3 | +5 | +9 |
+|---|---|---|---|---|---|
+| positions | 33,342 | 6,521 | 3,333 | 715 | 343 |
+| mean label (cp, White) | +85 | +130 | +35 | +41 | +14 |
+
+Both nets trained on t91 learned it. Static evals (cp) from the engine,
+the shipped net against gen768r_01 (C500) and gen768r_02 (Blackwell): a
+queen up 927 / 280 / 271, a rook up (K+R vs K) 197 / 113 / 71, a knight
+up in a middlegame 546 / 433 / 375. The net-only SPRT of gen768r_01
+against the shipped net (test 59, main eea8b8d, 10+0.1) stood at 6 wins,
+79 losses and 11 draws after 96 games, with no crashes or time losses,
+and was stopped there. gen768r_02 has the same defect and gets no SPRT.
+The held-out validation could not see it, because it comes from the same
+filtered data: there gen768r_02 looked better than the shipped net.
+
+**The raw data is sound; the cut was the bias.** The first 27.7M positions
+of the April binpack, dumped twice, with nothing dropped and with the old
+filter (|score| <= 800, ply 8-200):
+
+| quiet positions, White's edge | +3 (piece) | +5 (rook) | +9 (queen) |
+|---|---|---|---|
+| raw: positions / beyond +-800 | 416,194 / 47% | 189,548 / 91% | 224,872 / 99% |
+| old filter: positions kept / mean label | 173,456 / +95 | 16,446 / +56 | 1,118 / +42 |
+
+The cut removed 12.7% of all positions, but 99% of the quiet positions a
+queen up and 91% of those a rook up. The shipped net's data
+(`sf_train_full_q`) carries the same cut and still labels a quiet piece up
++179 and a rook up +195, because its labels run on a smaller scale and
+fewer of its won positions crossed 800.
+
+**Settings, from the same positions.** Nothing is dropped: opening plies
+(7.3% of positions, 168,729 distinct, each seen about 12 times) stay,
+because they are real positions our engine evaluates; scores stay raw,
+mates included (6.3% of positions, up to 26,624; int16 holds them). Large
+scores are a training choice, not a deletion: the loss clips targets at
++-1500 (`NNUE_TARGET_CLIP`), where the win probability in the loss is
+97.7% (non-mate scores: median 46, p95 1,174, p99 4,155; 10.1% of
+positions lie beyond 1500). The dump runs at 1.1M positions/s.
+
+**Decisions.**
+- *Data:* t91 April and May are re-dumped on mscope with nothing dropped
+  (`sf_train_t91_aprmay_all_q.tsv.xz`), checked for label against material
+  edge before any run.
+- *Trainer:* validation evaluates positions with a known large advantage,
+  so a net that has stopped valuing material shows up in the run; the
+  target clip and the capture weight are measured settings.
+- *Next Blackwell runs* use `resident_train.py`, on PyTorch 2.11; test runs
+  go in notebook cells, installs in the terminal.
+
+**Feb-May, prepared on the box.** `binpack2lcr` turned four t91 months into
+2,500,510,275 LCR1 records straight from the binpacks, with no text step
+and nothing dropped (this replaces the TSV re-dump above): February
+948,251,195, March 509,076,351, April 433,470,115 and May 609,712,614
+positions, at 40-65M positions/s on 20 threads; 80.0 GB. Quiet positions
+labelled beyond +800: a piece up 45% (of 188,589), a rook up 91% (of
+88,597), a queen up 99% (of 111,727), as on the mscope slice. The records
+sit on the sandbox's disk, not in its RAM (0.6 of 160 GB in use with all of
+them written), and big files have not survived into a new sandbox (twice),
+so each session prepares its data again.
+
+**Downloads.** One connection to Hugging Face's Xet bridge gave 1-11 MB/s
+in 30-second windows, about 7 on average. `pfetch.py` fetches 64 MiB pieces
+with range requests over 8 connections: the March, April and May files came
+at 21.0, 20.9 and 25.1 MB/s (30-second windows from 11 to 37 MB/s), so the
+23.4 GB take about 18 minutes instead of about an hour. Choosing the count
+automatically was dropped: in 12-second windows a new connection's first
+bytes take seconds, and it settled on 2 connections for March (7.3 MB/s
+against 7.0 on one). The count is a setting of the data cell.

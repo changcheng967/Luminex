@@ -2,13 +2,21 @@
 // to a filtered "fen<TAB>cp" TSV on stdout, for NNUE_FENEVAL_FILE training.
 //
 // Build (against a checkout of official-stockfish/nnue-pytorch):
-//   g++ -O2 -std=c++17 -I <nnue-pytorch>/data_loader/cpp \
+//   g++ -O2 -std=c++20 -I <nnue-pytorch>/data_loader/cpp \
 //       -o sf_binpack_dump sf_binpack_dump.cpp -lzstd
 //
 // Usage:
 //   ./sf_binpack_dump test80-full.binpack            [max_positions]  > out.tsv
 //
-// Filter (same as the sf_train_50m recipe): |score| < 800 cp, 8 <= ply <= 200.
+// Filter: positions are kept whatever their score. The old recipe's
+// |score| < 800 cut (sf_train_50m) dropped 12.7% of t91's positions, but 99%
+// of the quiet ones a queen up and 91% of those a rook up; what it left of
+// them was labelled near zero, and nets trained on that dump valued a queen
+// at under three pawns (DEVLOG 18). Scores are written raw (mates included)
+// and the trainer clips them in its loss. Environment:
+//   LUX_DUMP_MAX_SCORE  drop |score| above this (default 0 = keep all)
+//   LUX_DUMP_MIN_PLY    drop plies below this (default 8: book duplicates)
+//   LUX_DUMP_MAX_PLY    drop plies above this (default 0 = keep all)
 // Score convention and FEN format come straight from TrainingDataEntry /
 // chess::Position::fen() in the official headers — identical to the original
 // 50M harvest, verified by byte-comparing sample heads against sf_train_50m.
@@ -20,7 +28,7 @@
 
 int main(int argc, char** argv) {
     if (argc < 2) {
-        std::fprintf(stderr, "usage: %s in.binpack [max_positions] [resume_scanned]\n");
+        std::fprintf(stderr, "usage: %s in.binpack [max_positions] [resume_scanned]\n", argv[0]);
         return 1;
     }
     const long long maxPos = (argc > 2) ? std::atoll(argv[2]) : 0;
@@ -35,6 +43,17 @@ int main(int argc, char** argv) {
     // triplication incident). The runner passes size+10% margin; if this
     // fires before natural DONE, the output tail must be inspected for wrap.
     const long long maxScanned = (argc > 4) ? std::atoll(argv[4]) : 0;
+
+    auto envInt = [](const char* name, int def) {
+        const char* v = std::getenv(name);
+        return (v && *v) ? std::atoi(v) : def;
+    };
+    const int maxScore = envInt("LUX_DUMP_MAX_SCORE", 0);
+    const int minPly = envInt("LUX_DUMP_MIN_PLY", 8);
+    const int maxPly = envInt("LUX_DUMP_MAX_PLY", 0);
+    std::fprintf(stderr, "filter: |score| <= %s, ply %d..%s\n",
+                 maxScore ? std::to_string(maxScore).c_str() : "any", minPly,
+                 maxPly ? std::to_string(maxPly).c_str() : "end");
 
     binpack::CompressedTrainingDataEntryReader reader(argv[1]);
 
@@ -60,8 +79,8 @@ int main(int argc, char** argv) {
         ++scanned;
         if (scanned <= skipScanned) continue;
 
-        if (e.score < -800 || e.score > 800) { logProgress(false); continue; }
-        if (e.ply < 8 || e.ply > 200) { logProgress(false); continue; }
+        if (maxScore && (e.score < -maxScore || e.score > maxScore)) { logProgress(false); continue; }
+        if (e.ply < minPly || (maxPly && e.ply > maxPly)) { logProgress(false); continue; }
 
         const std::string fen = e.pos.fen();
         // TSV contract: the cp column is WHITE-relative. The binpack's score is
