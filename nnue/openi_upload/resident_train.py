@@ -48,6 +48,14 @@ Environment (default in brackets):
                      every activation into them to the engine's 1/127 steps. Gradients
                      pass straight through the rounding and the tail runs in fp32, so the
                      network trained is the network the engine loads after quantize_i8.py
+  NNUE_FT_DENSE [0]  the feature layer as dense per-king-bucket matmuls on tensor cores
+                     (positions sorted by bucket into tiles; X 0/1 times the bucket's
+                     768 x L1 block) instead of EmbeddingBag: 1 = the weight gradient
+                     only (the forward stays EmbeddingBag's, bit-identical), 2 = the
+                     forward too (bf16 inputs, fp32 accumulation; with NNUE_QAT in
+                     exact fp32, so it still equals the engine's int16 sums)
+  NNUE_FT_TILE [1024]  rows per tile of the dense feature layer
+  NNUE_FT_TF32 [1]   the dense gradient matmul in TF32 (0: exact fp32, slower)
   NNUE_TARGET_CLIP [1500]  |target| cap inside the loss (mates and big scores stay
                      in the data and train as "winning"; 1500 = 97.7% in the loss)
   NNUE_LOSS_WIDE ["" ]  "scale,weight": add weight * the same loss at a wider
@@ -99,6 +107,9 @@ CONTINUE = env("NNUE_CONTINUE", "0") == "1"
 COMPILE = env("NNUE_COMPILE", "0") == "1"
 LIVE = float(env("NNUE_LIVE_CLAMP", "0"))
 QAT = env("NNUE_QAT", "0") == "1"
+FT_DENSE = int(env("NNUE_FT_DENSE", "0"))
+FT_TILE = int(env("NNUE_FT_TILE", "1024"))
+FT_TF32 = env("NNUE_FT_TF32", "1") == "1"
 WIDE = [float(x) for x in env("NNUE_LOSS_WIDE", "").split(",")] if env("NNUE_LOSS_WIDE", "") else None
 TARGET_CLIP = float(env("NNUE_TARGET_CLIP", "1500"))   # |target| cap in the loss; data keeps raw scores
 OUT_DIR = env("NNUE_OUT_DIR", ".")
@@ -363,6 +374,104 @@ def forward_tail_qat(model, h, cnt):
         return F.linear(z, Wo, bo).gather(1, bucket).view(n) * 300.0
 
 
+PSQ = 768   # piece-square features per king bucket: feature index = bucket * PSQ + piece-square
+
+
+def ft_plan(idx, tile):
+    """Tile plan of one side's batch for the dense feature layer. All of a side's
+    features lie in one king bucket, so per bucket the layer is a 0/1 [positions, 768]
+    matrix times that bucket's [768, L1] block of the table. Positions are sorted by
+    bucket into tiles of `tile` rows, each bucket padded to whole tiles: at most
+    ceil(n / tile) + 32 tiles, so shapes are static and nothing syncs with the host.
+    Returns X [ntile, tile, 768] (fp32, 0/1), row [n] (each position's row in the
+    tiles), src [ntile * tile] (each tile row's position; padding rows name position
+    0, harmless because their X rows are zero) and tile_kb [ntile] (each tile's
+    bucket; unused tiles are all zero)."""
+    n, dv = idx.shape[0], idx.device
+    nkb = NUM_INPUTS // PSQ
+    ntile = (n + tile - 1) // tile + nkb
+    valid = idx < NUM_INPUTS
+    kb = idx[:, 0] // PSQ                      # slot 0 always holds a piece
+    counts = torch.bincount(kb, minlength=nkb)
+    padded = (counts + tile - 1) // tile * tile
+    end_pad = torch.cumsum(padded, 0)
+    start_pad, start_cnt = end_pad - padded, torch.cumsum(counts, 0) - counts
+    order = torch.argsort(kb, stable=True)
+    kb_s = kb[order]
+    row_sorted = start_pad[kb_s] + torch.arange(n, device=dv) - start_cnt[kb_s]
+    row = torch.empty_like(row_sorted)
+    row[order] = row_sorted
+    src = torch.zeros(ntile * tile, dtype=row.dtype, device=dv)
+    src[row_sorted] = order
+    tile_kb = torch.searchsorted(end_pad, torch.arange(ntile, device=dv) * tile, right=True).clamp(max=nkb - 1)
+    # A plain scatter of ones: a position's features are distinct, so only the spare
+    # slot at the end, which takes every padding slot, is written twice. (Scattering
+    # with accumulate=True instead runs PyTorch's sort-based kernel: ~1 ms a side.)
+    size = ntile * tile * PSQ
+    X = torch.zeros(size + 1, dtype=torch.float32, device=dv)
+    X[torch.where(valid, row.view(-1, 1) * PSQ + idx % PSQ, size).view(-1)] = 1.0
+    return X[:size].view(ntile, tile, PSQ), row, src, tile_kb
+
+
+class DenseFT(torch.autograd.Function):
+    """One side's feature layer (the sum of each position's active rows of `weight`)
+    with its weight gradient, and with NNUE_FT_DENSE=2 its forward too, done as one
+    batched matmul per tile on tensor cores instead of EmbeddingBag's sort and segment
+    sums. NNUE_FT_DENSE=1 keeps EmbeddingBag's forward, so the forward pass is
+    bit-identical to the default and only the gradient's summation order changes.
+
+    The dense forward runs in bf16 on the GPU, except under NNUE_QAT (and on the
+    CPU), where it runs in exact fp32 with autocast and TF32 off: QAT's weights sit
+    on the engine's int16 grid (k / 8192), and any sum of a position's 32 of them is
+    exact in fp32, so the layer equals the engine's integer sums. bf16 would round
+    each weight to 8 significant bits and undo what QAT trains for."""
+
+    @staticmethod
+    def forward(ctx, idx, weight, dense_fwd):
+        X, row, src, tile_kb = ft_plan(idx, FT_TILE)
+        ctx.save_for_backward(X, src, tile_kb)
+        ctx.nrows = weight.shape[0]
+        if not dense_fwd:
+            return F.embedding_bag(idx, weight, mode="sum", padding_idx=NUM_INPUTS)
+        L1 = weight.shape[1]
+        if QAT or not X.is_cuda:
+            Wt = weight[:NUM_INPUTS].float().view(-1, PSQ, L1)[tile_kb]   # [ntile, 768, L1]
+            tf32 = torch.backends.cuda.matmul.allow_tf32
+            torch.backends.cuda.matmul.allow_tf32 = False
+            try:
+                with torch.autocast(device_type=X.device.type, enabled=False):
+                    out = torch.bmm(X, Wt).view(-1, L1)
+            finally:
+                torch.backends.cuda.matmul.allow_tf32 = tf32
+            return out[row]
+        Wt = weight[:NUM_INPUTS].to(torch.bfloat16).view(-1, PSQ, L1)[tile_kb]   # cast the table once, then copy blocks
+        out = torch.bmm(X.to(torch.bfloat16), Wt).view(-1, L1)
+        return out[row].float()
+
+    @staticmethod
+    def backward(ctx, g):
+        X, src, tile_kb = ctx.saved_tensors
+        ntile, tile, _ = X.shape
+        L1 = g.shape[1]
+        G = g.float()[src].view(ntile, tile, L1)   # one gather; padding rows meet zero rows of X
+        tf32 = torch.backends.cuda.matmul.allow_tf32
+        torch.backends.cuda.matmul.allow_tf32 = FT_TF32
+        try:
+            dWt = torch.bmm(X.transpose(1, 2), G)   # [ntile, 768, L1]
+        finally:
+            torch.backends.cuda.matmul.allow_tf32 = tf32
+        dW = torch.zeros((NUM_INPUTS // PSQ, PSQ, L1), dtype=torch.float32, device=g.device)
+        dW.index_add_(0, tile_kb, dWt)
+        grad = torch.zeros((ctx.nrows, L1), dtype=torch.float32, device=g.device)
+        grad[:NUM_INPUTS] = dW.view(NUM_INPUTS, L1)   # the padding row keeps a zero gradient
+        return None, grad, None
+
+
+@torch.compiler.disable
+def ft_dense(idx, weight):
+    return DenseFT.apply(idx, weight, FT_DENSE >= 2)
+
+
 def forward(model, wf, bf, stm, cnt):
     """LNNUE.forward with the per-bucket loop replaced by one matmul per layer
     over all buckets and a gather of each position's own bucket: same values,
@@ -371,8 +480,14 @@ def forward(model, wf, bf, stm, cnt):
         w = model.ft.weight
         wq = w + (torch.round(w * 8192.0) / 8192.0 - w).detach()
         bq = model.ft_bias + (torch.round(model.ft_bias * 8192.0) / 8192.0 - model.ft_bias).detach()
-        acc_w = F.embedding_bag(wf, wq, mode="sum", padding_idx=NUM_INPUTS) + bq
-        acc_b = F.embedding_bag(bf, wq, mode="sum", padding_idx=NUM_INPUTS) + bq
+        if FT_DENSE:
+            acc_w, acc_b = ft_dense(wf, wq) + bq, ft_dense(bf, wq) + bq
+        else:
+            acc_w = F.embedding_bag(wf, wq, mode="sum", padding_idx=NUM_INPUTS) + bq
+            acc_b = F.embedding_bag(bf, wq, mode="sum", padding_idx=NUM_INPUTS) + bq
+    elif FT_DENSE:
+        acc_w = ft_dense(wf, model.ft.weight) + model.ft_bias
+        acc_b = ft_dense(bf, model.ft.weight) + model.ft_bias
     else:
         acc_w = model.ft(wf) + model.ft_bias
         acc_b = model.ft(bf) + model.ft_bias
