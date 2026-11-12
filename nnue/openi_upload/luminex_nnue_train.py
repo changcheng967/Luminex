@@ -227,29 +227,30 @@ class LNNUE(nn.Module):
             print("  [v2] pairwise: FT duplicated antisymmetrically (drift O(S^2), S~0.003)", flush=True)
 
         # --- tail-width (J) widening: applies to plain and bucketed tails ---
-        def widen_tail(pre, lw_key, lb_key, l3_key):
-            if pre + lw_key not in sd:
+        def widen_tail(label, lw_key, lb_key, l3_key):
+            # keys are full state-dict names; label only names the tail in the log
+            if lw_key not in sd:
                 return
-            old_J = sd[pre + lw_key].shape[0]
+            old_J = sd[lw_key].shape[0]
             new_J = model.L2
             if old_J >= new_J:
                 return
-            lw, lb = sd[pre + lw_key], sd[pre + lb_key] if pre + lb_key in sd else None
+            lw, lb = sd[lw_key], sd[lb_key] if lb_key in sd else None
             nw = torch.randn(new_J, lw.shape[1], device=lw.device) * 0.01
             nw[:old_J] = lw
-            sd[pre + lw_key] = nw
+            sd[lw_key] = nw
             if lb is not None:
                 nb = torch.zeros(new_J, device=lb.device)
                 nb[:old_J] = lb
-                sd[pre + lb_key] = nb
-            l3 = sd[pre + l3_key]                            # [L3, old_J]
+                sd[lb_key] = nb
+            l3 = sd[l3_key]                                  # [L3, old_J]
             n3 = torch.randn(l3.shape[0], new_J, device=l3.device) * 0.01
             n3[:, :old_J] = l3
-            sd[pre + l3_key] = n3
-            print(f"  [v2] {pre or 'main'} tail widened J {old_J} -> {new_J} "
+            sd[l3_key] = n3
+            print(f"  [v2] {label} tail widened J {old_J} -> {new_J} "
                   f"(noise 0.01 both matrices — no dead units)", flush=True)
 
-        widen_tail('', 'l2.weight', 'l2.bias', 'l3.weight')
+        widen_tail('main', 'l2.weight', 'l2.bias', 'l3.weight')
         if getattr(model, 'num_buckets', 1) > 1:
             if 'bl2.0.weight' not in sd:
                 # No-bucket checkpoint into a bucketed model: seed EVERY bucket
@@ -265,7 +266,7 @@ class LNNUE(nn.Module):
                 print(f"  [v2] seeded all {model.num_buckets} bucket tails from the plain tail", flush=True)
             else:
                 for b in range(model.num_buckets):
-                    widen_tail(f'bl2.{b}.', f'bl2.{b}.weight', f'bl2.{b}.bias', f'bl3.{b}.weight')
+                    widen_tail(f'bucket {b}', f'bl2.{b}.weight', f'bl2.{b}.bias', f'bl3.{b}.weight')
 
         missing = model.load_state_dict(sd, strict=False)
         if missing.missing_keys:
