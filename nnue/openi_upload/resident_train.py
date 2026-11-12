@@ -18,6 +18,10 @@ Environment (default in brackets):
                      (a background thread gathers the host-RAM rows a few batches
                      ahead), and each pass's order comes from a keyed permutation that
                      stores nothing, so the data can exceed the card and 2^32 positions
+  NNUE_FEED_THREADS [8]  threads that make each host-RAM batch in feeder.cpp (built
+                     with g++ on first use, next to this file): the permutation, the
+                     split between the pools and the gather, in one call without the GIL.
+                     The batches are the numpy path's, bit for bit. 0 = the numpy path
   NNUE_FENEVAL_FILE  fen<TAB>cp[<TAB>flag] lines (.xz, .zst or plain text)
   NNUE_DATA_VIA_FILE [0]  1: decompress to a temporary text file, then featurize
                      file to file (no pipe at all)
@@ -109,6 +113,7 @@ POWER = float(env("NNUE_LOSS_POWER", "2.6"))
 QW = parse_quiet_loss(env("NNUE_QUIET_LOSS", ""))
 VAL_FRAC = float(env("NNUE_VAL_FRAC", "0.002"))
 VRAM_POS = int(float(env("NNUE_VRAM_POS", "0")))
+FEED_THREADS = int(env("NNUE_FEED_THREADS", "8"))
 VAL_DATA = env("NNUE_VAL_DATA", "")
 VAL_MAX = int(float(env("NNUE_VAL_MAX", "5e6")))
 EVAL_EVERY = int(env("NNUE_EVAL_EVERY", "1000"))
@@ -323,13 +328,42 @@ class KeyedShuffle:
         return y
 
 
+def feeder_lib():
+    """feeder.cpp's feed_batch through ctypes (a call releases the GIL), built next to
+    this file with g++ when the .so is missing or older than the source. None when
+    NNUE_FEED_THREADS=0 or it can't be built or loaded: PoolFeeder then feeds through numpy."""
+    if FEED_THREADS <= 0:
+        return None
+    import ctypes
+    src, so = os.path.join(HERE, "feeder.cpp"), os.path.join(HERE, "libfeeder.so")
+    try:
+        if os.path.exists(src) and (not os.path.exists(so) or os.path.getmtime(so) < os.path.getmtime(src)):
+            tmp = f"{so}.{os.getpid()}.tmp"
+            subprocess.run(["g++", "-O3", "-march=native", "-shared", "-fPIC", "-pthread", src, "-o", tmp],
+                           check=True, capture_output=True, text=True)
+            os.replace(tmp, so)
+        lib = ctypes.CDLL(so)
+    except (OSError, subprocess.CalledProcessError) as e:
+        why = e.stderr.strip().splitlines()[-1] if isinstance(e, subprocess.CalledProcessError) and e.stderr else e
+        print(f"[feed] feeder.cpp unavailable ({why}): host-RAM batches go through numpy", flush=True)
+        return None
+    lib.feed_batch.restype = ctypes.c_int64
+    lib.feed_batch.argtypes = [ctypes.c_void_p, ctypes.c_int64, ctypes.c_int64, ctypes.c_void_p, ctypes.c_uint,
+                               ctypes.c_uint64, ctypes.c_int64, ctypes.c_int64, ctypes.c_void_p, ctypes.c_void_p,
+                               ctypes.c_void_p, ctypes.c_int]
+    return lib
+
+
 class PoolFeeder:
     """Training batches drawn from a VRAM pool and a host-RAM pool together. A
     background thread takes each batch's positions from a KeyedShuffle over both
     pools, gathers the host-RAM rows into pinned memory and copies them and the VRAM
     indices to the GPU on a side stream, up to DEPTH batches ahead; next() waits on
     that copy and returns the [bs, 32] batch. A batch has bs positions; the share
-    from each pool follows the pools' sizes."""
+    from each pool follows the pools' sizes. With feeder.cpp (NNUE_FEED_THREADS > 0) one
+    call makes a batch, permutation and gather together, on several threads and without
+    the GIL; numpy took ~26 ms a batch for the permutation alone at 6.6B positions
+    (34 Feistel bits, 2.6 rounds of cycle walking), and the GPU waited for it."""
 
     DEPTH = 3
 
@@ -342,6 +376,14 @@ class PoolFeeder:
         self.stream = torch.cuda.Stream() if cuda else None
         nslot = self.DEPTH + 2
         self.pins = [torch.empty((bs, REC), dtype=torch.uint8, pin_memory=cuda) for _ in range(nslot)]
+        self.lib, self.threads = feeder_lib(), FEED_THREADS
+        if self.lib is not None:
+            assert host_pool.is_contiguous() and host_pool.shape[1] == REC
+            self.gpins = [torch.empty(bs, dtype=torch.int64, pin_memory=cuda) for _ in range(nslot)]
+            self.scratch = np.empty(bs, dtype=np.uint64)
+            self.kepoch, self.keys = -1, None
+        print(f"[feed] host-RAM batches: "
+              f"{f'feeder.cpp, {self.threads} threads' if self.lib is not None else 'numpy'}", flush=True)
         self.done_ev = [None] * nslot
         self.q = queue.Queue(maxsize=self.DEPTH)
         self.err = None
@@ -351,23 +393,34 @@ class PoolFeeder:
         try:
             epoch, k, slot = 0, 0, 0
             while True:
-                idx = self.shuffle.indices(epoch, k * self.bs, self.bs)
-                in_gpu = idx < np.uint64(self.ng)
-                gi = torch.from_numpy(idx[in_gpu].astype(np.int64))
-                hi = torch.from_numpy((idx[~in_gpu] - np.uint64(self.ng)).astype(np.int64))
-                if self.done_ev[slot] is not None:
-                    self.done_ev[slot].synchronize()        # this slot's last copy has landed
-                pin = self.pins[slot][:len(hi)]
-                torch.index_select(self.hp, 0, hi, out=pin)
+                if self.lib is not None:
+                    if self.kepoch != epoch:
+                        self.kepoch, self.keys = epoch, np.array(self.shuffle._keys(epoch), dtype=np.uint64)
+                    if self.done_ev[slot] is not None:
+                        self.done_ev[slot].synchronize()    # this slot's last copies have landed
+                    c = self.lib.feed_batch(self.hp.data_ptr(), self.ng, self.n, self.keys.ctypes.data,
+                                            int(self.shuffle.h), int(self.shuffle.mask), k * self.bs, self.bs,
+                                            self.gpins[slot].data_ptr(), self.pins[slot].data_ptr(),
+                                            self.scratch.ctypes.data, self.threads)
+                    gi, pin = self.gpins[slot][:c], self.pins[slot][:self.bs - c]
+                else:
+                    idx = self.shuffle.indices(epoch, k * self.bs, self.bs)
+                    in_gpu = idx < np.uint64(self.ng)
+                    gi = torch.from_numpy(idx[in_gpu].astype(np.int64))
+                    hi = torch.from_numpy((idx[~in_gpu] - np.uint64(self.ng)).astype(np.int64))
+                    if self.done_ev[slot] is not None:
+                        self.done_ev[slot].synchronize()    # this slot's last copy has landed
+                    pin = self.pins[slot][:len(hi)]
+                    torch.index_select(self.hp, 0, hi, out=pin)
                 if self.stream is not None:
                     with torch.cuda.stream(self.stream):
-                        g_idx = gi.pin_memory().to(dev, non_blocking=True)
+                        g_idx = (gi if self.lib is not None else gi.pin_memory()).to(dev, non_blocking=True)
                         h_rows = pin.to(dev, non_blocking=True)
                         ev = torch.cuda.Event()
                         ev.record(self.stream)
                     self.done_ev[slot] = ev
                 else:
-                    g_idx, h_rows, ev = gi, pin.clone(), None
+                    g_idx, h_rows, ev = gi.clone(), pin.clone(), None   # the slot's buffers are reused
                 self.q.put((g_idx, h_rows, ev, epoch))
                 slot = (slot + 1) % len(self.pins)
                 k += 1
