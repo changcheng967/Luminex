@@ -61,6 +61,13 @@ Environment (default in brackets):
                      exact fp32, so it still equals the engine's int16 sums)
   NNUE_FT_TILE [1024]  rows per tile of the dense feature layer
   NNUE_FT_TF32 [1]   the dense gradient matmul in TF32 (0: exact fp32, slower)
+  NNUE_CHUNK [1]     positions per chunk: a batch is NNUE_BS / NNUE_CHUNK runs of this
+                     many consecutive training records, the runs in random order. The
+                     converted data keeps game order, so a run is consecutive plies of
+                     one game: the sampling a game-ordered, incremental feature layer
+                     would need. 1 = every position drawn on its own. Needs every
+                     position in VRAM (no NNUE_VRAM_POS split) and NNUE_BS a multiple
+                     of it
   NNUE_TARGET_CLIP [1500]  |target| cap inside the loss (mates and big scores stay
                      in the data and train as "winning"; 1500 = 97.7% in the loss)
   NNUE_LOSS_WIDE ["" ]  "scale,weight": add weight * the same loss at a wider
@@ -118,6 +125,7 @@ QAT = env("NNUE_QAT", "0") == "1"
 FT_DENSE = int(env("NNUE_FT_DENSE", "0"))
 FT_TILE = int(env("NNUE_FT_TILE", "1024"))
 FT_TF32 = env("NNUE_FT_TF32", "1") == "1"
+CHUNK = int(env("NNUE_CHUNK", "1"))
 WIDE = [float(x) for x in env("NNUE_LOSS_WIDE", "").split(",")] if env("NNUE_LOSS_WIDE", "") else None
 TARGET_CLIP = float(env("NNUE_TARGET_CLIP", "1500"))   # |target| cap in the loss; data keeps raw scores
 OUT_DIR = env("NNUE_OUT_DIR", ".")
@@ -276,6 +284,22 @@ class HostShuffle:
     def batch(perm, i, bs):
         """Indices i..i+bs of a pass as int64 on the GPU (uint32 values travel as int32)."""
         return perm[i:i + bs].to(dev, non_blocking=True).to(torch.int64) & 0xFFFFFFFF
+
+
+_CHUNK_STEP = None
+
+
+def batch_rows(perm, i):
+    """Rows of the VRAM pool for the batch starting at position i of a pass. With
+    NNUE_CHUNK = c the pass permutes chunk ids, and each id becomes c consecutive
+    rows (c * id .. c * id + c - 1): consecutive plies of a game."""
+    global _CHUNK_STEP
+    if CHUNK == 1:
+        return HostShuffle.batch(perm, i, BS)
+    if _CHUNK_STEP is None:
+        _CHUNK_STEP = torch.arange(CHUNK, dtype=torch.int64, device=dev)
+    starts = HostShuffle.batch(perm, i // CHUNK, BS // CHUNK) * CHUNK
+    return (starts.view(-1, 1) + _CHUNK_STEP).view(-1)
 
 
 class KeyedShuffle:
@@ -804,7 +828,10 @@ def main():
         dval = load_records(vfiles, VAL_MAX)
     n = len(train) + (len(host) if host is not None else 0)
     feeder = PoolFeeder(train, host, SEED, BS) if host is not None else None
-    shuffle = HostShuffle(n, SEED) if feeder is None else None
+    if CHUNK < 1 or (CHUNK > 1 and (feeder is not None or BS % CHUNK)):
+        raise SystemExit(f"FAIL: NNUE_CHUNK {CHUNK} needs every position in VRAM (no NNUE_VRAM_POS split) "
+                         f"and NNUE_BS ({BS}) a multiple of it")
+    shuffle = HostShuffle(n // CHUNK, SEED) if feeder is None else None
 
     model = LNNUE(L1=L1).to(dev)
     gstep, opt_state = 0, None
@@ -902,7 +929,7 @@ def main():
     while done is None:
         perm = shuffle.next_pass() if feeder is None else None
         for i in range(0, steps_per_pass * BS, BS):
-            batch = feeder.next()[0] if feeder is not None else train[HostShuffle.batch(perm, i, BS)]
+            batch = feeder.next()[0] if feeder is not None else train[batch_rows(perm, i)]
             loss = step_fn(model, batch)
             opt.zero_grad(set_to_none=True)
             loss.backward()
