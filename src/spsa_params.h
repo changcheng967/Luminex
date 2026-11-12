@@ -16,24 +16,24 @@ struct SPSAParams {
     // Null-move pruning reduction base: R = nmp_base + depth / 3 + min(margin / 200, 3)
     int nmp_base         = 6;
     // Razoring: prune if eval + razor_base + depth^2 * razor_coeff < alpha
-    int razor_base       = 285;
-    int razor_coeff      = 57;
+    int razor_base       = 288;
+    int razor_coeff      = 55;
     // Reverse futility (static null move): prune if eval - rev_fut_coeff * depth >= beta
-    int rev_fut_coeff    = 90;
+    int rev_fut_coeff    = 88;
     // Aspiration window initial half-size
-    int aspiration_delta = 41;
+    int aspiration_delta = 39;
     // Singular extension margin: sBeta = tt_value - depth * _singular_margin / 320
-    int _singular_margin = 201;
+    int _singular_margin = 205;
 
     static constexpr int COUNT = 7;  // fields read from and written to spsa_params.txt
 
     // Reverse futility: extra margin when neither side's eval trend helps us
-    int rfp_not_improving = 26;
+    int rfp_not_improving = 25;
     // Futility (quiet moves, depth <= 5): prune if eval + depth * fut_coeff
     // + (improving ? fut_improving : fut_base) < alpha
     int fut_coeff        = 134;
-    int fut_base         = 101;
-    int fut_improving    = 27;
+    int fut_base         = 99;
+    int fut_improving    = 25;
     // Late move pruning, in hundredths of a move: the count is
     // (lmp_base + 100 if improving + depth^2 * lmp_coeff) / 100
     int lmp_base         = 233;
@@ -43,11 +43,11 @@ struct SPSAParams {
     int hist_prune_base  = 896;
     int hist_prune_coeff = 5050;
     // ProbCut: rbeta = beta + probcut_margin
-    int probcut_margin   = 132;
+    int probcut_margin   = 136;
     // Null-move R: the depth term is depth * 100 / nmp_depth_div, the eval
     // term min((eval - beta) / nmp_eval_div, 3)
     int nmp_depth_div    = 289;
-    int nmp_eval_div     = 214;
+    int nmp_eval_div     = 228;
     // LMR: history adjustment = clamp(history / lmr_hist_div, -3, 3); the
     // cut-node and ttPv adjustments are in 1024ths of a ply
     int lmr_hist_div     = 3894;
@@ -55,7 +55,7 @@ struct SPSAParams {
     int lmr_ttpv         = 2101;
     // Double singular extension when the verification fails by more than
     // depth * dext_margin / 16
-    int dext_margin      = 16;
+    int dext_margin      = 17;
     // History bonus: min(quad * d^2 + lin * d - offset, 8192); the malus is
     // its negative
     int hist_bonus_quad  = 21;
@@ -68,7 +68,7 @@ struct SPSAParams {
 
     // Null-move pruning at depth <= nmp_shallow_depth needs the static eval
     // at least nmp_shallow_margin above beta (deeper: at beta)
-    int nmp_shallow_margin = 57;
+    int nmp_shallow_margin = 61;
     int nmp_shallow_depth  = 5;
 
     // Load from file (COUNT ints, one per line, in field order). Returns true if loaded.
