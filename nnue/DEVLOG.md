@@ -20,6 +20,8 @@ generation to the V13/V14 architecture program. Dates are first-commit dates fro
 | gen768 p1–p5 | Sep 2026 | same arch, multi-pass training | p4: 4.21B · p5: 5.37B | p4 MAE 176.1 ≈ baseline (saturation signal) |
 | V13 | Sep 2026+ | FM interaction, factorized buckets, material bucketing | — | **Spec complete**; DCU search picking hyperparams |
 | V14 | future | Residual topology + mobility + policy head | — | **Spec complete** |
+| gen768r | Nov 2026 | gen768's feature layer, the revived tail through 8 output buckets; QAT (03q, 04q) | t91 binpacks Feb–Oct 2026 (3.7B) | **In main** as gen768r_03q (CEB7B240), [V3-GEN768R.md](V3-GEN768R.md) |
+| gen768s | Nov 2026 | gen768r + one error head per bucket on the accumulator, read by the pruning margins | gen768r's + error labels | **Design**, §19 and [V4-GEN768S.md](V4-GEN768S.md) |
 
 ---
 
@@ -1078,3 +1080,102 @@ at 21.0, 20.9 and 25.1 MB/s (30-second windows from 11 to 37 MB/s), so the
 automatically was dropped: in 12-second windows a new connection's first
 bytes take seconds, and it settled on 2 connections for March (7.3 MB/s
 against 7.0 on one). The count is a setting of the data cell.
+
+## 19. gen768s: an error head for the search (design, Nov 12)
+
+**Why the search needs it.** §17's forensics put 39% of our loss on node
+limits (gone with 8x or 64x the nodes) and 12% on fragile search decisions;
+our static eval errs about twice as much as Stockfish's against the same
+truth, and ranks near-tie siblings at 48.9% against its 62.5%. The search
+already estimates how far to trust the eval: correction history, the
+search-minus-eval deltas it measures, kept in tables keyed by pawn
+structure, material and other position aspects, widens the reverse-futility
+margin by up to 80 cp and the futility margin by up to 50 cp
+(`eval_uncertainty` in `search.cpp`). That estimate is shared by every
+position of a class and learned during the game. An error head reads the
+accumulator the eval has already built, so it can estimate the same thing
+for each position from the first node, trained on corpus-scale labels.
+Stockfish's search has no consumer for such an output; it is a lever only
+an engine built around one can pull. The architecture is
+[V4-GEN768S.md](V4-GEN768S.md).
+
+**Speed budget, stated before any code.** Every component quotes its
+measured cost in its PR and pays for it in games.
+- *Step 0* measures gen768r's eval path on mscope: NPS on a fixed search,
+  `evalbench` (the forward pass alone), and the forward pass's share of
+  eval time against the accumulator updates (perf). Every later quote is
+  relative to these.
+- *The error head:* E1 is 12,288 int8 multiply-adds per call, half of the
+  value tail's L2 (24,576), and runs only where the margins read it
+  (non-PV nodes at the depths where reverse futility and futility act).
+  Budget: at most 3% NPS on the fixed search, measured.
+- *A wider value tail* (S2) keeps §17's rule: shipped only if the
+  fixed-node gain beats the NPS loss, and only L2 = 16 has a SIMD path
+  today.
+
+**Components, each with its rule and a cheap gate.**
+
+*S1, the error head.* Three labels are candidates; none is chosen yet.
+1. Our own residual, |value(x) - target(x)|, from the frozen value net on
+   LCR1 records of a month it never trained on (on its training positions
+   the residual is smaller than the engine will meet): no new data.
+2. Leela's disagreement, |orig_q - best_q|: its raw network against its
+   searched value, from the LGS shards. `lgs2lcr` reads both fields, but an
+   LCR1 record keeps only the score, so the converter needs an aux output
+   and the shards a conversion run; the 10.8B-position corpus has not been
+   converted.
+3. Our own search's disagreement, |static eval - search value at depth d|,
+   on positions from our games, generated on mscope: closest to what
+   correction history measures, and the smallest in volume.
+
+*Gate 1*, offline, on the forensics instrument, no games. For each label,
+a head trained on a frozen accumulator (minutes on the box) is read on the
+Stockfish-19-refereed positions of §17's games, where the actual error is
+|our static eval - Stockfish 19's deep eval| in expected-score units. A
+label passes if the head's Spearman correlation with the actual error beats
+|correction| (the recorder's) by at least 0.05, with a by-game bootstrap
+95% interval above zero, and if it adds to |correction| (partial
+correlation, interval above zero). Pre-registered: a label that fails is
+recorded and dropped, and if all three fail, S1 stops at gate 1. §14's
+ledger (offline metrics 0/8) stands: this gate only decides whether the
+head reaches games; games decide whether it ships.
+
+*Gate 2*, the engine. The head goes into the net file (LNS1) and is
+computed lazily; its NPS cost is measured against the budget; reverse
+futility and futility read it where they read |correction| today, beside
+or instead of it, with a three-point fixed-node screen picking the scale.
+Then an SPRT against main at 10+0.1 [0, 5], and LTC to confirm.
+
+*S2, the value tail's width.* No change. The capacity test (Nov 12) took run04's float
+net at 860K and trained it twice for 36K steps from a fresh optimizer, on
+the same 2.5B positions with the same seed and schedule (lr 5e-5 cosine):
+once as it is, L2 = 16, and once widened to L2 = 32 in all eight buckets
+(the new units' weights at 0.01 noise; #66 fixed the widening for bucketed
+nets). Both started at held-out 0.002059 and January 0.002144.
+
+| step | held-out 16 | held-out 32 | January 16 | January 32 |
+|---|---|---|---|---|
+| 4K | 0.002079 | 0.002080 | 0.002169 | 0.002171 |
+| 12K | 0.002069 | 0.002068 | 0.002165 | 0.002165 |
+| 20K | 0.002062 | 0.002058 | 0.002162 | 0.002161 |
+| 36K | 0.002052 | 0.002048 | 0.002155 | 0.002152 |
+
+The wider tail ends 0.19% lower on held-out and 0.14% lower on January;
+the gap opened by 20K steps and stopped growing there. Its new units are
+alive (1 of 256 dead at the end), and it trains at 52.7 steps/s against
+53.6. The rule set before the test asked for 1% on both; this is a fifth of
+it. A tail with twice the units, all live, learns almost nothing more from
+these labels, so the limit run04 reached is not the tail's width: it lies
+in the labels, or in the feature layer, which the test did not vary. No
+width change, and the next capacity goes into the error head. Caveats: 36K
+steps from a converged net, and the budget guard shortened both arms' early
+cosine, the 32 arm's a little less.
+
+*S3, what the forensics name.* §17's near-tie sibling-ranking term keeps
+its rule there (held-out near-tie ordering, then games). New inputs only
+for a knowledge hole the forensics name; none so far.
+
+**Sequencing.** gen768s does not gate v6.6.0. The release path finishes
+first: test 82 (04q against CEB7B240), the margin tune, its values SPRT,
+the ladder, the tag. Gate 1 needs the box for minutes, so it fits any box
+session after that.
