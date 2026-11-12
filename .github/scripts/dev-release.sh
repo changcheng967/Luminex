@@ -67,7 +67,9 @@ while read -r h; do
   line="* [\`${h:0:8}\`]($url/commit/$h) $(git show -s --format=%s "$h")"
   pr=$(gh api "repos/$repo/commits/$h/pulls" --jq '[.[] | select(.merged_at != null)][0].number // empty' 2> /dev/null || true)
   [ -z "$pr" ] || line+=" ([#$pr]($url/pull/$pr))"
-  engine=$(git show --name-only --format= "$h" | grep -E '^src/|^\.github/scripts/fetch-net\.sh$' | grep -vE "$tool_only" || true)
+  engine=$(git show --name-only --format= "$h" | grep -E '^src/' | grep -vE "$tool_only" || true)
+  # fetch-net.sh counts when it moved the network pin, not for other edits
+  [ -n "$engine" ] || engine=$(git show --format= "$h" -- .github/scripts/fetch-net.sh | grep -E '^[-+]sha256=' || true)
   if [ -n "$engine" ]; then engine_lines+=("$line"); else other_lines+=("$line"); fi
 done < <(git rev-list --no-merges "$base..$sha")
 count=$(( ${#engine_lines[@]} + ${#other_lines[@]} ))
