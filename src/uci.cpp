@@ -309,7 +309,13 @@ static void ensure_net_loaded(bool force = false) {
 
 void handle_uci() {
     init_evaluation();
+    // Development builds report their build id (CMake's LUMINEX_BUILD_ID,
+    // e.g. dev-20261112-d4774f1a) in place of the version
+#ifdef LUMINEX_BUILD_ID
+    safe_output("id name " + std::string(ENGINE_NAME) + " " + LUMINEX_BUILD_ID + "\n");
+#else
     safe_output("id name " + std::string(ENGINE_NAME) + " " + ENGINE_VERSION + "\n");
+#endif
     safe_output("id author " + std::string(ENGINE_AUTHOR) + "\n");
     safe_output("option name Hash type spin default 256 min 1 max 1048576\n");
     safe_output("option name Threads type spin default 1 min 1 max 64\n");

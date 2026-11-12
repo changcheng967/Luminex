@@ -160,6 +160,19 @@ if(LUMINEX_EMBED_NET)
     message(STATUS "Building in the network ${_lux_net}")
 endif()
 
+# A development build (the rolling luminex-dev pre-release that build.yml
+# publishes from every push to main) names itself after its tag, as in
+# "id name Luminex dev-20261112-d4774f1a", so a result can be traced to its
+# commit. Empty, the default, keeps the version from src/luminex.h.
+set(LUMINEX_BUILD_ID "" CACHE STRING "Development build name reported in place of the version (empty: the version)")
+if(LUMINEX_BUILD_ID)
+    if(NOT LUMINEX_BUILD_ID MATCHES "^[A-Za-z0-9._-]+$")
+        message(FATAL_ERROR "LUMINEX_BUILD_ID: letters, digits, '.', '_' and '-' only")
+    endif()
+    target_compile_definitions(luminex PRIVATE "LUMINEX_BUILD_ID=\"${LUMINEX_BUILD_ID}\"")
+    message(STATUS "Development build ${LUMINEX_BUILD_ID}")
+endif()
+
 # Optimize for the BUILD machine. The NNUE AVX-512/VNNI paths only compile in
 # with the right -march level; measured +12% nps on Xeon 2.6GHz (688K -> 770K).
 option(LUMINEX_NATIVE "Optimize for the build machine (-march=native)" OFF)
