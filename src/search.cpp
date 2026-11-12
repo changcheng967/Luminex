@@ -44,7 +44,8 @@ thread_local SearchStats g_stats;
 // Env: LUMINEX_AUDIT_OUT (file prefix, default "audit"), LUMINEX_AUDIT_P (sample share,
 // default 0.0625). One file per process: <prefix>_<random id>.bin, 36-byte records (Rec).
 namespace audit {
-enum Rule : uint8_t { RFP = 1, RAZOR = 2, NMP = 3, PROBCUT = 4, HIST = 5, LMP = 6, FUT = 7, LMR = 8 };
+enum Rule : uint8_t { RFP = 1, RAZOR = 2, NMP = 3, PROBCUT = 4, HIST = 5, LMP = 6, FUT = 7, LMR = 8,
+                      RFP_NEAR = 9, LMR_MORE = 10, QUIET = 11 };
 enum Skip : uint8_t { SKIP_RFP = 1, SKIP_RAZOR = 2, SKIP_NMP = 4, SKIP_PROBCUT = 8 };
 #pragma pack(push, 1)
 struct Rec {
@@ -96,6 +97,9 @@ static void flush() {
     std::lock_guard<std::mutex> lk(g_mu);
     if (g_f) std::fflush(g_f);
 }
+// A record a node starts and the wrapper around the node finishes with its result
+struct Pending { bool on = false; uint64_t n0 = 0; Rec r{}; };
+static thread_local Pending* t_pending = nullptr;
 }  // namespace audit
 #define AUDIT_ALLOWED(ss, bit) (!((ss)->audit_skip & audit::bit))
 #else
@@ -694,7 +698,12 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
 }
 
 // Main search function (internal worker)
+#ifdef LUMINEX_AUDIT
+static Value search_worker(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth, bool cut_node);
+static Value search_worker_impl(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth, bool cut_node) {
+#else
 [[maybe_unused]] static Value search_worker(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth, bool cut_node) {
+#endif
     // Save original alpha for proper bound determination
     Value original_alpha = alpha;
     Move best_move_found = MOVE_NONE;
@@ -896,14 +905,7 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
     const int piece_count_now = popcount(pos.pieces()) - popcount(pos.pieces(PAWN)) - 2;
     // A node rule decided: with the sample share, search this node again with that rule
     // switched off here (and only here), log both results, and keep the rule's decision.
-    auto audit_node = [&](audit::Rule rule, uint8_t skip, Value a, Value b, int margin, Value decided) {
-        if (!audit::sample()) return;
-        uint64_t n0 = audit::node_count();
-        uint8_t saved = ss->audit_skip;
-        ss->audit_skip = uint8_t(saved | skip);
-        Value v = search_worker(pos, ss, a, b, depth0, cut_node);
-        ss->audit_skip = saved;
-        if (stop.load(std::memory_order_relaxed)) return;
+    auto node_rec = [&](audit::Rule rule, Value a, Value b, int margin, Value decided) {
         audit::Rec r{};
         r.rule = rule; r.depth = audit::clip8u(depth); r.ply = audit::clip8u(ss->ply);
         r.flags = uint8_t((pv_node ? 1 : 0) | (cut_node ? 2 : 0) | (ss->improving ? 4 : 0)
@@ -914,9 +916,21 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
         r.tt_depth = found ? int8_t(std::max(-128, std::min(127, int(tte->depth())))) : -128;
         r.eval = audit::clip16(eval); r.alpha = audit::clip16(a); r.beta = audit::clip16(b);
         r.margin = audit::clip16(margin); r.uncertainty = audit::clip16(eval_uncertainty);
-        r.decided = audit::clip16(decided); r.verified = audit::clip16(v);
-        r.nodes = uint32_t(std::min<uint64_t>(audit::node_count() - n0, 0xFFFFFFFFULL));
+        r.decided = audit::clip16(decided);
         r.search_id = audit::g_search_id.load(std::memory_order_relaxed);
+        return r;
+    };
+    auto audit_node = [&](audit::Rule rule, uint8_t skip, Value a, Value b, int margin, Value decided) {
+        if (!audit::sample()) return;
+        uint64_t n0 = audit::node_count();
+        uint8_t saved = ss->audit_skip;
+        ss->audit_skip = uint8_t(saved | skip);
+        Value v = search_worker(pos, ss, a, b, depth0, cut_node);
+        ss->audit_skip = saved;
+        if (stop.load(std::memory_order_relaxed)) return;
+        audit::Rec r = node_rec(rule, a, b, margin, decided);
+        r.verified = audit::clip16(v);
+        r.nodes = uint32_t(std::min<uint64_t>(audit::node_count() - n0, 0xFFFFFFFFULL));
         audit::write(r);
     };
 #endif
@@ -936,6 +950,15 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
 #endif
             return eval;
         }
+#ifdef LUMINEX_AUDIT
+        if (!pv_node && !pos.is_check() && depth <= 8 && eval >= beta && AUDIT_ALLOWED(ss, SKIP_RFP)
+            && audit::t_pending && audit::sample()) {
+            audit::Pending& pnd = *audit::t_pending;
+            pnd.on = true;
+            pnd.n0 = audit::node_count();
+            pnd.r = node_rec(audit::RFP_NEAR, beta - 1, beta, rev_margin, eval);
+        }
+#endif
     }
 
     // Razoring: at low depths, if eval is far below alpha, try qsearch to confirm
@@ -1474,9 +1497,19 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
         }
 
         Value value;
+#ifdef LUMINEX_AUDIT
+        const bool aud_quiet = is_quiet && !pv_node && ss->ply > 0 && depth <= 8 && audit::sample();
+        const uint64_t aud_n0 = audit::node_count();
+        Value aud_reduced = VALUE_ZERO;
+        bool aud_has_reduced = false;
+#endif
         if (do_lmr && new_depth > 0) {
             // LMR: reduced zero-window search
             value = -search_worker(pos, ss + 1, -alpha - 1, -alpha, new_depth, !cut_node);
+#ifdef LUMINEX_AUDIT
+            aud_reduced = value;
+            aud_has_reduced = true;
+#endif
             if (stop.load(std::memory_order_relaxed)) {
                 pos.undo_move(m);
                 return false;
@@ -1534,6 +1567,36 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
             }
         }
 
+#ifdef LUMINEX_AUDIT
+        if (aud_quiet && !stop.load(std::memory_order_relaxed)) {
+            audit::Rec r = node_rec(audit::QUIET, alpha, beta, depth * sp.fut_coeff
+                + (ss->improving ? sp.fut_improving : sp.fut_base) + std::min(eval_uncertainty / 3, 50), alpha);
+            r.flags = uint8_t((r.flags & ~32) | (m == tt_move ? 32 : 0) | (gives_chk ? 128 : 0));
+            r.moves = audit::clip8u(moves_played); r.reduction = audit::clip8u(lmr_reduction);
+            Piece pc_moved = ss->moved_piece;
+            r.hist = pc_moved != NO_PIECE ? combined_history(worker, ss, pc_moved, m.to()) : 0;
+            r.history_bucket = int8_t((m == worker->killers[ss->ply][0] ? 1 : 0)
+                                      | (m == worker->killers[ss->ply][1] ? 2 : 0));
+            r.verified = audit::clip16(value);
+            r.nodes = uint32_t(std::min<uint64_t>(audit::node_count() - aud_n0, 0xFFFFFFFFULL));
+            audit::write(r);
+        }
+        if (do_lmr && new_depth > 1 && aud_has_reduced && !stop.load(std::memory_order_relaxed)
+            && audit::sample()) {
+            const uint64_t n1 = audit::node_count();
+            Value vm = -search_worker(pos, ss + 1, -alpha - 1, -alpha, new_depth - 1, !cut_node);
+            if (!stop.load(std::memory_order_relaxed)) {
+                // margin: this move's final value; decided: the reduced search; verified: one ply less
+                audit::Rec r = node_rec(audit::LMR_MORE, alpha, beta, value, aud_reduced);
+                r.flags = uint8_t((r.flags & ~32) | (m == tt_move ? 32 : 0) | (gives_chk ? 128 : 0));
+                r.moves = audit::clip8u(moves_played); r.reduction = audit::clip8u(lmr_reduction);
+                r.hist = int32_t(std::min<uint64_t>(n1 - aud_n0, 0x7FFFFFFFULL));   // nodes of the real search
+                r.verified = audit::clip16(vm);
+                r.nodes = uint32_t(std::min<uint64_t>(audit::node_count() - n1, 0xFFFFFFFFULL));
+                audit::write(r);
+            }
+        }
+#endif
         pos.undo_move(m);
 
         int moves_played_before = moves_played;
@@ -1983,6 +2046,24 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
 
     return best_value;
 }
+
+#ifdef LUMINEX_AUDIT
+// The node's search, then the near-miss record it may have started (audit::Pending), finished
+// with the value the node returned and the nodes it took.
+static Value search_worker(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth, bool cut_node) {
+    audit::Pending p;
+    audit::Pending* outer = audit::t_pending;
+    audit::t_pending = &p;
+    Value v = search_worker_impl(pos, ss, alpha, beta, depth, cut_node);
+    audit::t_pending = outer;
+    if (p.on && !stop.load(std::memory_order_relaxed)) {
+        p.r.verified = audit::clip16(v);
+        p.r.nodes = uint32_t(std::min<uint64_t>(audit::node_count() - p.n0, 0xFFFFFFFFULL));
+        audit::write(p.r);
+    }
+    return v;
+}
+#endif
 
 } // namespace
 
