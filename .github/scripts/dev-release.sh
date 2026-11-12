@@ -46,7 +46,7 @@ if [ ${#dev_tags[@]} -gt 0 ] && git rev-parse -q --verify "refs/tags/${dev_tags[
   label="since the previous development build (${dev_tags[0]#luminex-})"
 fi
 base=$(git rev-parse "refs/tags/$since^{commit}")
-count=$(git rev-list --count "$base..$sha")
+count=$(git rev-list --count --no-merges "$base..$sha")
 {
   echo "Precompiled binaries of the latest Luminex development version, built automatically from every push to \`main\` that passes CI."
   echo
@@ -57,7 +57,7 @@ count=$(git rev-list --count "$base..$sha")
   echo
   echo "## Commits $label"
   echo
-  git log --format="* [\`%h\`]($url/commit/%H) %s" --abbrev=8 -n 30 "$base..$sha"
+  git log --no-merges --format="* [\`%h\`]($url/commit/%H) %s" --abbrev=8 -n 30 "$base..$sha"
   [ "$count" -le 30 ] || echo "* and $((count - 30)) more"
   echo
   echo "[All commits since $stable]($url/compare/$stable...$sha)"
