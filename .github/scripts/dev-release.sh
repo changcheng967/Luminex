@@ -51,35 +51,66 @@ done
 chmod +x "$dir/luminex-linux-x86-64"
 bash "$here/check-name.sh" "$dir/luminex-linux-x86-64" "$BUILD_ID"
 
-# The notes list the commits since the previous development build, or since
-# the latest stable release when there is none
+# The notes cover everything since the latest stable release, since each push
+# to main replaces the previous development build. Commits are split into
+# those that change the engine binary (its sources, or the network it carries)
+# and those that do not (training, tools, CI, docs), each linked to its pull
+# request.
 stable=$(gh release view --repo "$repo" --json tagName --jq .tagName)
 mapfile -t dev_tags < <(gh release list --repo "$repo" --limit 100 --json tagName --jq '.[].tagName' \
                         | grep -E "$pattern" | grep -vx "$tag" || true)
-since=$stable
-label="since $stable"
-if [ ${#dev_tags[@]} -gt 0 ] && git rev-parse -q --verify "refs/tags/${dev_tags[0]}^{commit}" > /dev/null; then
-  since=${dev_tags[0]}
-  label="since the previous development build (${dev_tags[0]#luminex-})"
+base=$(git rev-parse "refs/tags/$stable^{commit}")
+tool_only='^src/(eval_trace\.cpp|featurize\.cpp|frame_merge\.cpp|lc0pack\.cpp|lc0_move_table\.h|verify_frames\.c)$'
+engine_lines=()
+other_lines=()
+while read -r h; do
+  line="* [\`${h:0:8}\`]($url/commit/$h) $(git show -s --format=%s "$h")"
+  pr=$(gh api "repos/$repo/commits/$h/pulls" --jq '[.[] | select(.merged_at != null)][0].number // empty' 2> /dev/null || true)
+  [ -z "$pr" ] || line+=" ([#$pr]($url/pull/$pr))"
+  engine=$(git show --name-only --format= "$h" | grep -E '^src/' | grep -vE "$tool_only" || true)
+  # fetch-net.sh counts when it moved the network pin, not for other edits
+  [ -n "$engine" ] || engine=$(git show --format= "$h" -- .github/scripts/fetch-net.sh | grep -E '^[-+]sha256=' || true)
+  if [ -n "$engine" ]; then engine_lines+=("$line"); else other_lines+=("$line"); fi
+done < <(git rev-list --no-merges "$base..$sha")
+count=$(( ${#engine_lines[@]} + ${#other_lines[@]} ))
+[ "$count" = 1 ] && commits="1 commit" || commits="$count commits"
+when=$(TZ=UTC git show -s --format=%cd --date=format-local:'%d %B %Y' "$sha")
+when=${when#0}
+stable_net=$(git show "$stable:.github/scripts/fetch-net.sh" 2> /dev/null \
+             | sed -n 's/^sha256=\([0-9a-f]\{8\}\).*/\1/p' | tr a-f A-F || true)
+if [ -z "$stable_net" ]; then
+  net_since=""
+elif [ "$stable_net" = "$net_id" ]; then
+  net_since=" It is also the network in $stable."
+else
+  net_since=" It replaces \`$stable_net\`, the network in $stable."
 fi
-base=$(git rev-parse "refs/tags/$since^{commit}")
-count=$(git rev-list --count --no-merges "$base..$sha")
 {
-  echo "Precompiled binaries of the latest Luminex development version, built automatically from every push to \`main\` that passes CI."
+  echo "**Luminex \`$BUILD_ID\`**: the engine as it stands on \`main\` on $when, $commits after [$stable]($url/releases/tag/$stable). CI built every binary below from commit [\`${sha:0:8}\`]($url/commit/$sha) and checked that each one runs, evaluates with its built-in network and names itself after this build."
   echo
-  echo "> [!NOTE]"
-  echo "> For stable, thoroughly tested builds use the [official releases]($url/releases/latest) (newest: [$stable]($url/releases/tag/$stable)). Development builds may contain bugs."
+  echo "A development build has no version number yet: it is what the next release is being made from. Every push to \`main\` publishes a new one and removes the old, so there is only ever one. For a numbered release, take [$stable]($url/releases/tag/$stable)."
   echo
-  echo "Built from [\`${sha:0:8}\`]($url/commit/$sha); the engine reports itself as \`Luminex $BUILD_ID\`. Each binary carries $net_line It is also attached on its own as \`$net_name\`; a build without a network inside loads it with the \`NNUEFile\` option."
+  echo "## Network"
   echo
-  echo "## Commits $label"
+  echo "Every binary carries $net_line$net_since The same file is attached on its own as \`$net_name\`, for builds without a network inside: load it with the \`NNUEFile\` option."
   echo
-  git log --no-merges --format="* [\`%h\`]($url/commit/%H) %s" --abbrev=8 -n 30 "$base..$sha"
-  [ "$count" -le 30 ] || echo "* and $((count - 30)) more"
+  echo "## Changes since $stable"
   echo
-  echo "[All commits since $stable]($url/compare/$stable...$sha)"
+  echo "### In the engine (${#engine_lines[@]})"
   echo
-  echo "## Binaries"
+  echo "These change how Luminex searches, evaluates or reports, or the network it plays with."
+  echo
+  if [ ${#engine_lines[@]} -gt 0 ]; then printf '%s\n' "${engine_lines[@]}"; else echo "None yet."; fi
+  echo
+  echo "### Training, tools and CI (${#other_lines[@]})"
+  echo
+  echo "These leave the engine's play unchanged."
+  echo
+  if [ ${#other_lines[@]} -gt 0 ]; then printf '%s\n' "${other_lines[@]}"; else echo "None yet."; fi
+  echo
+  echo "[Every change since $stable, file by file]($url/compare/$stable...$sha)"
+  echo
+  echo "## Which binary"
   echo
   echo "| Platform | Binary | CPU |"
   echo "|----------|--------|-----|"
@@ -90,6 +121,12 @@ count=$(git rev-list --count --no-merges "$base..$sha")
   echo "| Windows | \`luminex-windows-x86-64-modern.exe\` | AVX2 |"
   echo "| Windows | \`luminex-windows-x86-64.exe\` | POPCNT, no AVX2 needed |"
   echo "| macOS | \`luminex-macos-arm64\` | Apple silicon |"
+  echo
+  echo "The \`-modern\` builds need AVX2, which most x86-64 processors since 2015 have; on an older one take the plain build. Each binary is about 76 MB, the network included."
+  echo
+  echo "## Reporting a result or a bug"
+  echo
+  echo "The engine names itself \`Luminex $BUILD_ID\` (UCI \`id name\`). Quote that name with any game, rating or bug report, so it can be traced to this exact commit. Search and evaluation changes are measured on [OpenBench](https://bench.luminexchess.com/) before they merge; [luminexchess.com](https://luminexchess.com/) has the project's games and ratings."
 } > notes.md
 
 mapfile -t stale_releases < <(printf '%s\n' "${dev_tags[@]}" | grep -E "$pattern" || true)
