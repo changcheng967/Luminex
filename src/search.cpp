@@ -582,6 +582,14 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
 
         if (value >= beta) {
             g_stats.qs_cap_cutoffs++;
+            // A cutoff proves a lower bound and names the move that proved
+            // it: keep both, so the next visit cuts on the bound or tries that
+            // move first. Until now qsearch stored only its fail-lows, with no
+            // move, and every repeated cutoff searched its captures again.
+            if (!stop.load(std::memory_order_relaxed) && TT.should_store(tte, tt_found, 0)) {
+                tte->save(pos.key(), value_to_tt(value, ss->ply), false, BOUND_LOWER, 0,
+                          it->move, in_check ? Value(VALUE_INFINITE) : raw_eval, TT.generation());
+            }
             return value;  // fail-soft
         }
         if (value > alpha) {
@@ -602,9 +610,9 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
     }
 
     // Store the qsearch result at depth 0. should_store keeps deeper main-
-    // search entries from being clobbered by quiescence results. The early
-    // beta cutoffs above mean the value here is always below beta: an upper
-    // bound. Mate returns skip the store entirely.
+    // search entries from being clobbered by quiescence results. The beta
+    // cutoffs above store their own lower bounds, so the value here is always
+    // below beta: an upper bound. Mate returns skip the store entirely.
     if (!stop.load(std::memory_order_relaxed) && TT.should_store(tte, tt_found, 0)) {
         tte->save(pos.key(), value_to_tt(alpha, ss->ply), false, BOUND_UPPER, 0,
                   MOVE_NONE, in_check ? Value(VALUE_INFINITE) : raw_eval, TT.generation());
