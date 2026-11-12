@@ -5,12 +5,27 @@ on:
     branches: [ main ]
   pull_request:
     branches: [ main ]
+  workflow_dispatch:
 
 # Every build carries the shipped network (fetch-net.sh pins the file) and
 # must evaluate with it when run by itself from an empty directory
-# (check-net.sh), as the release binaries are.
+# (check-net.sh), as the release binaries are. Every build also names itself
+# after the development build (meta) and keeps its binary as an artifact; on
+# main, dev-release publishes them as the rolling luminex-dev pre-release.
 jobs:
+  # The development build every job builds: dev-<commit date, UTC>-<the
+  # commit's first 8 hex digits>, as in dev-20261112-d4774f1a.
+  meta:
+    runs-on: ubuntu-latest
+    outputs:
+      build_id: ${{ steps.id.outputs.build_id }}
+    steps:
+    - uses: actions/checkout@v5
+    - id: id
+      run: echo "build_id=dev-$(TZ=UTC git show -s --format=%cd --date=format-local:%Y%m%d HEAD)-$(git rev-parse HEAD | cut -c1-8)" >> "$GITHUB_OUTPUT"
+
   linux-modern:
+    needs: meta
     runs-on: ubuntu-latest
     steps:
     - uses: actions/checkout@v5
@@ -19,7 +34,7 @@ jobs:
     - name: Fetch the network
       run: bash .github/scripts/fetch-net.sh
     - name: Configure
-      run: cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DCI=ON -DCMAKE_CXX_COMPILER=g++-14 -DLUMINEX_MARCH=x86-64-v3 -DLUMINEX_EMBED_NET=net/luminex_sfq_i8.nnue
+      run: cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DCI=ON -DCMAKE_CXX_COMPILER=g++-14 -DLUMINEX_MARCH=x86-64-v3 -DLUMINEX_EMBED_NET=net/luminex_sfq_i8.nnue -DLUMINEX_BUILD_ID=${{ needs.meta.outputs.build_id }}
     - name: Build
       run: cmake --build build --config Release
     - name: Check instruction set
@@ -28,8 +43,20 @@ jobs:
       run: ./build/luminex bench
     - name: Check the built-in network
       run: bash .github/scripts/check-net.sh build/luminex
+    - name: Check the engine name
+      run: bash .github/scripts/check-name.sh build/luminex ${{ needs.meta.outputs.build_id }}
+    - name: Package
+      run: |
+        strip build/luminex
+        mv build/luminex luminex-linux-x86-64-modern
+    - uses: actions/upload-artifact@v4
+      with:
+        name: luminex-linux-x86-64-modern
+        path: luminex-linux-x86-64-modern
+        retention-days: 14
 
   linux-compat:
+    needs: meta
     runs-on: ubuntu-latest
     steps:
     - uses: actions/checkout@v5
@@ -38,7 +65,7 @@ jobs:
     - name: Fetch the network
       run: bash .github/scripts/fetch-net.sh
     - name: Configure
-      run: cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DCI=ON -DCMAKE_CXX_COMPILER=g++-14 -DLUMINEX_MARCH=x86-64-v2 -DLUMINEX_EMBED_NET=net/luminex_sfq_i8.nnue
+      run: cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DCI=ON -DCMAKE_CXX_COMPILER=g++-14 -DLUMINEX_MARCH=x86-64-v2 -DLUMINEX_EMBED_NET=net/luminex_sfq_i8.nnue -DLUMINEX_BUILD_ID=${{ needs.meta.outputs.build_id }}
     - name: Build
       run: cmake --build build --config Release
     - name: Check instruction set
@@ -47,11 +74,23 @@ jobs:
       run: ./build/luminex bench
     - name: Check the built-in network
       run: bash .github/scripts/check-net.sh build/luminex
+    - name: Check the engine name
+      run: bash .github/scripts/check-name.sh build/luminex ${{ needs.meta.outputs.build_id }}
+    - name: Package
+      run: |
+        strip build/luminex
+        mv build/luminex luminex-linux-x86-64
+    - uses: actions/upload-artifact@v4
+      with:
+        name: luminex-linux-x86-64
+        path: luminex-linux-x86-64
+        retention-days: 14
 
   # glibc-2.35 build for older hosts (DCU pods, Ubuntu 22.04). gcc-13 ships on
   # the 22.04 runner image; static libstdc++/libgcc so no GLIBCXX_3.4.3x is
   # needed at runtime. Same source, both march levels, artifacts attached.
   linux-legacy:
+    needs: meta
     runs-on: ubuntu-22.04
     strategy:
       matrix:
@@ -71,7 +110,7 @@ jobs:
     - name: Fetch the network
       run: bash .github/scripts/fetch-net.sh
     - name: Configure
-      run: cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DCI=ON -DCMAKE_CXX_COMPILER=g++-13 -DLUMINEX_MARCH=${{ matrix.march }} -DCMAKE_CXX_FLAGS="-static-libstdc++ -static-libgcc" -DLUMINEX_EMBED_NET=net/luminex_sfq_i8.nnue
+      run: cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DCI=ON -DCMAKE_CXX_COMPILER=g++-13 -DLUMINEX_MARCH=${{ matrix.march }} -DCMAKE_CXX_FLAGS="-static-libstdc++ -static-libgcc" -DLUMINEX_EMBED_NET=net/luminex_sfq_i8.nnue -DLUMINEX_BUILD_ID=${{ needs.meta.outputs.build_id }}
     - name: Build
       run: cmake --build build --config Release
     - name: Check instruction set
@@ -80,13 +119,21 @@ jobs:
       run: ./build/luminex bench
     - name: Check the built-in network
       run: bash .github/scripts/check-net.sh build/luminex
+    - name: Check the engine name
+      run: bash .github/scripts/check-name.sh build/luminex ${{ needs.meta.outputs.build_id }}
+    - name: Package
+      run: |
+        strip build/luminex
+        mv build/luminex luminex-${{ matrix.suffix }}
     - uses: actions/upload-artifact@v4
       with:
         name: luminex-${{ matrix.suffix }}
-        path: build/luminex
+        path: luminex-${{ matrix.suffix }}
+        retention-days: 14
 
 
   windows-modern:
+    needs: meta
     runs-on: windows-2022  # pin: windows-latest image no longer exposes a VS instance to cmake
     defaults:
       run:
@@ -97,7 +144,7 @@ jobs:
       shell: bash
       run: bash .github/scripts/fetch-net.sh
     - name: Configure
-      run: cmake -B build -G "Visual Studio 17 2022" -A x64 -T ClangCL -DLUMINEX_MSVC_ARCH=AVX2 -DLUMINEX_EMBED_NET=net/luminex_sfq_i8.nnue
+      run: cmake -B build -G "Visual Studio 17 2022" -A x64 -T ClangCL -DLUMINEX_MSVC_ARCH=AVX2 -DLUMINEX_EMBED_NET=net/luminex_sfq_i8.nnue -DLUMINEX_BUILD_ID=${{ needs.meta.outputs.build_id }}
     - name: Build
       run: cmake --build build --config Release
     - name: Check instruction set
@@ -108,8 +155,20 @@ jobs:
     - name: Check the built-in network
       shell: bash
       run: bash .github/scripts/check-net.sh build/Release/luminex.exe
+    - name: Check the engine name
+      shell: bash
+      run: bash .github/scripts/check-name.sh build/Release/luminex.exe ${{ needs.meta.outputs.build_id }}
+    - name: Package
+      shell: bash
+      run: mv build/Release/luminex.exe luminex-windows-x86-64-modern.exe
+    - uses: actions/upload-artifact@v4
+      with:
+        name: luminex-windows-x86-64-modern
+        path: luminex-windows-x86-64-modern.exe
+        retention-days: 14
 
   windows-compat:
+    needs: meta
     runs-on: windows-2022  # pin: windows-latest image no longer exposes a VS instance to cmake
     defaults:
       run:
@@ -120,7 +179,7 @@ jobs:
       shell: bash
       run: bash .github/scripts/fetch-net.sh
     - name: Configure
-      run: cmake -B build -G "Visual Studio 17 2022" -A x64 -DLUMINEX_MSVC_ARCH=SSE2 -DLUMINEX_EMBED_NET=net/luminex_sfq_i8.nnue
+      run: cmake -B build -G "Visual Studio 17 2022" -A x64 -DLUMINEX_MSVC_ARCH=SSE2 -DLUMINEX_EMBED_NET=net/luminex_sfq_i8.nnue -DLUMINEX_BUILD_ID=${{ needs.meta.outputs.build_id }}
     - name: Build
       run: cmake --build build --config Release
     - name: Check instruction set
@@ -131,8 +190,20 @@ jobs:
     - name: Check the built-in network
       shell: bash
       run: bash .github/scripts/check-net.sh build/Release/luminex.exe
+    - name: Check the engine name
+      shell: bash
+      run: bash .github/scripts/check-name.sh build/Release/luminex.exe ${{ needs.meta.outputs.build_id }}
+    - name: Package
+      shell: bash
+      run: mv build/Release/luminex.exe luminex-windows-x86-64.exe
+    - uses: actions/upload-artifact@v4
+      with:
+        name: luminex-windows-x86-64
+        path: luminex-windows-x86-64.exe
+        retention-days: 14
 
   macos-arm64:
+    needs: meta
     runs-on: macos-latest
     steps:
     - uses: actions/checkout@v5
@@ -141,7 +212,7 @@ jobs:
     - name: Fetch the network
       run: bash .github/scripts/fetch-net.sh
     - name: Configure
-      run: cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DLUMINEX_EMBED_NET=net/luminex_sfq_i8.nnue
+      run: cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DLUMINEX_EMBED_NET=net/luminex_sfq_i8.nnue -DLUMINEX_BUILD_ID=${{ needs.meta.outputs.build_id }}
     - name: Build
       run: cmake --build build --config Release
     - name: Check instruction set
@@ -150,3 +221,48 @@ jobs:
       run: ./build/luminex bench
     - name: Check the built-in network
       run: bash .github/scripts/check-net.sh build/luminex
+    - name: Check the engine name
+      run: bash .github/scripts/check-name.sh build/luminex ${{ needs.meta.outputs.build_id }}
+    - name: Package
+      run: |
+        strip build/luminex
+        mv build/luminex luminex-macos-arm64
+    - uses: actions/upload-artifact@v4
+      with:
+        name: luminex-macos-arm64
+        path: luminex-macos-arm64
+        retention-days: 14
+
+  # The rolling development build, as Stockfish publishes one: a push to main
+  # that passes every job above becomes the pre-release
+  # luminex-dev-YYYYMMDD-<sha8>, with the binaries those jobs built and
+  # tested, and the previous luminex-dev release and its tag are deleted
+  # (dev-release.sh). The v* releases and engine-archives (OpenBench's store
+  # of old builds and networks) never match the pattern it deletes. Runs on
+  # main queue one at a time; elsewhere (pull requests, other branches) the
+  # script runs dry and only prints what it would do.
+  dev-release:
+    needs: [meta, linux-modern, linux-compat, linux-legacy, windows-modern, windows-compat, macos-arm64]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    concurrency:
+      group: dev-release-${{ github.ref }}
+      cancel-in-progress: false
+    steps:
+    - uses: actions/checkout@v5
+      with:
+        fetch-depth: 0
+    - uses: actions/download-artifact@v4
+      with:
+        path: dist
+        pattern: luminex-*
+        merge-multiple: true
+    - name: Fetch the network
+      run: bash .github/scripts/fetch-net.sh dist
+    - name: Publish the development build
+      env:
+        GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        BUILD_ID: ${{ needs.meta.outputs.build_id }}
+        DRY_RUN: ${{ github.event_name != 'pull_request' && github.ref == 'refs/heads/main' && '0' || '1' }}
+      run: bash .github/scripts/dev-release.sh dist
