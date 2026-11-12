@@ -1,12 +1,14 @@
 // binpack2lcr.cpp — convert a training binpack straight into LCR1 records
-// (32 bytes each, the format resident_train.py keeps in VRAM), nothing dropped.
+// (32 bytes each, the format resident_train.py keeps in VRAM).
 //
 // A binpack is a sequence of self-contained chunks ("BINP", uint32 size, data),
 // so the chunks are decoded in parallel: thread k converts the k-th contiguous
 // run of chunks into OUT.kkk.lcr, which keeps the binpack's order across the
 // parts. Every position is written: mates and other large scores raw (the
 // trainer clips them in its loss), every ply, in-check and capture positions
-// flagged as sf_binpack_dump.cpp flags them.
+// flagged as sf_binpack_dump.cpp flags them. The one exception is a position
+// whose score is VALUE_NONE (32002): that is how a producer marks a position to
+// skip (nnue-pytorch's loader skips them too), so it is counted and left out.
 //
 // Record (src/featurize.cpp CompactRec): occupancy u64 | the pieces of the
 // occupied squares in ascending order as 4-bit codes (src/types.h Piece:
@@ -50,6 +52,12 @@ struct CompactRec {
     std::uint32_t poshash;
 };
 static_assert(sizeof(CompactRec) == 32, "LCR1 records are 32 bytes");
+
+// A binpack position scored VALUE_NONE is marked "skip" by its producer, not
+// evaluated. xushawn/t91-lgs marks the start position and its minimizer moves
+// this way (5.6% of October 2026); taken as a score, the trainer's clip would
+// read it as a 15-pawn win for the side to move.
+static constexpr int VALUE_NONE = 32002;
 
 static inline std::uint64_t mix64(std::uint64_t x) {
     x ^= x >> 33; x *= 0xff51afd7ed558ccdULL;
@@ -98,7 +106,7 @@ int main(int argc, char** argv) {
     }
     if (threads > static_cast<int>(chunks.size())) threads = static_cast<int>(chunks.size());
 
-    std::atomic<long long> total{0}, quiet{0}, capture{0}, check{0}, wins{0}, draws{0}, losses{0};
+    std::atomic<long long> total{0}, quiet{0}, capture{0}, check{0}, wins{0}, draws{0}, losses{0}, marked{0};
     std::atomic<int> failed{0};
     std::vector<std::thread> pool;
     for (int t = 0; t < threads; ++t) {
@@ -111,13 +119,14 @@ int main(int argc, char** argv) {
             std::vector<char> obuf(1 << 24);
             std::setvbuf(f, obuf.data(), _IOFBF, obuf.size());
             std::vector<unsigned char> chunk;
-            long long n = 0, nq = 0, nc = 0, ni = 0, nw = 0, nd = 0, nl = 0;
+            long long n = 0, nq = 0, nc = 0, ni = 0, nw = 0, nd = 0, nl = 0, nm = 0;
             for (std::size_t c = c0; c < c1; ++c) {
                 const unsigned char* p = base + chunks[c].first;
                 chunk.assign(p, p + chunks[c].second);
                 binpack::ChunkReader reader;
                 while (reader.hasNext(chunk)) {
                     const auto e = reader.next(chunk);
+                    if (e.score == VALUE_NONE) { ++nm; continue; }   // marked "skip" by its producer
                     CompactRec r;
                     std::memset(&r, 0, sizeof r);
                     r.occ = e.pos.piecesBB().bits();
@@ -148,7 +157,7 @@ int main(int argc, char** argv) {
             }
             if (std::fclose(f) != 0) failed = 3;
             total += n; quiet += nq; capture += nc; check += ni;
-            wins += nw; draws += nd; losses += nl;
+            wins += nw; draws += nd; losses += nl; marked += nm;
         });
     }
     for (auto& t : pool) t.join();
@@ -160,8 +169,10 @@ int main(int argc, char** argv) {
         return 1;
     }
     std::fprintf(stderr, "DONE %lld positions (quiet %lld, capture %lld, check %lld; side to move "
-                         "won %lld, drew %lld, lost %lld) from %zu chunks in %.1f s (%.1fM positions/s, %d threads)\n",
+                         "won %lld, drew %lld, lost %lld) from %zu chunks in %.1f s (%.1fM positions/s, %d threads); "
+                         "%lld marked skip (score VALUE_NONE) left out\n",
                  total.load(), quiet.load(), capture.load(), check.load(), wins.load(), draws.load(),
-                 losses.load(), chunks.size(), sec, total.load() / 1e6 / (sec > 0 ? sec : 1), threads);
+                 losses.load(), chunks.size(), sec, total.load() / 1e6 / (sec > 0 ? sec : 1), threads,
+                 marked.load());
     return 0;
 }
