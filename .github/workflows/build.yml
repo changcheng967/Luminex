@@ -246,6 +246,7 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: write
+      pull-requests: read  # the notes link each commit to its pull request
     concurrency:
       group: dev-release-${{ github.ref }}
       cancel-in-progress: false

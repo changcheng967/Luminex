@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 # Download the network the release binaries carry and check its sha256, so
-# every build embeds exactly the shipped file. Prints the file's path.
+# every build embeds exactly the shipped file. Prints the file's path and
+# which network it holds: the file is always saved under the engine's default
+# name, so the path alone does not say.
 #
 #   fetch-net.sh [DIR]   (default: net)
 #
@@ -29,4 +31,4 @@ if [ "$got" != "$sha256" ]; then
   rm -f "$out"
   exit 1
 fi
-echo "$out"
+echo "$out holds ${url##*/} (OpenBench id $(printf '%s' "${sha256:0:8}" | tr a-f A-F)), sha256 checked"
