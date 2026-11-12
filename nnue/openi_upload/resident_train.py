@@ -59,6 +59,9 @@ Environment (default in brackets):
                      only (the forward stays EmbeddingBag's, bit-identical), 2 = the
                      forward too (bf16 inputs, fp32 accumulation; with NNUE_QAT in
                      exact fp32, so it still equals the engine's int16 sums)
+                     3 = ft_fused.py's Triton kernels: X tiles built on chip from piece
+                     bitboards (no X in memory), both sides in one launch, bf16 forward and
+                     bf16 weight gradient with fp32 accumulation (not with NNUE_QAT)
   NNUE_FT_TILE [1024]  rows per tile of the dense feature layer
   NNUE_FT_TF32 [1]   the dense gradient matmul in TF32 (0: exact fp32, slower)
   NNUE_TARGET_CLIP [1500]  |target| cap inside the loss (mates and big scores stay
@@ -598,7 +601,52 @@ def ft_dense(idx, weight):
     return DenseFT.apply(idx, weight, FT_DENSE >= 2)
 
 
-def forward(model, wf, bf, stm, cnt):
+if FT_DENSE == 3:
+    import ft_fused as FF
+    if QAT:
+        raise SystemExit('NNUE_FT_DENSE=3 has no QAT path (QAT needs the exact fp32 sums of FT_DENSE=2)')
+    FUSED_FWD = dict(BM=128, BN=128, num_warps=4, num_stages=2)    # best of the 2026-11-12 sweeps: 1.247 ms
+    FUSED_BWD = dict(BMF=128, BN=128, BK=32, num_warps=4, num_stages=4)
+    FUSED_CH = 8192
+
+
+class FusedFT(torch.autograd.Function):
+    """Both sides' feature-layer sums straight from the LCR1 records (ft_fused.py):
+    bitboards, a stable sort by king bucket, the forward kernel, and in backward the
+    weight-gradient kernel. Returns White's and Black's [n, L1] sums in bf16, bias not
+    added (the caller adds ft_bias, so autograd keeps its gradient)."""
+
+    @staticmethod
+    def forward(ctx, wf, bf, weight):
+        n, L1 = wf.shape[0], weight.shape[1]
+        planes, kb = FF.side_rows(wf, bf, NUM_INPUTS)   # 0.9 ms; rec_bitboards is exact but 4.1 ms until fixed
+        order, rf = FF.plan(kb, FUSED_FWD['BM'])
+        rb = FF.plan(kb, FUSED_CH)[1]
+        planes_s = planes[order].contiguous()
+        w16 = weight[:NUM_INPUTS].to(torch.bfloat16)
+        zero = torch.zeros(L1, dtype=torch.float32, device=wf.device)
+        out_s = FF.ft_fwd(planes_s, rf, w16, zero, **FUSED_FWD)
+        out = torch.empty_like(out_s)
+        out[order] = out_s                     # back to side-row order: White 0..n-1, Black n..2n-1
+        ctx.save_for_backward(planes_s, rb, order)
+        ctx.nrows = weight.shape[0]
+        return out[:n], out[n:]
+
+    @staticmethod
+    def backward(ctx, gw, gb):
+        planes_s, rb, order = ctx.saved_tensors
+        g = torch.cat([gw, gb])[order].to(torch.bfloat16).contiguous()
+        dw = torch.zeros((ctx.nrows, g.shape[1]), dtype=torch.float32, device=g.device)
+        FF.ft_bwd(planes_s, rb, g, dw[:NUM_INPUTS], **FUSED_BWD)   # the padding row keeps a zero gradient
+        return None, None, dw
+
+
+@torch.compiler.disable
+def ft_fused(wf, bf, weight):
+    return FusedFT.apply(wf, bf, weight)
+
+
+def forward(model, wf, bf, stm, cnt, acc=None):
     """LNNUE.forward with the per-bucket loop replaced by one matmul per layer
     over all buckets and a gather of each position's own bucket: same values,
     static shapes, no host synchronization."""
@@ -611,6 +659,9 @@ def forward(model, wf, bf, stm, cnt):
         else:
             acc_w = F.embedding_bag(wf, wq, mode="sum", padding_idx=NUM_INPUTS) + bq
             acc_b = F.embedding_bag(bf, wq, mode="sum", padding_idx=NUM_INPUTS) + bq
+    elif acc is not None:   # NNUE_FT_DENSE=3: fwd_loss ran the fused kernels on the records
+        acc_w = acc[0].float() + model.ft_bias
+        acc_b = acc[1].float() + model.ft_bias
     elif FT_DENSE:
         acc_w = ft_dense(wf, model.ft.weight) + model.ft_bias
         acc_b = ft_dense(bf, model.ft.weight) + model.ft_bias
@@ -656,8 +707,9 @@ def batch_loss(pred, tgt, flag):
 
 def fwd_loss(model, rec):
     wf, bf, stm, tgt, flag, cnt = expand(rec)
+    acc = ft_fused(wf, bf, model.ft.weight) if FT_DENSE == 3 else None
     with torch.autocast(device_type="cuda", dtype=torch.bfloat16):
-        pred = forward(model, wf, bf, stm, cnt)
+        pred = forward(model, wf, bf, stm, cnt, acc)
     return batch_loss(pred.float(), tgt.clamp(-TARGET_CLIP, TARGET_CLIP), flag)
 
 
