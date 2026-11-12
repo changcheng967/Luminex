@@ -70,12 +70,18 @@ Environment (default in brackets):
                      3 = ft_fused.py's Triton kernels: X tiles built on chip from piece
                      bitboards (no X in memory), both sides in one launch, bf16 forward and
                      bf16 weight gradient with fp32 accumulation (not with NNUE_QAT)
+  NNUE_FT_FP8 [0]    with NNUE_FT_DENSE=3: 1 = the weight gradient in FP8 (G in e4m3, one
+                     global scale and a power-of-two boost per row), 2 = the forward too
+                     (the table in e4m3 with a scale per column); 0 = bf16 both ways
   NNUE_FT_TILE [1024]  rows per tile of the dense feature layer
   NNUE_FT_TF32 [1]   the dense gradient matmul in TF32 (0: exact fp32, slower)
   NNUE_TARGET_CLIP [1500]  |target| cap inside the loss (mates and big scores stay
                      in the data and train as "winning"; 1500 = 97.7% in the loss)
   NNUE_LOSS_WIDE ["" ]  "scale,weight": add weight * the same loss at a wider
                      sigmoid scale, which keeps a gradient in won positions
+  NNUE_PROFILE [0]   profile this many steps after NNUE_PROFILE_WARMUP [300] steps of the
+                     run (torch.profiler: GPU time by kernel and by kind, per step), write
+                     the trace next to the net, and stop
   NNUE_OUT_DIR [.]  NNUE_OUT_NAME [luminex_resident.nnue]
 """
 import math
@@ -130,6 +136,9 @@ LIVE = float(env("NNUE_LIVE_CLAMP", "0"))
 QAT = env("NNUE_QAT", "0") == "1"
 FT_DENSE = int(env("NNUE_FT_DENSE", "0"))
 FT_TILE = int(env("NNUE_FT_TILE", "1024"))
+FT_FP8 = int(env("NNUE_FT_FP8", "0"))
+PROFILE = int(env("NNUE_PROFILE", "0"))
+PROFILE_WARMUP = int(env("NNUE_PROFILE_WARMUP", "300"))
 FT_TF32 = env("NNUE_FT_TF32", "1") == "1"
 WIDE = [float(x) for x in env("NNUE_LOSS_WIDE", "").split(",")] if env("NNUE_LOSS_WIDE", "") else None
 TARGET_CLIP = float(env("NNUE_TARGET_CLIP", "1500"))   # |target| cap in the loss; data keeps raw scores
@@ -659,6 +668,8 @@ def ft_dense(idx, weight):
     return DenseFT.apply(idx, weight, FT_DENSE >= 2)
 
 
+if FT_FP8 and FT_DENSE != 3:
+    raise SystemExit('NNUE_FT_FP8 needs NNUE_FT_DENSE=3')
 if FT_DENSE == 3:
     import ft_fused as FF
     if QAT:
@@ -681,9 +692,12 @@ class FusedFT(torch.autograd.Function):
         order, rf = FF.plan(kb, FUSED_FWD['BM'])
         rb = FF.plan(kb, FUSED_CH)[1]
         planes_s = planes[order].contiguous()
-        w16 = weight[:NUM_INPUTS].to(torch.bfloat16)
         zero = torch.zeros(L1, dtype=torch.float32, device=wf.device)
-        out_s = FF.ft_fwd(planes_s, rf, w16, zero, **FUSED_FWD)
+        if FT_FP8 >= 2:   # the table in e4m3, scaled per column
+            w8, wsc = FF.fp8_cols(weight[:NUM_INPUTS])
+            out_s = FF.ft_fwd(planes_s, rf, w8, zero, fp8=True, wscale=wsc, **FUSED_FWD)
+        else:
+            out_s = FF.ft_fwd(planes_s, rf, weight[:NUM_INPUTS].to(torch.bfloat16), zero, **FUSED_FWD)
         out = torch.empty_like(out_s)
         out[order] = out_s                     # back to side-row order: White 0..n-1, Black n..2n-1
         ctx.save_for_backward(planes_s, rb, order)
@@ -693,10 +707,15 @@ class FusedFT(torch.autograd.Function):
     @staticmethod
     def backward(ctx, gw, gb):
         planes_s, rb, order = ctx.saved_tensors
-        g = torch.cat([gw, gb])[order].to(torch.bfloat16).contiguous()
+        g = torch.cat([gw, gb])[order]
         dw = torch.zeros((ctx.nrows, g.shape[1]), dtype=torch.float32, device=g.device)
-        FF.ft_bwd(planes_s, rb, g, dw[:NUM_INPUTS], **FUSED_BWD)   # the padding row keeps a zero gradient
-        return None, None, dw
+        if FT_FP8 >= 1:   # X^T G = inv * X^T diag(s) G8 (ft_fused.fp8_rows)
+            g8, gs, ginv = FF.fp8_rows(g)
+            FF.ft_bwd(planes_s, rb, g8, dw[:NUM_INPUTS], fp8=True, gscale=gs, **FUSED_BWD)
+            dw[:NUM_INPUTS] *= ginv
+        else:
+            FF.ft_bwd(planes_s, rb, g.to(torch.bfloat16).contiguous(), dw[:NUM_INPUTS], **FUSED_BWD)
+        return None, None, dw   # the padding row keeps a zero gradient
 
 
 @torch.compiler.disable
@@ -885,6 +904,40 @@ def evaluate_disjoint(model, dval, gstep):
 
 
 # ---------------------------------------------------------------------------
+def report_profile(prof, steps, seconds):
+    """NNUE_PROFILE: GPU time per step by kernel (top 40) and by kind, against the step's wall time."""
+    ev = prof.key_averages()
+    def dev_self(e):
+        return getattr(e, 'self_device_time_total', None) or getattr(e, 'self_cuda_time_total', 0) or 0
+    kernels = [e for e in ev if str(getattr(e, 'device_type', '')).endswith('CUDA') and dev_self(e) > 0]
+    kinds = (("fused FT kernels", ("_ft_fwd", "_ft_bwd")),
+             ("cuBLAS / cutlass GEMM", ("gemm", "cutlass", "nvjet", "xmma", "cublas", "sm80_", "sm90_", "sm100_", "sm120_")),
+             ("optimizer", ("adam", "Adam", "multi_tensor", "foreach")),
+             ("copies and fills", ("Memcpy", "memcpy", "Memset", "memset", "fill", "copy_")),
+             ("inductor (compiled glue)", ("triton_",)),
+             ("index / gather / scatter / sort", ("index", "gather", "scatter", "sort", "cumsum", "radix", "embedding")))
+    total = {k: 0.0 for k, _ in kinds}
+    total["other"] = 0.0
+    for e in kernels:
+        kind = next((k for k, pats in kinds if any(p in e.key for p in pats)), "other")
+        total[kind] += dev_self(e)
+    gpu = sum(total.values())
+    step_ms = seconds * 1e3 / steps
+    print(f"[profile] {steps} steps of {BS:,} positions: {step_ms:.2f} ms a step (wall), GPU kernels "
+          f"{gpu / 1e3 / steps:.2f} ms a step ({gpu / 1e3 / steps / step_ms:.0%} of the wall time)", flush=True)
+    for k, v in sorted(total.items(), key=lambda kv: -kv[1]):
+        print(f"[profile]   {k:34s} {v / 1e3 / steps:7.3f} ms a step  {v / max(gpu, 1e-9):6.1%}", flush=True)
+    print("[profile] top kernels (GPU ms a step, launches a step, name):", flush=True)
+    for e in sorted(kernels, key=lambda e: -dev_self(e))[:40]:
+        print(f"[profile]   {dev_self(e) / 1e3 / steps:7.3f}  {e.count / steps:5.1f}  {e.key[:150]}", flush=True)
+    path = os.path.join(OUT_DIR, OUT_BASE + "_profile.json")
+    try:
+        prof.export_chrome_trace(path)
+        print(f"[profile] trace: {path}", flush=True)
+    except Exception as e:
+        print(f"[profile] trace not written ({e.__class__.__name__}: {e})", flush=True)
+
+
 def main():
     t_start = time.time()
     torch.manual_seed(SEED)
@@ -1024,6 +1077,22 @@ def main():
             sched.step()
             gstep += 1
             sess = gstep - seg0
+            if PROFILE and sess == PROFILE_WARMUP:
+                gpu = str(dev).startswith("cuda")
+                if gpu:
+                    torch.cuda.synchronize()
+                prof = torch.profiler.profile(activities=[torch.profiler.ProfilerActivity.CPU]
+                                              + ([torch.profiler.ProfilerActivity.CUDA] if gpu else []))
+                prof.__enter__()
+                p_t0 = time.time()
+            elif PROFILE and sess == PROFILE_WARMUP + PROFILE:
+                if gpu:
+                    torch.cuda.synchronize()
+                p_s = time.time() - p_t0
+                prof.__exit__(None, None, None)
+                report_profile(prof, PROFILE, p_s)
+                done = "profile"
+                break
             if gstep % 50 == 0:
                 now = time.time()
                 l2max = max(float(m.weight.detach().abs().max()) for m in (model.bl2 if nbk > 1 else [model.l2]))
