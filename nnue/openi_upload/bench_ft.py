@@ -110,6 +110,19 @@ feats_s = feats[order]
 t_prep = timeit(lambda: FF.side_rows(wf, bf, NI))
 t_plan = timeit(lambda: FF.plan(kb, 128))
 t_gath = timeit(lambda: planes[order].contiguous())
+pl2, kb2 = FF.rec_bitboards(batch, RT.KB_T)
+same = bool(torch.equal(pl2, planes)) and bool(torch.equal(kb2, kb))
+t_rec = timeit(lambda: FF.rec_bitboards(batch, RT.KB_T))
+print(f">>> record -> bitboards kernel: {t_rec:.3f} ms (torch from feature indices: {t_prep:.3f} ms); "
+      f"identical to side_rows: {same}", flush=True)
+if not same:
+    bad = (pl2 != planes).any(1) | (kb2 != kb)
+    i = int(bad.nonzero()[0, 0])
+    print(f"  first mismatch: side-row {i}: kernel kb {int(kb2[i])} planes {pl2[i].tolist()}", flush=True)
+    print(f"  side_rows:      side-row {i}: kb {int(kb[i])} planes {planes[i].tolist()}; {int(bad.sum())} rows differ", flush=True)
+if ONLY == "bb":   # (bbfwd goes on to the forward sweep)
+    print("== FINISHED: bitboard kernel check", flush=True)
+    sys.exit(0)
 print(f"\n== fused: bitboards {t_prep:.3f} ms, sort and plan {t_plan:.3f} ms, bitboard gather {t_gath:.3f} ms a step", flush=True)
 
 # --- fused forward ---------------------------------------------------------------------------
@@ -117,11 +130,11 @@ Wf = torch.cat([Wb.float(), torch.zeros(1, L1, device=dev)])
 ref_f = F.embedding_bag(feats_s, Wf, mode="sum", padding_idx=NI) + bias
 ref_master = F.embedding_bag(feats_s, W, mode="sum", padding_idx=NI) + bias
 W8, wsc = FF.fp8_cols(W[:NI])
-fwd_cfgs = [(128, 128, 4, 3), (128, 128, 8, 3), (128, 128, 4, 4), (128, 256, 8, 2), (128, 256, 8, 3),
-            (64, 128, 4, 3), (64, 256, 4, 3), (256, 128, 8, 3), (128, 64, 4, 4), (256, 256, 8, 2)]
+fwd_cfgs = [(128, 128, 4, 3), (128, 128, 4, 4), (256, 128, 8, 3), (128, 64, 4, 4), (256, 128, 8, 2), (256, 128, 8, 4),
+            (256, 128, 4, 3), (256, 64, 4, 3), (256, 64, 8, 3), (256, 64, 4, 4), (128, 128, 4, 2), (128, 64, 4, 3)]
 ranges_by = {}
 best_f = {False: (1.459, 256, 128, 8, 3, 1.7e-3), True: (1.137, 128, 128, 4, 3, 2.4e-2)} if ONLY == 'bwd' else {}
-for fp8 in (() if ONLY == 'bwd' else (False, True)):
+for fp8 in (() if ONLY == 'bwd' else ((False,) if ONLY == 'bbfwd' else (False, True))):
     print(f"\n== fused forward ({'fp8 e4m3 W, per-column scale' if fp8 else 'bf16 W'}): X tiles built from bitboards", flush=True)
     for BM, BN, nw, ns in fwd_cfgs:
         if BM not in ranges_by:
@@ -143,6 +156,13 @@ for fp8 in (() if ONLY == 'bwd' else (False, True)):
             print(f"  BM={BM:3d} BN={BN:3d} warps={nw} stages={ns}: {ex.__class__.__name__}: {str(ex).splitlines()[0][:110]}", flush=True)
 del ref_f, ref_master
 torch.cuda.empty_cache()
+
+if ONLY == 'bbfwd':
+    for k, v in best_f.items():
+        print(f">>> best forward bf16: BM={v[1]} BN={v[2]} warps={v[3]} stages={v[4]}, {v[0]:.3f} ms, "
+              f"{FLOP / v[0] / 1e9:.0f} TFLOP/s", flush=True)
+    print("== FINISHED: bitboard kernel check and forward sweep", flush=True)
+    sys.exit(0)
 
 # --- fused backward --------------------------------------------------------------------------
 G_s = G[order]

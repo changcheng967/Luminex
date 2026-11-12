@@ -37,6 +37,77 @@ def side_rows(wf, bf, num_inputs):
     return planes.view(torch.int32), kb
 
 
+@triton.jit
+def _lsb_index(x):
+    """Index of the lowest set bit of each int64 (x != 0): the exponent of x & -x as an fp64."""
+    f = (x & (-x)).to(tl.float64).to(tl.int64, bitcast=True)
+    return ((f >> 52) & 0x7FF) - 1023
+
+
+@triton.jit
+def _hflip(x):   # square ^ 7 on every bit: reverse the bits of each byte
+    x = ((x >> 1) & 0x5555555555555555) | ((x & 0x5555555555555555) << 1)
+    x = ((x >> 2) & 0x3333333333333333) | ((x & 0x3333333333333333) << 2)
+    return ((x >> 4) & 0x0F0F0F0F0F0F0F0F) | ((x & 0x0F0F0F0F0F0F0F0F) << 4)
+
+
+@triton.jit
+def _vflip(x):   # square ^ 56 on every bit: reverse the bytes
+    x = ((x >> 8) & 0x00FF00FF00FF00FF) | ((x & 0x00FF00FF00FF00FF) << 8)
+    x = ((x >> 16) & 0x0000FFFF0000FFFF) | ((x & 0x0000FFFF0000FFFF) << 16)
+    return ((x >> 32) & 0xFFFFFFFF) | (x << 32)
+
+
+@triton.jit
+def _rec_bitboards(rec32, kbt, planes, kbo, n, BLOCK: tl.constexpr):
+    pid = tl.program_id(0)
+    pos = pid * BLOCK + tl.arange(0, BLOCK)
+    m = pos < n
+    p = pos.to(tl.int64)
+    lo = tl.load(rec32 + p * 8, mask=m, other=0).to(tl.int64) & 0xFFFFFFFF
+    hi = tl.load(rec32 + p * 8 + 1, mask=m, other=0).to(tl.int64)
+    occ = lo | (hi << 32)
+    q = tl.arange(0, 16)
+    bw = tl.zeros((BLOCK, 16), dtype=tl.int64)   # White's planes 2 * type + colour, squares unoriented
+    bb = tl.zeros((BLOCK, 16), dtype=tl.int64)   # Black's planes 2 * type + 1 - colour
+    for k in tl.static_range(4):                 # nibble words: pieces 8k .. 8k+7 in square order
+        nw = tl.load(rec32 + p * 8 + 2 + k, mask=m, other=0)
+        for i in tl.static_range(8):
+            code = (nw >> (4 * i)) & 15
+            have = occ != 0
+            sq = _lsb_index(occ)
+            bit = tl.where(have, tl.full((BLOCK,), 1, tl.int64) << (sq & 63), 0)
+            occ = occ & (occ - 1)
+            pt = code % 6
+            colour = code // 6
+            bw = bw | tl.where(q[None, :] == (2 * pt + colour)[:, None], bit[:, None], 0)
+            bb = bb | tl.where(q[None, :] == (2 * pt + 1 - colour)[:, None], bit[:, None], 0)
+    wk = _lsb_index(tl.sum(tl.where(q[None, :] == 10, bw, 0), axis=1))   # White king: White's plane 10
+    bk = _lsb_index(tl.sum(tl.where(q[None, :] == 10, bb, 0), axis=1))   # Black king: Black's plane 10
+    mw = (wk & 7) < 4
+    mb = (bk & 7) < 4
+    bw = tl.where(mw[:, None], _hflip(bw), bw)
+    bb = _vflip(tl.where(mb[:, None], _hflip(bb), bb))
+    kw = tl.load(kbt + (tl.where(mw, 7, 0) ^ wk), mask=m, other=0)
+    kbb = tl.load(kbt + ((tl.where(mb, 7, 0) ^ 56) ^ bk), mask=m, other=0)
+    cm = m[:, None] & (q[None, :] < 12)
+    tl.store(planes + p[:, None] * 12 + q[None, :], bw, mask=cm)
+    tl.store(planes + (p + n)[:, None] * 12 + q[None, :], bb, mask=cm)
+    tl.store(kbo + p, kw, mask=m)
+    tl.store(kbo + p + n, kbb, mask=m)
+
+
+def rec_bitboards(rec, kb_table, BLOCK=128):
+    """LCR1 records [n, 32] uint8 -> (planes [2n, 24] int32, kb [2n] int64), the same as
+    side_rows(*expand(rec)[:2]) but straight from the record, without the feature indices.
+    kb_table: resident_train.KB_T (oriented king square -> bucket, int64 [64])."""
+    n = rec.shape[0]
+    planes = torch.empty(2 * n, 12, dtype=torch.int64, device=rec.device)
+    kb = torch.empty(2 * n, dtype=torch.int64, device=rec.device)
+    _rec_bitboards[(triton.cdiv(n, BLOCK),)](rec.view(torch.int32), kb_table, planes, kb, n, BLOCK=BLOCK)
+    return planes.view(torch.int32), kb
+
+
 def plan(kb, block, nkb=NKB):
     """Sort side-rows by bucket and cut each bucket into ranges of at most `block` rows.
     Returns order [R] (sorted slot -> side-row; the same for every block, the sort is
