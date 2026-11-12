@@ -21,6 +21,9 @@ public:
     int forced_ply_count = 0;  // Consecutive plies in forcing sequence (checks/low mobility)
     bool improving = false;
     bool improving_deep = false;  // 4-ply eval trajectory (sustained improvement)
+#ifdef LUMINEX_AUDIT
+    uint8_t audit_skip = 0;  // rules the decision audit switched off at this ply (search.cpp audit::)
+#endif
     Stack* previous = nullptr;
 };
 

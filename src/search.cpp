@@ -12,6 +12,12 @@
 #include <string>
 #include <thread>
 #include <vector>
+#ifdef LUMINEX_AUDIT
+#include <cstdio>
+#include <cstdlib>
+#include <mutex>
+#include <random>
+#endif
 
 namespace luminex {
 
@@ -29,6 +35,72 @@ volatile bool g_stop_requested = false;
 // removes the contention. Node COUNTING is unaffected (uses the `nodes` atomic);
 // only the end-of-search stats dump becomes main-thread-local (informational).
 thread_local SearchStats g_stats;
+
+#ifdef LUMINEX_AUDIT
+// Decision audit, compiled only with -DLUMINEX_AUDIT. At a sampled share of the places
+// where a pruning or reduction rule decides, the search the rule skipped runs as well and
+// both results are logged, so each rule's error rate can be measured against the nodes it
+// saves. The engine still plays the rule's decision: only the TT sees the extra searches.
+// Env: LUMINEX_AUDIT_OUT (file prefix, default "audit"), LUMINEX_AUDIT_P (sample share,
+// default 0.0625). One file per process: <prefix>_<random id>.bin, 36-byte records (Rec).
+namespace audit {
+enum Rule : uint8_t { RFP = 1, RAZOR = 2, NMP = 3, PROBCUT = 4, HIST = 5, LMP = 6, FUT = 7, LMR = 8 };
+enum Skip : uint8_t { SKIP_RFP = 1, SKIP_RAZOR = 2, SKIP_NMP = 4, SKIP_PROBCUT = 8 };
+#pragma pack(push, 1)
+struct Rec {
+    uint8_t rule, depth, ply, flags;     // flags: 1 pv, 2 cut, 4 improving, 8 opponent worsening,
+                                         // 16 tt hit, 32 tt move, 64 improving_deep, 128 gives check
+    uint8_t pieces, moves, reduction, tt_bound;   // pieces: non-pawn, non-king; moves: moves_played
+    int16_t eval, alpha, beta, margin, uncertainty;
+    int16_t decided;                     // what the rule's own search returned (RFP: eval)
+    int16_t verified;                    // the search the rule skipped
+    int8_t tt_depth, history_bucket;     // history_bucket: hist / 256, clipped to int8
+    int32_t hist;
+    uint32_t nodes;                      // nodes of the skipped search
+    uint32_t search_id;                  // root search ("go") number in this process
+};
+#pragma pack(pop)
+static_assert(sizeof(Rec) == 36, "audit record size");
+static std::atomic<uint32_t> g_search_id{0};
+static std::mutex g_mu;
+static FILE* g_f = nullptr;
+static double g_share = -1.0;
+static thread_local uint64_t t_rng = 0;
+struct Closer { ~Closer() { if (g_f) std::fclose(g_f); } };
+static Closer g_closer;
+static inline bool sample() {
+    if (g_share < 0) {
+        const char* e = std::getenv("LUMINEX_AUDIT_P");
+        g_share = e ? std::atof(e) : 0.0625;
+    }
+    if (!t_rng) t_rng = (std::random_device{}() | 1ULL) * 0x9E3779B97F4A7C15ULL;
+    t_rng ^= t_rng << 13; t_rng ^= t_rng >> 7; t_rng ^= t_rng << 17;
+    return double(t_rng >> 11) * (1.0 / 9007199254740992.0) < g_share;
+}
+static inline uint64_t node_count() { return uint64_t(g_stats.main_nodes + g_stats.qs_nodes); }
+static inline int16_t clip16(long v) { return int16_t(std::max(-32000L, std::min(32000L, v))); }
+static inline uint8_t clip8u(long v) { return uint8_t(std::max(0L, std::min(255L, v))); }
+static void write(const Rec& r) {
+    std::lock_guard<std::mutex> lk(g_mu);
+    if (!g_f) {
+        const char* pre = std::getenv("LUMINEX_AUDIT_OUT");
+        std::random_device rd;
+        char path[512];
+        std::snprintf(path, sizeof path, "%s_%08x%08x.bin", pre ? pre : "audit", rd(), rd());
+        g_f = std::fopen(path, "wb");
+        if (!g_f) return;
+    }
+    std::fwrite(&r, sizeof r, 1, g_f);
+}
+static void flush() {
+    std::lock_guard<std::mutex> lk(g_mu);
+    if (g_f) std::fflush(g_f);
+}
+}  // namespace audit
+#define AUDIT_ALLOWED(ss, bit) (!((ss)->audit_skip & audit::bit))
+#else
+#define AUDIT_ALLOWED(ss, bit) true
+#endif
 
 // Search globals
 Limits limits;
@@ -679,6 +751,7 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
     if (depth <= 0) {
         return qsearch(pos, ss, alpha, beta, 0);
     }
+    [[maybe_unused]] const Depth depth0 = depth;   // the decision audit re-enters with this
 
     // Transposition table lookup. do_move and do_null_move already prefetched
     // this entry when they finished the key.
@@ -819,6 +892,35 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
         g_stats.iir_reductions++;
     }
 
+#ifdef LUMINEX_AUDIT
+    const int piece_count_now = popcount(pos.pieces()) - popcount(pos.pieces(PAWN)) - 2;
+    // A node rule decided: with the sample share, search this node again with that rule
+    // switched off here (and only here), log both results, and keep the rule's decision.
+    auto audit_node = [&](audit::Rule rule, uint8_t skip, Value a, Value b, int margin, Value decided) {
+        if (!audit::sample()) return;
+        uint64_t n0 = audit::node_count();
+        uint8_t saved = ss->audit_skip;
+        ss->audit_skip = uint8_t(saved | skip);
+        Value v = search_worker(pos, ss, a, b, depth0, cut_node);
+        ss->audit_skip = saved;
+        if (stop.load(std::memory_order_relaxed)) return;
+        audit::Rec r{};
+        r.rule = rule; r.depth = audit::clip8u(depth); r.ply = audit::clip8u(ss->ply);
+        r.flags = uint8_t((pv_node ? 1 : 0) | (cut_node ? 2 : 0) | (ss->improving ? 4 : 0)
+                          | (opponent_worsening ? 8 : 0) | (found ? 16 : 0) | (tt_move ? 32 : 0)
+                          | (ss->improving_deep ? 64 : 0));
+        r.pieces = audit::clip8u(piece_count_now);
+        r.tt_bound = found ? uint8_t(tte->bound()) : 0;
+        r.tt_depth = found ? int8_t(std::max(-128, std::min(127, int(tte->depth())))) : -128;
+        r.eval = audit::clip16(eval); r.alpha = audit::clip16(a); r.beta = audit::clip16(b);
+        r.margin = audit::clip16(margin); r.uncertainty = audit::clip16(eval_uncertainty);
+        r.decided = audit::clip16(decided); r.verified = audit::clip16(v);
+        r.nodes = uint32_t(std::min<uint64_t>(audit::node_count() - n0, 0xFFFFFFFFULL));
+        r.search_id = audit::g_search_id.load(std::memory_order_relaxed);
+        audit::write(r);
+    };
+#endif
+
     // Tunable search constants (spsa_params.h); the move lambdas below use them too
     const SPSAParams& sp = SPSAParams::get();
 
@@ -827,14 +929,17 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
     {
         int rev_margin = sp.rev_fut_coeff * depth + ((ss->improving || opponent_worsening) ? 0 : sp.rfp_not_improving);
         rev_margin += std::min(eval_uncertainty / 2, 80);  // Up to 80cp extra margin when uncertain
-        if (!pv_node && !pos.is_check() && depth <= 8 && eval - rev_margin >= beta) {
+        if (!pv_node && !pos.is_check() && depth <= 8 && eval - rev_margin >= beta && AUDIT_ALLOWED(ss, SKIP_RFP)) {
             g_stats.rev_futility_prunes++;
+#ifdef LUMINEX_AUDIT
+            audit_node(audit::RFP, audit::SKIP_RFP, beta - 1, beta, rev_margin, eval);
+#endif
             return eval;
         }
     }
 
     // Razoring: at low depths, if eval is far below alpha, try qsearch to confirm
-    if (!pv_node && !pos.is_check() && depth <= 4) {
+    if (!pv_node && !pos.is_check() && depth <= 4 && AUDIT_ALLOWED(ss, SKIP_RAZOR)) {
         Value razor_margin = sp.razor_base + depth * depth * sp.razor_coeff;
         if (eval + razor_margin < alpha) {
             // qsearch fail-high against the (alpha-1, alpha) window returns
@@ -842,6 +947,9 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
             Value qsearch_value = qsearch(pos, ss, alpha - 1, alpha, 0);
             if (qsearch_value < alpha) {
                 g_stats.razoring_prunes++;
+#ifdef LUMINEX_AUDIT
+                audit_node(audit::RAZOR, audit::SKIP_RAZOR, alpha, alpha + 1, razor_margin, qsearch_value);
+#endif
                 return qsearch_value;  // Confirmed losing, prune
             }
         }
@@ -856,7 +964,7 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
                           eval >= beta + (depth <= sp.nmp_shallow_depth ? sp.nmp_shallow_margin : 0) &&
                           ss->ply >= 1 && !ss->excluded_move &&
                           (ss - 1)->current_move != MOVE_NULL &&
-                          ss->ply >= worker->nmp_disabled_ply;
+                          ss->ply >= worker->nmp_disabled_ply && AUDIT_ALLOWED(ss, SKIP_NMP);
 
     if (null_move_ok) {
         // The child reads this ply as its (ss-1): MOVE_NULL bans a second null,
@@ -890,10 +998,16 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
                 worker->nmp_disabled_ply = saved_disable_ply;
                 if (verify >= beta) {
                     g_stats.null_move_prunes++;
+#ifdef LUMINEX_AUDIT
+                    audit_node(audit::NMP, audit::SKIP_NMP, beta - 1, beta, R, null_value);
+#endif
                     return null_value;
                 }
             } else {
                 g_stats.null_move_prunes++;
+#ifdef LUMINEX_AUDIT
+                audit_node(audit::NMP, audit::SKIP_NMP, beta - 1, beta, R, null_value);
+#endif
                 return null_value;
             }
         }
@@ -902,7 +1016,7 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
     // ProbCut - if a capture is obviously good enough, verify with shallow search
     // Skipped in excluded nodes: pruning the singular verification would
     // shortcut the very measurement the verification exists to make.
-    if (!pv_node && depth >= 5 && !pos.is_check() && ss->ply >= 2 && !ss->excluded_move) {
+    if (!pv_node && depth >= 5 && !pos.is_check() && ss->ply >= 2 && !ss->excluded_move && AUDIT_ALLOWED(ss, SKIP_PROBCUT)) {
         Value rbeta = std::min(beta + sp.probcut_margin, VALUE_INFINITE - 200);
         int rdepth = depth - 3;
 
@@ -938,6 +1052,9 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
             if (value >= rbeta) {
                 // Shallow search confirms this move is very good - prune
                 g_stats.probcut_prunes++;
+#ifdef LUMINEX_AUDIT
+                audit_node(audit::PROBCUT, audit::SKIP_PROBCUT, beta - 1, beta, sp.probcut_margin, value);
+#endif
                 return value;
             }
         }
@@ -1179,6 +1296,45 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
         return bishop_snipers != 0 || rook_snipers != 0;
     };
 
+#ifdef LUMINEX_AUDIT
+    // A move rule skipped or reduced a move: search it as the rule would not have (full
+    // depth, zero window on alpha) and log whether it beats alpha. `decided` is the rule's
+    // own result (the reduced search's value for LMR, alpha for a pruned move).
+    auto audit_move = [&](audit::Rule rule, Move m, int margin, int hist, int reduction, bool gives_chk,
+                          Value decided, int verify_depth) {
+        uint64_t n0 = audit::node_count();
+        Value v = -search_worker(pos, ss + 1, -alpha - 1, -alpha, verify_depth, !cut_node);
+        if (stop.load(std::memory_order_relaxed)) return;
+        audit::Rec r{};
+        r.rule = rule; r.depth = audit::clip8u(depth); r.ply = audit::clip8u(ss->ply);
+        r.flags = uint8_t((pv_node ? 1 : 0) | (cut_node ? 2 : 0) | (ss->improving ? 4 : 0)
+                          | (opponent_worsening ? 8 : 0) | (found ? 16 : 0) | (m == tt_move ? 32 : 0)
+                          | (ss->improving_deep ? 64 : 0) | (gives_chk ? 128 : 0));
+        r.pieces = audit::clip8u(piece_count_now); r.moves = audit::clip8u(moves_played);
+        r.reduction = audit::clip8u(reduction);
+        r.tt_bound = found ? uint8_t(tte->bound()) : 0;
+        r.tt_depth = found ? int8_t(std::max(-128, std::min(127, int(tte->depth())))) : -128;
+        r.eval = audit::clip16(eval); r.alpha = audit::clip16(alpha); r.beta = audit::clip16(beta);
+        r.margin = audit::clip16(margin); r.uncertainty = audit::clip16(eval_uncertainty);
+        r.decided = audit::clip16(decided); r.verified = audit::clip16(v);
+        r.hist = hist; r.history_bucket = int8_t(std::max(-128, std::min(127, hist / 256)));
+        r.nodes = uint32_t(std::min<uint64_t>(audit::node_count() - n0, 0xFFFFFFFFULL));
+        r.search_id = audit::g_search_id.load(std::memory_order_relaxed);
+        audit::write(r);
+    };
+    // A pruned quiet: make it, search it at full depth, unmake it
+    auto audit_pruned = [&](audit::Rule rule, Move m, int margin, int hist) {
+        if (!audit::sample()) return;   // search_move already checked the move legal
+        bool gives_chk = gives_check(m);
+        ss->current_move = m;
+        ss->moved_piece = pos.piece_on(m.from());
+        ss->reduction = 0;
+        if (!pos.do_move(m)) return;
+        audit_move(rule, m, margin, hist, 0, gives_chk, alpha, depth - 1);
+        pos.undo_move(m);
+    };
+#endif
+
     // Helper lambda: search a single move, return true if beta cutoff
     auto search_move = [&](Move m, bool is_quiet) -> bool {
         if (stop.load(std::memory_order_relaxed)) return false;
@@ -1208,6 +1364,9 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
                 // Prune if history is very negative (move has historically been bad)
                 if (hist_score < sp.hist_prune_base - sp.hist_prune_coeff * (depth - 1)) {
                     g_stats.history_prunes++;
+#ifdef LUMINEX_AUDIT
+                    audit_pruned(audit::HIST, m, sp.hist_prune_base - sp.hist_prune_coeff * (depth - 1), hist_score);
+#endif
                     return false;
                 }
             }
@@ -1223,6 +1382,9 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
         if (is_quiet && !pv_node && ss->ply > 0 && depth <= 8 && moves_played >= lmp_threshold
             && m != worker->killers[ss->ply][0] && m != worker->killers[ss->ply][1]) {
             g_stats.lmp_prunes++;
+#ifdef LUMINEX_AUDIT
+            audit_pruned(audit::LMP, m, lmp_threshold, 0);
+#endif
             return false;
         }
 
@@ -1232,6 +1394,9 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
             margin += std::min(eval_uncertainty / 3, 50);  // Less pruning when eval uncertain
             if (eval + margin < alpha) {
                 g_stats.futility_prunes++;
+#ifdef LUMINEX_AUDIT
+                audit_pruned(audit::FUT, m, margin, 0);
+#endif
                 return false;
             }
         }
@@ -1316,6 +1481,10 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
                 pos.undo_move(m);
                 return false;
             }
+#ifdef LUMINEX_AUDIT
+            if (value <= alpha && audit::sample())
+                audit_move(audit::LMR, m, 0, 0, lmr_reduction, gives_chk, value, full_depth);
+#endif
             // A reduced move that beats alpha is searched again unreduced
             // with a zero window. Its depth follows the reduced score: far
             // above the current best earns a ply more, barely above alpha a
@@ -1984,6 +2153,10 @@ Move search(Position& pos, Limits& lim) {
     local_nodes = 0;
     last_reported_nodes = 0;
     g_stats = SearchStats{};  // Reset stats for each search
+#ifdef LUMINEX_AUDIT
+    audit::flush();
+    audit::g_search_id.fetch_add(1);
+#endif
 
     // Track search start time for time management
     search_start = std::chrono::steady_clock::now();
