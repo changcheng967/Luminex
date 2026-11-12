@@ -49,6 +49,10 @@ Environment (default in brackets):
   NNUE_CONTINUE [0] 1: a resumed .pt keeps its schedule. NNUE_T_MAX_STEPS then counts
                      from the run's first step, so the cosine and the stop carry on
                      where the checkpoint left off (a run cut short resumes as planned)
+  NNUE_SCHED_START [0]  with NNUE_CONTINUE=1: the step at which the checkpoint's schedule
+                     began, for a run that had itself resumed a .pt on a new cosine (run05
+                     started from gen768r_04 at 860000): the schedule then carries on from
+                     gstep - NNUE_SCHED_START, not from gstep
   NNUE_LIVE_CLAMP [0]  tail activations pass this gradient slope outside [0, 1];
                      the forward pass (and so the engine's net) is unchanged
   NNUE_QAT [0]       1: train the network the way the engine runs it. The first layer
@@ -120,6 +124,7 @@ EVAL_EVERY = int(env("NNUE_EVAL_EVERY", "1000"))
 SAVE_EVERY = int(env("NNUE_SAVE_EVERY", "3000"))
 KEEP_EVERY = int(env("NNUE_KEEP_EVERY", "0"))
 CONTINUE = env("NNUE_CONTINUE", "0") == "1"
+SCHED_START = int(float(env("NNUE_SCHED_START", "0")))
 COMPILE = env("NNUE_COMPILE", "0") == "1"
 LIVE = float(env("NNUE_LIVE_CLAMP", "0"))
 QAT = env("NNUE_QAT", "0") == "1"
@@ -956,7 +961,9 @@ def main():
 
     steps_per_pass = n // BS
     t_max = T_MAX if T_MAX > 0 else steps_per_pass
-    off = gstep if CONTINUE else 0   # schedule steps already done by the run this checkpoint came from
+    off = gstep - SCHED_START if CONTINUE else 0   # schedule steps already done by the run this checkpoint came from
+    if off < 0:
+        raise SystemExit(f"FAIL: NNUE_SCHED_START {SCHED_START:,} is past the checkpoint's step {gstep:,}")
     state = {"t_live": t_max}
     sched = torch.optim.lr_scheduler.LambdaLR(
         opt, lambda s: 0.5 * (1.0 + math.cos(math.pi * min(1.0, (s + off) / max(1, state["t_live"])))))
