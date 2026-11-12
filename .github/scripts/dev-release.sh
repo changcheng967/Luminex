@@ -21,18 +21,35 @@ pattern='^luminex-dev-[0-9]{8}-[0-9a-f]{8}$'
 [[ $tag =~ $pattern ]] || { echo "$tag is not a development build tag" >&2; exit 1; }
 [[ $BUILD_ID == *-"${sha:0:8}" ]] || { echo "$BUILD_ID does not name commit $sha" >&2; exit 1; }
 
+# The network the binaries carry, as fetch-net.sh pins it: its file name on
+# engine-archives, its OpenBench id (the first 8 hex digits of its sha256) and
+# its about line. fetch-net.sh saved it under the engine's default file name;
+# it is attached under its own name, so the notes and the file say which
+# network it is.
+here=$(dirname "$0")
+net_name=$(sed -n 's#^url=.*/##p' "$here/fetch-net.sh")
+net_about=$(sed -n 's#^about="\(.*\)"$#\1#p' "$here/fetch-net.sh")
+[ -n "$net_name" ] || { echo "no url= line in fetch-net.sh" >&2; exit 1; }
+[ "$net_name" = luminex_sfq_i8.nnue ] || cp "$dir/luminex_sfq_i8.nnue" "$dir/$net_name"
+net_id=$(sha256sum "$dir/$net_name" | cut -c1-8 | tr a-f A-F)
+if [ -n "$net_about" ]; then
+  net_line="the network ${net_about%%: *} (OpenBench id \`$net_id\`): ${net_about#*: }."
+else
+  net_line="the network \`$net_name\` (OpenBench id \`$net_id\`)."
+fi
+
 # Every build job's binary, and the network on its own
 assets=(luminex-linux-x86-64-modern luminex-linux-x86-64
         luminex-linux-x86-64-glibc235-modern luminex-linux-x86-64-glibc235
         luminex-windows-x86-64-modern.exe luminex-windows-x86-64.exe
-        luminex-macos-arm64 luminex_sfq_i8.nnue)
+        luminex-macos-arm64 "$net_name")
 files=()
 for a in "${assets[@]}"; do
   [ -f "$dir/$a" ] || { echo "missing $dir/$a" >&2; exit 1; }
   files+=("$dir/$a")
 done
 chmod +x "$dir/luminex-linux-x86-64"
-bash "$(dirname "$0")/check-name.sh" "$dir/luminex-linux-x86-64" "$BUILD_ID"
+bash "$here/check-name.sh" "$dir/luminex-linux-x86-64" "$BUILD_ID"
 
 # The notes list the commits since the previous development build, or since
 # the latest stable release when there is none
@@ -53,7 +70,7 @@ count=$(git rev-list --count --no-merges "$base..$sha")
   echo "> [!NOTE]"
   echo "> For stable, thoroughly tested builds use the [official releases]($url/releases/latest) (newest: [$stable]($url/releases/tag/$stable)). Development builds may contain bugs."
   echo
-  echo "Built from [\`${sha:0:8}\`]($url/commit/$sha); the engine reports itself as \`Luminex $BUILD_ID\`. Each binary carries the network \`luminex_sfq_i8.nnue\`, which is also attached on its own."
+  echo "Built from [\`${sha:0:8}\`]($url/commit/$sha); the engine reports itself as \`Luminex $BUILD_ID\`. Each binary carries $net_line It is also attached on its own as \`$net_name\`; a build without a network inside loads it with the \`NNUEFile\` option."
   echo
   echo "## Commits $label"
   echo
