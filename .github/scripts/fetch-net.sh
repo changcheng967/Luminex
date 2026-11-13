@@ -6,7 +6,7 @@
 #
 #   fetch-net.sh [DIR]   (default: net)
 #
-# The pin is gen768r_04q (luminex_gen768r_04q_i8.nnue on the engine-archives
+# The pin is gen768r_05q (luminex_gen768r_05q_i8.nnue on the engine-archives
 # pre-release). Shipping a new network means attaching it to a release and
 # moving url, sha256 and about here; whatever the asset is called, the file is
 # saved as DEFAULT_NET (src/nnue.h), the name the engine loads. about, the
@@ -14,9 +14,9 @@
 # build's notes (dev-release.sh).
 set -euo pipefail
 name=luminex_sfq_i8.nnue
-url=https://github.com/changcheng967/Luminex/releases/download/engine-archives/luminex_gen768r_04q_i8.nnue
-sha256=a9a8380fe52702cb16d84bad772400b2efe78406591a79e089f7cf7c63652143
-about="gen768r_04q: gen768r_03 trained on to 860K steps (from 460K on t91 Feb-Aug and Oct 2026, at loss power 3.0), then 30K steps through the engine's int8 rounding (QAT)"
+url=https://github.com/changcheng967/Luminex/releases/download/engine-archives/luminex_gen768r_05q_i8.nnue
+sha256=a723dbdbbf30850c55bf2e72cc98ec936352c8b479cbcec6123e20e656a8aa69
+about="gen768r_05q: gen768r_04 trained on to 1.50M steps (from 860K on t91 November-December 2025 and February-May 2026, 6.6B positions, at loss power 3.0), then 30K steps through the engine's int8 rounding (QAT)"
 dir=${1:-net}
 out=$dir/$name
 mkdir -p "$dir"
