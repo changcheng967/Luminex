@@ -20,7 +20,7 @@ generation to the V13/V14 architecture program. Dates are first-commit dates fro
 | gen768 p1–p5 | Sep 2026 | same arch, multi-pass training | p4: 4.21B · p5: 5.37B | p4 MAE 176.1 ≈ baseline (saturation signal) |
 | V13 | Sep 2026+ | FM interaction, factorized buckets, material bucketing | — | **Spec complete**; DCU search picking hyperparams |
 | V14 | future | Residual topology + mobility + policy head | — | **Spec complete** |
-| gen768r | Nov 2026 | gen768's feature layer, the revived tail through 8 output buckets; QAT (03q, 04q) | t91 binpacks Feb–Oct 2026 (3.7B) | **In main** as gen768r_03q (CEB7B240), [V3-GEN768R.md](V3-GEN768R.md) |
+| gen768r | Nov 2026 | gen768's feature layer, the revived tail through 8 output buckets; QAT (03q, 04q, 05q) | t91 binpacks Feb–Oct 2026 (3.7B); 05: Nov–Dec 2025 + Feb–May 2026 (6.6B) | **In main** as gen768r_05q (A723DBDB), [V3-GEN768R.md](V3-GEN768R.md) |
 | gen768s | Nov 2026 | gen768r + one error head per bucket on the accumulator, read by the pruning margins | gen768r's + error labels | **Design**, §19 and [V4-GEN768S.md](V4-GEN768S.md) |
 
 ---
