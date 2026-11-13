@@ -822,11 +822,19 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
     // Tunable search constants (spsa_params.h); the move lambdas below use them too
     const SPSAParams& sp = SPSAParams::get();
 
+    // Non-pawn, non-king pieces: reverse futility and null move both read it
+    const int piece_count = popcount(pos.pieces()) - popcount(pos.pieces(PAWN)) - 2;
+
     // Reverse futility pruning (static null move): if eval is far above beta, prune immediately
     // Also less aggressive when eval is uncertain
     {
         int rev_margin = sp.rev_fut_coeff * depth + ((ss->improving || opponent_worsening) ? 0 : sp.rfp_not_improving);
         rev_margin += std::min(eval_uncertainty / 2, 80);  // Up to 80cp extra margin when uncertain
+        // Less material, a wider margin: with fewer pieces the static eval misjudges more
+        // fail-highs. The decision audit (04q, 200 games at 100K nodes, 7.7M sampled decisions)
+        // found the margin a 1% error rate needs grows by roughly 40 cp per non-pawn piece
+        // off below a full board, while today's margin ignores material; this takes 15 a piece.
+        rev_margin += 15 * std::max(0, 12 - piece_count);
         if (!pv_node && !pos.is_check() && depth <= 8 && eval - rev_margin >= beta) {
             g_stats.rev_futility_prunes++;
             return eval;
@@ -851,7 +859,6 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
     // eval sits above beta. Consecutive nulls are banned (a second null
     // proves nothing the first didn't) and nulls are banned inside a
     // verification search's ply window.
-    int piece_count = popcount(pos.pieces()) - popcount(pos.pieces(PAWN)) - 2;
     bool null_move_ok = !pv_node && !pos.is_check() && depth >= 2 && piece_count >= 1 &&
                           eval >= beta + (depth <= sp.nmp_shallow_depth ? sp.nmp_shallow_margin : 0) &&
                           ss->ply >= 1 && !ss->excluded_move &&
