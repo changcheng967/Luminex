@@ -9,9 +9,10 @@
 namespace luminex::nnue {
 
 // Compile-time cap on L1 width (the runtime L1, read from the net, may be smaller).
-// Bumped 512->1024 to allow L1=1024 nets (raw-strength push toward 3000 Elo). The
-// accumulator buffers (float [2][NNUE_L1_MAX]) and h_i8/h2 stacks are sized from this.
-inline constexpr int NNUE_L1_MAX = 1024;
+// Bumped 512->1024 to allow L1=1024 nets (raw-strength push toward 3000 Elo), then to 1536
+// for the feature-layer width test (gen768r_05 widened to 1024 and 1536). The accumulator
+// buffers (float [2][NNUE_L1_MAX]) and h_i8/h2 stacks are sized from this.
+inline constexpr int NNUE_L1_MAX = 1536;
 
 // Network shipped with each release. Release binaries carry it inside them
 // (CMake LUMINEX_EMBED_NET); a build without it loads the file of this name
