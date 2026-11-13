@@ -10,7 +10,9 @@ bin=$1
 dir=$(mktemp -d)
 cp "$bin" "$dir/"
 out=$(cd "$dir" && printf 'uci\nisready\nposition startpos\neval\nquit\n' | "./$(basename "$bin")" 2>&1)
-rm -rf "$dir"
+# Windows can keep the copied binary locked for a moment after it exits, so
+# the cleanup retries and never fails the check.
+for _ in 1 2 3 4 5; do rm -rf "$dir" 2> /dev/null && break; sleep 1; done
 printf '%s\n' "$out" | grep -E '^(id name|info string|eval)' || true
 if ! printf '%s\n' "$out" | grep -q 'NNUE evaluation using built-in'; then
   echo "$bin: the built-in network did not load" >&2
