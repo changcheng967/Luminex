@@ -61,6 +61,9 @@ Environment (default in brackets):
                      every activation into them to the engine's 1/127 steps. Gradients
                      pass straight through the rounding and the tail runs in fp32, so the
                      network trained is the network the engine loads after quantize_i8.py
+  NNUE_QAT_FT8 [0]   with NNUE_QAT: SHIFT (1-8) rounds the first layer's weights instead to the
+                     int8 table of an LNF8 net, steps of 2^(SHIFT-13) clipped at +-127 steps
+                     (quantize_i8.py --ft8 SHIFT / --ft-grid SHIFT); the bias stays on x8192
   NNUE_FT_DENSE [0]  the feature layer as dense per-king-bucket matmuls on tensor cores
                      (positions sorted by bucket into tiles; X 0/1 times the bucket's
                      768 x L1 block) instead of EmbeddingBag: 1 = the weight gradient
@@ -134,6 +137,9 @@ SCHED_START = int(float(env("NNUE_SCHED_START", "0")))
 COMPILE = env("NNUE_COMPILE", "0") == "1"
 LIVE = float(env("NNUE_LIVE_CLAMP", "0"))
 QAT = env("NNUE_QAT", "0") == "1"
+QAT_FT8 = int(env("NNUE_QAT_FT8", "0"))
+if QAT_FT8 and not (QAT and 1 <= QAT_FT8 <= 8):
+    raise SystemExit(f"FAIL: NNUE_QAT_FT8={QAT_FT8} needs NNUE_QAT=1 and a shift from 1 to 8")
 FT_DENSE = int(env("NNUE_FT_DENSE", "0"))
 FT_TILE = int(env("NNUE_FT_TILE", "1024"))
 FT_FP8 = int(env("NNUE_FT_FP8", "0"))
@@ -729,7 +735,11 @@ def forward(model, wf, bf, stm, cnt, acc=None):
     static shapes, no host synchronization."""
     if QAT:   # the first layer on the engine's int16 grid (src/nnue.cpp FT_WSCALE = 8192)
         w = model.ft.weight
-        wq = w + (torch.round(w * 8192.0) / 8192.0 - w).detach()
+        if QAT_FT8:   # an LNF8 net's int8 table: q << SHIFT on the x8192 grid, |q| <= 127
+            k = float(2 ** (13 - QAT_FT8))
+            wq = w + (torch.clamp(torch.round(w * k), -127.0, 127.0) / k - w).detach()
+        else:
+            wq = w + (torch.round(w * 8192.0) / 8192.0 - w).detach()
         bq = model.ft_bias + (torch.round(model.ft_bias * 8192.0) / 8192.0 - model.ft_bias).detach()
         if FT_DENSE:
             acc_w, acc_b = ft_dense(wf, wq) + bq, ft_dense(bf, wq) + bq
