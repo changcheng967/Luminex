@@ -203,6 +203,16 @@ static constexpr float FT_WSCALE = 8192.0f;
 static constexpr float FT_WINV = 1.0f / FT_WSCALE;
 static std::vector<int16_t> ft_w;
 static std::vector<int32_t> ft_b_i32;   // integer-domain FT bias (b*FT_WSCALE)
+// LNF8 nets keep the feature weights as int8: q stands for q << g_ft8_shift on the x8192
+// domain (shift 7: steps of 1/64, |w| <= 1.98). A row is half the bytes of an ft_w row, so
+// the incremental updates and refreshes read half the memory; the accumulator is the same
+// int16 lanes, and a net whose weights sit on that grid evaluates bit for bit as its int16 twin.
+static std::vector<int8_t> ft_w8;
+static bool g_ft8 = false;
+static int g_ft8_shift = 7;
+#if defined(__AVX2__) || defined(__AVX512F__)
+static __m128i g_ft8_cnt = _mm_cvtsi32_si128(7);   // the shift as a vector shift count
+#endif
 // DOSL linear head (Step-0): per-feature scalar weights over the SAME HalfKAv2_hg
 // indices; accumulator keeps one int32 per perspective (O(1) qsearch stand-pat).
 // Weights stored in 1/32 cp units: a queen feature (~900cp) still fits int16.
@@ -312,13 +322,14 @@ static bool load_stream(std::istream& f, const std::string& name) {
     std::string mg(magic, 4);
     // LNN1: float tail. LNI8: int8 tail. LNB8: int8 tails, one per output
     // bucket; its header carries the bucket count after the four sizes.
-    if (mg != "LNN1" && mg != "LNI8" && mg != "LNB8") { std::fprintf(stderr, "nnue: bad magic\n"); return false; }
+    // LNF8: an LNB8 net whose feature weights are int8 too (a shift, then the table, feature-major).
+    if (mg != "LNN1" && mg != "LNI8" && mg != "LNB8" && mg != "LNF8") { std::fprintf(stderr, "nnue: bad magic\n"); return false; }
     int32_t hdr[4];
     f.read(reinterpret_cast<char*>(hdr), sizeof(hdr));
     if (!f) { std::fprintf(stderr, "nnue: truncated header\n"); return false; }
     int L1 = hdr[0], L2 = hdr[1], L3 = hdr[2], NI = hdr[3];
     int32_t NB = 1;
-    if (mg == "LNB8") {
+    if (mg == "LNB8" || mg == "LNF8") {
         f.read(reinterpret_cast<char*>(&NB), 4);
         if (!f || NB < 1 || NB > MAX_BUCKETS) { std::fprintf(stderr, "nnue: bucket count %d out of range\n", NB); return false; }
     }
@@ -337,17 +348,35 @@ static bool load_stream(std::istream& f, const std::string& name) {
     g_tails.assign(NB, DenseTail{});
     g_buckets = NB;
     g_L1 = L1; g_L2 = L2; g_L3 = L3;
+    g_ft8 = (mg == "LNF8");
+    long long clamped = 0;
+    if (g_ft8) {
+        int32_t shift = -1, n = 0;
+        f.read(reinterpret_cast<char*>(&shift), 4);
+        if (!f || shift < 0 || shift > 8) { std::fprintf(stderr, "nnue: LNF8 shift %d out of range\n", shift); return false; }
+        f.read(reinterpret_cast<char*>(&n), 4);
+        if (n != L1 * NUM_INPUTS) { std::fprintf(stderr, "nnue: LNF8 feature table %d != %d\n", n, L1 * NUM_INPUTS); return false; }
+        ft_w8.resize(static_cast<size_t>(NUM_INPUTS) * L1);
+        f.read(reinterpret_cast<char*>(ft_w8.data()), n);
+        if (!f) { std::fprintf(stderr, "nnue: truncated LNF8 feature table\n"); return false; }
+        g_ft8_shift = shift;
+#if defined(__AVX2__) || defined(__AVX512F__)
+        g_ft8_cnt = _mm_cvtsi32_si128(shift);
+#endif
+        std::vector<int16_t>().swap(ft_w);
+    } else {
     std::vector<float> ft_w_raw;
     if (!read_tensor(f, ft_w_raw, L1 * NUM_INPUTS)) return false;
     ft_w.resize(static_cast<size_t>(NUM_INPUTS) * L1);
     // int16 at x8192 holds |w| < 4.0; clamp instead of letting the cast wrap.
-    long long clamped = 0;
     for (int i = 0; i < NUM_INPUTS; ++i)
         for (int l = 0; l < L1; ++l) {
             long long q = std::llround(ft_w_raw[l * NUM_INPUTS + i] * FT_WSCALE);
             if (q > 32767 || q < -32767) { q = q > 0 ? 32767 : -32767; ++clamped; }
             ft_w[i * L1 + l] = (int16_t)q;
         }
+        std::vector<int8_t>().swap(ft_w8);
+    }
     if (!read_tensor(f, ft_b, L1)) return false;
     ft_b_i32.resize(L1);
     for (int l = 0; l < L1; ++l) ft_b_i32[l] = std::lround(ft_b[l] * FT_WSCALE);
@@ -445,12 +474,13 @@ static bool load_stream(std::istream& f, const std::string& name) {
     // THP for the big weight tables: the incremental update path is
     // memory-latency bound (random row access into ft_w); huge pages cut
     // TLB misses. Best effort — silently ignored where disallowed.
-    madvise(ft_w.data(), (ft_w.size() * sizeof(int16_t) + 0xFFFFF) & ~0xFFFFF, MADV_HUGEPAGE);
+    if (g_ft8) madvise(ft_w8.data(), (ft_w8.size() + 0xFFFFF) & ~0xFFFFF, MADV_HUGEPAGE);
+    else madvise(ft_w.data(), (ft_w.size() * sizeof(int16_t) + 0xFFFFF) & ~0xFFFFF, MADV_HUGEPAGE);
 #endif
     // stdout carries UCI traffic, so the report is an info string.
     if (NB > 1)
-        std::printf("info string NNUE evaluation using %s (int8 L1=%d L2=%d L3=%d, %d output buckets)\n",
-                    name.c_str(), L1, L2, L3, NB);
+        std::printf("info string NNUE evaluation using %s (int8 L1=%d L2=%d L3=%d, %d output buckets%s)\n",
+                    name.c_str(), L1, L2, L3, NB, g_ft8 ? (", int8 features step 1/" + std::to_string(8192 >> g_ft8_shift)).c_str() : "");
     else
         std::printf("info string NNUE evaluation using %s (%s L1=%d L2=%d L3=%d)\n",
                     name.c_str(), g_int8 ? "int8" : "float", L1, L2, L3);
@@ -512,44 +542,71 @@ static inline uint8_t crelu_q8(int v) {
 // Saturating int16 on both rows; equivalent fused or sequential per sign.
 
 
-static inline const int16_t* feature_row(bool white_pov, int ksq, int sq, Piece piece) {
-    return &ft_w[static_cast<size_t>(halfka_idx(white_pov, ksq, sq, piece)) * g_L1];
+static inline size_t feature_offset(bool white_pov, int ksq, int sq, Piece piece) {
+    return static_cast<size_t>(halfka_idx(white_pov, ksq, sq, piece)) * g_L1;
+}
+// A feature's row of weights, int16 (LNB8 / LNI8 / LNN1) or int8 (LNF8).
+template <typename R> static inline const R* feature_row(bool white_pov, int ksq, int sq, Piece piece);
+template <> inline const int16_t* feature_row<int16_t>(bool white_pov, int ksq, int sq, Piece piece) {
+    return &ft_w[feature_offset(white_pov, ksq, sq, piece)];
+}
+template <> inline const int8_t* feature_row<int8_t>(bool white_pov, int ksq, int sq, Piece piece) {
+    return &ft_w8[feature_offset(white_pov, ksq, sq, piece)];
 }
 
+// A row's lanes on the x8192 domain: int16 rows as stored, int8 rows sign-extended and shifted.
+#if defined(__AVX512F__)
+static inline __m512i row32(const int16_t* w) { return _mm512_loadu_si512((const __m512i*)w); }
+static inline __m512i row32(const int8_t* w) {
+    return _mm512_sll_epi16(_mm512_cvtepi8_epi16(_mm256_loadu_si256((const __m256i*)w)), g_ft8_cnt);
+}
+static inline __m512i row16_i32(const int16_t* w) { return _mm512_cvtepi16_epi32(_mm256_loadu_si256((const __m256i*)w)); }
+static inline __m512i row16_i32(const int8_t* w) {
+    return _mm512_sll_epi32(_mm512_cvtepi8_epi32(_mm_loadu_si128((const __m128i*)w)), g_ft8_cnt);
+}
+#elif defined(__AVX2__)
+static inline __m256i row16(const int16_t* w) { return _mm256_loadu_si256((const __m256i*)w); }
+static inline __m256i row16(const int8_t* w) {
+    return _mm256_sll_epi16(_mm256_cvtepi8_epi16(_mm_loadu_si128((const __m128i*)w)), g_ft8_cnt);
+}
+static inline __m256i row8_i32(const int16_t* w) { return _mm256_cvtepi16_epi32(_mm_loadu_si128((const __m128i*)w)); }
+static inline __m256i row8_i32(const int8_t* w) {
+    return _mm256_sll_epi32(_mm256_cvtepi8_epi32(_mm_loadl_epi64((const __m128i*)w)), g_ft8_cnt);
+}
+#endif
+static inline int row_lane(const int16_t* w, int l) { return w[l]; }
+static inline int row_lane(const int8_t* w, int l) { return int(w[l]) * (1 << g_ft8_shift); }
+
 // Add / subtract one feature row to a perspective's lanes (saturating int16).
-static inline void add_row(int16_t* acc, const int16_t* w) {
+template <typename R> static inline void add_row(int16_t* acc, const R* w) {
 #if defined(__AVX512F__)
     for (int l = 0; l < g_L1; l += 32)
         _mm512_storeu_si512((__m512i*)(acc + l), _mm512_adds_epi16(
-            _mm512_loadu_si512((const __m512i*)(acc + l)),
-            _mm512_loadu_si512((const __m512i*)(w + l))));
+            _mm512_loadu_si512((const __m512i*)(acc + l)), row32(w + l)));
 #elif defined(__AVX2__)
     for (int l = 0; l < g_L1; l += 16)
         _mm256_storeu_si256((__m256i*)(acc + l), _mm256_adds_epi16(
-            _mm256_loadu_si256((const __m256i*)(acc + l)),
-            _mm256_loadu_si256((const __m256i*)(w + l))));
+            _mm256_loadu_si256((const __m256i*)(acc + l)), row16(w + l)));
 #else
-    for (int l = 0; l < g_L1; ++l) acc[l] = int16_t(std::max(-32768, std::min(32767, int(acc[l]) + int(w[l]))));
+    for (int l = 0; l < g_L1; ++l) acc[l] = int16_t(std::max(-32768, std::min(32767, int(acc[l]) + row_lane(w, l))));
 #endif
 }
-static inline void sub_row(int16_t* acc, const int16_t* w) {
+template <typename R> static inline void sub_row(int16_t* acc, const R* w) {
 #if defined(__AVX512F__)
     for (int l = 0; l < g_L1; l += 32)
         _mm512_storeu_si512((__m512i*)(acc + l), _mm512_subs_epi16(
-            _mm512_loadu_si512((const __m512i*)(acc + l)),
-            _mm512_loadu_si512((const __m512i*)(w + l))));
+            _mm512_loadu_si512((const __m512i*)(acc + l)), row32(w + l)));
 #elif defined(__AVX2__)
     for (int l = 0; l < g_L1; l += 16)
         _mm256_storeu_si256((__m256i*)(acc + l), _mm256_subs_epi16(
-            _mm256_loadu_si256((const __m256i*)(acc + l)),
-            _mm256_loadu_si256((const __m256i*)(w + l))));
+            _mm256_loadu_si256((const __m256i*)(acc + l)), row16(w + l)));
 #else
-    for (int l = 0; l < g_L1; ++l) acc[l] = int16_t(std::max(-32768, std::min(32767, int(acc[l]) - int(w[l]))));
+    for (int l = 0; l < g_L1; ++l) acc[l] = int16_t(std::max(-32768, std::min(32767, int(acc[l]) - row_lane(w, l))));
 #endif
 }
 
-static inline void add_feature(Accumulator& a, int p, int ksq, int sq, Piece piece) {
-    add_row(a.v[p], feature_row(p == 0, ksq, sq, piece));
+template <typename R> static inline void add_feature(Accumulator& a, int p, int ksq, int sq, Piece piece) {
+    add_row(a.v[p], feature_row<R>(p == 0, ksq, sq, piece));
 }
 
 // One perspective of a child accumulator, written in a single pass from the
@@ -559,32 +616,32 @@ static inline void add_feature(Accumulator& a, int p, int ksq, int sq, Piece pie
 // steps, order and saturation of the copy-then-update-in-place sequence this
 // replaced, so the lanes are bit-identical to it. Saturating adds and subtracts
 // do not commute, so the order matters whenever a lane saturates.
-template <bool S1, bool A1>
-static inline void delta_rows(const int16_t* parent, int16_t* child, const int16_t* add0,
-                              const int16_t* sub0, const int16_t* sub1, const int16_t* add1) {
+template <bool S1, bool A1, typename R>
+static inline void delta_rows(const int16_t* parent, int16_t* child, const R* add0,
+                              const R* sub0, const R* sub1, const R* add1) {
 #if defined(__AVX512F__)
     for (int l = 0; l < g_L1; l += 32) {
         __m512i v = _mm512_loadu_si512((const __m512i*)(parent + l));
-        v = _mm512_adds_epi16(v, _mm512_loadu_si512((const __m512i*)(add0 + l)));
-        v = _mm512_subs_epi16(v, _mm512_loadu_si512((const __m512i*)(sub0 + l)));
-        if constexpr (S1) v = _mm512_subs_epi16(v, _mm512_loadu_si512((const __m512i*)(sub1 + l)));
-        if constexpr (A1) v = _mm512_adds_epi16(v, _mm512_loadu_si512((const __m512i*)(add1 + l)));
+        v = _mm512_adds_epi16(v, row32(add0 + l));
+        v = _mm512_subs_epi16(v, row32(sub0 + l));
+        if constexpr (S1) v = _mm512_subs_epi16(v, row32(sub1 + l));
+        if constexpr (A1) v = _mm512_adds_epi16(v, row32(add1 + l));
         _mm512_storeu_si512((__m512i*)(child + l), v);
     }
 #elif defined(__AVX2__)
     for (int l = 0; l < g_L1; l += 16) {
         __m256i v = _mm256_loadu_si256((const __m256i*)(parent + l));
-        v = _mm256_adds_epi16(v, _mm256_loadu_si256((const __m256i*)(add0 + l)));
-        v = _mm256_subs_epi16(v, _mm256_loadu_si256((const __m256i*)(sub0 + l)));
-        if constexpr (S1) v = _mm256_subs_epi16(v, _mm256_loadu_si256((const __m256i*)(sub1 + l)));
-        if constexpr (A1) v = _mm256_adds_epi16(v, _mm256_loadu_si256((const __m256i*)(add1 + l)));
+        v = _mm256_adds_epi16(v, row16(add0 + l));
+        v = _mm256_subs_epi16(v, row16(sub0 + l));
+        if constexpr (S1) v = _mm256_subs_epi16(v, row16(sub1 + l));
+        if constexpr (A1) v = _mm256_adds_epi16(v, row16(add1 + l));
         _mm256_storeu_si256((__m256i*)(child + l), v);
     }
 #else
     for (int l = 0; l < g_L1; ++l) {
-        int v = std::max(-32768, std::min(32767, int(parent[l]) + int(add0[l]) - int(sub0[l])));
-        if constexpr (S1) v = std::max(-32768, std::min(32767, v - int(sub1[l])));
-        if constexpr (A1) v = std::max(-32768, std::min(32767, v + int(add1[l])));
+        int v = std::max(-32768, std::min(32767, int(parent[l]) + row_lane(add0, l) - row_lane(sub0, l)));
+        if constexpr (S1) v = std::max(-32768, std::min(32767, v - row_lane(sub1, l)));
+        if constexpr (A1) v = std::max(-32768, std::min(32767, v + row_lane(add1, l)));
         child[l] = int16_t(v);
     }
 #endif
@@ -609,15 +666,20 @@ static void init_bias(int16_t* acc) {
 #endif
 }
 
-static void refresh_perspective(const Position& pos, Accumulator& a, int p) {
+template <typename R> static void refresh_perspective_t(const Position& pos, Accumulator& a, int p) {
     bool white_pov = (p == 0);
     int ksq = static_cast<int>(pos.king_sq(white_pov ? WHITE : BLACK));
     init_bias(a.v[p]);
     for (int sq = 0; sq < NUM_SQ; ++sq) {
         Piece pc = pos.piece_on(Square(sq));
         if (pc == NO_PIECE) continue;
-        add_feature(a, p, ksq, Square(sq), pc);
+        add_feature<R>(a, p, ksq, Square(sq), pc);
     }
+}
+
+static void refresh_perspective(const Position& pos, Accumulator& a, int p) {
+    if (g_ft8) refresh_perspective_t<int8_t>(pos, a, p);
+    else refresh_perspective_t<int16_t>(pos, a, p);
 }
 
 // Refresh cache: per perspective and own-king square, the lanes of the board
@@ -632,34 +694,30 @@ struct alignas(64) RefreshEntry {
     uint32_t net_id = 0;
 };
 
-static inline void add_row_i32(int32_t* acc, const int16_t* w) {
+template <typename R> static inline void add_row_i32(int32_t* acc, const R* w) {
 #if defined(__AVX512F__)
     for (int l = 0; l < g_L1; l += 16)
         _mm512_storeu_si512((__m512i*)(acc + l), _mm512_add_epi32(
-            _mm512_loadu_si512((const __m512i*)(acc + l)),
-            _mm512_cvtepi16_epi32(_mm256_loadu_si256((const __m256i*)(w + l)))));
+            _mm512_loadu_si512((const __m512i*)(acc + l)), row16_i32(w + l)));
 #elif defined(__AVX2__)
     for (int l = 0; l < g_L1; l += 8)
         _mm256_storeu_si256((__m256i*)(acc + l), _mm256_add_epi32(
-            _mm256_loadu_si256((const __m256i*)(acc + l)),
-            _mm256_cvtepi16_epi32(_mm_loadu_si128((const __m128i*)(w + l)))));
+            _mm256_loadu_si256((const __m256i*)(acc + l)), row8_i32(w + l)));
 #else
-    for (int l = 0; l < g_L1; ++l) acc[l] += w[l];
+    for (int l = 0; l < g_L1; ++l) acc[l] += row_lane(w, l);
 #endif
 }
-static inline void sub_row_i32(int32_t* acc, const int16_t* w) {
+template <typename R> static inline void sub_row_i32(int32_t* acc, const R* w) {
 #if defined(__AVX512F__)
     for (int l = 0; l < g_L1; l += 16)
         _mm512_storeu_si512((__m512i*)(acc + l), _mm512_sub_epi32(
-            _mm512_loadu_si512((const __m512i*)(acc + l)),
-            _mm512_cvtepi16_epi32(_mm256_loadu_si256((const __m256i*)(w + l)))));
+            _mm512_loadu_si512((const __m512i*)(acc + l)), row16_i32(w + l)));
 #elif defined(__AVX2__)
     for (int l = 0; l < g_L1; l += 8)
         _mm256_storeu_si256((__m256i*)(acc + l), _mm256_sub_epi32(
-            _mm256_loadu_si256((const __m256i*)(acc + l)),
-            _mm256_cvtepi16_epi32(_mm_loadu_si128((const __m128i*)(w + l)))));
+            _mm256_loadu_si256((const __m256i*)(acc + l)), row8_i32(w + l)));
 #else
-    for (int l = 0; l < g_L1; ++l) acc[l] -= w[l];
+    for (int l = 0; l < g_L1; ++l) acc[l] -= row_lane(w, l);
 #endif
 }
 // int32 lanes -> int16 lanes with signed saturation.
@@ -691,7 +749,8 @@ static inline RefreshEntry* refresh_cache() {
 // holds, so after the diff they are the exact sum for `pieces`, saturated once
 // here: the result does not depend on what the entry held before, which is
 // what lets a rebuild wait until an evaluation needs it.
-static void refresh_from_board(const Bitboard (&pieces)[2][6], int ksq, Accumulator& a, int p) {
+template <typename R>
+static void refresh_from_board_t(const Bitboard (&pieces)[2][6], int ksq, Accumulator& a, int p) {
     bool white_pov = (p == 0);
     RefreshEntry& e = refresh_cache()[p * NUM_SQ + ksq];
     if (e.net_id != g_net_id) {
@@ -706,20 +765,26 @@ static void refresh_from_board(const Bitboard (&pieces)[2][6], int ksq, Accumula
             if (now == was) continue;
             Piece pc = make_piece(Color(c), PieceType(pt));
             for (Bitboard gone = was & ~now; gone; )
-                sub_row_i32(e.acc, feature_row(white_pov, ksq, pop_lsb(gone), pc));
+                sub_row_i32(e.acc, feature_row<R>(white_pov, ksq, pop_lsb(gone), pc));
             for (Bitboard added = now & ~was; added; )
-                add_row_i32(e.acc, feature_row(white_pov, ksq, pop_lsb(added), pc));
+                add_row_i32(e.acc, feature_row<R>(white_pov, ksq, pop_lsb(added), pc));
             e.pieces[c][pt] = now;
         }
     store_saturated(a.v[p], e.acc);
+}
+
+static void refresh_from_board(const Bitboard (&pieces)[2][6], int ksq, Accumulator& a, int p) {
+    if (g_ft8) refresh_from_board_t<int8_t>(pieces, ksq, a, p);
+    else refresh_from_board_t<int16_t>(pieces, ksq, a, p);
 }
 
 // Sides [p_begin, p_end) of `child` from those of `parent` and the move
 // recorded in d (a ply that rebuilds none of these sides): the rows and step
 // order the eager update used, so the lanes are bit-identical to it. The move
 // is decoded once for both sides.
-static void apply_delta(const PlyDelta& d, const Accumulator& parent, Accumulator& child,
-                        int p_begin, int p_end) {
+template <typename R>
+static void apply_delta_t(const PlyDelta& d, const Accumulator& parent, Accumulator& child,
+                          int p_begin, int p_end) {
     if (d.null_move) {
         for (int p = p_begin; p < p_end; ++p)
             std::memcpy(child.v[p], parent.v[p], sizeof(int16_t) * size_t(g_L1));
@@ -748,17 +813,24 @@ static void apply_delta(const PlyDelta& d, const Accumulator& parent, Accumulato
     for (int p = p_begin; p < p_end; ++p) {
         const bool white_pov = (p == 0);
         const int ksq = d.ksq[p];
-        const int16_t* to_row   = feature_row(white_pov, ksq, to, to_pc);
-        const int16_t* from_row = feature_row(white_pov, ksq, from, from_pc);
+        const R* to_row   = feature_row<R>(white_pov, ksq, to, to_pc);
+        const R* from_row = feature_row<R>(white_pov, ksq, from, from_pc);
         if (castling)
-            delta_rows<true, true>(parent.v[p], child.v[p], to_row, from_row,
-                                   feature_row(white_pov, ksq, rfrom, rook), feature_row(white_pov, ksq, rto, rook));
+            delta_rows<true, true, R>(parent.v[p], child.v[p], to_row, from_row,
+                                      feature_row<R>(white_pov, ksq, rfrom, rook), feature_row<R>(white_pov, ksq, rto, rook));
         else if (cap_pc != NO_PIECE)
-            delta_rows<true, false>(parent.v[p], child.v[p], to_row, from_row,
-                                    feature_row(white_pov, ksq, cap_sq, cap_pc), nullptr);
+            delta_rows<true, false, R>(parent.v[p], child.v[p], to_row, from_row,
+                                       feature_row<R>(white_pov, ksq, cap_sq, cap_pc), static_cast<const R*>(nullptr));
         else
-            delta_rows<false, false>(parent.v[p], child.v[p], to_row, from_row, nullptr, nullptr);
+            delta_rows<false, false, R>(parent.v[p], child.v[p], to_row, from_row,
+                                        static_cast<const R*>(nullptr), static_cast<const R*>(nullptr));
     }
+}
+
+static void apply_delta(const PlyDelta& d, const Accumulator& parent, Accumulator& child,
+                        int p_begin, int p_end) {
+    if (g_ft8) apply_delta_t<int8_t>(d, parent, child, p_begin, p_end);
+    else apply_delta_t<int16_t>(d, parent, child, p_begin, p_end);
 }
 
 // Bring both sides of the accumulator at pos's ply up to date. Each side walks
@@ -873,7 +945,8 @@ void update(Position& pos, Move m, Piece moved, PieceType captured) {
             else if (i == 2) idx = halfka_idx(false, bk, from, dep_piece);
             else idx = halfka_idx(false, bk, to, arr_piece);
 #if defined(__x86_64__) || defined(__i386__) || defined(_M_X64) || defined(_M_IX86)
-            _mm_prefetch((const char*)&ft_w[static_cast<size_t>(idx) * g_L1], _MM_HINT_T0);
+            _mm_prefetch(g_ft8 ? (const char*)&ft_w8[static_cast<size_t>(idx) * g_L1]
+                               : (const char*)&ft_w[static_cast<size_t>(idx) * g_L1], _MM_HINT_T0);
 #endif
         }
     }
@@ -905,7 +978,8 @@ Value evaluate(const Position& pos) {
                     int idx = halfka_idx(white_pov, ksq, sq, pc);
                     // the loop computed idx and discarded it — the "reference"
                     // was the bias alone, so any real position aborted here
-                    ref += ft_w[(size_t)idx * g_L1 + l];
+                    ref += g_ft8 ? int(ft_w8[(size_t)idx * g_L1 + l]) * (1 << g_ft8_shift)
+                                 : int(ft_w[(size_t)idx * g_L1 + l]);
                 }
                 // int16 saturating acc: saturated lanes differ from the exact
                 // reference in raw value but are IDENTICAL after the SCReLU clip
