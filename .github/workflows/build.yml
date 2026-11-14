@@ -217,6 +217,19 @@ jobs:
       id: simd
       run: |
         bash .github/scripts/check-simd.sh ./luminex --net "net/$(sed -n 's#^url=.*/##p' .github/scripts/fetch-net.sh)"
+    # The negative control of the SDE checks in the linux and windows jobs:
+    # this build's kernels are compiled for the runner's CPU (AVX2 at least),
+    # so as Sandy Bridge, which has no AVX2, SDE's chip check must stop it.
+    - name: Check that SDE stops instructions the emulated CPU lacks
+      run: |
+        SDE=$(bash .github/scripts/fetch-sde.sh)
+        net="net/$(sed -n 's#^url=.*/##p' .github/scripts/fetch-net.sh)"
+        if out=$("$SDE" -snb -chip-check-exe-only -- ./luminex nnuecheck "$net" 2>&1); then
+          printf '%s\n' "$out" | tail -5
+          echo "SDE ran a build for this CPU as Sandy Bridge and did not stop it" >&2
+          exit 1
+        fi
+        printf '%s\n' "$out" | grep -m1 -i "sde-error\|not valid for specified chip"
 
   # The universal binaries and OpenBench's build compute the same evaluations:
   # one digest, whatever compiler, OS and instruction-set level.
