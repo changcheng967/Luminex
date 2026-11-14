@@ -1200,8 +1200,11 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
         any_legal_move = true;  // Legal move exists (even if later pruned)
 
         // Continuation pruning: skip quiet moves with very poor history at low depth
-        // Combined counter+continuation history
-        if (is_quiet && !pv_node && depth <= 4 && moves_played > 0) {
+        // Combined counter+continuation history. Only below alpha: when the
+        // static eval already reaches alpha, a quiet move's history does not
+        // tell the refutations apart (the prune audit found 8-14% of those
+        // prunes wrong, against 0-2% below alpha).
+        if (is_quiet && !pv_node && depth <= 4 && moves_played > 0 && (pos.is_check() || eval < alpha)) {
             Piece pc = pos.piece_on(m.from());
             if (pc != NO_PIECE) {
                 int hist_score = combined_history(worker, ss, pc, m.to());
