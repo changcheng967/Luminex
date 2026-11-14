@@ -50,33 +50,52 @@ and time management solved from measured data.
 
 ## Strength
 
-**CCI, v6.5.1** (E1 list: Intel Core Ultra 7 265T E-cores, 1 thread, November 2026):
+**v6.6.0 against v6.5.1** on OpenBench (one thread, 10+0.1, 2moves_v1):
+**+246.6 ± 13.1** over 2,010 games (W 1292, D 653, L 65;
+[test 131](https://bench.luminexchess.com/test/131/)).
+
+**Gauntlet 3**, the development build with gen768r_05q against twelve
+CCRL-rated engines (800 games each, 10+0.1;
+[gauntlet 3](https://bench.luminexchess.com/gauntlet/3/)): **3471 ± 16 on
+CCRL Blitz**, 3402 ± 21 on CCRL 40/15. v6.6.0's gen768r_06q adds
++3.1 ± 2.5 in self-play ([test 128](https://bench.luminexchess.com/test/128/)),
+below what a repeat gauntlet resolves (about ± 10), so the rating stands.
+
+| Opponent (CCRL Blitz) | Elo |
+|---|---|
+| Stash 37 (3417) | +94 |
+| Smallbrain 7.0.0 (3454) | −13 |
+| Rice 8.0.0 (3530) | −102 |
+| Patricia 5 (3539) | −59 |
+| Elixir v3.0 (3567) | −124 |
+| Altair v7.0.0 (3579) | −160 |
+| Renegade, Quanticade, Clover, Berserk, Obsidian, PlentyChess (3694–3773) | −350 to −444 |
+
+**CCI, v6.5.1** (E1 list: Intel Core Ultra 7 265T E-cores, 1 thread, November 2026),
+the last release CCI has rated:
 
 | STC 8+0.08 | LTC 60+0.6 | VLTC 2m24+1.12 |
 |---|---|---|
 | 2619 | 3054 | 3173 |
 
-**Stash ladder, v6.5.0.** On OpenBench, 1,000 games against each Stash version in turn:
-
-| Opponent (CCRL Blitz) | Result |
-|---|---|
-| Stash 29 (3137) | +104 ± 20 |
-| Stash 30 | +79 |
-| Stash 31 | +40 |
-| Stash 32 (3252) | +8 ± 18 |
-| Stash 33 (3286) | −14 (48%; the ladder stops here) |
-
-**Gains on `main` since v6.5.1.** Each is an SPRT on OpenBench, at 10+0.1 unless noted:
+**What v6.6.0 adds over v6.5.1.** Each is an SPRT on OpenBench against the
+main of its day, at 10+0.1 unless noted:
 
 | Change | Elo |
 |---|---|
-| Search constants retuned by SPSA (#40) | +26.5 ± 10.4 |
+| Correction history keyed by side to move | +61.4 ± 15.7 |
 | Clock spent by a solved time schedule (#44) | +72.2 ± 16.7 |
+| Search constants retuned by SPSA (tune 45, #40; tune 54) | +26.5 ± 10.4; +5.9 ± 4.2 |
 | Search stopped by measured best-move stability (#45) | +8.3 ± 5.3 |
+| Late quiet moves pruned without a history escape | +4.9 ± 3.7 |
 | Margin over beta for shallow null moves (#41) | +4.0 ± 3.1 |
-| New time management against the old formulas, at 60+0.6 | +37.5 ± 11.0 |
 | Zero-increment clocks spent by value of time, at 10+0 (#47) | +5.6 ± 4.2 |
 | Moves-to-go clocks spent by value of time, at 40 moves in 10 s (#47) | +11.0 ± 6.2 |
+| The gen768r network: gen768r_03 with tune 65's constants, over the old network | +60.1 ± 15.4 |
+| then 03q (QAT), 04q, 05q, 06q, each over the one before | +13.4, +13.3, +22.0, +3.1 |
+
+The hash prefetch at make-move, the one-pass child accumulator and the lazy
+accumulator updates search the same trees about 9% faster.
 
 ## Download
 
@@ -94,8 +113,9 @@ Take the modern build unless the CPU lacks AVX2; most x86 CPUs from 2013 on
 have it. Every build runs the network: the modern ones with AVX2 kernels, the
 others with a portable int8 path (NEON dot-product on Apple silicon).
 
-Every release binary carries the current network (`luminex_sfq_i8.nnue`)
-inside it, so the binary alone plays at full strength. The network loads at
+Every release binary carries the current network, gen768r_06q, inside it
+(under the engine's default file name, `luminex_sfq_i8.nnue`), so the binary
+alone plays at full strength. The network loads at
 the first `isready` or `go`. To play with another network, point `NNUEFile`
 at its file; it is looked for as given, then next to the binary. Left at its
 default name, `NNUEFile` selects the built-in network. Each release also
@@ -160,7 +180,8 @@ Two interchangeable evaluation functions, selected at runtime with `UseNNUE`:
     horizontal mirroring.
   - First layer: 768 int16 lanes per perspective, so 1,536 inputs, with
     SCReLU activations.
-  - Dense tail: int8 16 → 32 → 1 layers. On AVX-512 VNNI hardware it runs on
+  - Dense tail: int8 16 → 32 → 1 layers, one per output bucket (eight, chosen
+    by the number of pieces on the board). On AVX-512 VNNI hardware it runs on
     `VPDPBUSD` with a batched L3.
   - The accumulator is updated lazily. A move only records its change, and the
     change is applied when a position is actually evaluated (many nodes are
@@ -229,10 +250,16 @@ before it lands:
 
 ## NNUE training
 
-The current network is a 768-wide HalfKAv2_hm net. It was warm-started from
-the Gen768 lineage and fine-tuned on Stockfish-relabel data: Leela positions
-with deep-Stockfish search labels, filtered to |eval| < 800 cp and plies
-8–200. The loss weights quiet positions, which are what the search consumes.
+The current network, gen768r_06q, is gen768's 768-wide HalfKAv2_hm feature
+layer with a revived dense tail split into eight output buckets. Six training
+runs took it to 1.95M steps of 131,072 positions on Leela Chess Zero's test91
+self-play games: the binpacks of the t91 LGS store, every month from November
+2025 to October 2026, with every position kept except those the binpacks mark
+to skip. The loss (power 3.0 on the win-probability error) weights quiet
+positions, which are what the search consumes; the last 30K steps of each
+release net train through the engine's int8 rounding (QAT). It is the gen768r
+line's last network: [`nnue/DEVLOG.md`](nnue/DEVLOG.md) has the runs and the
+measurements behind them.
 
 The training and data tooling lives in `nnue/` and `src/`:
 - the streaming trainer;

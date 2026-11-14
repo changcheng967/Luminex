@@ -2,7 +2,7 @@
 
 ## 1. General Metadata
 - **Network Name**: gen768r
-- **Target Engine / Application**: Luminex 6.6+ (LNB8 net format)
+- **Target Engine / Application**: Luminex v6.6.0, its only release (LNB8 net format; the line ended with gen768r_06q)
 - **Primary Use Case**: Chess Position Evaluation
 - **Weight Quantization Scheme**: Post-hoc (float training; FT stored float32 in the file, int16 x8192 in engine RAM; dense layers int8, one scale per layer per bucket)
 - **Internal Output Scale**: float centipawns (trainer), int32 centipawns (engine)
