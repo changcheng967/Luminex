@@ -1179,3 +1179,126 @@ for a knowledge hole the forensics name; none so far.
 first: test 82 (04q against CEB7B240), the margin tune, its values SPRT,
 the ladder, the tag. Gate 1 needs the box for minutes, so it fits any box
 session after that.
+
+---
+
+## 20. The gap to Stockfish, and what V5 must do (design draft, Nov 14)
+
+gen768r ends with run06: every t91 month has now been trained on, and
+the line's last net is a continuation, not a new design. This section
+puts the measurements since §19 in one place and turns them into V5's
+rules and its deciding experiments. It picks no architecture yet: the
+experiments below do that.
+
+**Equal nodes against Stockfish 19.** §17's protocol with Stockfish 19
+as the opponent in place of Stash 37 (main fba65a5 with gen768r_05q,
+100K nodes a move each, 2moves_v1, 1,000 games, mscope): **-584 +- 41
+Elo**, 0 wins, 933 losses, 67 draws (pentanomial 434/65/1/0/0). In the
+same setup 05q scores +167.5 +- 20.6 against Stash 37. At 3M nodes on
+three positions the nominal depths match (ours 25, 21, 29; Stockfish's
+25, 22, 29), and on mscope our search is faster in the middlegame
+(700K and 690K nodes/s against 504K and 543K) and slower in the rook
+endgame (1.22M against 1.40M). So the gap to Stockfish is not speed and
+not depth. It is what a node is worth: how accurate the leaf evaluation
+is, and which lines get the depth.
+
+**What that does to §17's attribution.** "Fixed by 8x or 64x the nodes"
+is now 48% of our confirmed loss against Stash (table below), and the
+eval's own share fell to 10%. But a mistake that 8x the nodes fixes is
+also one that a better eval fixes at 1x: Stockfish reaches at 100K nodes
+what our search needs 8-64x for. The eval's real weight is larger than
+its own share says, and the search's tree shape is the other part. The
+same chain against Stockfish 19 (referee, replays, attribution) runs
+overnight and splits our mistakes in those games.
+
+| loss attribution, share of confirmed loss | Nov 8 (300 games) | 04q (1,000) | 05q (1,000) |
+|---|---|---|---|
+| score against Stash 37 at 100K nodes | -63.2 +- 33.0 (Nov 6) | +144.3 +- 19.5 | +167.5 +- 20.6 |
+| loss per game (SF19 WDL) | 1.27 | 0.878 | 0.871 |
+| confirmed mistakes per game | 4.2 | 2.8 | 2.9 |
+| gone with a cold re-search at 1x | 32.8% | 35.7% | 35.2% |
+| gone with 8x / 64x the nodes | 20.7% / 17.9% | 31.1% / 16.2% | 29.5% / 18.2% |
+| search defect (our static eval is right) | 11.7% | 7.2% | 7.4% |
+| eval (learnable, deep, beyond labels) | 16.9% | 9.8% | 9.7% |
+| near-tie pairs: our static eval / SF's | 48.9% / 62.5% (88) | 57.6% / 58.1% (229) | 57.3% / 63.2% (268) |
+
+The forensic loss per game hardly moved from 04q to 05q while the score
+rose 23 Elo, as test 112 measured (+22.02 +- 8.50): at this level the
+loss metric is too coarse to rank one net against the next. Games
+decide.
+
+**What width costs, and what it bought.** The FT-width probe (Nov 12):
+05's float net widened by net2net (function preserved) and trained 36K
+steps with a fresh optimizer on 2B positions, against a 768 control.
+1024 lowered the held-out loss 0.20% and January's 0.10%; 1536 lowered
+them 0.45% and 0.19%. The workers price the same nets at identical evals
+(tests 111 and 110, 10+0.1): 1024 -23.84 +- 8.01 over 2,000 games, 1536
+-52.56 +- 8.43 over 2,018, at 0.897 and 0.755 of 768's nodes per second
+there (mscope measured 0.912 and 0.791). Caveat: 36K steps from a net
+converged at 768 is the cheapest probe, not full training; whether width
+pays when a wider net is trained from scratch is untested.
+
+**What the table costs.** LNF8 stores the feature weights as int8 (q <<
+7 on the x8192 grid, steps of 1/64, |w| <= 1.98; 63 of 18.9M clip on
+05q). Rounded after training, 05q's evals move 28.7 cp on average, so
+it needs QAT. Speed alone, at identical evals (05q's weights on the grid,
+as LNF8 against the same weights as LNB8; test 114): **+10.76 +- 7.97
+over 2,002 games**, while the workers' bench NPS moved only 1.2%. A
+smaller table is worth more under twenty games a worker than a single
+search shows. The trainer's QAT now rounds the feature layer to that
+grid (NNUE_QAT_FT8, 5497013); run06's second QAT phase trains the first
+net through it.
+
+**Where an evaluation's time goes** (05q, mscope, a Xeon 6982P-C with its
+TSC at 2.8 GHz, under the overnight chain's load). The forward pass alone
+(`evalbench`, a fixed position) takes 593-739 ns, and bringing a lazily
+updated accumulator current takes 1,468 TSC ticks, 524 ns, an evaluation
+in search (NNUE_PROFILE): about 55% forward, 45% accumulator.
+NNUE_PROFILE's own forward timer includes its density count, a scalar
+loop over the 1,536 activations, and reads 3,382 ticks (1.21 us): the
+earlier "70-72% forward" figure came from that timer and overstates the
+forward pass. 53.9% of the L1 activations are non-zero, so if neurons are
+independent only ~4.5% of the four-input blocks that one VPDPBUSD
+consumes are all zero: skipping zero blocks in L2 buys nothing on
+today's nets. The endgame position is the slowest (739 ns against 593 for
+the start position), which says evaluate() does more than the network
+there; that is a lead to read, not a number to design on.
+
+**Margins (test 113).** PR #71 widened reverse futility by 15 cp per
+missing piece below twelve, where the search audit measured its 1%-error
+margin growing ~40 cp per piece: -3.48 +- 4.09 over 8,088 games, H0
+accepted. A rule's error rate does not price the nodes a wider margin
+spends, so margin changes are judged in games only. gen768s's gate 2
+(§19) inherits this.
+
+**V5's rules.**
+1. The value net's accuracy per node is the lever. Stockfish's eval and
+   tree shape are where the 584 Elo lives; our speed already matches.
+2. Every component quotes its cost in worker Elo, measured at identical
+   evals, before it is adopted (§19's budget rule, now with test 114 and
+   tests 110/111 as the scale).
+3. Width is bought only if a from-scratch run shows it; the 36K-step
+   probe is not that test.
+4. The 8-bit table is V5's starting point if run06's 06q8 passes its
+   SPRT against 06q (the accuracy cost of QAT on the 1/64 grid against
+   the +10.8 of speed).
+
+**The deciding experiments.**
+- *E1, the Stockfish attribution* (mscope, tonight): our mistakes in the
+  1,000 games against Stockfish 19, split as in the table. If the eval
+  rows grow there, V5 is mostly an eval; if the node rows do, the search's
+  tree shape needs its own program beside V5.
+- *E2, width under full training* (box, one session): 768 and 1024, both
+  with the 8-bit table, trained from scratch on the same data, seed and
+  schedule for the same steps; held-out and January curves, then the two
+  nets in games on the workers. 1024 must win back ~24 Elo of speed.
+- *E3, trained sparsity* (box): an L1 penalty on the SCReLU outputs, with
+  density against held-out loss. It matters only if density falls to
+  ~25% or below at a small loss, where an L2 that skips zero blocks would
+  roughly halve the forward pass.
+- *E4, gen768s gate 1* (box, minutes): §19 unchanged, plus a calibration
+  curve per bucket, a head-width sweep (4/8/16/32) and the search audit's
+  nodes as a check on distribution shift.
+- *Data:* from scratch, V5 can use all of t91 again (9.8B positions from
+  November 2025 to October 2026, January's tail held out); what ran out
+  was the gen768r line's continued training on it.
