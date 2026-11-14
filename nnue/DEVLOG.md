@@ -1302,3 +1302,76 @@ spends, so margin changes are judged in games only. gen768s's gate 2
 - *Data:* from scratch, V5 can use all of t91 again (9.8B positions from
   November 2025 to October 2026, January's tail held out); what ran out
   was the gen768r line's continued training on it.
+
+**The design: gen1024s (Nov 14).** V5 is named for what it is: gen768s's
+search-cooperation design (a value tail and an error head per output
+bucket, the error read by the pruning margins) on a 1024-wide feature
+table stored in 8 bits ([V5-GEN1024S.md](V5-GEN1024S.md)). Each part
+answers a measurement above:
+- *The 8-bit table* is worth +10.76 +- 7.97 in speed alone on VNNI
+  workers (test 114) and +6.24 +- 7.71 on AVX2 builds (test 127). Test
+  129 (-5.28 +- 4.82) does not price it: its dev side also carried
+  branch nnue-ft-int8's 1536-lane accumulators against main's 1024, and
+  the accumulator array scales with NNUE_L1_MAX. Test 130 repeats it on
+  main's accumulators (branch ft-int8-on-main).
+- *Width 1024* becomes affordable with it: the 8-bit table at 1024 is
+  25.2 MB, against 37.7 MB for gen768r's int16 table at 768.
+- *The value tail* keeps gen768r's widths (16, 32): the tail-width test
+  bought 0.19%.
+- *The error head* is one linear readout per bucket (2,048 multiply-adds,
+  one sixteenth of the value tail's first layer). Gate 1a (below) found a
+  linear readout of the accumulator predicts the error as well as a
+  hidden layer of 4 to 32 units.
+
+**Gate 1a.** The value net gen768r_05, which trained on no part of
+January, scored on January's tail (T91 labels); the label is its error
+in expected-score units, |sigmoid(pred/400) - sigmoid(target/400)|. A
+head per bucket trains on 3M positions of the tail's first 16 files and
+is read on 1M of its last 4 (other games); 95% intervals from a bootstrap
+over files. Spearman with the actual error:
+
+| predictor | Spearman |
+|---|---|
+| the eval's size, \|pred\| | 0.478 (0.469 .. 0.488) |
+| piece count | -0.082 |
+| class (quiet, capture, check) | 0.155 |
+| linear readout of the 1,536 activations (ridge) | 0.579 (0.576 .. 0.582) |
+| head 1536 -> W -> 1, W = 4 / 8 / 16 / 32 | 0.486 / 0.563 / 0.580 / 0.532 |
+| W = 8 at the 0.8 quantile | 0.504, coverage 0.801 |
+
+The W = 8 head's calibration is close to the identity, decile by decile
+(predicted mean 0.0071 -> actual 0.0081, 0.0312 -> 0.0309, 0.0781 ->
+0.0784, 0.1224 -> 0.1245), so a margin can read it linearly. Two buckets
+(9-12 and 17-20 men) show no ranking within themselves; their heads need
+a look. This label is disagreement with the T91 teacher. Gate 1 proper
+(1b) scores the head against Stockfish 19's deep evaluation on the
+forensics positions, beside the engine's own |correction|.
+
+**The labels: BT4.** The t91 store also holds every month relabelled by
+Leela's BT4 network (binpacks/v6-bt4: BT4's value head, W - L and D, on
+the same games and positions; 8.56B positions after the binpacks' skip
+marks, the v6 filter marking about 13% more than base). Every gen768r
+run trained on base, T91's own values. On BT4's labels gen768r_06,
+untouched, scores loss 0.001304 and MAE 137.5 cp on a January tail,
+against 0.001978 and 155.5 on T91's: BT4's values are the smoother
+target. The material check passes at T91's scale (a piece up labelled
+beyond +800 47% of the time, against 45%; a rook 93 against 91; a queen
+99 against 99), so the search margins keep their meaning. Result mixing
+stays out: §12 measured it at -78 on test91, whose games are 86%
+eval-adjudicated.
+
+**The first pair.** gen1024s_01's value net (run A: gen768r_06 widened by
+net2net to 1024, a fresh optimizer, 450K steps from lr 5e-5 on the BT4
+months, then QAT through the 8-bit table) against gen768s_01's (run B:
+the same at 768, the V4 design's width). Same data (November 2025 and
+every 2026 month, 6.10B positions), seed and schedule. A against B prices
+width on the new labels; B against gen768r_06q prices the labels.
+
+**The held-out instrument.** January has been every gen768r run's
+game-disjoint month, and gen768r_06 trained on its head, so a January
+tail no longer measures generalization for anything descended from 06:
+the comparison favours 06q over 05q, and the -1.2% above is not the
+line's gain (test 128 is). gen1024s and gen768s keep a BT4-labelled
+January tail (the last 35 chunks, 10,947,134 positions) only to watch the
+runs. Their instrument is the Stockfish-19-refereed positions of the
+forensics games, whose truth is no t91 label at all.
