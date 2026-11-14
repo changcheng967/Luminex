@@ -105,22 +105,26 @@ Latest release: [github.com/changcheng967/Luminex/releases](https://github.com/c
 |----------|--------|-----|
 | Linux | `luminex-linux-x86-64-modern` | AVX2 (x86-64-v3) |
 | Linux | `luminex-linux-x86-64` | SSE4.2 and POPCNT (x86-64-v2) |
+| Linux, glibc 2.35 (Ubuntu 22.04 and older hosts) | `luminex-linux-x86-64-glibc235-modern` | AVX2 (x86-64-v3) |
+| Linux, glibc 2.35 | `luminex-linux-x86-64-glibc235` | SSE4.2 and POPCNT (x86-64-v2) |
 | Windows | `luminex-windows-x86-64-modern.exe` | AVX2 |
 | Windows | `luminex-windows-x86-64.exe` | POPCNT, no AVX2 needed |
 | macOS | `luminex-macos-arm64` | Apple silicon |
 
 Take the modern build unless the CPU lacks AVX2; most x86 CPUs from 2013 on
-have it. Every build runs the network: the modern ones with AVX2 kernels, the
+have it. The plain Linux builds need glibc 2.38 or newer (Ubuntu 24.04); the
+glibc235 builds run on older systems. Every build runs the network: the modern ones with AVX2 kernels, the
 others with a portable int8 path (NEON dot-product on Apple silicon).
 
-Every release binary carries the current network, gen768r_06q, inside it
-(under the engine's default file name, `luminex_sfq_i8.nnue`), so the binary
-alone plays at full strength. The network loads at
+Every release binary carries the current network,
+`luminex_gen768r_06q_i8.nnue`, inside it, so the binary alone plays at full
+strength, and reports it by that name. The network loads at
 the first `isready` or `go`. To play with another network, point `NNUEFile`
 at its file; it is looked for as given, then next to the binary. Left at its
-default name, `NNUEFile` selects the built-in network. Each release also
-attaches the network as a separate file for builds without one inside, which
-look for it in the working directory and next to the binary. Without a
+default name, the network's own, `NNUEFile` selects the built-in network.
+Each release also attaches the network under that name, for builds without
+one inside, which look for it in the working directory and next to the
+binary. Without a
 loadable network the engine says so with an `info string` and uses the
 hand-crafted evaluation.
 
@@ -146,7 +150,7 @@ go movetime 1000
 | `UCI_ShowWDL` | false | Append `wdl W D L` (per mille, approximate model) to info lines |
 | `Ponder` | false | Allow pondering (`go ponder` / `ponderhit`) |
 | `UseNNUE` | true | NNUE evaluation (falls back to the HCE when no network loads) |
-| `NNUEFile` | `luminex_sfq_i8.nnue` | Network file to load; the default name selects the built-in network |
+| `NNUEFile` | `luminex_gen768r_06q_i8.nnue` | Network file to load; the default, the shipped network's own name, selects the built-in network |
 | `Contempt` | 0 | Draw avoidance (centipawns) |
 | `Move Overhead` | 30 | Time-management safety margin per move (ms) |
 | `TimeSchedule` | 2 | Clock schedule with an increment: 0 = the old formula, 1 and 2 = schedules solved by dynamic programming (2: early moves are worth more) |
@@ -287,13 +291,16 @@ cmake -B build -DCMAKE_BUILD_TYPE=Release
 cmake --build build --config Release
 ```
 
-That binary has no network inside; it loads `luminex_sfq_i8.nnue` from the
-working directory or its own directory. To build the network in, as the
-releases do, fetch the pinned file and name it at configure time:
+That binary has no network inside; it loads the shipped network,
+`luminex_gen768r_06q_i8.nnue`, from the working directory or its own
+directory. The name comes from `.github/scripts/fetch-net.sh`, which pins the
+network: CMake reads it there, so a build always names the network it ships
+with. To build the network in, as the releases do, fetch the pinned file and
+ask for it at configure time:
 
 ```bash
 bash .github/scripts/fetch-net.sh
-cmake -B build -DCMAKE_BUILD_TYPE=Release -DLUMINEX_EMBED_NET=net/luminex_sfq_i8.nnue
+cmake -B build -DCMAKE_BUILD_TYPE=Release -DLUMINEX_EMBED_PINNED=ON
 cmake --build build --config Release
 ```
 

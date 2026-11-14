@@ -497,7 +497,11 @@ bool load_embedded() {
     if (net.size == 0) return false;
     MemoryBuffer buf(net.data, net.size);
     std::istream f(&buf);
+#ifdef LUMINEX_EMBED_NAME
+    return load_stream(f, std::string("built-in ") + LUMINEX_EMBED_NAME);   // the built-in file's own name
+#else
     return load_stream(f, std::string("built-in ") + DEFAULT_NET);
+#endif
 }
 
 static inline float clip01(float x) { float c = x < 0.0f ? 0.0f : (x > 1.0f ? 1.0f : x); return c * c; }

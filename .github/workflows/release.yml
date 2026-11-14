@@ -33,7 +33,48 @@ jobs:
     - name: Fetch the network
       run: bash .github/scripts/fetch-net.sh
     - name: Configure
-      run: cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DCI=ON ${{ matrix.cmake_flags }} -DLUMINEX_EMBED_NET=net/luminex_sfq_i8.nnue
+      run: cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DCI=ON ${{ matrix.cmake_flags }} -DLUMINEX_EMBED_PINNED=ON
+    - name: Build
+      run: cmake --build build --config Release
+    - name: Check instruction set
+      run: bash .github/scripts/check-isa.sh build/luminex ${{ matrix.level }}
+    - name: Check the built-in network
+      run: bash .github/scripts/check-net.sh build/luminex
+    - name: Package
+      run: |
+        strip build/luminex
+        chmod +x build/luminex
+        mv build/luminex luminex-${{ matrix.suffix }}
+    - uses: actions/upload-artifact@v4
+      with:
+        name: luminex-${{ matrix.suffix }}
+        path: luminex-${{ matrix.suffix }}
+
+  # glibc-2.35 builds for older hosts (Ubuntu 22.04 and its kind), as build.yml
+  # makes for the development builds: the ubuntu-latest binaries above need
+  # glibc 2.38 and GLIBCXX 3.4.32. gcc-13 on the 22.04 image, libstdc++ and
+  # libgcc linked statically, both instruction-set levels.
+  build-linux-legacy:
+    runs-on: ubuntu-22.04
+    strategy:
+      matrix:
+        include:
+          - suffix: linux-x86-64-glibc235-modern
+            march: x86-64-v3
+            level: avx2
+          - suffix: linux-x86-64-glibc235
+            march: x86-64-v2
+            level: baseline
+    steps:
+    - uses: actions/checkout@v5
+    - name: Install dependencies
+      run: |
+        sudo add-apt-repository -y ppa:ubuntu-toolchain-r/test
+        sudo apt-get update && sudo apt-get install -y ninja-build g++-13
+    - name: Fetch the network
+      run: bash .github/scripts/fetch-net.sh
+    - name: Configure
+      run: cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DCI=ON -DCMAKE_CXX_COMPILER=g++-13 -DLUMINEX_MARCH=${{ matrix.march }} -DCMAKE_CXX_FLAGS="-static-libstdc++ -static-libgcc" -DLUMINEX_EMBED_PINNED=ON
     - name: Build
       run: cmake --build build --config Release
     - name: Check instruction set
@@ -54,7 +95,7 @@ jobs:
     runs-on: windows-2022  # pin: windows-latest image no longer exposes a VS instance to cmake
     # cmd, as in build.yml's Windows jobs, so CI runs these exact command
     # lines. PowerShell, the default, splits an unquoted argument such as
-    # -DLUMINEX_EMBED_NET=net/luminex_sfq_i8.nnue at the dot.
+    # -DLUMINEX_EMBED_NET=net/<file>.nnue at the dot.
     defaults:
       run:
         shell: cmd
@@ -75,7 +116,7 @@ jobs:
       shell: bash
       run: bash .github/scripts/fetch-net.sh
     - name: Configure
-      run: cmake -B build -G "Visual Studio 17 2022" -A x64 ${{ matrix.cmake_flags }} -DLUMINEX_EMBED_NET=net/luminex_sfq_i8.nnue
+      run: cmake -B build -G "Visual Studio 17 2022" -A x64 ${{ matrix.cmake_flags }} -DLUMINEX_EMBED_PINNED=ON
     - name: Build
       run: cmake --build build --config Release
     - name: Check instruction set
@@ -101,7 +142,7 @@ jobs:
     - name: Fetch the network
       run: bash .github/scripts/fetch-net.sh
     - name: Configure
-      run: cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DLUMINEX_EMBED_NET=net/luminex_sfq_i8.nnue
+      run: cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DLUMINEX_EMBED_PINNED=ON
     - name: Build
       run: cmake --build build --config Release
     - name: Check instruction set
@@ -119,7 +160,7 @@ jobs:
         path: luminex-macos-arm64
 
   upload-assets:
-    needs: [build-linux, build-windows, build-macos]
+    needs: [build-linux, build-linux-legacy, build-windows, build-macos]
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -144,11 +185,17 @@ jobs:
             --notes "## Luminex $TAG" \
             --target "$GITHUB_SHA"
         fi
+        # The network goes up under its real name, the pinned asset's file name
+        # (fetch-net.sh saved it under that name), never under another one.
+        net_name=$(sed -n 's#^url=.*/##p' .github/scripts/fetch-net.sh)
+        [ -f "net/$net_name" ] || { echo "net/$net_name is missing"; exit 1; }
         gh release upload "$TAG" \
           artifacts/luminex-linux-x86-64-modern/luminex-linux-x86-64-modern \
           artifacts/luminex-linux-x86-64/luminex-linux-x86-64 \
+          artifacts/luminex-linux-x86-64-glibc235-modern/luminex-linux-x86-64-glibc235-modern \
+          artifacts/luminex-linux-x86-64-glibc235/luminex-linux-x86-64-glibc235 \
           artifacts/luminex-windows-x86-64-modern/luminex-windows-x86-64-modern.exe \
           artifacts/luminex-windows-x86-64/luminex-windows-x86-64.exe \
           artifacts/luminex-macos-arm64/luminex-macos-arm64 \
-          net/luminex_sfq_i8.nnue \
+          "net/$net_name" \
           --clobber
