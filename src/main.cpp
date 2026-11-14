@@ -168,6 +168,12 @@ int main(int argc, char* argv[]) {
         return 0;
     }
 
+    // nnuecheck [NETFILE]: every SIMD kernel level must evaluate alike (CI
+    // runs it on each release binary, and under Intel SDE for the levels the
+    // runner's CPU lacks); the exit status says whether they did.
+    if (argc > 1 && std::string(argv[1]) == "nnuecheck")
+        return run_nnuecheck(argc > 2 ? argv[2] : "") ? 0 : 1;
+
     // Check for divide mode
     if (argc > 1 && std::string(argv[1]) == "divide") {
         int depth = (argc > 2) ? std::atoi(argv[2]) : 3;

@@ -5,22 +5,20 @@
 #
 #   check-deps.py BINARY ASSET
 #
-# ASSET is the binary's release name (luminex-linux-x86-64-modern,
-# luminex-linux-x86-64-glibc235, luminex-windows-x86-64.exe,
-# luminex-macos-arm64, ...). A binary that needs more than its row says fails
-# the build. v6.6.0's first binaries needed macOS 26, as clang builds for the
-# runner's macOS without a deployment target, and on Windows the Visual C++
-# Redistributable, for the DLL runtime; their notes said neither. A limit
-# here and its row in the notes change together.
+# ASSET is the binary's release name: luminex-linux-x86-64,
+# luminex-windows-x86-64.exe or luminex-macos-arm64. A binary that needs more
+# than its row says fails the build. v6.6.0's first binaries needed macOS 26,
+# as clang builds for the runner's macOS without a deployment target, and on
+# Windows the Visual C++ Redistributable, for the DLL runtime; their notes
+# said neither. A limit here and its row in the notes change together.
 import struct
 import sys
 
-# Linux: the newest symbol version each library may be asked for. glibc 2.38
-# and GCC 13's libstdc++ are Ubuntu 24.04's; the glibc235 builds link
-# libstdc++ and libgcc in and need glibc 2.35, Ubuntu 22.04's.
-LINUX = {"GLIBC": (2, 38), "GLIBCXX": (3, 4, 32), "CXXABI": (1, 3, 14)}
-LINUX_235 = {"GLIBC": (2, 35)}
-LINUX_235_NO_LIBS = ("libstdc++.so.6", "libgcc_s.so.1")
+# Linux: the newest symbol version each library may be asked for. The Linux
+# binary is built on Ubuntu 22.04 with libstdc++ and libgcc linked in, so it
+# needs glibc 2.35, Ubuntu 22.04's, and neither of those libraries.
+LINUX = {"GLIBC": (2, 35)}
+LINUX_NO_LIBS = ("libstdc++.so.6", "libgcc_s.so.1")
 # macOS 13.3, CMakeLists.txt's deployment target: the first with std::to_chars
 # for floating point, which std::format needs.
 MACOS_MIN = (13, 3, 0)
@@ -114,9 +112,9 @@ def elf_needs(b):
     return libs, versions
 
 
-def check_linux(b, glibc235):
+def check_linux(b):
     libs, versions = elf_needs(b)
-    limits = LINUX_235 if glibc235 else LINUX
+    limits = LINUX
     errors, newest = [], {}
     for lib, names in versions.items():
         for name in names:
@@ -128,8 +126,7 @@ def check_linux(b, glibc235):
                 newest[prefix] = num
             if prefix in limits and num > limits[prefix]:
                 errors.append(f"{lib} {name}, newer than {prefix}_{'.'.join(map(str, limits[prefix]))}")
-    if glibc235:
-        errors += [f"links {lib}, which this build carries inside" for lib in libs if lib in LINUX_235_NO_LIBS]
+    errors += [f"links {lib}, which this build carries inside" for lib in libs if lib in LINUX_NO_LIBS]
     summary = ", ".join(f"{p}_{'.'.join(map(str, n))}" for p, n in sorted(newest.items()))
     return f"libraries {', '.join(libs)}; newest versions {summary}", errors
 
@@ -206,7 +203,7 @@ def main():
     path, asset = sys.argv[1], sys.argv[2]
     b = Binary(path)
     if asset.startswith("luminex-linux-"):
-        summary, errors = check_linux(b, "glibc235" in asset)
+        summary, errors = check_linux(b)
     elif asset.startswith("luminex-macos-"):
         summary, errors = check_macos(b)
     elif asset.startswith("luminex-windows-"):

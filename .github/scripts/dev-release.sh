@@ -37,10 +37,7 @@ else
 fi
 
 # Every build job's binary, and the network on its own
-assets=(luminex-linux-x86-64-modern luminex-linux-x86-64
-        luminex-linux-x86-64-glibc235-modern luminex-linux-x86-64-glibc235
-        luminex-windows-x86-64-modern.exe luminex-windows-x86-64.exe
-        luminex-macos-arm64 "$net_name")
+assets=(luminex-linux-x86-64 luminex-windows-x86-64.exe luminex-macos-arm64 "$net_name")
 files=()
 for a in "${assets[@]}"; do
   [ -f "$dir/$a" ] || { echo "missing $dir/$a" >&2; exit 1; }
@@ -112,15 +109,11 @@ fi
   echo
   echo "| Platform | Binary | CPU | Needs |"
   echo "|---|---|---|---|"
-  echo "| Linux | \`luminex-linux-x86-64-modern\` | AVX2 (x86-64-v3) | Ubuntu 24.04 or newer (glibc 2.38, GCC 13's libstdc++) |"
-  echo "| Linux | \`luminex-linux-x86-64\` | SSE4.2, POPCNT (x86-64-v2) | Ubuntu 24.04 or newer (glibc 2.38, GCC 13's libstdc++) |"
-  echo "| Linux | \`luminex-linux-x86-64-glibc235-modern\` | AVX2 (x86-64-v3) | Ubuntu 22.04 or newer (glibc 2.35) |"
-  echo "| Linux | \`luminex-linux-x86-64-glibc235\` | SSE4.2, POPCNT (x86-64-v2) | Ubuntu 22.04 or newer (glibc 2.35) |"
-  echo "| Windows | \`luminex-windows-x86-64-modern.exe\` | AVX2 | nothing to install |"
-  echo "| Windows | \`luminex-windows-x86-64.exe\` | POPCNT | nothing to install |"
+  echo "| Linux | \`luminex-linux-x86-64\` | any x86-64 with SSE4.2 and POPCNT (x86-64-v2) | Ubuntu 22.04 or newer (glibc 2.35) |"
+  echo "| Windows | \`luminex-windows-x86-64.exe\` | any x86-64 with POPCNT | nothing to install |"
   echo "| macOS | \`luminex-macos-arm64\` | Apple silicon | macOS 13.3 or newer |"
   echo
-  echo "Take a \`-modern\` build unless the CPU lacks AVX2 (Intel Core since 2013, AMD since 2015). Each binary is about 76 MB, the network included."
+  echo "One binary per platform: the x86-64 ones carry the network kernels for every instruction-set level (AVX-512 with VNNI, AVX-512, AVX-VNNI, AVX2 and a baseline) and run the best one the CPU supports; the \`info string\` that reports the network names it. Each binary is about 76 MB, the network included."
   echo
   echo "## Reporting a result or a bug"
   echo

@@ -34,6 +34,15 @@ non-regression test, and a test stopped undecided.
 
 | Platform | Binary | CPU | Needs |
 |---|---|---|---|
+| Linux | `luminex-linux-x86-64` | any x86-64 with SSE4.2 and POPCNT (x86-64-v2) | Ubuntu 22.04 or newer (glibc 2.35) |
+| Windows | `luminex-windows-x86-64.exe` | any x86-64 with POPCNT | nothing to install |
+| macOS | `luminex-macos-arm64` | Apple silicon | macOS 13.3 or newer |
+
+One binary per platform: the x86-64 ones carry the network kernels of every
+instruction-set level (AVX-512 with VNNI, AVX-512, AVX-VNNI, AVX2, a
+baseline), use the best the CPU supports, and name it at the end of the
+`info string` that reports the network. Every level evaluates alike
+(nnuecheck in CI).
 
 Needs is what the binary needs from the system: glibc and libstdc++ on Linux,
 any runtime to install on Windows, the oldest macOS. check-deps.py reads it
