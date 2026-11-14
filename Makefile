@@ -28,6 +28,9 @@ BUILD_DIR ?= build-openbench
 # routes it through try_add_flag(), which silently drops flags the compiler
 # rejects — so you get an unoptimised ARM binary with no warning. Pick per
 # architecture instead.
+# Measurement branch: every worker builds the AVX2 level the release binaries use
+# (x86-64-v3), so a test here prices the int8 feature table on AVX2 code paths.
+MARCH     := x86-64-v3
 UNAME_M   := $(shell uname -m)
 ifeq ($(UNAME_M),aarch64)
   MARCH   ?= armv8-a
