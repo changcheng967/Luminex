@@ -9,7 +9,8 @@ on:
 
 # Every build carries the shipped network (fetch-net.sh pins the file) and
 # must evaluate with it when run by itself from an empty directory
-# (check-net.sh), as the release binaries are. Every build also names itself
+# (check-net.sh), as the release binaries are, and need no more from the
+# system than the release notes say (check-deps.py). Every build also names itself
 # after the development build (meta) and keeps its binary as an artifact; on
 # main, dev-release publishes them as the rolling luminex-dev pre-release.
 jobs:
@@ -49,6 +50,11 @@ jobs:
       run: |
         strip build/luminex
         mv build/luminex luminex-linux-x86-64-modern
+    - name: Check what it needs from the system
+      shell: bash
+      run: |
+        py=python3; [ "$RUNNER_OS" = Windows ] && py=python
+        "$py" .github/scripts/check-deps.py luminex-linux-x86-64-modern luminex-linux-x86-64-modern
     - uses: actions/upload-artifact@v4
       with:
         name: luminex-linux-x86-64-modern
@@ -80,6 +86,11 @@ jobs:
       run: |
         strip build/luminex
         mv build/luminex luminex-linux-x86-64
+    - name: Check what it needs from the system
+      shell: bash
+      run: |
+        py=python3; [ "$RUNNER_OS" = Windows ] && py=python
+        "$py" .github/scripts/check-deps.py luminex-linux-x86-64 luminex-linux-x86-64
     - uses: actions/upload-artifact@v4
       with:
         name: luminex-linux-x86-64
@@ -125,6 +136,11 @@ jobs:
       run: |
         strip build/luminex
         mv build/luminex luminex-${{ matrix.suffix }}
+    - name: Check what it needs from the system
+      shell: bash
+      run: |
+        py=python3; [ "$RUNNER_OS" = Windows ] && py=python
+        "$py" .github/scripts/check-deps.py luminex-${{ matrix.suffix }} luminex-${{ matrix.suffix }}
     - uses: actions/upload-artifact@v4
       with:
         name: luminex-${{ matrix.suffix }}
@@ -161,6 +177,11 @@ jobs:
     - name: Package
       shell: bash
       run: mv build/Release/luminex.exe luminex-windows-x86-64-modern.exe
+    - name: Check what it needs from the system
+      shell: bash
+      run: |
+        py=python3; [ "$RUNNER_OS" = Windows ] && py=python
+        "$py" .github/scripts/check-deps.py luminex-windows-x86-64-modern.exe luminex-windows-x86-64-modern.exe
     - uses: actions/upload-artifact@v4
       with:
         name: luminex-windows-x86-64-modern
@@ -196,6 +217,11 @@ jobs:
     - name: Package
       shell: bash
       run: mv build/Release/luminex.exe luminex-windows-x86-64.exe
+    - name: Check what it needs from the system
+      shell: bash
+      run: |
+        py=python3; [ "$RUNNER_OS" = Windows ] && py=python
+        "$py" .github/scripts/check-deps.py luminex-windows-x86-64.exe luminex-windows-x86-64.exe
     - uses: actions/upload-artifact@v4
       with:
         name: luminex-windows-x86-64
@@ -227,6 +253,11 @@ jobs:
       run: |
         strip build/luminex
         mv build/luminex luminex-macos-arm64
+    - name: Check what it needs from the system
+      shell: bash
+      run: |
+        py=python3; [ "$RUNNER_OS" = Windows ] && py=python
+        "$py" .github/scripts/check-deps.py luminex-macos-arm64 luminex-macos-arm64
     - uses: actions/upload-artifact@v4
       with:
         name: luminex-macos-arm64

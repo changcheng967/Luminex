@@ -8,6 +8,10 @@ string(REGEX MATCH "ENGINE_VERSION = \"([0-9]+\\.[0-9]+\\.[0-9]+)\"" _LUX_VER "$
 if(NOT CMAKE_MATCH_1)
     message(FATAL_ERROR "cannot parse ENGINE_VERSION from src/luminex.h")
 endif()
+# The oldest macOS the binary runs on: 11.0, the first on Apple silicon. With
+# no target, clang builds for the macOS it runs on, so v6.6.0's first macOS
+# binary needed macOS 26, the runner's. project() reads it, so it comes first.
+set(CMAKE_OSX_DEPLOYMENT_TARGET "11.0" CACHE STRING "Oldest macOS the binary runs on")
 project(Luminex VERSION ${CMAKE_MATCH_1} LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 23)
@@ -31,6 +35,10 @@ endfunction()
 
 # Compiler flags for maximum performance
 if(MSVC)
+    # The C and C++ runtime linked into the .exe (/MT), so it runs on a Windows
+    # without the Visual C++ Redistributable; v6.6.0's first Windows binaries
+    # needed it (MSVCP140, VCRUNTIME140 and VCRUNTIME140_1 DLLs).
+    set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
     add_compile_options(/W4 /Zi)
     if(CMAKE_BUILD_TYPE STREQUAL "Debug")
         add_compile_options(/Od /RTC1)
