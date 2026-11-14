@@ -1407,3 +1407,51 @@ buckets had already learned. It belongs to a from-scratch V5 run.
 Folding keeps the table's size; keeping the block at inference with
 fewer king buckets would shrink the table, but the king-bucket crossing
 counts of Nov 6 put fewer buckets at only 1-7% of speed.
+
+**The first result (Nov 14).** gen1024s_01q (16-bit table) against
+gen768r_06q, both on main: **+58.15 +- 14.26 over 790 games** (test 136,
+W212 L81 D497, LLR 2.97). That prices the package; run B and test 137
+split it into width, labels and format.
+
+**Where the rest of V5 should go.** The Stockfish 19 forensics (1,000
+games at 100K nodes, 2,077 confirmed mistakes) put 81% of the confirmed
+loss on the search side (32% gone with a cold re-search, 49% with 8-64x
+the nodes), 7% on search defects and 11% on the eval; 89% is positional
+(tactics allowed 9.7%, missed 1.5%), 92.5% falls in balanced positions,
+and 84% in positions with 21 or more pieces (output buckets 5-7). In
+near ties our static eval already picks the better child about as often
+as Stockfish's (58.6% against 61.4%). So V5's additions should tell the
+search more, not see more tactics: threat inputs would address the 11%.
+Beyond width and the error head, four candidates, each with its gate:
+- *A policy head.* The store keeps lc0's full visit distribution for all
+  10.8B t91 positions, a move-ordering signal no NNUE engine trains on;
+  49% of the loss is the right line not getting depth. A head from the
+  2048 activations to from-square and to-square logits, read only at
+  nodes deep enough for ordering to matter, would order quiet moves
+  ahead of the history tables. Gate: on held-out positions, its top-1
+  and top-3 agreement with lc0's best move against our engine's quiet
+  ordering at the same positions; then depth at fixed nodes and an SPRT.
+- *A draw head.* BT4's relabel carries D next to W-L. One number cannot
+  tell a dead-equal position from a sharp one, and nearly all the loss
+  is in balanced positions; a D output per bucket (one more dot product)
+  lets the search spend effort where the result is still open. Gate: D's
+  calibration on the January tail, then an SPRT of one search use.
+- *Output buckets cut by loss, not by piece count.* Three of the eight
+  buckets (21-32 pieces) hold 84% of the loss. Re-cut the boundaries so
+  the opening and middlegame get more of them, at the same size. Gate:
+  held-out loss per piece-count band in a short run, then an SPRT.
+- *A sparse forward pass (engine).* At 10+0.1 speed is Elo (1024's 10%
+  NPS cost alone was -23.84 in test 111), and the forward pass is about
+  55% of an evaluation while computing all 2048 activations, many of
+  them zero after the clipped activation. Skipping zero blocks would
+  make width cheaper. Gate: the activations' zero fraction on game
+  positions, then NPS at identical evals.
+
+**A method note on search screens.** The fixed-node screen s3 (Nov 15,
+100K nodes, gauntlet against main, 600 games a variant) measured its own
+limit: its unchanged control read +16.3 at 490 games, inside its +-21
+noise, and no variant had separated from the control except lmr_m1,
+which read worse. Screens of this size can no longer resolve the small
+search changes left (qsearch's hash stores, #69, had already gone from
++31.4 in an earlier screen to +1.29 at 10+0.1), so small search changes
+go straight to an SPRT, and a screen's pass is triage, not evidence.
