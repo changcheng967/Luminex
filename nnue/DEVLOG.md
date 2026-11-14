@@ -20,8 +20,9 @@ generation to the V13/V14 architecture program. Dates are first-commit dates fro
 | gen768 p1–p5 | Sep 2026 | same arch, multi-pass training | p4: 4.21B · p5: 5.37B | p4 MAE 176.1 ≈ baseline (saturation signal) |
 | V13 | Sep 2026+ | FM interaction, factorized buckets, material bucketing | — | **Spec complete**; DCU search picking hyperparams |
 | V14 | future | Residual topology + mobility + policy head | — | **Spec complete** |
-| gen768r | Nov 2026 | gen768's feature layer, the revived tail through 8 output buckets; QAT (03q to 06q) | t91 binpacks Feb–Oct 2026 (3.7B); 05: Nov–Dec 2025 + Feb–May 2026 (6.6B); 06: Dec 2025 + Jan + Jun–Oct 2026 (6.0B) | **In main** as gen768r_06q (E3397B0F), the line's last net; [V3-GEN768R.md](V3-GEN768R.md) |
-| gen768s | Nov 2026 | gen768r + one error head per bucket on the accumulator, read by the pruning margins | gen768r's + error labels | **Design**, §19 and [V4-GEN768S.md](V4-GEN768S.md) |
+| gen768r | Nov 2026 | gen768's feature layer, the revived tail through 8 output buckets; QAT (03q to 06q) | t91 binpacks Feb–Oct 2026 (3.7B); 05: Nov–Dec 2025 + Feb–May 2026 (6.6B); 06: Dec 2025 + Jan + Jun–Oct 2026 (6.0B) | **Released in v6.6.0** as gen768r_06q (E3397B0F), the line's last net; [V3-GEN768R.md](V3-GEN768R.md) |
+| gen768s | Nov 2026 | gen768r + one error head per bucket on the accumulator, read by the pruning margins | gen768r's + error labels | **Design**; gate 1a passed (§20); gen768s_01's value net is gen1024s_01's width control; §19 and [V4-GEN768S.md](V4-GEN768S.md) |
+| gen1024s (V5) | Nov 2026 | gen768s's value tails and a linear error head per bucket, on a 1024-wide 8-bit feature table (LNF8 grid) | t91 relabelled by Leela BT4 (binpacks/v6-bt4, 8.6B); game-disjoint check: the Stockfish-19-refereed forensics positions (January is spent) | **Design**, gen1024s_01's value net in training; §20 and [V5-GEN1024S.md](V5-GEN1024S.md) |
 
 ---
 
