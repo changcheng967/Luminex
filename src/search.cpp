@@ -1237,14 +1237,15 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
         }
 
         // Late Move Reduction: reduce moves that are unlikely to be best
-        // Apply LMR to quiet moves and losing captures (SEE < 0)
+        // Apply LMR to quiet moves and losing captures (SEE < 0), from the
+        // second move at non-PV nodes and the fourth at PV nodes
         // But NEVER reduce moves that give check — they are forcing
         Depth new_depth = depth - 1;
         int lmr_reduction = 0;  // actual reduction, before extensions
         bool gives_chk = gives_check(m);
         bool is_losing_capture = m.is_capture() && !m.is_promotion() && depth >= 1 &&
-                                  !pos.see_ge(m, Value(-depth * 80));
-        bool do_lmr = depth >= 3 && moves_played >= 3 &&
+                                  !pos.see_ge(m, VALUE_ZERO);
+        bool do_lmr = depth >= 3 && moves_played >= (pv_node ? 3 : 1) &&
                       (is_quiet || is_losing_capture) && !gives_chk;
 
         if (do_lmr) g_stats.lmr_total++;
