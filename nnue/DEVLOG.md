@@ -1375,6 +1375,13 @@ months, then QAT through the 8-bit table) against gen768s_01's (run B:
 the same at 768, the V4 design's width). Same data (November 2025 and
 every 2026 month, 6.10B positions), seed and schedule. A against B prices
 width on the new labels; B against gen768r_06q prices the labels.
+Reading the SPRTs: A against gen768r_06q prices the whole package at
+once (width 1024, BT4 labels and the 8-bit table), so a pass there
+credits none of the three by itself. The format is A in 8 bits against
+A in 16 bits from the same float net, head to head (test 130's
+comparison, which found nothing at 768); width is A against B, which
+share the labels, the data, the 8-bit QAT, the seed and the schedule.
+Each result is written up under the comparison that isolates it.
 
 **The held-out instrument.** January has been every gen768r run's
 game-disjoint month, and gen768r_06 trained on its head, so a January
@@ -1384,3 +1391,19 @@ line's gain (test 128 is). gen1024s and gen768s keep a BT4-labelled
 January tail (the last 35 chunks, 10,947,134 positions) only to watch the
 runs. Their instrument is the Stockfish-19-refereed positions of the
 forensics games, whose truth is no t91 label at all.
+
+**Not taken yet: a shared piece-square block.** A draft of Nov 9 (branch
+nnue-factorize-draft, commit f9d19ad, never run; archived as a bundle on
+the OpenBench host, /opt/openbench-backups) trains one 768-row
+piece-square block shared by all 32 king buckets: each bucket's rows
+read as its own weights plus the block, autograd sums every bucket's
+gradient into it, and it is folded into the buckets before every
+validation and save, so the engine's table and file format do not
+change. The gain it aims at is data efficiency: a king square the data
+rarely shows still learns its piece-square terms from every position.
+It was deferred because it predates QAT and the dense feature layer, and
+because every gen768r run warm-started from a converged net, whose rare
+buckets had already learned. It belongs to a from-scratch V5 run.
+Folding keeps the table's size; keeping the block at inference with
+fewer king buckets would shrink the table, but the king-bucket crossing
+counts of Nov 6 put fewer buckets at only 1-7% of speed.
