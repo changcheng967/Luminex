@@ -127,7 +127,7 @@ avxvnni`):
 | `avx512` | AVX-512 without VNNI: Skylake-SP and Skylake-X | AVX-512 lanes, AVX2 dense layers |
 | `avxvnni` | AVX2 with AVX-VNNI: Intel Alder Lake and later (Core Ultra included) | AVX2, dense layers on VEX `VPDPBUSD` |
 | `avx2` | AVX2 (x86-64-v3): Intel since Haswell (2013), AMD since Excavator (2015) | AVX2 |
-| `base` | every other x86-64 | SSE2 lanes, portable int8 dense layers |
+| `base` | every other x86-64 | SSE2; the dense layers on SSSE3's `pmaddubsw` on Linux (whose base is x86-64-v2) |
 
 Every level computes the same evaluation, bit for bit; CI checks it on each
 binary (`nnuecheck`, under Intel SDE for CPUs the runners lack). CI also

@@ -37,9 +37,10 @@
 //   which matches the contracted builds (OpenBench's included).
 // - The accumulator lanes saturate after every row at every SIMD level; the
 //   dispatch build's base level does too (SSE2 below). The portable scalar
-//   loops (ARM without dot product, and x86 builds without AVX2 when
-//   LUMINEX_DISPATCH is off) clamp a child's first add and subtract once, as
-//   they always have, which differs only where a lane saturates.
+//   loops (ARM, and x86 builds without AVX2 when LUMINEX_DISPATCH is off)
+//   clamp a child's first add and subtract once, as they always have, which
+//   differs only where a lane saturates. (So ARM builds can differ from x86
+//   ones in a few evaluations: nnuecheck's digest shows it.)
 // Float (LNN1) nets sum in a different order per level and are not exact
 // across levels.
 
@@ -248,6 +249,37 @@ inline int32_t dot_i8_vnni_small(const int8_t* w, const uint8_t* a, int n) {
     }
     __m512i acc = _mm512_dpbusd_epi32(_mm512_setzero_si512(), av, wv);
     return _mm512_reduce_add_epi32(acc);
+}
+#endif
+
+#if defined(LK_SSE2_LANES)
+// 16 uint8 x int8 products, summed in fours into 4 int32 lanes and added to acc.
+inline __m128i dpbusd128(__m128i acc, __m128i a, __m128i w) {
+#if defined(__SSSE3__)
+    __m128i p16 = _mm_maddubs_epi16(a, w);        // exact, as dpbusd256's (see ACT_MAX)
+    return _mm_add_epi32(acc, _mm_madd_epi16(p16, _mm_set1_epi16(1)));
+#else
+    // SSE2: widen both to int16 (zero- and sign-extended), then pmaddwd
+    const __m128i zero = _mm_setzero_si128();
+    const __m128i alo = _mm_unpacklo_epi8(a, zero), ahi = _mm_unpackhi_epi8(a, zero);
+    const __m128i wlo = _mm_srai_epi16(_mm_unpacklo_epi8(w, w), 8), whi = _mm_srai_epi16(_mm_unpackhi_epi8(w, w), 8);
+    return _mm_add_epi32(acc, _mm_add_epi32(_mm_madd_epi16(alo, wlo), _mm_madd_epi16(ahi, whi)));
+#endif
+}
+inline int32_t hsum128(__m128i v) {
+    v = _mm_add_epi32(v, _mm_shuffle_epi32(v, 0x4E));   // + the other 64-bit half
+    v = _mm_add_epi32(v, _mm_shuffle_epi32(v, 0xB1));   // + the neighbouring lane
+    return _mm_cvtsi128_si32(v);
+}
+// int8 dot product over n bytes, 16 at a time, a scalar tail for the rest.
+inline int32_t dot_i8_128(const int8_t* w, const uint8_t* a, int n) {
+    __m128i acc = _mm_setzero_si128();
+    int i = 0;
+    for (; i + 16 <= n; i += 16)
+        acc = dpbusd128(acc, _mm_loadu_si128((const __m128i*)(a + i)), _mm_loadu_si128((const __m128i*)(w + i)));
+    int32_t sum = hsum128(acc);
+    for (; i < n; ++i) sum += (int32_t)w[i] * (int32_t)a[i];
+    return sum;
 }
 #endif
 
@@ -592,6 +624,59 @@ float forward_int8(const int16_t* acc_stm, const int16_t* acc_nstm, const TailVi
     for (int l = 0; l < L3; l += 8) quant8(h3 + l, h3_i8 + l, sc127);
     return bias_add(t.out_b, dot_i8(t.out_w, h3_i8, L3), t.icso);
 #endif
+#elif defined(LK_SSE2_LANES)
+    // The universal build's base level: the portable path's operations, four
+    // lanes at a time in SSE2, and the dense dots in 16-byte blocks (SSSE3's
+    // pmaddubsw where the base targets x86-64-v2, SSE2 widening otherwise).
+    uint8_t h_i8[2 * NNUE_L1_MAX];
+    {
+        const __m128 z = _mm_setzero_ps(), one = _mm_set1_ps(1.0f), winv = _mm_set1_ps(FT_WINV);
+        const __m128 sc = _mm_set1_ps(127.0f);
+        for (int side = 0; side < 2; ++side) {
+            const int16_t* in = side == 0 ? acc_stm : acc_nstm;
+            uint8_t* out = h_i8 + side * L1;
+            for (int l = 0; l < L1; l += 8) {
+                const __m128i v = _mm_loadu_si128((const __m128i*)(in + l));
+                // int16 -> int32 sign-extended, -> float, x 2^-13 (exact), clamp to [0, 1],
+                // square, x 127, round to nearest even: the scalar path's steps per lane
+                __m128 flo = _mm_mul_ps(_mm_cvtepi32_ps(_mm_srai_epi32(_mm_unpacklo_epi16(v, v), 16)), winv);
+                __m128 fhi = _mm_mul_ps(_mm_cvtepi32_ps(_mm_srai_epi32(_mm_unpackhi_epi16(v, v), 16)), winv);
+                flo = _mm_min_ps(_mm_max_ps(flo, z), one);
+                fhi = _mm_min_ps(_mm_max_ps(fhi, z), one);
+                const __m128i qlo = _mm_cvtps_epi32(_mm_mul_ps(_mm_mul_ps(flo, flo), sc));
+                const __m128i qhi = _mm_cvtps_epi32(_mm_mul_ps(_mm_mul_ps(fhi, fhi), sc));
+                _mm_storel_epi64((__m128i*)(out + l), _mm_packus_epi16(_mm_packs_epi32(qlo, qhi), _mm_setzero_si128()));
+            }
+        }
+    }
+    if (act_nonzero) { long long nz = 0; for (int i = 0; i < 2 * L1; ++i) nz += (h_i8[i] != 0); *act_nonzero += nz; }
+    const int total_in = 2 * L1;
+    float h2[NNUE_DENSE_MAX];
+    // L2, output-major weights, four outputs per pass sharing each block of
+    // activations (L2 is a multiple of 8, 2*L1 of 64).
+    for (int o = 0; o < L2; o += 4) {
+        const int8_t* w = &t.l2_w[static_cast<size_t>(o) * total_in];
+        __m128i a0 = _mm_setzero_si128(), a1 = a0, a2 = a0, a3 = a0;
+        for (int i = 0; i < total_in; i += 16) {
+            const __m128i a = _mm_loadu_si128((const __m128i*)(h_i8 + i));
+            a0 = dpbusd128(a0, a, _mm_loadu_si128((const __m128i*)(w + i)));
+            a1 = dpbusd128(a1, a, _mm_loadu_si128((const __m128i*)(w + total_in + i)));
+            a2 = dpbusd128(a2, a, _mm_loadu_si128((const __m128i*)(w + 2 * total_in + i)));
+            a3 = dpbusd128(a3, a, _mm_loadu_si128((const __m128i*)(w + 3 * total_in + i)));
+        }
+        h2[o + 0] = clip01(bias_add(t.l2_b[o + 0], hsum128(a0), t.ics2[o + 0]));
+        h2[o + 1] = clip01(bias_add(t.l2_b[o + 1], hsum128(a1), t.ics2[o + 1]));
+        h2[o + 2] = clip01(bias_add(t.l2_b[o + 2], hsum128(a2), t.ics2[o + 2]));
+        h2[o + 3] = clip01(bias_add(t.l2_b[o + 3], hsum128(a3), t.ics2[o + 3]));
+    }
+    uint8_t h2_i8[NNUE_DENSE_MAX];
+    for (int o = 0; o < L2; ++o) h2_i8[o] = round_u8(h2[o] * 127.0f);
+    float h3[NNUE_DENSE_MAX];
+    for (int o = 0; o < L3; ++o)
+        h3[o] = clip01(bias_add(t.l3_b[o], dot_i8_128(&t.l3_w[static_cast<size_t>(o) * L2], h2_i8, L2), t.ics3[o]));
+    uint8_t h3_i8[NNUE_DENSE_MAX];
+    for (int o = 0; o < L3; ++o) h3_i8[o] = round_u8(h3[o] * 127.0f);
+    return bias_add(t.out_b, dot_i8_128(t.out_w, h3_i8, L3), t.icso);
 #elif defined(LK_DOTPROD)
     uint8_t h_i8[2 * NNUE_L1_MAX];
     // SCReLU + quantize: acc int16 → float → clip01 → square → ×127 → uint8
