@@ -241,8 +241,24 @@ jobs:
   # of old builds and networks) never match the pattern it deletes. Runs on
   # main queue one at a time; elsewhere (pull requests, other branches) the
   # script runs dry and only prints what it would do.
+  # The build OpenBench's workers run: the Makefile, which runs CMake with no
+  # network inside and leaves NNUEFile to the client. The other jobs build
+  # through CMake directly, so this path was the untested one; this job builds
+  # it, checks the bench and that NNUEFile's default is the pinned network's
+  # real name.
+  makefile:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v5
+    - name: Build as OpenBench does
+      run: make -j EXE=luminex
+    - name: Run Bench
+      run: ./luminex bench
+    - name: Check the default network name
+      run: bash .github/scripts/check-net.sh --no-embed ./luminex
+
   dev-release:
-    needs: [meta, linux-modern, linux-compat, linux-legacy, windows-modern, windows-compat, macos-arm64]
+    needs: [meta, linux-modern, linux-compat, linux-legacy, windows-modern, windows-compat, macos-arm64, makefile]
     runs-on: ubuntu-latest
     permissions:
       contents: write
