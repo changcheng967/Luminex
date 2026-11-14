@@ -1309,14 +1309,22 @@ search-cooperation design (a value tail and an error head per output
 bucket, the error read by the pruning margins) on a 1024-wide feature
 table stored in 8 bits ([V5-GEN1024S.md](V5-GEN1024S.md)). Each part
 answers a measurement above:
-- *The 8-bit table* is worth +10.76 +- 7.97 in speed alone on VNNI
-  workers (test 114) and +6.24 +- 7.71 on AVX2 builds (test 127). Test
-  129 (-5.28 +- 4.82) does not price it: its dev side also carried
-  branch nnue-ft-int8's 1536-lane accumulators against main's 1024, and
-  the accumulator array scales with NNUE_L1_MAX. Test 130 repeats it on
-  main's accumulators (branch ft-int8-on-main).
-- *Width 1024* becomes affordable with it: the 8-bit table at 1024 is
-  25.2 MB, against 37.7 MB for gen768r's int16 table at 768.
+- *The 8-bit table* was worth +10.76 +- 7.97 in speed alone on VNNI
+  workers (test 114) and +6.24 +- 7.71 on AVX2 builds (test 127): the
+  same weights stored in 8 bits against 16, both sides on branch
+  nnue-ft-int8's build (1536-lane accumulators). Test 129 (-5.28 +-
+  4.82) did not price it: its dev side carried those accumulators
+  against main's 1024 (the accumulator array scales with NNUE_L1_MAX).
+  **Test 130 is the real comparison and it failed**: main's
+  accumulators (branch ft-int8-on-main), run06's 8-bit-trained net 06q8
+  against 06q in 16 bits, speed and accuracy together: -1.82 +- 3.32
+  over 12,188 games, LLR -2.97. On main at 768 the 8-bit path buys
+  nothing. Whether it pays at 1024, where the table halves from 50.3 MB
+  to 25.2 MB, is gen1024s_01's own pair of SPRTs (8-bit against 16-bit);
+  they decide V5's table format.
+- *Width 1024* is what an 8-bit table would make cheaper: 25.2 MB at
+  1024, against 37.7 MB for gen768r's int16 table at 768 and 50.3 MB
+  for int16 at 1024.
 - *The value tail* keeps gen768r's widths (16, 32): the tail-width test
   bought 0.19%.
 - *The error head* is one linear readout per bucket (2,048 multiply-adds,
