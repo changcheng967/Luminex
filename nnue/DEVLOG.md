@@ -1422,7 +1422,7 @@ and 84% in positions with 21 or more pieces (output buckets 5-7). In
 near ties our static eval already picks the better child about as often
 as Stockfish's (58.6% against 61.4%). So V5's additions should tell the
 search more, not see more tactics: threat inputs would address the 11%.
-Beyond width and the error head, four candidates, each with its gate:
+Beyond width and the error head, six candidates, each with its gate:
 - *A policy head.* The store keeps lc0's full visit distribution for all
   10.8B t91 positions, a move-ordering signal no NNUE engine trains on;
   49% of the loss is the right line not getting depth. A head from the
@@ -1446,6 +1446,20 @@ Beyond width and the error head, four candidates, each with its gate:
   them zero after the clipped activation. Skipping zero blocks would
   make width cheaper. Gate: the activations' zero fraction on game
   positions, then NPS at identical evals.
+- *A cached pawn-structure tower.* 89% of the loss is positional, and
+  the feature layer is linear in single pieces: pawn chains, islands and
+  passers exist only as what the small tail can recombine. A separate,
+  deeper net over pawns and kings alone would add its output to the
+  accumulator's. Its input changes far less often than the board: the
+  arch-stats counters of Nov 6 found 76-92% of evaluations hit a
+  pawn-and-king cache of 2^10-2^18 entries, so a tower several layers
+  deep costs little per node once cached. Gate: held-out loss of a short
+  run with the tower against one without (both from the same start),
+  then NPS with the cache, then an SPRT.
+- *The policy as a training signal.* Even unread by the search, a
+  policy target trained jointly with the value can shape the shared
+  accumulator; the store already has the visit counts. Gate: value
+  held-out loss with and without the joint policy loss, same data.
 
 **A method note on search screens.** The fixed-node screen s3 (Nov 15,
 100K nodes, gauntlet against main, 600 games a variant) measured its own
