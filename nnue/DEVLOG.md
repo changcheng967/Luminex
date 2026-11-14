@@ -1461,6 +1461,19 @@ Beyond width and the error head, six candidates, each with its gate:
   accumulator; the store already has the visit counts. Gate: value
   held-out loss with and without the joint policy loss, same data.
 
+**What a full V5 run trains.** Of these, five are architecture trained
+inside the full run itself: the width, the re-cut buckets, the pawn
+tower, and the draw and policy heads, trained jointly with the value as
+one multi-task loss. The error head is architecture too (it ships in the
+net file and the engine reads it), but its target is the value's own
+error, which moves while the value trains, so it trains in a final
+stage of the same run with the value frozen, like QAT; a joint version
+with a stop-gradient on the value is the alternative to try. The sparse
+forward pass is not architecture: the engine computes the same net
+faster, with no training. The heads' gates can run first on run A's
+frozen net (the cheap test); the pawn tower and the buckets need a
+training run to test at all.
+
 **A method note on search screens.** The fixed-node screen s3 (Nov 15,
 100K nodes, gauntlet against main, 600 games a variant) measured its own
 limit: its unchanged control read +16.3 at 490 games, inside its +-21
