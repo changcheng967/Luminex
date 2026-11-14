@@ -110,7 +110,7 @@ Latest release: [github.com/changcheng967/Luminex/releases](https://github.com/c
 | Linux | `luminex-linux-x86-64-glibc235` | SSE4.2, POPCNT (x86-64-v2) | Ubuntu 22.04 or newer (glibc 2.35) |
 | Windows | `luminex-windows-x86-64-modern.exe` | AVX2 | nothing to install |
 | Windows | `luminex-windows-x86-64.exe` | POPCNT | nothing to install |
-| macOS | `luminex-macos-arm64` | Apple silicon | macOS 11 or newer |
+| macOS | `luminex-macos-arm64` | Apple silicon | macOS 13.3 or newer |
 
 Take a `-modern` build unless the CPU lacks AVX2 (Intel Core since 2013, AMD
 since 2015). CI reads what every binary needs from its headers and fails a

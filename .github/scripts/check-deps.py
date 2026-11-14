@@ -21,8 +21,9 @@ import sys
 LINUX = {"GLIBC": (2, 38), "GLIBCXX": (3, 4, 32), "CXXABI": (1, 3, 14)}
 LINUX_235 = {"GLIBC": (2, 35)}
 LINUX_235_NO_LIBS = ("libstdc++.so.6", "libgcc_s.so.1")
-# macOS 11, the first on Apple silicon.
-MACOS_MIN = (11, 0, 0)
+# macOS 13.3, CMakeLists.txt's deployment target: the first with std::to_chars
+# for floating point, which std::format needs.
+MACOS_MIN = (13, 3, 0)
 # Windows: no DLL runtime, so nothing to install.
 WINDOWS_NO_DLLS = ("msvcp", "vcruntime", "concrt", "ucrtbase", "api-ms-win-crt-")
 

@@ -118,7 +118,7 @@ fi
   echo "| Linux | \`luminex-linux-x86-64-glibc235\` | SSE4.2, POPCNT (x86-64-v2) | Ubuntu 22.04 or newer (glibc 2.35) |"
   echo "| Windows | \`luminex-windows-x86-64-modern.exe\` | AVX2 | nothing to install |"
   echo "| Windows | \`luminex-windows-x86-64.exe\` | POPCNT | nothing to install |"
-  echo "| macOS | \`luminex-macos-arm64\` | Apple silicon | macOS 11 or newer |"
+  echo "| macOS | \`luminex-macos-arm64\` | Apple silicon | macOS 13.3 or newer |"
   echo
   echo "Take a \`-modern\` build unless the CPU lacks AVX2 (Intel Core since 2013, AMD since 2015). Each binary is about 76 MB, the network included."
   echo

@@ -8,10 +8,13 @@ string(REGEX MATCH "ENGINE_VERSION = \"([0-9]+\\.[0-9]+\\.[0-9]+)\"" _LUX_VER "$
 if(NOT CMAKE_MATCH_1)
     message(FATAL_ERROR "cannot parse ENGINE_VERSION from src/luminex.h")
 endif()
-# The oldest macOS the binary runs on: 11.0, the first on Apple silicon. With
-# no target, clang builds for the macOS it runs on, so v6.6.0's first macOS
-# binary needed macOS 26, the runner's. project() reads it, so it comes first.
-set(CMAKE_OSX_DEPLOYMENT_TARGET "11.0" CACHE STRING "Oldest macOS the binary runs on")
+# The oldest macOS the binary runs on. With no target, clang builds for the
+# macOS it runs on, so v6.6.0's first macOS binary needed macOS 26, the
+# runner's. 13.3 is the oldest that has what the engine uses: std::format
+# (the UCI info lines) formats floating point through std::to_chars, which
+# macOS ships from 13.3. Every Apple silicon Mac runs macOS 13. project()
+# reads the target, so it comes first.
+set(CMAKE_OSX_DEPLOYMENT_TARGET "13.3" CACHE STRING "Oldest macOS the binary runs on")
 project(Luminex VERSION ${CMAKE_MATCH_1} LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 23)
