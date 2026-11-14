@@ -23,14 +23,12 @@ pattern='^luminex-dev-[0-9]{8}-[0-9a-f]{8}$'
 
 # The network the binaries carry, as fetch-net.sh pins it: its file name on
 # engine-archives, its OpenBench id (the first 8 hex digits of its sha256) and
-# its about line. fetch-net.sh saved it under the engine's default file name;
-# it is attached under its own name, so the notes and the file say which
-# network it is.
+# its about line. fetch-net.sh saved it under its own name, the name it is
+# attached under, so the notes and the file say which network it is.
 here=$(dirname "$0")
 net_name=$(sed -n 's#^url=.*/##p' "$here/fetch-net.sh")
 net_about=$(sed -n 's#^about="\(.*\)"$#\1#p' "$here/fetch-net.sh")
 [ -n "$net_name" ] || { echo "no url= line in fetch-net.sh" >&2; exit 1; }
-[ "$net_name" = luminex_sfq_i8.nnue ] || cp "$dir/luminex_sfq_i8.nnue" "$dir/$net_name"
 net_id=$(sha256sum "$dir/$net_name" | cut -c1-8 | tr a-f A-F)
 if [ -n "$net_about" ]; then
   net_line="the network ${net_about%%: *} (OpenBench id \`$net_id\`): ${net_about#*: }."

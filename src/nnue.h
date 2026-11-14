@@ -13,10 +13,15 @@ namespace luminex::nnue {
 // accumulator buffers (float [2][NNUE_L1_MAX]) and h_i8/h2 stacks are sized from this.
 inline constexpr int NNUE_L1_MAX = 1024;
 
-// Network shipped with each release. Release binaries carry it inside them
-// (CMake LUMINEX_EMBED_NET); a build without it loads the file of this name
-// from the working directory or next to the engine binary.
-inline constexpr const char* DEFAULT_NET = "luminex_sfq_i8.nnue";
+// Network shipped with each release, by its real name: CMake reads it from the
+// file name of the asset .github/scripts/fetch-net.sh pins, so the default
+// NNUEFile follows every net swap. Release binaries carry the network inside
+// them (CMake LUMINEX_EMBED_PINNED); a build without it loads the file of this
+// name from the working directory or next to the engine binary.
+#ifndef LUMINEX_DEFAULT_NET
+#error "LUMINEX_DEFAULT_NET comes from CMake: the pinned network's file name in .github/scripts/fetch-net.sh"
+#endif
+inline constexpr const char* DEFAULT_NET = LUMINEX_DEFAULT_NET;
 
 // Load a .nnue file. Returns true on success. A missing file or bad header
 // keeps the current net; a file that fails part-way leaves no net loaded.

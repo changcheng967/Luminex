@@ -34,7 +34,7 @@ jobs:
     - name: Fetch the network
       run: bash .github/scripts/fetch-net.sh
     - name: Configure
-      run: cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DCI=ON -DCMAKE_CXX_COMPILER=g++-14 -DLUMINEX_MARCH=x86-64-v3 -DLUMINEX_EMBED_NET=net/luminex_sfq_i8.nnue -DLUMINEX_BUILD_ID=${{ needs.meta.outputs.build_id }}
+      run: cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DCI=ON -DCMAKE_CXX_COMPILER=g++-14 -DLUMINEX_MARCH=x86-64-v3 -DLUMINEX_EMBED_PINNED=ON -DLUMINEX_BUILD_ID=${{ needs.meta.outputs.build_id }}
     - name: Build
       run: cmake --build build --config Release
     - name: Check instruction set
@@ -65,7 +65,7 @@ jobs:
     - name: Fetch the network
       run: bash .github/scripts/fetch-net.sh
     - name: Configure
-      run: cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DCI=ON -DCMAKE_CXX_COMPILER=g++-14 -DLUMINEX_MARCH=x86-64-v2 -DLUMINEX_EMBED_NET=net/luminex_sfq_i8.nnue -DLUMINEX_BUILD_ID=${{ needs.meta.outputs.build_id }}
+      run: cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DCI=ON -DCMAKE_CXX_COMPILER=g++-14 -DLUMINEX_MARCH=x86-64-v2 -DLUMINEX_EMBED_PINNED=ON -DLUMINEX_BUILD_ID=${{ needs.meta.outputs.build_id }}
     - name: Build
       run: cmake --build build --config Release
     - name: Check instruction set
@@ -110,7 +110,7 @@ jobs:
     - name: Fetch the network
       run: bash .github/scripts/fetch-net.sh
     - name: Configure
-      run: cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DCI=ON -DCMAKE_CXX_COMPILER=g++-13 -DLUMINEX_MARCH=${{ matrix.march }} -DCMAKE_CXX_FLAGS="-static-libstdc++ -static-libgcc" -DLUMINEX_EMBED_NET=net/luminex_sfq_i8.nnue -DLUMINEX_BUILD_ID=${{ needs.meta.outputs.build_id }}
+      run: cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DCI=ON -DCMAKE_CXX_COMPILER=g++-13 -DLUMINEX_MARCH=${{ matrix.march }} -DCMAKE_CXX_FLAGS="-static-libstdc++ -static-libgcc" -DLUMINEX_EMBED_PINNED=ON -DLUMINEX_BUILD_ID=${{ needs.meta.outputs.build_id }}
     - name: Build
       run: cmake --build build --config Release
     - name: Check instruction set
@@ -144,7 +144,7 @@ jobs:
       shell: bash
       run: bash .github/scripts/fetch-net.sh
     - name: Configure
-      run: cmake -B build -G "Visual Studio 17 2022" -A x64 -T ClangCL -DLUMINEX_MSVC_ARCH=AVX2 -DLUMINEX_EMBED_NET=net/luminex_sfq_i8.nnue -DLUMINEX_BUILD_ID=${{ needs.meta.outputs.build_id }}
+      run: cmake -B build -G "Visual Studio 17 2022" -A x64 -T ClangCL -DLUMINEX_MSVC_ARCH=AVX2 -DLUMINEX_EMBED_PINNED=ON -DLUMINEX_BUILD_ID=${{ needs.meta.outputs.build_id }}
     - name: Build
       run: cmake --build build --config Release
     - name: Check instruction set
@@ -179,7 +179,7 @@ jobs:
       shell: bash
       run: bash .github/scripts/fetch-net.sh
     - name: Configure
-      run: cmake -B build -G "Visual Studio 17 2022" -A x64 -DLUMINEX_MSVC_ARCH=SSE2 -DLUMINEX_EMBED_NET=net/luminex_sfq_i8.nnue -DLUMINEX_BUILD_ID=${{ needs.meta.outputs.build_id }}
+      run: cmake -B build -G "Visual Studio 17 2022" -A x64 -DLUMINEX_MSVC_ARCH=SSE2 -DLUMINEX_EMBED_PINNED=ON -DLUMINEX_BUILD_ID=${{ needs.meta.outputs.build_id }}
     - name: Build
       run: cmake --build build --config Release
     - name: Check instruction set
@@ -212,7 +212,7 @@ jobs:
     - name: Fetch the network
       run: bash .github/scripts/fetch-net.sh
     - name: Configure
-      run: cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DLUMINEX_EMBED_NET=net/luminex_sfq_i8.nnue -DLUMINEX_BUILD_ID=${{ needs.meta.outputs.build_id }}
+      run: cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DLUMINEX_EMBED_PINNED=ON -DLUMINEX_BUILD_ID=${{ needs.meta.outputs.build_id }}
     - name: Build
       run: cmake --build build --config Release
     - name: Check instruction set

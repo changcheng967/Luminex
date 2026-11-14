@@ -17,5 +17,10 @@
 | Platform | File |
 |---|---|
 
+Every asset carries its real name: the network is attached as
+`luminex_<architecture>_<NN>_i8.nnue`, the name the binaries report, never
+under a past network's name or a neutral one. check-net.sh fails a build that
+reports any other.
+
 ## Credits
 - Data/toolchain/attribution. License line.
