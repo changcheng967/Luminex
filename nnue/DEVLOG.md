@@ -1633,3 +1633,46 @@ test's whole loss gap, at no speed cost) is the cost of the
 quantization itself. It is recovered, if at all, by the quantization
 scheme, not by a longer QAT: the next measurement splits it between the
 feature grid, the tail's int8 weights and the activations' 127 levels.
+
+---
+
+## 21. After tests 146 and 147: two rules, the inputs, the data (Nov 15)
+
+**The borrowing rule, sharpened.** Concepts from anywhere, implementations
+from first principles, constants fitted here, every feature gated on our
+own measurements. Reading another engine's source to learn what exists
+(threat inputs, pawn history, uncertainty in LMR) is reconnaissance, and
+its published Elo is a prior for the order of work; its code is never
+ported. The one concept here borrowed without being costed against our
+own search, the error head, is the one test 146 rejected.
+
+**The ceiling rule.** No margin or head consumption reaches an SPRT
+before its offline Elo ceiling is computed. The audit records hold every
+pruned search's true value and node count, so the most any error
+predictor could buy in a margin is computable without games. Test 146
+(-2.90 +- 3.90, its interval topping out near +1) is what skipping that
+step costs.
+
+**Per-row tail scales.** #89's pass (test 147, +9.84 +- 5.58) is #56's
+per-neuron scales returning. #56 was closed on Nov 11 as superseded by
+QAT, with no SPRT of its own; with a QAT that rounds each row on its own
+scale, the same idea passed.
+
+**V5's core is the inputs.** Width failed three ways (L1 1024 and 1536,
+L2 32: each under half a percent of loss, nothing in games) while better
+labels gave +77.57, and at depth 1 we are still -359 against Stockfish
+19: an inputs problem, not a capacity problem. Every engine above us
+feeds threat (attack-relation) features beside the king-bucketed
+piece-squares. V5's threat features are designed here, on our own king
+buckets and mirroring. The incremental threat accumulator's NPS budget is
+fixed before the trainer gate, since a feature set that costs 10% NPS
+needs a much larger accuracy win than one that costs 3%.
+
+**Data.** The public BT4-tf13tune corpus carries the same network's
+labels as our t91 binpacks: 701 GB of game binpacks (Leela test60 and
+test77 to test80, 2021-2024, leela96, older Leela runs, Stockfish
+self-play), plus 27.3B positions sampled from inside Stockfish's search
+(xushawn/sf-searchtree-bt4). Run 4 (gen768s_04) is run 3 with every t91
+month plus ~91 GB of that corpus, held as binpacks by #85's feeder and
+nothing else changed; its SPRT against gen768s_03q is set before it
+trains.
