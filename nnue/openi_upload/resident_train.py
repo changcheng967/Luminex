@@ -22,6 +22,23 @@ Environment (default in brackets):
                      with g++ on first use, next to this file): the permutation, the
                      split between the pools and the gather, in one call without the GIL.
                      The batches are the numpy path's, bit for bit. 0 = the numpy path
+  NNUE_BINPACKS      instead of NNUE_DATA: training binpacks (nnue-pytorch's format; a path, or a
+                     comma-separated list of paths and globs), held in host RAM at ~2.6 bytes a
+                     position, so all of t91's BT4 months (8.56B positions, 26.8 GB) fit where
+                     32-byte records capped a run at ~6.1B. binfeed.cpp (built on first use against
+                     NNUE_PYTORCH's binpack reader) decodes them on the CPU into LCR1 records,
+                     binpack2lcr's bit for bit, the chunks in a new pseudo-random order each pass;
+                     the batches come out of a shuffle reservoir in VRAM (BinpackFeeder). The
+                     validation split is the same (by hash): an index pass finds the held-out
+                     positions and each chunk's count once, cached next to each file (<file>.bfx).
+                     NNUE_MAX_POS keeps the first chunks in file order
+  NNUE_RESERVOIR [NNUE_VRAM_POS, else 1e9]  positions in the VRAM reservoir: the stream is cut into
+                     windows of this many positions, and each window is trained in a uniformly
+                     random order (32 bytes of VRAM a position)
+  NNUE_DECODE_THREADS [cores - 4]  binfeed.cpp threads decoding chunks (also the index pass's)
+  NNUE_READ_THREADS [8]  parallel reads of the binpacks into RAM
+  NNUE_BINPACK_CACHE [1]  0: neither read nor write the index caches (<file>.bfx)
+  NNUE_PYTORCH [<this dir>/nnue-pytorch]  checkout of official-stockfish/nnue-pytorch (binpack.h)
   NNUE_FENEVAL_FILE  fen<TAB>cp[<TAB>flag] lines (.xz, .zst or plain text)
   NNUE_DATA_VIA_FILE [0]  1: decompress to a temporary text file, then featurize
                      file to file (no pipe at all)
@@ -34,7 +51,7 @@ Environment (default in brackets):
   NNUE_BUDGET_SEC    [0 = none] wall-clock budget; the horizon shrinks to fit it
   NNUE_LOSS_POWER [2.6]  NNUE_QUIET_LOSS ["" = unweighted, e.g. 1,0.3,0]
   NNUE_VAL_FRAC [0.002]  share of positions held out by FEN hash (never trained on)
-  NNUE_VAL_DATA      LCR1 file(s) or globs from games the run never trains on (another
+  NNUE_VAL_DATA      LCR1 file(s), binpacks or globs from games the run never trains on (another
                      month): a [DISJOINT] line beside each [HEALTH] line. The hash split
                      shares games with the training data, so only these positions show
                      a net memorising games or fitting a biased corpus
@@ -127,6 +144,11 @@ QW = parse_quiet_loss(env("NNUE_QUIET_LOSS", ""))
 VAL_FRAC = float(env("NNUE_VAL_FRAC", "0.002"))
 VRAM_POS = int(float(env("NNUE_VRAM_POS", "0")))
 FEED_THREADS = int(env("NNUE_FEED_THREADS", "8"))
+BINPACKS = env("NNUE_BINPACKS", "")
+RESERVOIR = int(float(env("NNUE_RESERVOIR", "0")))
+DECODE_THREADS = max(1, int(env("NNUE_DECODE_THREADS", str(max(2, (os.cpu_count() or 8) - 4)))))
+READ_THREADS = max(1, int(env("NNUE_READ_THREADS", "8")))
+BINPACK_CACHE = env("NNUE_BINPACK_CACHE", "1") == "1"
 VAL_DATA = env("NNUE_VAL_DATA", "")
 VAL_MAX = int(float(env("NNUE_VAL_MAX", "5e6")))
 EVAL_EVERY = int(env("NNUE_EVAL_EVERY", "1000"))
@@ -250,15 +272,21 @@ def load_data(paths):
 
 
 def load_records(paths, cap):
-    """LCR1 files -> one uint8 [n, 32] tensor on the GPU, at most cap positions
-    in file order (the game-disjoint validation set)."""
+    """LCR1 files or binpacks -> one uint8 [n, 32] tensor on the GPU, at most cap
+    positions in file order (the game-disjoint validation set). A binpack gives
+    every position binpack2lcr would write, in its order (binfeed.cpp)."""
     parts, n = [], 0
     for p in paths:
         if n >= cap:
             break
-        a = np.fromfile(p, dtype=np.uint8, count=(cap - n) * REC)
-        if a.size % REC:
-            raise SystemExit(f"FAIL: {p} is not a whole number of {REC}-byte records")
+        if p.endswith(".binpack"):
+            bp = Binpacks([p], 2 ** 32, False, quiet=True)   # threshold 2^32: every position "held out"
+            a = bp.val_records()[:cap - n]
+            bp.close()
+        else:
+            a = np.fromfile(p, dtype=np.uint8, count=(cap - n) * REC)
+            if a.size % REC:
+                raise SystemExit(f"FAIL: {p} is not a whole number of {REC}-byte records")
         parts.append(a.reshape(-1, REC))
         n += len(parts[-1])
     rec = (torch.from_numpy(np.concatenate(parts)).to(dev) if parts
@@ -460,6 +488,260 @@ class PoolFeeder:
             g_idx.record_stream(torch.cuda.current_stream())
             h_rows.record_stream(torch.cuda.current_stream())
         return torch.cat([self.g[g_idx], h_rows]), epoch
+
+
+def binfeed_lib():
+    """binfeed.cpp through ctypes (a call releases the GIL), built next to this file with g++
+    against nnue-pytorch's binpack reader (NNUE_PYTORCH) when the .so is missing or older than
+    the source, as binpack2lcr is built."""
+    import ctypes
+    src, so = os.path.join(HERE, "binfeed.cpp"), os.path.join(HERE, "libbinfeed.so")
+    if not os.path.exists(so) or os.path.getmtime(so) < os.path.getmtime(src):
+        inc = os.path.join(env("NNUE_PYTORCH", os.path.join(HERE, "nnue-pytorch")), "data_loader", "cpp")
+        if not os.path.exists(os.path.join(inc, "lib", "binpack.h")):
+            raise SystemExit(f"FAIL: binpacks need nnue-pytorch's reader: no {inc}/lib/binpack.h (set NNUE_PYTORCH)")
+        tmp = f"{so}.{os.getpid()}.tmp"
+        r = subprocess.run(["g++", "-O3", "-march=native", "-std=c++20", "-shared", "-fPIC", "-pthread",
+                            "-I", inc, src, "-o", tmp], capture_output=True, text=True)
+        if r.returncode:
+            raise SystemExit(f"FAIL: building binfeed.cpp: {r.stderr.strip()[-3000:]}")
+        os.replace(tmp, so)
+    lib = ctypes.CDLL(so)
+    vp, i32, i64, u64 = ctypes.c_void_p, ctypes.c_int, ctypes.c_int64, ctypes.c_uint64
+    p64 = ctypes.POINTER(ctypes.c_int64)
+    for name, res, args in (("bf_open", vp, [ctypes.c_char_p, u64, i32, i32]), ("bf_index", i32, [vp, i32]),
+                            ("bf_info", None, [vp, p64]), ("bf_file_counts", None, [vp, p64]),
+                            ("bf_select", i64, [vp, i64]), ("bf_val_count", i64, [vp]),
+                            ("bf_val_copy", None, [vp, vp]), ("bf_stream_start", i32, [vp, u64, i32, i32]),
+                            ("bf_next", i64, [vp, vp, i64, p64]), ("bf_stream_stop", None, [vp]),
+                            ("bf_close", None, [vp]), ("bf_bench", ctypes.c_double, [vp, i32, i64, p64]),
+                            ("bf_sort", None, [vp, i64, i32]), ("bf_last_error", ctypes.c_char_p, [])):
+        fn = getattr(lib, name)
+        fn.restype, fn.argtypes = res, args
+    return lib
+
+
+class Binpacks:
+    """Binpack files read into host RAM by binfeed.cpp and indexed: each chunk's training
+    positions counted and its held-out ones (hash below thr; 2^32 holds out all) collected, in
+    one decode of every chunk, or from the files' caches (<file>.bfx) when they match."""
+
+    INFO = ("files", "chunks", "bytes", "train", "held", "marked", "cached",
+            "quiet", "capture", "check", "won", "drew", "lost", "active")
+
+    def __init__(self, paths, thr, cache, quiet=False):
+        import ctypes
+        self.ct, self.lib, self.paths = ctypes, binfeed_lib(), list(paths)
+        t = time.time()
+        self.h = self.lib.bf_open("\n".join(self.paths).encode(), int(thr), READ_THREADS, int(cache))
+        if not self.h:
+            raise SystemExit(f"FAIL: binpacks: {self.lib.bf_last_error().decode()}")
+        t_read, t = time.time() - t, time.time()
+        threads = max(DECODE_THREADS, os.cpu_count() or 1)   # nothing else runs yet
+        rc = self.lib.bf_index(self.h, threads)
+        if rc == -1:
+            raise SystemExit(f"FAIL: binpacks: {self.lib.bf_last_error().decode()}")
+        t_index = time.time() - t
+        self.info = self._info()
+        i = self.info
+        if not quiet:
+            decoded = sum(tr + he + mk for tr, he, mk, c in self.file_counts() if not c)
+            print(f"[data] {i['files']} binpack(s), {i['bytes'] / 1e9:.2f} GB read into RAM in {t_read:.0f} s "
+                  f"({i['bytes'] / 1e6 / max(t_read, 1e-3):.0f} MB/s, {READ_THREADS} reads at a time): {i['chunks']:,} chunks",
+                  flush=True)
+            print(f"[data] index: {i['cached']} of {i['files']} file(s) from their caches; "
+                  + (f"{decoded:,} positions decoded in {t_index:.0f} s ({decoded / max(t_index, 1e-3) / 1e6:.1f}M/s, "
+                     f"{threads} threads)" if decoded else "nothing decoded")
+                  + {-2: "; a cache could not be written (read-only directory?)", 0: ""}.get(rc, f"; {rc} cache(s) written"),
+                  flush=True)
+            for p, (tr, he, mk, c) in zip(self.paths, self.file_counts()):
+                print(f"  {os.path.basename(p)}: {tr:,} training + {he:,} held out, {mk:,} marked skip left out"
+                      f"{' (cache)' if c else ''}", flush=True)
+
+    def _info(self):
+        out = (self.ct.c_int64 * len(self.INFO))()
+        self.lib.bf_info(self.h, out)
+        return dict(zip(self.INFO, out))
+
+    def file_counts(self):
+        """Per file: (training, held out, marked skip, 1 if read from its cache)."""
+        out = (self.ct.c_int64 * (4 * len(self.paths)))()
+        self.lib.bf_file_counts(self.h, out)
+        return [tuple(out[4 * k:4 * k + 4]) for k in range(len(self.paths))]
+
+    def select(self, max_pos):
+        """Keep the first chunks in file order up to max_pos training positions (0: all);
+        returns the training positions in a pass."""
+        n = int(self.lib.bf_select(self.h, int(max_pos)))
+        self.info = self._info()
+        return n
+
+    def val_records(self):
+        """The held-out records of the selected chunks, in file order: uint8 [n, 32] numpy."""
+        n = int(self.lib.bf_val_count(self.h))
+        out = np.empty((n, REC), dtype=np.uint8)
+        if n:
+            self.lib.bf_val_copy(self.h, out.ctypes.data)
+        return out
+
+    def start(self, seed, threads, ring):
+        if self.lib.bf_stream_start(self.h, int(seed), int(threads), int(ring)) != 0:
+            raise SystemExit(f"FAIL: binpack stream: {self.lib.bf_last_error().decode()}")
+
+    def next_into(self, ptr, count):
+        """The stream's next `count` records into the buffer at ptr (blocking); their pass."""
+        p = self.ct.c_int64(0)
+        got = self.lib.bf_next(self.h, ptr, int(count), self.ct.byref(p))
+        if got != count:
+            raise RuntimeError(f"binpack stream: {self.lib.bf_last_error().decode()}")
+        return p.value
+
+    def close(self):
+        if self.h:
+            self.lib.bf_close(self.h)
+            self.h = None
+
+
+def material_check(all_rec, block=1 << 21):
+    """check_data.py's test (the run cells) on LCR1 records: of the quiet positions in which one
+    side is a piece, a rook or a queen up, the share labelled beyond +800 for that side.
+    Returns {name: (positions, share)}. Block by block: the piece codes take 256 bytes a record."""
+    tally = {name: [0, 0] for name in ("piece", "rook", "queen")}
+    for o in range(0, len(all_rec), block):
+        rec = all_rec[o:o + block]
+        edge = material_edge(rec)
+        white = (rec[:, 26] & 1).bool()
+        tgt = rec[:, 24:26].contiguous().view(torch.int16).view(-1).to(torch.int64)
+        wt = torch.where(white, tgt, -tgt)
+        quiet = ((rec[:, 26] >> 1) & 3) == 0
+        for e, name in ((3, "piece"), (5, "rook"), (9, "queen")):
+            m = (edge.abs() == e) & quiet
+            tally[name][0] += int(m.sum())
+            tally[name][1] += int(((wt[m] * torch.sign(edge[m])) >= 800).sum())
+    return {k: (c, w / c if c else float("nan")) for k, (c, w) in tally.items()}
+
+
+class BinpackFeeder:
+    """Training batches from binpacks held in host RAM (NNUE_BINPACKS).
+
+    binfeed.cpp's threads decode the binpacks' chunks into LCR1 records, the chunks in a new
+    pseudo-random order each pass, into one stream of every training position once a pass. The
+    stream first fills a reservoir of S positions in VRAM (NNUE_RESERVOIR); then each batch is
+    the reservoir rows at the next bs places of a KeyedShuffle over the S places (a new key
+    every S / bs batches, a "cycle"), and those rows are refilled from the stream at once. Each
+    place is drawn and refilled once a cycle, so the batches of a cycle hold exactly the S
+    positions that came in during the cycle before, in a uniformly random order: the stream cut
+    into windows of S positions, each one shuffled whole, without a second copy of anything.
+    A background thread finds the places (feeder.cpp's feed_batch, the same permutation as
+    KeyedShuffle) and pulls the records (bf_next), both without the GIL, and copies them to the
+    GPU on a side stream, DEPTH batches ahead; next() takes the batch and refills its places."""
+
+    DEPTH = 3
+
+    def __init__(self, paths, seed, bs):
+        thr = min(int(VAL_FRAC * 2 ** 32), 2 ** 32 - 1)
+        self.bp = Binpacks(paths, thr, BINPACK_CACHE)
+        self.n = self.bp.select(int(float(env("NNUE_MAX_POS", "0"))))
+        i = self.bp.info
+        held = self.bp.val_records()
+        self.val = torch.from_numpy(held).to(dev)
+        if self.n < bs:
+            raise SystemExit(f"FAIL: the binpacks hold {self.n:,} training positions, fewer than a batch")
+        print(f"[data] training {self.n:,} positions a pass, {len(held):,} held out ({VAL_FRAC:.2%} by hash) "
+              f"| all files: {i['marked']:,} marked skip left out; quiet {i['quiet']:,}, capture {i['capture']:,}, "
+              f"check {i['check']:,}; side to move won {i['won']:,}, drew {i['drew']:,}, lost {i['lost']:,}", flush=True)
+        mc = material_check(self.val)
+        print("  [DATA] material check (held-out quiet positions labelled beyond +800 for the side up): "
+              + ", ".join(f"{k} up {s:.0%} (of {c:,})" for k, (c, s) in mc.items()), flush=True)
+        if mc["queen"][0] >= 100 and not mc["queen"][1] >= 0.9:
+            raise SystemExit("FAIL: the binpacks' labels do not value material (a queen up must read as won)")
+        self.bs = bs
+        cap = RESERVOIR or VRAM_POS or 1_000_000_000
+        self.S = max(bs, min(cap, self.n) // bs * bs)
+        self.cycle = self.S // bs
+        cuda = str(dev).startswith("cuda")
+        self.bp.start(seed, DECODE_THREADS, 4 * DECODE_THREADS + 8)
+        t = time.time()
+        self.R = torch.empty((self.S, REC), dtype=torch.uint8, device=dev)
+        blk = min(self.S, 1 << 22)
+        stage = torch.empty((blk, REC), dtype=torch.uint8, pin_memory=cuda)
+        for o in range(0, self.S, blk):
+            k = min(blk, self.S - o)
+            self.bp.next_into(stage.data_ptr(), k)
+            self.R[o:o + k].copy_(stage[:k])   # synchronous: the next bf_next reuses the buffer
+        del stage
+        per_chunk = self.n / max(1, self.bp.info["active"])
+        print(f"[data] reservoir: {self.S:,} positions ({self.S * REC / 1e9:.1f} GB on {dev}) filled in "
+              f"{time.time() - t:.0f} s; each window of {self.S:,} positions ({self.S / self.n:.0%} of a pass, "
+              f"~{self.S / per_chunk:,.0f} chunks of ~{per_chunk:,.0f}) is trained in a uniformly random order",
+              flush=True)
+        self.shuffle = KeyedShuffle(self.S, seed)
+        self.flib = feeder_lib()
+        self.stream = torch.cuda.Stream() if cuda else None
+        nslot = self.DEPTH + 2
+        self.pins = [torch.empty((bs, REC), dtype=torch.uint8, pin_memory=cuda) for _ in range(nslot)]
+        self.gpins = [torch.empty(bs, dtype=torch.int64, pin_memory=cuda) for _ in range(nslot)]
+        self.scratch = np.empty(bs, dtype=np.uint64)
+        self.kcycle, self.keys = -1, None
+        print(f"[feed] binpack stream: {DECODE_THREADS} decode threads; reservoir places by "
+              f"{f'feeder.cpp, {FEED_THREADS} threads' if self.flib is not None else 'numpy'}", flush=True)
+        self.done_ev = [None] * nslot
+        self.q = queue.Queue(maxsize=self.DEPTH)
+        self.err = None
+        threading.Thread(target=self._run, daemon=True).start()
+
+    def sample(self, k):
+        """k reservoir rows spread over it (for the start-up [DATA] line)."""
+        return self.R[torch.arange(k, device=self.R.device) * (self.S // k)]
+
+    def _places(self, step, slot):
+        c, i = divmod(step, self.cycle)
+        if self.flib is not None:
+            if self.kcycle != c:
+                self.kcycle, self.keys = c, np.array(self.shuffle._keys(c), dtype=np.uint64)
+            got = self.flib.feed_batch(None, self.S, self.S, self.keys.ctypes.data, int(self.shuffle.h),
+                                       int(self.shuffle.mask), i * self.bs, self.bs, self.gpins[slot].data_ptr(),
+                                       None, self.scratch.ctypes.data, FEED_THREADS)
+            assert got == self.bs
+        else:
+            self.gpins[slot].numpy()[:] = self.shuffle.indices(c, i * self.bs, self.bs).astype(np.int64)
+
+    def _run(self):
+        try:
+            step, slot = 0, 0
+            while True:
+                if self.done_ev[slot] is not None:
+                    self.done_ev[slot].synchronize()    # this slot's last copies have landed
+                self._places(step, slot)
+                self.bp.next_into(self.pins[slot].data_ptr(), self.bs)
+                if self.stream is not None:
+                    with torch.cuda.stream(self.stream):
+                        g_idx = self.gpins[slot].to(dev, non_blocking=True)
+                        fresh = self.pins[slot].to(dev, non_blocking=True)
+                        ev = torch.cuda.Event()
+                        ev.record(self.stream)
+                    self.done_ev[slot] = ev
+                else:
+                    g_idx, fresh, ev = self.gpins[slot].clone(), self.pins[slot].clone(), None
+                self.q.put((g_idx, fresh, ev, step * self.bs // self.n))
+                slot = (slot + 1) % len(self.pins)
+                step += 1
+        except Exception as e:   # surface in next(), never hang the trainer
+            self.err = e
+            self.q.put(None)
+
+    def next(self):
+        item = self.q.get()
+        if item is None:
+            raise RuntimeError(f"BinpackFeeder thread failed: {self.err!r}")
+        g_idx, fresh, ev, epoch = item
+        if ev is not None:
+            torch.cuda.current_stream().wait_event(ev)
+            g_idx.record_stream(torch.cuda.current_stream())
+            fresh.record_stream(torch.cuda.current_stream())
+        batch = self.R[g_idx]   # this step's positions
+        self.R[g_idx] = fresh   # and their places refilled from the stream
+        return batch, epoch
 
 
 KB = [-1, -1, -1, -1, 31, 30, 29, 28, -1, -1, -1, -1, 27, 26, 25, 24,
@@ -951,20 +1233,30 @@ def report_profile(prof, steps, seconds):
 def main():
     t_start = time.time()
     torch.manual_seed(SEED)
-    data = env("NNUE_DATA", "")
-    src = env("NNUE_FENEVAL_FILE", "")
-    if not data:
-        if not src:
-            raise SystemExit("FAIL: set NNUE_DATA (LCR1 file) or NNUE_FENEVAL_FILE")
-        data = os.path.join(os.path.dirname(os.path.abspath(src)),
-                            os.path.basename(src).split(".tsv")[0] + ".lcr")
-    files = data_files(data)
-    if not files or not all(os.path.exists(p) for p in files):
-        if not src or len(files) > 1:
-            raise SystemExit(f"FAIL: NNUE_DATA {data} not found and no NNUE_FENEVAL_FILE to build it from")
-        build_data(src, data)
-        files = [data]
-    train, host, val = load_data(files)
+    if BINPACKS:   # binpacks in host RAM, decoded on the CPU into a VRAM reservoir
+        files = data_files(BINPACKS)
+        missing = [p for p in files if not os.path.exists(p)]
+        if not files or missing:
+            raise SystemExit(f"FAIL: NNUE_BINPACKS {BINPACKS}: {'not found: ' + missing[0] if missing else 'no files'}")
+        feeder = BinpackFeeder(files, SEED, BS)
+        train, val, n = None, feeder.val, feeder.n
+    else:
+        data = env("NNUE_DATA", "")
+        src = env("NNUE_FENEVAL_FILE", "")
+        if not data:
+            if not src:
+                raise SystemExit("FAIL: set NNUE_DATA (LCR1 file), NNUE_BINPACKS or NNUE_FENEVAL_FILE")
+            data = os.path.join(os.path.dirname(os.path.abspath(src)),
+                                os.path.basename(src).split(".tsv")[0] + ".lcr")
+        files = data_files(data)
+        if not files or not all(os.path.exists(p) for p in files):
+            if not src or len(files) > 1:
+                raise SystemExit(f"FAIL: NNUE_DATA {data} not found and no NNUE_FENEVAL_FILE to build it from")
+            build_data(src, data)
+            files = [data]
+        train, host, val = load_data(files)
+        n = len(train) + (len(host) if host is not None else 0)
+        feeder = PoolFeeder(train, host, SEED, BS) if host is not None else None
     dval = None
     if VAL_DATA:
         vfiles = data_files(VAL_DATA)
@@ -972,11 +1264,9 @@ def main():
             raise SystemExit(f"FAIL: NNUE_VAL_DATA {VAL_DATA} not found")
         shared = set(map(os.path.realpath, vfiles)) & set(map(os.path.realpath, files))
         if shared:
-            raise SystemExit(f"FAIL: NNUE_VAL_DATA shares {len(shared)} file(s) with NNUE_DATA, "
+            raise SystemExit(f"FAIL: NNUE_VAL_DATA shares {len(shared)} file(s) with the training data, "
                              f"e.g. {sorted(shared)[0]}: those positions are trained on")
         dval = load_records(vfiles, VAL_MAX)
-    n = len(train) + (len(host) if host is not None else 0)
-    feeder = PoolFeeder(train, host, SEED, BS) if host is not None else None
     shuffle = HostShuffle(n, SEED) if feeder is None else None
 
     model = LNNUE(L1=L1).to(dev)
@@ -1037,7 +1327,7 @@ def main():
             # clipped as in the loss: raw mate scores (up to ~26,600) would swamp a correlation
             gate = stm_split_gate(model, wf, bf, stm, tgt.clamp(-TARGET_CLIP, TARGET_CLIP))
             print(f"  [DATA] stm-split correlation {gate} (gate passed)", flush=True)
-        wf, bf, stm, tgt, flag, cnt = expand(train[:BS])
+        wf, bf, stm, tgt, flag, cnt = expand(train[:BS] if train is not None else feeder.sample(BS))
         print(f"  [DATA] w {int(wf.min())}..{int(wf.max())} | b {int(bf.min())}..{int(bf.max())} | "
               f"pieces {int(cnt.min())}..{int(cnt.max())} | white to move {float(stm.mean()):.3f} | "
               f"target {float(tgt.min()):.0f}..{float(tgt.max()):.0f} std {float(tgt.std()):.0f} | "
