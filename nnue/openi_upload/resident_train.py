@@ -81,6 +81,15 @@ Environment (default in brackets):
   NNUE_QAT_FT8 [0]   with NNUE_QAT: SHIFT (1-8) rounds the first layer's weights instead to the
                      int8 table of an LNF8 net, steps of 2^(SHIFT-13) clipped at +-127 steps
                      (quantize_i8.py --ft8 SHIFT / --ft-grid SHIFT); the bias stays on x8192
+  NNUE_QAT_AFTER [0] steps of QAT in this run after the float phase (NNUE_QAT=0) ends: the float
+                     net is saved as usual, then the same process carries on with QAT (as NNUE_QAT=1,
+                     with NNUE_QAT_FT8) from that model and optimizer state on a new cosine of this many
+                     steps, on the same resident data: no reload. Anything the run added to LNNUE (a
+                     head) is dropped at the switch, as the cells' strip step does, so QAT trains the
+                     value net alone. NNUE_QAT_LR [NNUE_LR] its peak learning rate (the tail at
+                     NNUE_TAIL_LR_MULT times it), NNUE_QAT_BUDGET_SEC [0 = none] its own wall-clock
+                     budget, NNUE_QAT_EVERY [NNUE_EVAL_EVERY] its validation, checkpoint and
+                     numbered-copy interval, NNUE_QAT_OUT_NAME [<NNUE_OUT_NAME>q.nnue] its net
   NNUE_FT_DENSE [0]  the feature layer as dense per-king-bucket matmuls on tensor cores
                      (positions sorted by bucket into tiles; X 0/1 times the bucket's
                      768 x L1 block) instead of EmbeddingBag: 1 = the weight gradient
@@ -162,8 +171,14 @@ COMPILE = env("NNUE_COMPILE", "0") == "1"
 LIVE = float(env("NNUE_LIVE_CLAMP", "0"))
 QAT = env("NNUE_QAT", "0") == "1"
 QAT_FT8 = int(env("NNUE_QAT_FT8", "0"))
-if QAT_FT8 and not (QAT and 1 <= QAT_FT8 <= 8):
-    raise SystemExit(f"FAIL: NNUE_QAT_FT8={QAT_FT8} needs NNUE_QAT=1 and a shift from 1 to 8")
+QAT_AFTER = int(float(env("NNUE_QAT_AFTER", "0")))
+QAT_LR = float(env("NNUE_QAT_LR", str(LR)))
+QAT_BUDGET = float(env("NNUE_QAT_BUDGET_SEC", "0"))
+QAT_EVERY = int(env("NNUE_QAT_EVERY", "0")) or int(env("NNUE_EVAL_EVERY", "1000"))
+if QAT_AFTER and QAT:
+    raise SystemExit("FAIL: NNUE_QAT_AFTER continues a float phase into QAT: it needs NNUE_QAT=0")
+if QAT_FT8 and not ((QAT or QAT_AFTER) and 1 <= QAT_FT8 <= 8):
+    raise SystemExit(f"FAIL: NNUE_QAT_FT8={QAT_FT8} needs NNUE_QAT=1 (or NNUE_QAT_AFTER) and a shift from 1 to 8")
 FT_DENSE = int(env("NNUE_FT_DENSE", "0"))
 FT_TILE = int(env("NNUE_FT_TILE", "1024"))
 FT_FP8 = int(env("NNUE_FT_FP8", "0"))
@@ -175,6 +190,7 @@ TARGET_CLIP = float(env("NNUE_TARGET_CLIP", "1500"))   # |target| cap in the los
 OUT_DIR = env("NNUE_OUT_DIR", ".")
 OUT = env("NNUE_OUT_NAME", "luminex_resident.nnue")
 OUT_BASE = OUT[:-5] if OUT.endswith(".nnue") else OUT
+QAT_OUT = env("NNUE_QAT_OUT_NAME", OUT_BASE + "q.nnue")
 dev = env("NNUE_DEVICE", "cuda")   # cpu: a slow dry run of every code path on a machine without a GPU
 
 
@@ -962,7 +978,7 @@ if FT_FP8 and FT_DENSE != 3:
     raise SystemExit('NNUE_FT_FP8 needs NNUE_FT_DENSE=3')
 if FT_DENSE == 3:
     import ft_fused as FF
-    if QAT and FT_FP8:
+    if (QAT or QAT_AFTER) and FT_FP8:
         raise SystemExit('NNUE_FT_FP8 has no QAT path: QAT needs the exact sums of the bf16 split forward')
     FUSED_FWD = dict(BM=128, BN=128, num_warps=4, num_stages=2)    # best of the 2026-11-12 sweeps: 1.247 ms
     FUSED_BWD = dict(BMF=128, BN=128, BK=32, num_warps=4, num_stages=4)
@@ -1246,6 +1262,7 @@ def report_profile(prof, steps, seconds):
 
 
 def main():
+    global QAT   # NNUE_QAT_AFTER turns it on between the phases
     t_start = time.time()
     torch.manual_seed(SEED)
     if BINPACKS:   # binpacks in host RAM, decoded on the CPU into a VRAM reservoir
@@ -1357,9 +1374,12 @@ def main():
     if COMPILE:
         step_fn = torch.compile(fwd_loss, dynamic=False)
 
+    phase = {"off": off, "t_max": t_max, "budget": BUDGET, "t_begin": t_start, "eval": EVAL_EVERY,
+             "save": SAVE_EVERY, "keep": KEEP_EVERY, "out": OUT, "base": OUT_BASE}
+
     def save(reason):
         os.makedirs(OUT_DIR, exist_ok=True)
-        nn_path, pt_path = os.path.join(OUT_DIR, OUT), os.path.join(OUT_DIR, OUT_BASE + ".pt")
+        nn_path, pt_path = os.path.join(OUT_DIR, phase["out"]), os.path.join(OUT_DIR, phase["base"] + ".pt")
         save_nnue(model, nn_path + ".tmp")
         os.replace(nn_path + ".tmp", nn_path)
         torch.save({"model": model.state_dict(), "gstep": gstep, "opt": opt.state_dict(), "swa": None},
@@ -1370,78 +1390,114 @@ def main():
     def keep():
         """A numbered copy of the float net, so checkpoints along the run can be gated."""
         os.makedirs(OUT_DIR, exist_ok=True)
-        path = os.path.join(OUT_DIR, f"{OUT_BASE}_s{gstep}.nnue")
+        path = os.path.join(OUT_DIR, f"{phase['base']}_s{gstep}.nnue")
         save_nnue(model, path + ".tmp")
         os.replace(path + ".tmp", path)
         print(f"  [keep] {path} at step {gstep}", flush=True)
 
+    def run_phase():
+        """Steps until the phase's horizon or budget; then the final readings and save."""
+        nonlocal gstep
+        off, t_max, budget, t_begin = phase["off"], phase["t_max"], phase["budget"], phase["t_begin"]
+        seg0, t0, last_t, last_s = gstep, time.time(), time.time(), gstep
+        epoch, done = 0, None
+        while done is None:
+            perm = shuffle.next_pass() if feeder is None else None
+            for i in range(0, steps_per_pass * BS, BS):
+                batch = feeder.next()[0] if feeder is not None else train[HostShuffle.batch(perm, i, BS)]
+                loss = step_fn(model, batch)
+                opt.zero_grad(set_to_none=True)
+                loss.backward()
+                if GRAD_CLIP > 0:
+                    torch.nn.utils.clip_grad_norm_(params, GRAD_CLIP)
+                opt.step()
+                sched.step()
+                gstep += 1
+                sess = gstep - seg0
+                if PROFILE and sess == PROFILE_WARMUP:
+                    gpu = str(dev).startswith("cuda")
+                    if gpu:
+                        torch.cuda.synchronize()
+                    prof = torch.profiler.profile(activities=[torch.profiler.ProfilerActivity.CPU]
+                                                  + ([torch.profiler.ProfilerActivity.CUDA] if gpu else []))
+                    prof.__enter__()
+                    p_t0 = time.time()
+                elif PROFILE and sess == PROFILE_WARMUP + PROFILE:
+                    if gpu:
+                        torch.cuda.synchronize()
+                    p_s = time.time() - p_t0
+                    prof.__exit__(None, None, None)
+                    report_profile(prof, PROFILE, p_s)
+                    done = "profile"
+                    break
+                if gstep % 50 == 0:
+                    now = time.time()
+                    l2max = max(float(m.weight.detach().abs().max()) for m in (model.bl2 if nbk > 1 else [model.l2]))
+                    print(f"  e{epoch} step {gstep} loss={float(loss):.5f} L2|max|={l2max:.2f} | "
+                          f"{sess * BS / 1e6:.0f}M | {(gstep - last_s) / (now - last_t):.1f} steps/s", flush=True)
+                    last_t, last_s = now, gstep
+                if sess % 200 == 0 and budget > 0:
+                    el = time.time() - t0
+                    fit = int(off + sess + sess / max(el, 1.0) * max(0.0, budget - (time.time() - t_begin) - 90))
+                    new = min(t_max, max(off + sess + 1, fit))
+                    if new != state["t_live"]:
+                        print(f"  [sched] budget guard: horizon {state['t_live']:,} -> {new:,} steps "
+                              f"({sess / max(el, 1.0):.2f} steps/s)", flush=True)
+                        state["t_live"] = new
+                if sess % phase["eval"] == 0:
+                    evaluate(model, val, gstep)
+                    evaluate_disjoint(model, dval, gstep)
+                if sess % phase["save"] == 0:
+                    save("checkpoint")
+                if phase["keep"] > 0 and gstep % phase["keep"] == 0:
+                    keep()
+                if off + sess >= state["t_live"]:
+                    done = "tmax"
+                    break
+                if budget > 0 and time.time() - t_begin >= budget:
+                    done = "budget"
+                    break
+            epoch += 1
+        evaluate(model, val, gstep)
+        evaluate_disjoint(model, dval, gstep)
+        save("final")
+        print(f"DONE ({done}) - {phase['out']}: {gstep} steps, {(gstep - seg0) * BS:,} positions in "
+              f"{time.time() - t_begin:.0f} s ({(gstep - seg0) / (time.time() - t0):.2f} steps/s)", flush=True)
+        return done
+
     evaluate(model, val, gstep)   # the starting point, for the curve
     evaluate_disjoint(model, dval, gstep)
-    seg0, t0, last_t, last_s = gstep, time.time(), time.time(), gstep
-    epoch, done = 0, None
-    while done is None:
-        perm = shuffle.next_pass() if feeder is None else None
-        for i in range(0, steps_per_pass * BS, BS):
-            batch = feeder.next()[0] if feeder is not None else train[HostShuffle.batch(perm, i, BS)]
-            loss = step_fn(model, batch)
-            opt.zero_grad(set_to_none=True)
-            loss.backward()
-            if GRAD_CLIP > 0:
-                torch.nn.utils.clip_grad_norm_(params, GRAD_CLIP)
-            opt.step()
-            sched.step()
-            gstep += 1
-            sess = gstep - seg0
-            if PROFILE and sess == PROFILE_WARMUP:
-                gpu = str(dev).startswith("cuda")
-                if gpu:
-                    torch.cuda.synchronize()
-                prof = torch.profiler.profile(activities=[torch.profiler.ProfilerActivity.CPU]
-                                              + ([torch.profiler.ProfilerActivity.CUDA] if gpu else []))
-                prof.__enter__()
-                p_t0 = time.time()
-            elif PROFILE and sess == PROFILE_WARMUP + PROFILE:
-                if gpu:
-                    torch.cuda.synchronize()
-                p_s = time.time() - p_t0
-                prof.__exit__(None, None, None)
-                report_profile(prof, PROFILE, p_s)
-                done = "profile"
-                break
-            if gstep % 50 == 0:
-                now = time.time()
-                l2max = max(float(m.weight.detach().abs().max()) for m in (model.bl2 if nbk > 1 else [model.l2]))
-                print(f"  e{epoch} step {gstep} loss={float(loss):.5f} L2|max|={l2max:.2f} | "
-                      f"{sess * BS / 1e6:.0f}M | {(gstep - last_s) / (now - last_t):.1f} steps/s", flush=True)
-                last_t, last_s = now, gstep
-            if sess % 200 == 0 and BUDGET > 0:
-                el = time.time() - t0
-                fit = int(off + sess + sess / max(el, 1.0) * max(0.0, BUDGET - (time.time() - t_start) - 90))
-                new = min(t_max, max(off + sess + 1, fit))
-                if new != state["t_live"]:
-                    print(f"  [sched] budget guard: horizon {state['t_live']:,} -> {new:,} steps "
-                          f"({sess / max(el, 1.0):.2f} steps/s)", flush=True)
-                    state["t_live"] = new
-            if sess % EVAL_EVERY == 0:
-                evaluate(model, val, gstep)
-                evaluate_disjoint(model, dval, gstep)
-            if sess % SAVE_EVERY == 0:
-                save("checkpoint")
-            if KEEP_EVERY > 0 and gstep % KEEP_EVERY == 0:
-                keep()
-            if off + sess >= state["t_live"]:
-                done = "tmax"
-                break
-            if BUDGET > 0 and time.time() - t_start >= BUDGET:
-                done = "budget"
-                break
-        epoch += 1
-    evaluate(model, val, gstep)
-    evaluate_disjoint(model, dval, gstep)
-    save("final")
-    print(f"DONE ({done}) - {OUT}: {gstep} steps, {(gstep - seg0) * BS:,} positions in "
-          f"{time.time() - t_start:.0f} s ({(gstep - seg0) / (time.time() - t0):.2f} steps/s)", flush=True)
-
+    done = run_phase()
+    if QAT_AFTER > 0 and done != "profile":   # QAT on in this process: the data stays where it is
+        t_switch = time.time()
+        QAT = True
+        base_keys = set(LNNUE(L1=L1).state_dict())
+        extra = sorted({k.split(".")[0] for k in model.state_dict() if k not in base_keys})
+        for name in extra:   # a head the run added (the cells' draw head): QAT trains the value alone
+            delattr(model, name)
+        gone = [p for g in opt.param_groups[3:] for p in g["params"]]
+        del opt.param_groups[3:]
+        for p in gone:
+            opt.state.pop(p, None)
+        for g, mult in zip(opt.param_groups, (1.0, TAIL_LR_MULT, 1.0)):
+            g["lr"] = g["initial_lr"] = QAT_LR * mult
+        params = [p for g in opt.param_groups for p in g["params"]]
+        state["t_live"] = QAT_AFTER
+        sched = torch.optim.lr_scheduler.LambdaLR(
+            opt, lambda s: 0.5 * (1.0 + math.cos(math.pi * min(1.0, s / max(1, state["t_live"])))))
+        if COMPILE:
+            torch._dynamo.reset()
+            step_fn = torch.compile(fwd_loss, dynamic=False)
+        phase.update(off=0, t_max=QAT_AFTER, budget=QAT_BUDGET, t_begin=t_switch, eval=QAT_EVERY, save=QAT_EVERY,
+                     keep=QAT_EVERY, out=QAT_OUT, base=QAT_OUT[:-5] if QAT_OUT.endswith(".nnue") else QAT_OUT)
+        grid = f"int8 grid (shift {QAT_FT8})" if QAT_FT8 else "int16 grid"
+        print(f"== QAT PHASE in this run: {QAT_AFTER:,} steps from step {gstep:,} on a new cosine from lr {QAT_LR} "
+              f"(tail x{TAIL_LR_MULT}), the feature layer on the {grid}, NNUE_FT_DENSE={FT_DENSE}"
+              f"{', dropped ' + ', '.join(extra) if extra else ''}; the data stays resident | budget {QAT_BUDGET:.0f} s "
+              f"-> {QAT_OUT}", flush=True)
+        evaluate(model, val, gstep)   # the QAT net before its first step
+        evaluate_disjoint(model, dval, gstep)
+        run_phase()
 
 if __name__ == "__main__":
     main()
