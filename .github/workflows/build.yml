@@ -229,6 +229,7 @@ jobs:
           echo "SDE ran a build for this CPU as Sandy Bridge and did not stop it" >&2
           exit 1
         fi
+        printf '%s\n' "$out" | tail -n 12
         printf '%s\n' "$out" | grep -m1 -i "sde-error\|not valid for specified chip"
 
   # The universal binaries and OpenBench's build compute the same evaluations:
