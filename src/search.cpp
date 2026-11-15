@@ -487,7 +487,7 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
     }
 
     // Delta pruning: if best possible capture can't raise alpha, skip captures
-    if (!in_check) {
+    if (!in_check && !(SPSAParams::get().ablate_mask & 1024)) {
         Value delta = 200 + QUEEN_VALUE;  // Assume best case: can capture a queen
         if (eval + delta < alpha) {
             g_stats.delta_prunes_qs++;
@@ -553,7 +553,7 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
         // Skip losing captures with negative SEE (but keep queen promotions).
         // Threshold goes negative as depth drops: deeper in qsearch tolerates
         // increasingly losing captures. Exception: in check, try all evasions.
-        if (!in_check && !it->move.is_promotion()
+        if (!in_check && !it->move.is_promotion() && !(SPSAParams::get().ablate_mask & 512)
             && !pos.see_ge(it->move, Value(SPSAParams::get().qs_see_coeff * depth))) {
             continue;
         }
@@ -798,12 +798,14 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
         ss->forced_ply_count = ((ss - 1)->forced_ply_count + 1);
     }
 
+    const int abl = SPSAParams::get().ablate_mask;   // ablation study: each set bit switches a rule off
+
     // Hindsight depth adjustment: if the previous ply was heavily reduced by LMR,
     // compensate by adjusting current depth based on eval feedback.
     // If parent was reduced >= 3 and position isn't worsening for us,
     // the reduction was likely too aggressive — increase depth to compensate.
     // If both plies have very positive eval sum, position is winning — save time.
-    if (!pv_node && ss->ply >= 2 && !pos.is_check()) {
+    if (!(abl & 8192) && !pv_node && ss->ply >= 2 && !pos.is_check()) {
         int prior_reduction = (ss - 1)->reduction;
         if (prior_reduction >= 3 && !opponent_worsening) {
             depth++;
@@ -814,7 +816,7 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
 
     // Internal Iterative Reduction (IIR): reduce depth by 1 when no TT move available
     // Broader threshold from Stash (depth >= 3 instead of 4)
-    if (!pv_node && tt_move == MOVE_NONE && depth >= 3) {
+    if (!(abl & 2048) && !pv_node && tt_move == MOVE_NONE && depth >= 3) {
         depth--;
         g_stats.iir_reductions++;
     }
@@ -827,14 +829,14 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
     {
         int rev_margin = sp.rev_fut_coeff * depth + ((ss->improving || opponent_worsening) ? 0 : sp.rfp_not_improving);
         rev_margin += std::min(eval_uncertainty / 2, 80);  // Up to 80cp extra margin when uncertain
-        if (!pv_node && !pos.is_check() && depth <= 8 && eval - rev_margin >= beta) {
+        if (!(abl & 1) && !pv_node && !pos.is_check() && depth <= 8 && eval - rev_margin >= beta) {
             g_stats.rev_futility_prunes++;
             return eval;
         }
     }
 
     // Razoring: at low depths, if eval is far below alpha, try qsearch to confirm
-    if (!pv_node && !pos.is_check() && depth <= 4) {
+    if (!(abl & 2) && !pv_node && !pos.is_check() && depth <= 4) {
         Value razor_margin = sp.razor_base + depth * depth * sp.razor_coeff;
         if (eval + razor_margin < alpha) {
             // qsearch fail-high against the (alpha-1, alpha) window returns
@@ -852,7 +854,7 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
     // proves nothing the first didn't) and nulls are banned inside a
     // verification search's ply window.
     int piece_count = popcount(pos.pieces()) - popcount(pos.pieces(PAWN)) - 2;
-    bool null_move_ok = !pv_node && !pos.is_check() && depth >= 2 && piece_count >= 1 &&
+    bool null_move_ok = !(abl & 4) && !pv_node && !pos.is_check() && depth >= 2 && piece_count >= 1 &&
                           eval >= beta + (depth <= sp.nmp_shallow_depth ? sp.nmp_shallow_margin : 0) &&
                           ss->ply >= 1 && !ss->excluded_move &&
                           (ss - 1)->current_move != MOVE_NULL &&
@@ -902,7 +904,7 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
     // ProbCut - if a capture is obviously good enough, verify with shallow search
     // Skipped in excluded nodes: pruning the singular verification would
     // shortcut the very measurement the verification exists to make.
-    if (!pv_node && depth >= 5 && !pos.is_check() && ss->ply >= 2 && !ss->excluded_move) {
+    if (!(abl & 8) && !pv_node && depth >= 5 && !pos.is_check() && ss->ply >= 2 && !ss->excluded_move) {
         Value rbeta = std::min(beta + sp.probcut_margin, VALUE_INFINITE - 200);
         int rdepth = depth - 3;
 
@@ -1004,6 +1006,8 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
             if (singular_value < sBeta - depth * sp.dext_margin / 16) {
                 singular_extension = 2;
             }
+        } else if (abl & 4096) {
+            // ablation: no multi-cut, no negative extension
         } else if (singular_value >= beta) {
             // Multi-cut: other moves are also good enough to beat beta
             // Return immediately without searching further
@@ -1037,9 +1041,9 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
         if (ttPv) reduction_1024 -= sp.lmr_ttpv;
         int reduction = reduction_1024 >= 0 ? reduction_1024 / LMR_DENOM
                                             : -((-reduction_1024 + LMR_DENOM - 1) / LMR_DENOM);
-        if (!ss->improving && !opponent_worsening) reduction += 1;
+        if (!(abl & 262144) && !ss->improving && !opponent_worsening) reduction += 1;
         // Deep worsening: position declining over 4 plies, search less aggressively
-        if (!ss->improving && !ss->improving_deep && !opponent_worsening) reduction += 1;
+        if (!(abl & 262144) && !ss->improving && !ss->improving_deep && !opponent_worsening) reduction += 1;
 
         // TT move gets less reduction
         if (m == tt_move) reduction -= 1;
@@ -1084,11 +1088,11 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
 
         // TT-move-noisy LMR: if TT found a tactical (capture) solution,
         // quiet moves are less likely to beat it — reduce more
-        if (!m.is_capture() && !m.is_promotion() && tt_move.is_capture()) reduction += 1;
+        if (!(abl & 131072) && !m.is_capture() && !m.is_promotion() && tt_move.is_capture()) reduction += 1;
 
         // Capture-response LMR: after opponent's capture, quiets are less
         // likely to be best — recapture is usually the critical response.
-        if (!m.is_capture() && !m.is_promotion() && depth >= 4 && ss->ply >= 1
+        if (!(abl & 65536) && !m.is_capture() && !m.is_promotion() && depth >= 4 && ss->ply >= 1
             && (ss - 1)->current_move.is_capture()) {
             reduction += 1;
         }
@@ -1105,7 +1109,7 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
         // Eval-adaptive: use eval-to-beta distance to adjust reductions
         // Far above beta = position is clearly winning, reduce more
         // Near alpha = critical position, reduce less
-        if (!pos.is_check()) {
+        if (!(abl & 32768) && !pos.is_check()) {
             int eval_margin = int(eval) - int(alpha);
             if (eval_margin > 250) reduction += 1;
             else if (eval_margin > -50 && eval_margin < 100) reduction -= 1;
@@ -1201,7 +1205,7 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
 
         // Continuation pruning: skip quiet moves with very poor history at low depth
         // Combined counter+continuation history
-        if (is_quiet && !pv_node && depth <= 4 && moves_played > 0) {
+        if (!(abl & 16) && is_quiet && !pv_node && depth <= 4 && moves_played > 0) {
             Piece pc = pos.piece_on(m.from());
             if (pc != NO_PIECE) {
                 int hist_score = combined_history(worker, ss, pc, m.to());
@@ -1220,14 +1224,14 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
         // ones it rates lowest. The count is tunable in hundredths of a move.
         int lmp_threshold = (sp.lmp_base + ((ss->improving || opponent_worsening) ? 100 : 0)
                              + depth * depth * sp.lmp_coeff) / 100;
-        if (is_quiet && !pv_node && ss->ply > 0 && depth <= 8 && moves_played >= lmp_threshold
+        if (!(abl & 32) && is_quiet && !pv_node && ss->ply > 0 && depth <= 8 && moves_played >= lmp_threshold
             && m != worker->killers[ss->ply][0] && m != worker->killers[ss->ply][1]) {
             g_stats.lmp_prunes++;
             return false;
         }
 
         // Futility pruning: skip quiet moves that can't improve alpha
-        if (is_quiet && !pv_node && ss->ply > 0 && !pos.is_check() && depth <= 5) {
+        if (!(abl & 64) && is_quiet && !pv_node && ss->ply > 0 && !pos.is_check() && depth <= 5) {
             int margin = depth * sp.fut_coeff + (ss->improving ? sp.fut_improving : sp.fut_base);
             margin += std::min(eval_uncertainty / 3, 50);  // Less pruning when eval uncertain
             if (eval + margin < alpha) {
@@ -1245,7 +1249,7 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
         bool is_losing_capture = m.is_capture() && !m.is_promotion() && depth >= 1 &&
                                   !pos.see_ge(m, Value(-depth * 80));
         bool do_lmr = depth >= 3 && moves_played >= 3 &&
-                      (is_quiet || is_losing_capture) && !gives_chk;
+                      ((is_quiet && !(abl & 128)) || (is_losing_capture && !(abl & 256))) && !gives_chk;
 
         if (do_lmr) g_stats.lmr_total++;
 
@@ -1274,7 +1278,7 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
         // piece is simply taken leaves nothing forcing to look deeper into.
         // Recaptures get no extension; they are captures the search already
         // orders first and qsearch resolves.
-        if (gives_chk && pos.see_ge(m, VALUE_ZERO)) {
+        if (gives_chk && ((abl & 16384) || pos.see_ge(m, VALUE_ZERO))) {
             ext_count++;
             g_stats.check_extensions++;
         }

@@ -70,6 +70,8 @@ struct SPSAParams {
     // at least nmp_shallow_margin above beta (deeper: at beta)
     int nmp_shallow_margin = 57;
     int nmp_shallow_depth  = 5;
+    // Diagnostic: each set bit switches one search rule off (forensics kit, abl_report.py)
+    int ablate_mask = 0;
 
     // Load from file (COUNT ints, one per line, in field order). Returns true if loaded.
     bool load(const std::string& path) {
@@ -140,6 +142,7 @@ inline constexpr SPSAOption SPSA_OPTIONS[] = {
     {"CorrWeightMax",   &SPSAParams::corr_weight_max,     1,   128},
     {"NmpShallowMargin", &SPSAParams::nmp_shallow_margin, 0,  300},
     {"NmpShallowDepth", &SPSAParams::nmp_shallow_depth,   0,   12},
+    {"AblateMask",      &SPSAParams::ablate_mask,         0, 524287},
 };
 
 inline const SPSAOption* find_spsa_option(const std::string& name) {
