@@ -16,6 +16,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <new>
 #include <type_traits>
 #if defined(__linux__)
 #include <sys/mman.h>
@@ -93,6 +94,22 @@ public:
 private:
     T* p_ = nullptr;
     std::size_t n_ = 0;
+};
+
+// An allocator for std::vector whose data starts on a cache line: the
+// network's SIMD kernels read the dense weights 32 or 64 bytes at a time,
+// and a read that straddles two lines costs two. std::vector's own allocator
+// guarantees 16 bytes.
+template <class T>
+struct CacheAligned {
+    using value_type = T;
+    static constexpr std::size_t ALIGN = 64;
+    CacheAligned() = default;
+    template <class U> CacheAligned(const CacheAligned<U>&) noexcept {}
+    T* allocate(std::size_t n) { return static_cast<T*>(::operator new(n * sizeof(T), std::align_val_t(ALIGN))); }
+    void deallocate(T* p, std::size_t) noexcept { ::operator delete(p, std::align_val_t(ALIGN)); }
+    template <class U> bool operator==(const CacheAligned<U>&) const noexcept { return true; }
+    template <class U> bool operator!=(const CacheAligned<U>&) const noexcept { return false; }
 };
 
 } // namespace luminex

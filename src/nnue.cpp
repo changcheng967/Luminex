@@ -217,8 +217,11 @@ static bool g_loaded = false;
 // and LNI8 nets have one tail; LNB8 and LNR8 nets have one per output bucket,
 // chosen by the number of pieces on the board (bucket_of). LNI8 and LNB8 hold
 // one weight scale per layer, LNR8 one per row (output neuron) of L2 and L3.
+// The dense weights start on cache lines (large_pages.h): the kernels read them
+// 32 or 64 bytes at a time.
+using WeightBytes = std::vector<int8_t, CacheAligned<int8_t>>;
 struct DenseTail {
-    std::vector<int8_t> l2_w_i8, l3_w_i8, out_w_i8;
+    WeightBytes l2_w_i8, l3_w_i8, out_w_i8;
     std::vector<float> l2_b, l3_b;
     // A dot of int8 weights (w x s) with uint8 activations (a x 127) becomes
     // the float sum when multiplied by 1 / (s x 127): one factor per output.
@@ -360,7 +363,7 @@ static bool load_stream(std::istream& f, const std::string& name) {
     if (g_int8) {
         // LNI8 / LNB8: per tail, int8 weights + float bias + float scale per layer.
         // LNR8: the L2 and L3 scales are float tensors, one per row.
-        auto read_i8 = [&](std::vector<int8_t>& v, int expected) -> bool {
+        auto read_i8 = [&](WeightBytes& v, int expected) -> bool {
             int32_t n = 0; f.read(reinterpret_cast<char*>(&n), 4);
             if (n != expected) { std::fprintf(stderr, "nnue: i8 size %d != %d\n", n, expected); return false; }
             v.resize(n); f.read(reinterpret_cast<char*>(v.data()), n); return f.good(); };
@@ -385,7 +388,7 @@ static bool load_stream(std::istream& f, const std::string& name) {
         // Batched-L3 layout: dpbusd lane (o*4+j) accumulates h2-slice j against
         // l3_w[o] slice j — one interleaved row per 4 outputs, 2 dpbusd for all 32.
         if (L2 == 16 && (L3 % 4) == 0) {
-            std::vector<int8_t> tmp(static_cast<size_t>(L3) * L2);
+            WeightBytes tmp(static_cast<size_t>(L3) * L2);
             for (int o = 0; o < L3; ++o)
                 for (int j = 0; j < 4; ++j)
                     std::memcpy(&tmp[(static_cast<size_t>(o) * 4 + j) * 4], &t.l3_w_i8[static_cast<size_t>(o) * L2 + j * 4], 4);
@@ -397,7 +400,7 @@ static bool load_stream(std::istream& f, const std::string& name) {
         // broadcast 4-byte input chunk updates all 16 output sums at once.
         if (L2 == 16 && (2 * L1) % 4 == 0) {
             const int total_in = 2 * L1;
-            std::vector<int8_t> tmp(static_cast<size_t>(L2) * total_in);
+            WeightBytes tmp(static_cast<size_t>(L2) * total_in);
             for (int c = 0; c < total_in / 4; ++c)
                 for (int o = 0; o < L2; ++o)
                     std::memcpy(&tmp[(static_cast<size_t>(c) * L2 + o) * 4],
@@ -424,7 +427,7 @@ static bool load_stream(std::istream& f, const std::string& name) {
         {
             int total_in = 2 * L1;
             int chunks = total_in / 32;
-            std::vector<int8_t> tmp(static_cast<size_t>(L2) * total_in);
+            WeightBytes tmp(static_cast<size_t>(L2) * total_in);
             for (int c = 0; c < chunks; ++c)
                 for (int o = 0; o < L2; ++o)
                     std::memcpy(&tmp[(static_cast<size_t>(c) * L2 + o) * 32],
@@ -955,9 +958,9 @@ Value evaluate(const Position& pos) {
     // This position's dense tail (the only one unless the net has output
     // buckets), bound to the names the kernels below use.
     const DenseTail& tail = g_tails[bucket_of(pos)];
-    const std::vector<int8_t>& l2_w_i8 = tail.l2_w_i8;
-    const std::vector<int8_t>& l3_w_i8 = tail.l3_w_i8;
-    const std::vector<int8_t>& out_w_i8 = tail.out_w_i8;
+    const WeightBytes& l2_w_i8 = tail.l2_w_i8;
+    const WeightBytes& l3_w_i8 = tail.l3_w_i8;
+    const WeightBytes& out_w_i8 = tail.out_w_i8;
     const std::vector<float>& l2_b = tail.l2_b;
     const std::vector<float>& l3_b = tail.l3_b;
     [[maybe_unused]] const float* const ics2 = tail.ics2.data();
