@@ -104,6 +104,12 @@ Environment (default in brackets):
   NNUE_FT_FP8 [0]    with NNUE_FT_DENSE=3: 1 = the weight gradient in FP8 (G in e4m3, one
                      global scale and a power-of-two boost per row), 2 = the forward too
                      (the table in e4m3 with a scale per column); 0 = bf16 both ways
+  NNUE_FT_ACT [1]    with NNUE_FT_DENSE=3: the kernels also add the bias and apply SCReLU,
+                     writing each side's values straight into the next layer's input (side
+                     to move first; bf16, fp32 under QAT), and the backward of both is one
+                     kernel: no un-sort of the sums, no elementwise passes over them. The
+                     same values and gradients bit for bit (the bias gradient sums in another
+                     order); 0 = the separate elementwise pass of before
   NNUE_FT_TILE [1024]  rows per tile of the dense feature layer
   NNUE_FT_TF32 [1]   the dense gradient matmul in TF32 (0: exact fp32, slower)
   NNUE_TARGET_CLIP [1500]  |target| cap inside the loss (mates and big scores stay
@@ -182,6 +188,7 @@ if QAT_FT8 and not ((QAT or QAT_AFTER) and 1 <= QAT_FT8 <= 8):
 FT_DENSE = int(env("NNUE_FT_DENSE", "0"))
 FT_TILE = int(env("NNUE_FT_TILE", "1024"))
 FT_FP8 = int(env("NNUE_FT_FP8", "0"))
+FT_ACT = FT_DENSE == 3 and env("NNUE_FT_ACT", "1") == "1"
 PROFILE = int(env("NNUE_PROFILE", "0"))
 PROFILE_WARMUP = int(env("NNUE_PROFILE_WARMUP", "300"))
 FT_TF32 = env("NNUE_FT_TF32", "1") == "1"
@@ -996,19 +1003,8 @@ class FusedFT(torch.autograd.Function):
     @staticmethod
     def forward(ctx, wf, bf, weight):
         n, L1 = wf.shape[0], weight.shape[1]
-        planes, kb = FF.side_rows(wf, bf, NUM_INPUTS)   # 0.9 ms; rec_bitboards is exact but 4.1 ms until fixed
-        order, rf = FF.plan(kb, FUSED_FWD['BM'])
-        rb = FF.plan(kb, FUSED_CH)[1]
-        planes_s = planes[order].contiguous()
-        zero = torch.zeros(L1, dtype=torch.float32, device=wf.device)
-        if QAT:   # exact: hi + lo is the rounded weight, the sums fp32
-            hi, lo = FF.split_bf16(weight[:NUM_INPUTS].float())
-            out_s = FF.ft_fwd(planes_s, rf, hi, zero, w_lo=lo, **FUSED_FWD)
-        elif FT_FP8 >= 2:   # the table in e4m3, scaled per column
-            w8, wsc = FF.fp8_cols(weight[:NUM_INPUTS])
-            out_s = FF.ft_fwd(planes_s, rf, w8, zero, fp8=True, wscale=wsc, **FUSED_FWD)
-        else:
-            out_s = FF.ft_fwd(planes_s, rf, weight[:NUM_INPUTS].to(torch.bfloat16), zero, **FUSED_FWD)
+        planes_s, order, rf, rb = ft_sorted_rows(wf, bf)
+        out_s = ft_sums(planes_s, rf, weight, torch.zeros(L1, dtype=torch.float32, device=wf.device))
         out = torch.empty_like(out_s)
         out[order] = out_s                     # back to side-row order: White 0..n-1, Black n..2n-1
         ctx.save_for_backward(planes_s, rb, order)
@@ -1018,20 +1014,89 @@ class FusedFT(torch.autograd.Function):
     @staticmethod
     def backward(ctx, gw, gb):
         planes_s, rb, order = ctx.saved_tensors
-        g = torch.cat([gw, gb])[order]
-        dw = torch.zeros((ctx.nrows, g.shape[1]), dtype=torch.float32, device=g.device)
-        if FT_FP8 >= 1:   # X^T G = inv * X^T diag(s) G8 (ft_fused.fp8_rows)
-            g8, gs, ginv = FF.fp8_rows(g)
-            FF.ft_bwd(planes_s, rb, g8, dw[:NUM_INPUTS], fp8=True, gscale=gs, **FUSED_BWD)
-            dw[:NUM_INPUTS] *= ginv
-        else:
-            FF.ft_bwd(planes_s, rb, g.to(torch.bfloat16).contiguous(), dw[:NUM_INPUTS], **FUSED_BWD)
-        return None, None, dw   # the padding row keeps a zero gradient
+        return None, None, ft_weight_grad(planes_s, rb, torch.cat([gw, gb])[order], ctx.nrows)
+
+
+def ft_sorted_rows(wf, bf):
+    """The fused kernels' inputs: side-rows' bitboards sorted by king bucket (planes_s), the
+    sort (order: sorted slot -> side-row) and the forward's and backward's ranges."""
+    planes, kb = FF.side_rows(wf, bf, NUM_INPUTS)   # 0.9 ms; rec_bitboards is exact but 4.1 ms until fixed
+    order, rf = FF.plan(kb, FUSED_FWD['BM'])
+    rb = FF.plan(kb, FUSED_CH)[1]
+    return planes[order].contiguous(), order, rf, rb
+
+
+def ft_sums(planes_s, rf, weight, bias, act=None):
+    """ft_fused.ft_fwd on the table as the run holds it (ft_fwd's act: the activation too)."""
+    if QAT:   # exact: hi + lo is the rounded weight, the sums fp32
+        hi, lo = FF.split_bf16(weight[:NUM_INPUTS].float())
+        return FF.ft_fwd(planes_s, rf, hi, bias, w_lo=lo, act=act, **FUSED_FWD)
+    if FT_FP8 >= 2:   # the table in e4m3, scaled per column
+        w8, wsc = FF.fp8_cols(weight[:NUM_INPUTS])
+        return FF.ft_fwd(planes_s, rf, w8, bias, fp8=True, wscale=wsc, act=act, **FUSED_FWD)
+    return FF.ft_fwd(planes_s, rf, weight[:NUM_INPUTS].to(torch.bfloat16), bias, act=act, **FUSED_FWD)
+
+
+def ft_weight_grad(planes_s, rb, g, nrows):
+    """The table's gradient X^T G from G [R, L1] in sorted order (bf16, or FP8 with NNUE_FT_FP8)."""
+    dw = torch.zeros((nrows, g.shape[1]), dtype=torch.float32, device=g.device)
+    if FT_FP8 >= 1:   # X^T G = inv * X^T diag(s) G8 (ft_fused.fp8_rows)
+        g8, gs, ginv = FF.fp8_rows(g)
+        FF.ft_bwd(planes_s, rb, g8, dw[:NUM_INPUTS], fp8=True, gscale=gs, **FUSED_BWD)
+        dw[:NUM_INPUTS] *= ginv
+    else:
+        FF.ft_bwd(planes_s, rb, g.to(torch.bfloat16).contiguous(), dw[:NUM_INPUTS], **FUSED_BWD)
+    return dw   # the padding row keeps a zero gradient
+
+
+class FusedAct(torch.autograd.Function):
+    """FusedFT with forward()'s bias and SCReLU in its kernels (NNUE_FT_ACT): returns h
+    [n, 2 * L1], side to move first, in bf16 as autocast rounds it for the next matmul (fp32
+    under NNUE_QAT), twice over the same memory: one for the value's tail, one for any other
+    consumer (the draw head reads forward()'s h), so the two gradients arrive apart and
+    backward adds them in fp32, as autograd added them into forward()'s fp32 h before."""
+
+    @staticmethod
+    def forward(ctx, wf, bf, weight, bias, stm):
+        ctx.set_materialize_grads(False)
+        n, L1 = wf.shape[0], weight.shape[1]
+        planes_s, order, rf, rb = ft_sorted_rows(wf, bf)
+        dst = FF.act_dst(order, stm, n, L1)
+        sums, h = ft_sums(planes_s, rf, weight, bias, act=(dst, n))
+        ctx.save_for_backward(planes_s, rb, dst, sums, bias)
+        ctx.nrows = weight.shape[0]
+        return h, h.detach()
+
+    @staticmethod
+    def backward(ctx, gh, gh2):
+        planes_s, rb, dst, sums, bias = ctx.saved_tensors
+        if gh is None:
+            gh, gh2 = gh2, None
+        if gh is None:
+            return None, None, None, None, None
+        gs, db = FF.act_bwd(gh, gh2, sums, dst, bias)
+        return None, None, ft_weight_grad(planes_s, rb, gs, ctx.nrows), db, None
 
 
 @torch.compiler.disable
 def ft_fused(wf, bf, weight):
+    """Both sides' feature-layer sums (FusedFT), for fwd_loss. With NNUE_FT_ACT forward() runs
+    the kernels itself (ft_fused_act: it needs the bias and the side to move); this returns ()."""
+    if FT_ACT:
+        return ()
     return FusedFT.apply(wf, bf, qat_ft(weight) if QAT else weight)
+
+
+@torch.compiler.disable
+def ft_fused_act(wf, bf, stm, weight, bias):
+    if QAT:
+        return FusedAct.apply(wf, bf, qat_ft(weight), qat_bias(bias), stm)
+    return FusedAct.apply(wf, bf, weight, bias, stm)
+
+
+def qat_bias(b):
+    """The first layer's bias on the engine's grid, with a straight-through gradient."""
+    return b + (torch.round(b * 8192.0) / 8192.0 - b).detach()
 
 
 def qat_ft(w):
@@ -1047,9 +1112,13 @@ def qat_ft(w):
 def forward(model, wf, bf, stm, cnt, acc=None):
     """LNNUE.forward with the per-bucket loop replaced by one matmul per layer
     over all buckets and a gather of each position's own bucket: same values,
-    static shapes, no host synchronization."""
-    if QAT:   # the first layer on the engine's grid
-        bq = model.ft_bias + (torch.round(model.ft_bias * 8192.0) / 8192.0 - model.ft_bias).detach()
+    static shapes, no host synchronization. hv is the value tail's input, h the same
+    activations for any other consumer (with NNUE_FT_ACT its own output, see FusedAct)."""
+    hv = None
+    if acc is not None and FT_ACT:   # NNUE_FT_DENSE=3, from fwd_loss: the kernels apply the bias and SCReLU too
+        hv, h = ft_fused_act(wf, bf, stm, model.ft.weight, model.ft_bias)
+    elif QAT:   # the first layer on the engine's grid
+        bq = qat_bias(model.ft_bias)
         if acc is not None:   # NNUE_FT_DENSE=3: fwd_loss ran the fused kernels on qat_ft's weights (exact)
             acc_w, acc_b = acc[0] + bq, acc[1] + bq
         elif FT_DENSE:
@@ -1068,22 +1137,23 @@ def forward(model, wf, bf, stm, cnt, acc=None):
     else:
         acc_w = model.ft(wf) + model.ft_bias
         acc_b = model.ft(bf) + model.ft_bias
-    s = stm.view(-1, 1) > 0.5
-    h = torch.cat([torch.where(s, acc_w, acc_b), torch.where(s, acc_b, acc_w)], 1)
-    h = torch.clamp(h, 0.0, 1.0).square()
+    if hv is None:
+        s = stm.view(-1, 1) > 0.5
+        h = torch.cat([torch.where(s, acc_w, acc_b), torch.where(s, acc_b, acc_w)], 1)
+        hv = h = torch.clamp(h, 0.0, 1.0).square()
     if QAT:
-        return forward_tail_qat(model, h, cnt)
+        return forward_tail_qat(model, hv, cnt)
     nbk = model.num_buckets
     if nbk == 1:
-        z = tail_act(model.l2(h))
+        z = tail_act(model.l2(hv))
         z = tail_act(model.l3(z))
         return model.out(z).view(-1).float() * 300.0
-    n, L2, L3 = h.shape[0], model.L2, model.L3
+    n, L2, L3 = hv.shape[0], model.L2, model.L3
     bucket = ((cnt - 1) * nbk // 32).clamp(0, nbk - 1).view(n, 1)
     W2 = torch.cat([m.weight for m in model.bl2]); b2 = torch.cat([m.bias for m in model.bl2])
     W3 = torch.cat([m.weight for m in model.bl3]); b3 = torch.cat([m.bias for m in model.bl3])
     Wo = torch.cat([m.weight for m in model.bout]); bo = torch.cat([m.bias for m in model.bout])
-    z = F.linear(h, W2, b2).view(n, nbk, L2).gather(1, bucket.view(n, 1, 1).expand(n, 1, L2)).view(n, L2)
+    z = F.linear(hv, W2, b2).view(n, nbk, L2).gather(1, bucket.view(n, 1, 1).expand(n, 1, L2)).view(n, L2)
     z = F.linear(tail_act(z), W3, b3).view(n, nbk, L3).gather(1, bucket.view(n, 1, 1).expand(n, 1, L3)).view(n, L3)
     return F.linear(tail_act(z), Wo, bo).gather(1, bucket).view(n).float() * 300.0
 
@@ -1233,7 +1303,7 @@ def report_profile(prof, steps, seconds):
     def dev_self(e):
         return getattr(e, 'self_device_time_total', None) or getattr(e, 'self_cuda_time_total', 0) or 0
     kernels = [e for e in ev if str(getattr(e, 'device_type', '')).endswith('CUDA') and dev_self(e) > 0]
-    kinds = (("fused FT kernels", ("_ft_fwd", "_ft_bwd")),
+    kinds = (("fused FT kernels", ("_ft_fwd", "_ft_bwd", "_act_bwd")),
              ("cuBLAS / cutlass GEMM", ("gemm", "cutlass", "nvjet", "xmma", "cublas", "sm80_", "sm90_", "sm100_", "sm120_")),
              ("optimizer", ("adam", "Adam", "multi_tensor", "foreach")),
              ("copies and fills", ("Memcpy", "memcpy", "Memset", "memset", "fill", "copy_")),

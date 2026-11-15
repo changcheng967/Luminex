@@ -15,6 +15,15 @@ Both run over side-rows sorted by bucket (plan()). FP8 variants: the forward tak
 e4m3 with a per-column scale; the backward takes G in e4m3 with one global scale and a
 power-of-two boost per row, the boost's inverse riding in X's entries (exact in e4m3).
 
+Activation (ft_fwd(act=...), act_bwd): the forward also adds the bias, applies SCReLU and
+writes each side-row's values straight to its half of the next layer's input h [n, 2 * L1]
+(side to move first, act_dst()), so the sums never go back to side-row order and no
+elementwise pass reads them. The values are the trainer's bit for bit: x = (the stored sum)
++ bias in fp32, h = clamp(x, 0, 1)^2 rounded to bf16 as autocast rounds it for the matmul.
+act_bwd() is autograd's backward of the same ops: G = where(0 <= x <= 1, dL/dh * 2 *
+clamp(x, 0, 1), 0) in fp32, rounded to bf16 in sorted order for ft_bwd, and the bias
+gradient from the fp32 G (the one difference: its sum runs in another order).
+
 Exact forward (QAT): a weight on the engine's int16 grid, k / 2^13 with |k| < 2^15, is the
 sum of two bf16 values, hi = bf16(w) and lo = w - hi (|lo| <= 64 / 2^13: at most 7 significant
 bits), split_bf16(). The forward then runs two bf16 dots into one fp32 accumulator and stores
@@ -136,8 +145,9 @@ def plan(kb, block, nkb=NKB):
 
 
 @triton.jit
-def _ft_fwd(planes, ranges, w, bias, wscale, out, wlo,
-            L1: tl.constexpr, BM: tl.constexpr, BN: tl.constexpr, FP8: tl.constexpr, SPLIT: tl.constexpr):
+def _ft_fwd(planes, ranges, w, bias, wscale, out, wlo, dst, h,
+            L1: tl.constexpr, BM: tl.constexpr, BN: tl.constexpr, FP8: tl.constexpr, SPLIT: tl.constexpr,
+            ACT: tl.constexpr):
     t = tl.program_id(0)
     nb = tl.program_id(1)
     r0 = tl.load(ranges + 3 * t)
@@ -169,11 +179,26 @@ def _ft_fwd(planes, ranges, w, bias, wscale, out, wlo,
                 acc = tl.dot(bit.to(tl.bfloat16), tl.load(wrow_lo + k[:, None] * L1 + cols[None, :]), acc)
     if FP8:
         acc = acc * tl.load(wscale + cols)[None, :]
-    acc = acc + tl.load(bias + cols)[None, :]
-    if SPLIT:
-        tl.store(out + rows[:, None] * L1 + cols[None, :], acc, mask=rmask[:, None])
+    if ACT:   # the sums without the bias (act_bwd's x), then bias + SCReLU into each row's half of h
+        if SPLIT:
+            s = acc
+        else:
+            s = acc.to(tl.bfloat16)
+        tl.store(out + rows[:, None] * L1 + cols[None, :], s, mask=rmask[:, None])
+        x = s.to(tl.float32) + tl.load(bias + cols)[None, :]
+        c = tl.minimum(tl.maximum(x, 0.0), 1.0)
+        y = c * c
+        hp = h + tl.load(dst + rows, mask=rmask, other=0)[:, None] + cols[None, :]
+        if SPLIT:
+            tl.store(hp, y, mask=rmask[:, None])
+        else:
+            tl.store(hp, y.to(tl.bfloat16), mask=rmask[:, None])
     else:
-        tl.store(out + rows[:, None] * L1 + cols[None, :], acc.to(tl.bfloat16), mask=rmask[:, None])
+        acc = acc + tl.load(bias + cols)[None, :]
+        if SPLIT:
+            tl.store(out + rows[:, None] * L1 + cols[None, :], acc, mask=rmask[:, None])
+        else:
+            tl.store(out + rows[:, None] * L1 + cols[None, :], acc.to(tl.bfloat16), mask=rmask[:, None])
 
 
 @triton.jit
@@ -213,22 +238,80 @@ def _ft_bwd(planes, ranges, g, gscale, dw,
     tl.atomic_add(dst, acc, sem="relaxed")
 
 
+@triton.jit
+def _act_bwd(g, g2, sums, dst, bias, gs, part, R,
+             L1: tl.constexpr, BR: tl.constexpr, BC: tl.constexpr, TWO: tl.constexpr):
+    pb = tl.program_id(0)
+    cb = tl.program_id(1)
+    rows = (pb * BR + tl.arange(0, BR)).to(tl.int64)
+    rmask = rows < R
+    cols = cb * BC + tl.arange(0, BC)
+    gp = tl.load(dst + rows, mask=rmask, other=0)[:, None] + cols[None, :]
+    gv = tl.load(g + gp, mask=rmask[:, None], other=0.0).to(tl.float32)
+    if TWO:   # a second consumer's gradient, added in fp32 as autograd added the two
+        gv = gv + tl.load(g2 + gp, mask=rmask[:, None], other=0.0).to(tl.float32)
+    sp = rows[:, None] * L1 + cols[None, :]
+    x = tl.load(sums + sp, mask=rmask[:, None], other=0.0).to(tl.float32) + tl.load(bias + cols)[None, :]
+    c = tl.minimum(tl.maximum(x, 0.0), 1.0)
+    gx = tl.where((x >= 0.0) & (x <= 1.0) & rmask[:, None], gv * 2.0 * c, 0.0)   # clamp's mask is inclusive
+    tl.store(gs + sp, gx.to(tl.bfloat16), mask=rmask[:, None])
+    tl.store(part + pb * L1 + cols, tl.sum(gx, axis=0))
+
+
 def ft_fwd(planes_s, ranges, w, bias, BM, BN, fp8=False, wscale=None, num_warps=8, num_stages=3, out=None,
-           w_lo=None):
+           w_lo=None, act=None):
     """planes_s: side-rows in sorted order; ranges from plan(kb, BM). w: [32 * 768, L1]
     bf16 (or e4m3 with wscale [L1] fp32 = 1 / column scale). Returns [R, L1] bf16 in sorted order.
     With w_lo (bf16, split_bf16's second part), the table is w + w_lo and the output fp32: exact
-    for weights on the int16 grid."""
+    for weights on the int16 grid.
+    With act = (dst, n) (act_dst()), the activation too: returns (sums, h), the sums as above but
+    without the bias, and h [n, 2 * L1] = clamp(sums + bias, 0, 1)^2, each side-row's values at
+    offset dst[r] (bf16; fp32 with w_lo)."""
     R, L1 = planes_s.shape[0], w.shape[1]
     split = w_lo is not None
     if split and fp8:
         raise ValueError("the exact (split) forward is bf16 only")
     if out is None:
         out = torch.empty(R, L1, dtype=torch.float32 if split else torch.bfloat16, device=planes_s.device)
+    h = out
+    if act is not None:
+        dst, n = act
+        if R != 2 * n or dst.shape[0] != R:
+            raise ValueError(f"act: {R} side-rows, {dst.shape[0]} offsets for {n} positions")
+        h = torch.empty(n, 2 * L1, dtype=out.dtype, device=planes_s.device)
     grid = (ranges.shape[0], L1 // BN)
     _ft_fwd[grid](planes_s, ranges, w, bias, wscale if fp8 else bias, out, w_lo if split else w,
-                  L1=L1, BM=BM, BN=BN, FP8=fp8, SPLIT=split, num_warps=num_warps, num_stages=num_stages)
-    return out
+                  act[0] if act is not None else ranges, h,
+                  L1=L1, BM=BM, BN=BN, FP8=fp8, SPLIT=split, ACT=act is not None,
+                  num_warps=num_warps, num_stages=num_stages)
+    return out if act is None else (out, h)
+
+
+def act_dst(order, stm, n, L1):
+    """Where each sorted side-row's L1 activations start in h [n, 2 * L1]: its position's row,
+    the first half for the side to move (stm [n], 1 = White) and the second for the other, as
+    the trainer's torch.cat([where(s, white, black), where(s, black, white)], 1) lays them out.
+    order from plan(): side-rows 0..n-1 are White's views, n..2n-1 Black's."""
+    black = order >= n
+    p = order - black.long() * n
+    half = torch.where(stm[p] > 0.5, black, ~black)
+    return (p * (2 * L1) + half.long() * L1).contiguous()
+
+
+def act_bwd(g, g2, sums, dst, bias, BR=32, BC=256, num_warps=4):
+    """Backward of ft_fwd(act=...). g [n, 2 * L1] = dL/dh (bf16 or fp32), g2 = a second
+    consumer's dL/dh or None, sums and bias as ft_fwd took them. Returns (gs, db): gs [R, L1] bf16
+    in sorted order for ft_bwd, the gradient of the sums, and db [L1] fp32, the bias's."""
+    R, L1 = sums.shape
+    BC = min(BC, L1 & -L1)   # a power of two that divides L1
+    g = g.contiguous()
+    g2 = g2.contiguous() if g2 is not None else None
+    gs = torch.empty(R, L1, dtype=torch.bfloat16, device=sums.device)
+    nrb = triton.cdiv(R, BR)
+    part = torch.empty(nrb, L1, dtype=torch.float32, device=sums.device)
+    _act_bwd[(nrb, L1 // BC)](g, g2 if g2 is not None else g, sums, dst, bias, gs, part, R,
+                              L1=L1, BR=BR, BC=BC, TWO=g2 is not None, num_warps=num_warps)
+    return gs, part.sum(0)
 
 
 def split_bf16(w):
