@@ -1,206 +1,338 @@
-# Box test of the binpack feeder (PR #85) and the two QAT commits (PR #86, draft): ONE visible cell,
-# ~20 minutes, no training run. Writes only under /marimo/bftest (delete it afterwards); /marimo/data,
-# /marimo/tools, /marimo/out and /marimo/ckpt are only read. It refuses to start while a run is alive
-# (resident_train, binpack2lcr, the featurizer) or the GPU holds more than 2 GB.
-#  1. check_binfeed.py on the August 2026 BT4 binpack: exactness against binpack2lcr, the reservoir on the GPU,
-#     the box's read and decode rates at 1-20 threads, the stream's delivery rate.
-#  2. Speed, from gen768s_01's float net on that month: 1,500 float steps on NNUE_FT_DENSE=3, then 1,500 QAT
-#     steps in the same process (NNUE_QAT_AFTER, the fused exact path; the reservoir is the whole month,
-#     ~4.4 GB of VRAM, a >2^31-element tensor); then 1,500 QAT steps as today (a separate process on =2).
-#  3. check_fused.py --qat on the month's records with the float phase's .pt: the fused exact forward against
-#     the dense fp32 one, bit for bit.
-# The summary at the end: steps/s per phase, the switch's cost, the QAT start readings, PASS/FAIL lines.
-import collections
-import os
-import re
-import signal
-import statistics
-import subprocess
-import sys
-import threading
-import time
+def _binfeed_retest():
+    """Re-test of PR #85's binpack feeder after the 2026-11-15 box run that stopped for good at step 650, and of
+    PR #86's QAT. About 12 minutes, nothing kept: writes /marimo/bfre (delete it afterwards) and the log
+    /marimo/bfre.log; /marimo/data, /marimo/ckpt and /marimo/bftest are only read. Refuses while a training run is
+    active or the GPU holds more than 2 GB.
+      1. The stream alone, driven as the trainer drives it at the GPU's pace: 16 decode threads, a 72-chunk ring, a
+         reservoir of a whole pass, then a 131,072-record pull every 12 ms for 4 passes of the Aug 2026 BT4 month.
+         First cb44cca's binfeed.cpp (the code that stopped), then 786821a's (every wait re-checks every 20 ms;
+         late = waits a timer ended with the condition true). A stall (30 s without records) is reported.
+      2. The float phase as run 3 would train it on binpacks (L1 768, NNUE_FT_DENSE=3, the draw head, compiled):
+         3,000 steps (2.8 passes of the month; the stream reaches its 4th pass), then 500 QAT steps in the same
+         process (NNUE_QAT_AFTER, PR #86), with NNUE_STALL_SEC=60 so a stall is reported within a minute.
+      3. The same float phase on LCR1 records (/marimo/data, 150M positions on the card), 600 steps: the baseline.
+      4. check_fused.py --qat with step 2's float checkpoint: the fused exact QAT forward against the dense one.
+    The last lines: RUN3_BINPACKS_OK or RUN3_BINPACKS_NOT_OK (both phases finished, no stall, float steps/s within
+    3% of the LCR baseline's), and QAT86_OK or QAT86_NOT_OK."""
+    import glob, hashlib, json, os, re, statistics, subprocess, sys, textwrap, time, urllib.parse, urllib.request
 
-import marimo as mo
-
-COMMIT = "cb44ccae505a80b5789ef2d9785f0a301d25e3ad"   # branch binpack-qat (PR #86, on PR #85's 0cb8a8f)
-NP_COMMIT = "ed84cc1fd2255faa0f33dcfa7839c9b6b4bb49b8"  # nnue-pytorch: the binpack reader binpack2lcr was verified with
-MONTH = "2026-08"     # BT4: 432,909,354 bytes, ~168M positions
-STEPS = 1500          # steps of each timed phase
-CONNECTIONS = 8
-HOME = "/marimo"
-TEST = HOME + "/bftest"
-LOG = TEST + "/bftest.log"
-REFRESH_SECONDS = 5
-
-SCRIPT = r"""
-set -uo pipefail
-HOME_DIR="$1"; TEST="$2"; COMMIT="$3"; NP_COMMIT="$4"; MONTH="$5"; STEPS="$6"; CONN="$7"; PY="$8"
-mkdir -p "$TEST/tools" "$TEST/data" "$TEST/out" "$TEST/lcr" "$TEST/work"
-sha() { sha256sum "$1" | cut -d' ' -f1; }
-ok() { [ -f "$1" ] && [ "$(sha "$1")" = "$2" ]; }
-echo "== 1/5: environment"
-nvidia-smi --query-gpu=name,memory.used,memory.total,driver_version --format=csv,noheader || { echo "FAIL: no GPU"; exit 1; }
-echo "  CPU threads: $(nproc), RAM: $(free -g | awk '/^Mem/ {print $2}') GB, $(g++ --version | head -n 1)"
-"$PY" -c 'import torch, triton; print("  torch", torch.__version__, "| triton", triton.__version__, "|", torch.cuda.get_device_name(0))'
-FREE_GB=$(df -BG --output=avail "$TEST" | tail -n 1 | tr -dc 0-9)
-[ "${FREE_GB:-0}" -ge 15 ] || { echo "FAIL: $TEST has ${FREE_GB} GB free; the test needs ~10 GB at its peak"; exit 1; }
-echo "== 2/5: code at ${COMMIT:0:7} (branch binpack-qat), nnue-pytorch ${NP_COMMIT:0:7}"
-GH=https://raw.githubusercontent.com/changcheng967/Luminex/$COMMIT/nnue/openi_upload
-for pair in "resident_train.py 978617664877793aab2d6b4885396172c2e9234c48f5c4bfbfeb691c804d316a" "ft_fused.py 6db6cfc39c388b01b42fd9fe1f0d82e806e7964a9d2d2c327ca7de08f418968c" "check_fused.py a0e5d71f0eb52e8435be08e309886a648721554a0809360645af1670a256d837" "binfeed.cpp 0a0432fe17b2b7a1f9042d7490c1f450245851da31820cc85f65391bde62d850" "check_binfeed.py 642506187a58d0e9cb19c006acaa76068ba88719336104fc96f769af342d6d93" "feeder.cpp e01bbbf99c8bd712b3fe28cdb90287e91f310b3eba8ebd922ece92aabfed8779" "luminex_nnue_train.py ea5b94f2026c82b7a111d54d75fcf87fc30a8986290332b3dd446bb64f1222a8" "binpack2lcr.cpp 542f7448adc8bea54c6ab31ce78ed59dba2922b2d568f86149fce661a2ae12d7" "pfetch.py cf24acc2e7482c8afb2862528e2aed6a1b7e4ce8e0e5f7e244e3e98e117a0ccb"; do
-    set -- $pair
-    ok "$TEST/tools/$1" "$2" || curl -fsSL --retry 5 -o "$TEST/tools/$1" "$GH/$1" || curl -fsSL --retry 5 -o "$TEST/tools/$1" "https://gh-proxy.com/$GH/$1" || true
-    ok "$TEST/tools/$1" "$2" || { echo "FAIL: $1 from GitHub does not match sha256 $2"; exit 1; }
-done
-echo "  code: sha256 ok"
-NP="$HOME_DIR/tools/nnue-pytorch"
-if [ ! -f "$NP/data_loader/cpp/lib/binpack.h" ]; then
-    NP="$TEST/tools/nnue-pytorch"; mkdir -p "$NP"
-    curl -fsSL --retry 5 "https://codeload.github.com/official-stockfish/nnue-pytorch/tar.gz/$NP_COMMIT" | tar xz -C "$NP" --strip-components=1
-fi
-[ -f "$NP/data_loader/cpp/lib/binpack.h" ] || { echo "FAIL: nnue-pytorch headers missing"; exit 1; }
-export NNUE_PYTORCH="$NP"
-g++ -O2 -march=native -std=c++20 -pthread -I "$NP/data_loader/cpp" -o "$TEST/tools/binpack2lcr" "$TEST/tools/binpack2lcr.cpp" || { echo "FAIL: binpack2lcr build"; exit 1; }
-echo "  binpack2lcr: built; binfeed.cpp builds on first use"
-echo "== 3/5: the $MONTH BT4 binpack"
-case ${MONTH#*-} in 01) mn=jan;; 02) mn=feb;; 03) mn=mar;; 04) mn=apr;; 05) mn=may;; 06) mn=jun;; 07) mn=jul;; 08) mn=aug;; 09) mn=sep;; 10) mn=oct;; 11) mn=nov;; 12) mn=dec;; esac
-F="test91-$MONTH-$mn-150gb6p.v6.relabel-BT4-tf13tune-histfix.binpack"
-read -r size oid < <("$PY" -c "import json, sys, urllib.parse, urllib.request; print(*(lambda e: (e['size'], e['lfs']['oid']))(json.load(urllib.request.urlopen(urllib.request.Request('https://huggingface.co/api/datasets/xushawn/t91-lgs/paths-info/main', data=urllib.parse.urlencode([('paths', 'binpacks/v6-bt4/' + sys.argv[1]), ('expand', 'true')]).encode()), timeout=60))[0]))" "$F")
-if [ "$(stat -c %s "$TEST/data/$F" 2> /dev/null || echo 0)" != "$size" ] || [ -f "$TEST/data/$F.pieces" ]; then
-    "$PY" "$TEST/tools/pfetch.py" "https://huggingface.co/datasets/xushawn/t91-lgs/resolve/main/binpacks/v6-bt4/$F" "$TEST/data/$F" "$size" "$CONN" || { echo "FAIL: download"; exit 1; }
-    rm -f "$TEST/data/$F.pieces"
-fi
-[ "$(sha "$TEST/data/$F")" = "$oid" ] || { rm -f "$TEST/data/$F"; echo "FAIL: $F sha256 differs from Hugging Face's"; exit 1; }
-echo "  $F: $size bytes, sha256 ok"
-echo "== 4/5: check_binfeed.py: exactness, the reservoir on the GPU, read and decode rates"
-"$PY" "$TEST/tools/check_binfeed.py" "$TEST/data/$F" --work "$TEST/work" --threads 1,2,4,10,20 || echo "FAIL: check_binfeed.py (exit $?)"
-echo "== 5/5: speed, from gen768s_01's float net: float on NNUE_FT_DENSE=3, QAT in the same process (fused exact), then QAT as today (=2)"
-CK=""; [ -f "$HOME_DIR/ckpt/luminex_gen768s_01.nnue" ] && CK="$HOME_DIR/ckpt/luminex_gen768s_01.nnue"
-echo "  start: ${CK:-random weights}"
-COMMON="NNUE_BUCKETS=8 NNUE_TAIL_LR_MULT=4 NNUE_L1=768 NNUE_BS=131072 NNUE_LOSS_POWER=3.0 NNUE_QUIET_LOSS=1,0.3,0 NNUE_GRAD_CLIP=1.0 NNUE_TARGET_CLIP=1500 NNUE_VAL_FRAC=0.002 NNUE_COMPILE=1 NNUE_OUT_DIR=$TEST/out NNUE_BINPACKS=$TEST/data/$F"
-echo "== PHASE float + in-process QAT"
-env PYTHONUNBUFFERED=1 $COMMON ${CK:+NNUE_RESUME=$CK} NNUE_LR=5e-5 NNUE_T_MAX_STEPS="$STEPS" NNUE_EVAL_EVERY="$STEPS" NNUE_SAVE_EVERY="$STEPS" NNUE_QAT=0 NNUE_FT_DENSE=3 NNUE_QAT_AFTER="$STEPS" NNUE_QAT_LR=2e-5 NNUE_QAT_EVERY="$STEPS" NNUE_SEED=6 NNUE_OUT_NAME=bft.nnue "$PY" -u "$TEST/tools/resident_train.py" || echo "FAIL: float + in-process QAT (exit $?)"
-echo "== PHASE separate QAT on NNUE_FT_DENSE=2"
-if [ -f "$TEST/out/bft.pt" ]; then
-    env PYTHONUNBUFFERED=1 $COMMON NNUE_RESUME="$TEST/out/bft.pt" NNUE_LR=2e-5 NNUE_T_MAX_STEPS="$STEPS" NNUE_EVAL_EVERY="$STEPS" NNUE_SAVE_EVERY="$STEPS" NNUE_QAT=1 NNUE_FT_DENSE=2 NNUE_SEED=4 NNUE_OUT_NAME=bft_q2.nnue "$PY" -u "$TEST/tools/resident_train.py" || echo "FAIL: separate QAT (exit $?)"
-else echo "FAIL: no float checkpoint for the separate QAT phase"; fi
-echo "== PHASE check_fused.py --qat on the month's records"
-"$TEST/tools/binpack2lcr" "$TEST/data/$F" "$TEST/lcr/t91_$MONTH" "$(nproc)" 2> "$TEST/lcr/convert.log" || echo "FAIL: convert"
-"$PY" "$TEST/tools/check_fused.py" --qat "$TEST/lcr" $( [ -f "$TEST/out/bft.pt" ] && echo "$TEST/out/bft.pt" ) || echo "FAIL: check_fused.py --qat (exit $?)"
-echo "== FINISHED (delete $TEST when the numbers are copied)"
-"""
+    # The cells' draw head (v5r2.py's PATCH_DRAW, verbatim), applied to this branch's trainer for the float runs.
+    PATCH_DRAW = textwrap.dedent('''
+        import sys
+        src, dst = sys.argv[1], sys.argv[2]
+        rt = open(src, encoding="utf-8").read()
 
 
-def busy():
-    """A training or conversion process, or a GPU in use: the reason not to start, else None."""
-    for pid in filter(str.isdigit, os.listdir("/proc")):
-        if int(pid) == os.getpid():
-            continue
-        try:
-            with open(f"/proc/{pid}/cmdline", "rb") as f:
-                argv = f.read().split(b"\0")
-        except OSError:
-            continue
-        if any(a.endswith((b"resident_train.py", b"resident_train_dh.py", b"c500_train_stream.py")) for a in argv) or \
-                any(a.endswith((b"binpack2lcr", b"luminex-featurize")) for a in argv[:1]):
-            return "a run is alive: " + b" ".join(argv).decode(errors="replace")[:200]
+        def patch(old, new, what):
+            global rt
+            if rt.count(old) != 1:
+                sys.exit(f"draw patch: {what} appears {rt.count(old)} times")
+            rt = rt.replace(old, new)
+
+
+        patch("def forward(model, wf, bf, stm, cnt, acc=None):",
+              "def forward(model, wf, bf, stm, cnt, acc=None, want_h=False):", "forward()")
+        patch("    return F.linear(tail_act(z), Wo, bo).gather(1, bucket).view(n).float() * 300.0\\n",
+              "    _o = F.linear(tail_act(z), Wo, bo).gather(1, bucket).view(n).float() * 300.0\\n"
+              "    return (_o, h) if want_h else _o\\n", "the value's return")
+        patch('def fwd_loss(model, rec):\\n'
+              '    wf, bf, stm, tgt, flag, cnt = expand(rec)\\n'
+              '    acc = ft_fused(wf, bf, model.ft.weight) if FT_DENSE == 3 else None\\n'
+              '    with torch.autocast(device_type="cuda", dtype=torch.bfloat16):\\n'
+              '        pred = forward(model, wf, bf, stm, cnt, acc)\\n'
+              '    return batch_loss(pred.float(), tgt.clamp(-TARGET_CLIP, TARGET_CLIP), flag)\\n',
+              'DRAW_W = float(os.environ.get("NNUE_DRAW_W", "0"))\\n'
+              '\\n'
+              '\\n'
+              'def draw_logit(model, h, pred, cnt):\\n'
+              '    """The draw head: one logit per output bucket from the activations and the value\\'s size\\n'
+              '    (detached: the draw loss shapes the accumulator, not the value\\'s output directly)."""\\n'
+              '    n = h.shape[0]\\n'
+              '    bucket = ((cnt - 1) * model.num_buckets // 32).clamp(0, model.num_buckets - 1).view(n, 1)\\n'
+              '    z = model.dhead(h).float().gather(1, bucket).view(n)\\n'
+              '    return z + model.dhead_p[bucket.view(n)] * (pred.detach().float().abs() / 400.0)\\n'
+              '\\n'
+              '\\n'
+              'def fwd_loss(model, rec):\\n'
+              '    wf, bf, stm, tgt, flag, cnt = expand(rec)\\n'
+              '    acc = ft_fused(wf, bf, model.ft.weight) if FT_DENSE == 3 else None\\n'
+              '    dh = getattr(model, "dhead", None)\\n'
+              '    with torch.autocast(device_type="cuda", dtype=torch.bfloat16):\\n'
+              '        if dh is None:\\n'
+              '            pred = forward(model, wf, bf, stm, cnt, acc)\\n'
+              '        else:\\n'
+              '            pred, h = forward(model, wf, bf, stm, cnt, acc, want_h=True)\\n'
+              '            dlogit = draw_logit(model, h, pred, cnt)\\n'
+              '    vloss = batch_loss(pred.float(), tgt.clamp(-TARGET_CLIP, TARGET_CLIP), flag)\\n'
+              '    if dh is None:\\n'
+              '        return vloss\\n'
+              '    fl = rec[:, 26].to(torch.int64)\\n'
+              '    known = ((fl >> 3) & 1).float()\\n'
+              '    drawn = (((fl >> 4) & 3) == 1).float()\\n'
+              '    bce = F.binary_cross_entropy_with_logits(dlogit, drawn, reduction="none")\\n'
+              '    return vloss + DRAW_W * (bce * known).sum() / known.sum().clamp(min=1.0)\\n', "fwd_loss()")
+        patch("    model = LNNUE(L1=L1).to(dev)\\n",
+              "    model = LNNUE(L1=L1).to(dev)\\n"
+              "    if DRAW_W > 0:\\n"
+              "        model.dhead = torch.nn.Linear(2 * L1, model.num_buckets).to(dev)\\n"
+              "        torch.nn.init.zeros_(model.dhead.weight)\\n"
+              "        torch.nn.init.zeros_(model.dhead.bias)\\n"
+              "        model.dhead_p = torch.nn.Parameter(torch.zeros(model.num_buckets, device=dev))\\n"
+              '        print(f"[draw] draw head on, loss weight {DRAW_W:g}", flush=True)\\n', "model construction")
+        patch("    opt = torch.optim.AdamW(groups, lr=LR, amsgrad=True, fused=True)\\n",
+              '    if hasattr(model, "dhead"):   # its own group, the last: no weight decay, the tail learning rate\\n'
+              '        groups.append({"params": list(model.dhead.parameters()) + [model.dhead_p], "weight_decay": 0.0,\\n'
+              '                       "lr": LR * TAIL_LR_MULT})\\n'
+              "    opt = torch.optim.AdamW(groups, lr=LR, amsgrad=True, fused=True)\\n", "the optimizer line")
+        open(dst, "w", encoding="utf-8").write(rt)
+        print(f"  draw head: patched trainer {dst}")
+    ''')
+
+    # The stream driven alone (step 1): argv = code dir, binpack, decode threads, passes, seconds between pulls.
+    STRESS = '''
+    import os, sys, threading, time
+    CODE, FILE, T, PASSES, SLEEP = sys.argv[1], sys.argv[2], int(sys.argv[3]), float(sys.argv[4]), float(sys.argv[5])
+    os.environ.update(NNUE_DEVICE="cpu", NNUE_READ_THREADS="8", NNUE_VAL_FRAC="0.002", NNUE_BINPACK_CACHE="1")
+    sys.path.insert(0, CODE)
+    import numpy as np
+    import resident_train as RT
+    thr = min(int(RT.VAL_FRAC * 2 ** 32), 2 ** 32 - 1)
+    bp = RT.Binpacks([FILE], thr, True)
+    n = bp.select(0)
+    bs = 131072
+    S = n // bs * bs
+    bp.start(6, T, 4 * T + 8)
+    st = {"got": 0, "t": time.time()}
+    def state():
+        return f"; stream {bp.state()}" if hasattr(bp, "state") else ""
+    def watchdog():
+        while True:
+            time.sleep(2)
+            if time.time() - st["t"] > 30:
+                print(f"STREAM_STALL: no records for {time.time() - st['t']:.0f} s at {st['got']:,} positions "
+                      f"({st['got'] / n:.3f} passes){state()}", flush=True)
+                os._exit(3)
+    threading.Thread(target=watchdog, daemon=True).start()
+    buf = np.empty((1 << 22, 32), np.uint8)
+    for o in range(0, S, 1 << 22):
+        k = min(1 << 22, S - o)
+        bp.next_into(buf.ctypes.data, k)
+        st["got"] += k
+        st["t"] = time.time()
+    t1, pulls = time.time(), 0
+    while st["got"] < PASSES * n:
+        bp.next_into(buf.ctypes.data, bs)
+        pulls += 1
+        if SLEEP:
+            time.sleep(SLEEP)
+        st["got"] += bs
+        st["t"] = time.time()
+    print(f"STREAM_OK: {st['got'] / n:.2f} passes, {pulls} pulls of {bs:,} in {time.time() - t1:.0f} s{state()}", flush=True)
+    os._exit(0)
+    '''
+
+    NEW = "b725c583be96d945bc745043916408cc82b84170"   # branch binpack-qat: PR #86 with #85's fix 786821a merged
+    OLD = "cb44ccae505a80b5789ef2d9785f0a301d25e3ad"   # the code that stopped at step 650
+    PINS_NEW = {"resident_train.py": "05fa55a00b2455639aadfc73553fb49422e4ffbd7eb5518afe3c2bca3a395b92",
+                "binfeed.cpp": "844a1814c2322474c2af4204bf16a444dcc448c37a80b9ea765a2ed6783c1b77",
+                "ft_fused.py": "6db6cfc39c388b01b42fd9fe1f0d82e806e7964a9d2d2c327ca7de08f418968c",
+                "check_fused.py": "a0e5d71f0eb52e8435be08e309886a648721554a0809360645af1670a256d837",
+                "luminex_nnue_train.py": "ea5b94f2026c82b7a111d54d75fcf87fc30a8986290332b3dd446bb64f1222a8",
+                "feeder.cpp": "e01bbbf99c8bd712b3fe28cdb90287e91f310b3eba8ebd922ece92aabfed8779",
+                "pfetch.py": "cf24acc2e7482c8afb2862528e2aed6a1b7e4ce8e0e5f7e244e3e98e117a0ccb"}
+    PINS_OLD = {"resident_train.py": "978617664877793aab2d6b4885396172c2e9234c48f5c4bfbfeb691c804d316a",
+                "binfeed.cpp": "0a0432fe17b2b7a1f9042d7490c1f450245851da31820cc85f65391bde62d850",
+                "luminex_nnue_train.py": "ea5b94f2026c82b7a111d54d75fcf87fc30a8986290332b3dd446bb64f1222a8"}
+    NP_COMMIT = "ed84cc1fd2255faa0f33dcfa7839c9b6b4bb49b8"   # nnue-pytorch: the binpack reader
+    MONTH = "test91-2026-08-aug-150gb6p.v6.relabel-BT4-tf13tune-histfix.binpack"
+    HOME, DATA, TEST = "/marimo", "/marimo/data", "/marimo/bfre"
+    START = HOME + "/ckpt/luminex_gen768s_01.nnue"   # the start the stopped run used
+    LCR_REF = 67.7   # the current trainer's float steps/s at L1 768 with the draw head (the parent's figure)
+    t0 = time.time()
+    if subprocess.run("pgrep -f '[r]esident_train'", shell=True, capture_output=True).stdout.strip():
+        print("a training run is active; not starting"); return
     try:
         used = float(subprocess.run(["nvidia-smi", "--query-gpu=memory.used", "--format=csv,noheader,nounits"],
-                                    capture_output=True, text=True, timeout=20).stdout.split()[0])
-        if used > 2048:
-            return f"the GPU holds {used:.0f} MiB"
+                                    capture_output=True, text=True, timeout=30).stdout.split()[0])
     except Exception as e:
-        return f"nvidia-smi failed ({e.__class__.__name__})"
-    return None
+        print(f"nvidia-smi failed ({e.__class__.__name__}); not starting"); return
+    if used > 2048:
+        print(f"the GPU holds {used:.0f} MiB; not starting"); return
+    parts = sorted(glob.glob(DATA + "/t91_*.lcr"))
+    if not parts:
+        print(f"FAIL: no {DATA}/t91_*.lcr for the baseline and check_fused"); return
+    for d in ("new", "old", "data", "out"):
+        os.makedirs(f"{TEST}/{d}", exist_ok=True)
+
+    def sha(path):
+        h = hashlib.sha256()
+        with open(path, "rb") as f:
+            for b in iter(lambda: f.read(1 << 24), b""):
+                h.update(b)
+        return h.hexdigest()
+
+    def fetch(commit, pins, dst):
+        gh = f"https://raw.githubusercontent.com/changcheng967/Luminex/{commit}/nnue/openi_upload/"
+        for name, want in pins.items():
+            path = f"{dst}/{name}"
+            for url in (gh + name, "https://gh-proxy.com/" + gh + name):
+                if os.path.exists(path) and sha(path) == want:
+                    break
+                try:
+                    with urllib.request.urlopen(url, timeout=60) as r:
+                        open(path, "wb").write(r.read())
+                except Exception as e:
+                    print(f"  {name}: {url[:70]}... failed ({e.__class__.__name__})", flush=True)
+            if not (os.path.exists(path) and sha(path) == want):
+                raise SystemExit(f"FAIL: {name} at {commit[:7]} does not match sha256 {want}")
+        print(f"code: {len(pins)} files at {commit[:7]} -> {dst}, sha256 ok", flush=True)
+
+    fetch(NEW, PINS_NEW, f"{TEST}/new")
+    fetch(OLD, PINS_OLD, f"{TEST}/old")
+    np_dir = next((d for d in (f"{HOME}/tools/nnue-pytorch", f"{HOME}/bftest/tools/nnue-pytorch", f"{TEST}/np")
+                   if os.path.exists(f"{d}/data_loader/cpp/lib/binpack.h")), None)
+    if np_dir is None:
+        np_dir = f"{TEST}/np"
+        os.makedirs(np_dir, exist_ok=True)
+        subprocess.run(f"curl -fsSL --retry 5 https://codeload.github.com/official-stockfish/nnue-pytorch/tar.gz/{NP_COMMIT}"
+                       f" | tar xz -C {np_dir} --strip-components=1", shell=True, check=True)
+    print(f"nnue-pytorch: {np_dir}", flush=True)
+    q = urllib.parse.urlencode([("paths", "binpacks/v6-bt4/" + MONTH), ("expand", "true")]).encode()
+    req = urllib.request.Request("https://huggingface.co/api/datasets/xushawn/t91-lgs/paths-info/main", data=q)
+    info = json.load(urllib.request.urlopen(req, timeout=60))[0]
+    size, oid = info["size"], info["lfs"]["oid"]
+    month = next((p for p in (f"{HOME}/bftest/data/{MONTH}", f"{DATA}/{MONTH}", f"{TEST}/data/{MONTH}")
+                  if os.path.exists(p) and os.path.getsize(p) == size and sha(p) == oid), None)
+    if month is None:
+        month = f"{TEST}/data/{MONTH}"
+        subprocess.run([sys.executable, f"{TEST}/new/pfetch.py", "https://huggingface.co/datasets/xushawn/t91-lgs/resolve/"
+                        f"main/binpacks/v6-bt4/{MONTH}", month, str(size), "8"], check=True)
+        if sha(month) != oid:
+            print(f"FAIL: {MONTH} sha256 differs from Hugging Face's"); return
+    print(f"month: {month} ({size:,} bytes, sha256 ok)", flush=True)
+    open(f"{TEST}/new/patch_draw.py", "w", encoding="utf-8").write(PATCH_DRAW)
+    r = subprocess.run([sys.executable, f"{TEST}/new/patch_draw.py", f"{TEST}/new/resident_train.py",
+                        f"{TEST}/new/resident_train_dh.py"], capture_output=True, text=True)
+    print((r.stdout + r.stderr).strip(), flush=True)
+    if r.returncode:
+        print("FAIL: the draw patch"); return
+    open(f"{TEST}/stress.py", "w").write(textwrap.dedent(STRESS))
+
+    env0 = {k: v for k, v in os.environ.items() if not k.startswith("NNUE_")}
+    env0.update(PYTHONUNBUFFERED="1", NNUE_PYTORCH=np_dir)
+
+    def stream(title, argv, env, keys, logname, limit):
+        print(f"\n== {title}", flush=True)
+        ta, lines = time.time(), []
+        with open(f"{TEST}/out/{logname}", "w") as lg:
+            pr = subprocess.Popen(argv, env=env, cwd=TEST, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
+                                  bufsize=1, errors="replace", start_new_session=True)
+            timer = __import__("threading").Timer(limit, lambda: os.killpg(pr.pid, 9))
+            timer.start()
+            for line in pr.stdout:
+                lg.write(line)
+                lg.flush()
+                lines.append(line.rstrip())
+                m = re.search(r" step (\d+) loss=", line)
+                if any(k in line for k in keys) or (m and int(m.group(1)) % 500 == 0):
+                    print("   " + line.rstrip()[:240], flush=True)
+            rc = pr.wait()
+            timer.cancel()
+        print(f"   exit {rc} in {time.time() - ta:.0f} s{' (killed at the time limit)' if rc == -9 else ''}", flush=True)
+        if rc != 0:
+            print("\n".join("   " + x[:240] for x in lines[-30:]), flush=True)
+        return rc, lines
+
+    res = {}
+    for tag, code in (("old", f"{TEST}/old"), ("new", f"{TEST}/new")):
+        rc, lines = stream(f"1/4: the stream alone, {tag} binfeed.cpp ({OLD[:7] if tag == 'old' else '786821a'}), "
+                           "16 threads, a pull every 12 ms, 4 passes",
+                           [sys.executable, "-u", f"{TEST}/stress.py", code, month, "16", "4", "0.012"], env0,
+                           ("STREAM_", "Error", "FAIL", "[data]"), f"stress_{tag}.log", 600)
+        res[tag] = next((x for x in lines if x.startswith("STREAM_")), f"no result (exit {rc})")
+    keys = ("[data]", "[feed]", "[draw]", "[HEALTH", "== QAT PHASE", "DONE (", "[STALL]", "FAIL", "Error", "Traceback")
+    base = dict(env0, NNUE_BUCKETS="8", NNUE_TAIL_LR_MULT="4", NNUE_L1="768", NNUE_BS="131072", NNUE_LOSS_POWER="3.0",
+                NNUE_QUIET_LOSS="1,0.3,0", NNUE_GRAD_CLIP="1.0", NNUE_TARGET_CLIP="1500", NNUE_VAL_FRAC="0.002",
+                NNUE_COMPILE="1", NNUE_FT_DENSE="3", NNUE_QAT="0", NNUE_DRAW_W="1e-3", NNUE_LR="5e-5", NNUE_SEED="6",
+                NNUE_FEED_THREADS="8", NNUE_KEEP_EVERY="0", NNUE_OUT_DIR=f"{TEST}/out", NNUE_STALL_SEC="60")
+    if os.path.exists(START):
+        base["NNUE_RESUME"] = START
+    rcA, linesA = stream("2/4: float phase on binpacks (the draw head), 3,000 steps, then 500 QAT steps in-process",
+                         [sys.executable, "-u", f"{TEST}/new/resident_train_dh.py"],
+                         dict(base, NNUE_BINPACKS=month, NNUE_T_MAX_STEPS="3000", NNUE_EVAL_EVERY="3000",
+                              NNUE_SAVE_EVERY="3000", NNUE_QAT_AFTER="500", NNUE_QAT_LR="2e-5", NNUE_QAT_EVERY="500",
+                              NNUE_OUT_NAME="bfre.nnue"), keys, "binpacks.log", 1500)
+    rcB, linesB = stream("3/4: the same float phase on LCR1 records (150M on the card), 600 steps: the baseline",
+                         [sys.executable, "-u", f"{TEST}/new/resident_train_dh.py"],
+                         dict(base, NNUE_DATA=DATA + "/t91_*.lcr", NNUE_MAX_POS="150000000", NNUE_VRAM_POS="150000000",
+                              NNUE_T_MAX_STEPS="600", NNUE_EVAL_EVERY="600", NNUE_SAVE_EVERY="600",
+                              NNUE_OUT_NAME="bfre_lcr.nnue"), keys, "lcr.log", 900)
+    ck = f"{TEST}/out/bfre.pt"
+    rcC, linesC = stream("4/4: check_fused.py --qat (the fused exact QAT forward against the dense one)",
+                         [sys.executable, "-u", f"{TEST}/new/check_fused.py", "--qat", DATA] + ([ck] if os.path.exists(ck) else []),
+                         env0, ("QAT feature layer", "loss:", "GRAD_", "Error", "FAIL"), "check_qat.log", 900)
+
+    def rates(lines):
+        """Median steps/s of each phase's 50-step readings after its first 300 steps."""
+        out, phase, first = {}, "float", None
+        for x in lines:
+            if "== QAT PHASE" in x:
+                phase, first = "qat", None
+            m = re.search(r" step (\d+) loss=.* \| ([0-9.]+) steps/s", x)
+            if m:
+                s = int(m.group(1))
+                first = s if first is None else first
+                if s >= first + 300:
+                    out.setdefault(phase, []).append(float(m.group(2)))
+        return {k: statistics.median(v) for k, v in out.items() if v}
+
+    ra, rb = rates(linesA), rates(linesB)
+    stalls = [x for x in linesA + linesB if x.startswith("[STALL]")]
+    doneA = sum(1 for x in linesA if x.startswith("DONE ("))
+    qat_ran = any("== QAT PHASE" in x for x in linesA)
+    exact = next((x.strip() for x in linesC if "QAT feature layer" in x), "no QAT feature-layer line")
+    print("\n== SUMMARY", flush=True)
+    print(f"stream alone, old: {res['old']}", flush=True)
+    print(f"stream alone, new: {res['new']}", flush=True)
+    print(f"float steps/s, binpacks: {ra.get('float', 'n/a')}; LCR1 baseline: {rb.get('float', 'n/a')} (the parent's "
+          f"{LCR_REF}); QAT steps/s in-process on NNUE_FT_DENSE=3: {ra.get('qat', 'n/a')}", flush=True)
+    print(f"stall reports: {len(stalls)}" + "".join("\n   " + x[:240] for x in stalls[:40]), flush=True)
+    print(f"check_fused --qat: {exact}; exit {rcC}", flush=True)
+    fa, fb = ra.get("float"), rb.get("float")
+    ok3 = rcA == 0 and doneA == 2 and not stalls and fa is not None and fb is not None and fa >= 0.97 * fb
+    print(f"{'RUN3_BINPACKS_OK' if ok3 else 'RUN3_BINPACKS_NOT_OK'}: float {fa} steps/s on binpacks against {fb} on "
+          f"LCR1 records; {doneA} of 2 phases finished; {len(stalls)} stall report line(s)", flush=True)
+    ok6 = rcA == 0 and qat_ran and doneA == 2 and rcC == 0
+    print(f"{'QAT86_OK' if ok6 else 'QAT86_NOT_OK'}: in-process QAT {'ran' if qat_ran else 'did not run'} at "
+          f"{ra.get('qat', 'n/a')} steps/s; check_fused --qat exit {rcC} | {time.time() - t0:.0f} s "
+          f"(delete {TEST} when copied)", flush=True)
 
 
-def summary(lines):
-    """Steps/s per phase (median of the 50-step readings after the first 300 steps), the switch's
-    cost, the QAT start readings, and the PASS/FAIL lines."""
-    out, phase, rates, health, switch = [], None, collections.defaultdict(list), {}, {}
-    for line in lines:
-        if line.startswith("== PHASE"):
-            phase = line[9:]
-        elif "== QAT PHASE in this run" in line:
-            phase, switch["t"] = "in-process QAT (fused, =3)", time.time()
-        m = re.search(r"step (\d+) loss=.* \| ([0-9.]+) steps/s", line)
-        if m and phase:
-            rates[phase].append((int(m.group(1)), float(m.group(2))))
-        m = re.match(r"\[HEALTH step (\d+)\] val loss=([0-9.]+) MAE=([0-9.]+)cp", line)
-        if m and phase and phase not in health:
-            health[phase] = f"step {m.group(1)}: val loss {m.group(2)}, MAE {m.group(3)} cp"
-        if any(k in line for k in ("BINFEED_", "GRAD_", "QAT feature layer", "FAIL", "decode,", "stream,", "read into RAM",
-                                   "reservoir:", "DONE (")):
-            out.append(line.strip())
-    for p, r in rates.items():
-        first = r[0][0] if r else 0
-        late = [x for s, x in r if s >= first + 300] or [x for _, x in r]
-        if late:
-            out.append(f"steps/s, {p}: median {statistics.median(late):.1f} over {len(late)} readings")
-    for p, h in health.items():
-        out.append(f"first [HEALTH], {p}: {h}")
-    return out
+
+import sys as _sys
 
 
-os.makedirs(TEST, exist_ok=True)
-why = busy()
-if why:
-    mo.output.replace(mo.plain_text(f"NOT STARTED: {why}. Run this cell when the box is free."))
-else:
-    state = {"last": time.time(), "phase": "starting"}
-    recent, every = collections.deque(maxlen=4000), []
-    lock = threading.Lock()
+class _Tee:
+    def __init__(self, *streams):
+        self.streams = streams
 
-    def read_output(pipe):
-        log = open(LOG, "a", buffering=1, errors="replace")
-        for line in pipe:
-            log.write(line)
-            text = line.rstrip("\n")
-            with lock:
-                state["last"] = time.time()
-                if text.startswith("== "):
-                    state["phase"] = text[3:]
-                recent.append(text)
-                every.append(text)
-        log.close()
+    def write(self, x):
+        for t in self.streams:
+            t.write(x)
+            t.flush()
 
-    started = time.time()
-    proc = subprocess.Popen(["bash", "-c", SCRIPT, "bash", HOME, TEST, COMMIT, NP_COMMIT, MONTH, str(STEPS),
-                             str(CONNECTIONS), sys.executable],
-                            env=dict(os.environ, PYTHONUNBUFFERED="1"), stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
-                            stderr=subprocess.STDOUT, text=True, bufsize=1, errors="replace", start_new_session=True)
-    reader = threading.Thread(target=read_output, args=(proc.stdout,), daemon=True)
-    reader.start()
+    def flush(self):
+        for t in self.streams:
+            t.flush()
 
-    def panel(status):
-        with lock:
-            shown, s = list(recent)[-400:], dict(state)
-        up = int(time.time() - started)
-        return mo.plain_text(f"binfeed box test: {status} {up // 60}m {up % 60:02d}s · phase: {s['phase']} · "
-                             f"last output {int(time.time() - s['last'])} s ago · log {LOG}\n" + "─" * 46 + "\n"
-                             + "\n".join(shown))
 
+with open("/marimo/bfre.log", "w") as _log:
+    _stdout = _sys.stdout
+    _sys.stdout = _Tee(_stdout, _log)
     try:
-        while True:
-            mo.output.replace(panel("running"))
-            try:
-                proc.wait(timeout=REFRESH_SECONDS)
-                break
-            except subprocess.TimeoutExpired:
-                pass
-        reader.join(timeout=5)
-        with lock:
-            lines = list(every)
-        result = summary(lines)
-        with open(LOG, "a") as f:
-            f.write("== SUMMARY\n" + "\n".join(result) + "\n")
-        for text in result:
-            print(text, flush=True)
-        mo.output.replace(mo.plain_text(f"binfeed box test finished (exit {proc.returncode}) after "
-                                        f"{int(time.time() - started) // 60} min\n" + "\n".join(result)))
+        _binfeed_retest()
+    except BaseException:
+        import traceback as _tb
+        print("FAIL:", _tb.format_exc(), flush=True)
     finally:
-        if proc.poll() is None:   # the cell was stopped: stop the test
-            os.killpg(proc.pid, signal.SIGTERM)
-            try:
-                proc.wait(timeout=20)
-            except subprocess.TimeoutExpired:
-                os.killpg(proc.pid, signal.SIGKILL)
+        _sys.stdout = _stdout
