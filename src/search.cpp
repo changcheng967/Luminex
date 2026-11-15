@@ -248,6 +248,12 @@ static inline int head_error_cp(int e1e4, Value eval) {
     return int(std::min(400.0, e1e4 * 1e-4 * 400.0 / d));
 }
 
+// LUMINEX_HEAD_STATS: where the margins read the error head, the head's error in cp
+// (10 cp bins, 0-400) and |correction|, printed as quantiles after each search.
+// One search thread only (plain counters).
+static const bool g_head_stats = std::getenv("LUMINEX_HEAD_STATS") != nullptr;
+static uint64_t g_head_hist[41], g_corr_hist[41], g_head_n = 0, g_head_missing = 0;
+
 inline Value eval_cached(const Position& pos, int* herr = nullptr) {
     uint64_t key = pos.key();
     uint32_t idx = uint32_t(key) & (EVAL_CACHE_SIZE - 1);
@@ -798,8 +804,20 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
         // The net's own estimate of its error moves the margins around their
         // usual size: wider where it expects to be wrong, narrower where not.
         const SPSAParams& hp = SPSAParams::get();
-        if (hp.head_k > 0 && head_err >= 0)
-            eval_uncertainty = std::max(0, eval_uncertainty + hp.head_k * (head_error_cp(head_err, eval) - hp.head_c) / 64);
+        if (hp.head_k > 0 && head_err >= 0) {
+            const int hcp = head_error_cp(head_err, eval);
+            if (g_head_stats) {
+                ++g_head_hist[std::min(hcp / 10, 40)];
+                ++g_corr_hist[std::min(eval_uncertainty / 10, 40)];
+                ++g_head_n;
+            }
+            // Below 0 where the head trusts the eval: the margins may shrink
+            // (at most 20 cp for reverse futility, 13 for futility), so the
+            // head moves pruning around rather than only adding caution.
+            eval_uncertainty = std::max(-40, eval_uncertainty + hp.head_k * (hcp - hp.head_c) / 64);
+        } else if (g_head_stats && hp.head_k > 0) {
+            ++g_head_missing;
+        }
     }
     ss->static_eval = eval;
 
@@ -2615,6 +2633,20 @@ Move search(Position& pos, Limits& lim) {
     // Search statistics are opt-in (LUMINEX_SEARCH_STATS=1): STATS info strings
     // plus one line per search appended to /tmp/luminex_game_stats.txt.
     static const bool search_stats = std::getenv("LUMINEX_SEARCH_STATS") != nullptr;
+    if (g_head_stats && g_head_n > 0) {
+        auto q = [](const uint64_t* h, uint64_t n, double f) {
+            uint64_t c = 0;
+            for (int b = 0; b < 41; ++b) { c += h[b]; if (c >= f * n) return b * 10 + 5; }
+            return 405;
+        };
+        std::ostringstream hs;
+        hs << "info string HEADSTATS nodes " << g_head_n << " missing " << g_head_missing
+           << " | head cp p10 " << q(g_head_hist, g_head_n, 0.1) << " p25 " << q(g_head_hist, g_head_n, 0.25)
+           << " p50 " << q(g_head_hist, g_head_n, 0.5) << " p75 " << q(g_head_hist, g_head_n, 0.75)
+           << " p90 " << q(g_head_hist, g_head_n, 0.9)
+           << " | |correction| p50 " << q(g_corr_hist, g_head_n, 0.5) << " p90 " << q(g_corr_hist, g_head_n, 0.9) << "\n";
+        uci_safe_output(hs.str());
+    }
     {
         // Node distribution
         int64_t total_nodes = g_stats.main_nodes + g_stats.qs_nodes;

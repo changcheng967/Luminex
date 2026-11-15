@@ -73,10 +73,13 @@ struct SPSAParams {
 
     // The net's error head (an LHE1 section): the eval's uncertainty for the
     // reverse-futility and futility margins is |correction| + head_k / 64 x
-    // (the head's error in cp at this eval - head_c), at least 0. head_k = 0:
-    // the head is neither computed nor read; the search is the one without it.
-    int head_k = 0;
-    int head_c = 100;
+    // (the head's error in cp at this eval - head_c), at least -40. head_c is
+    // the head's mean in real searches (LUMINEX_HEAD_STATS on gen768s_02q:
+    // p10 45, p50 155, p90 >= 400 cp), so margins move around their usual
+    // size. head_k = 0, or a net without heads: the head is neither computed
+    // nor read, and the search is the one without it.
+    int head_k = 16;
+    int head_c = 200;
 
     // Load from file (COUNT ints, one per line, in field order). Returns true if loaded.
     bool load(const std::string& path) {
