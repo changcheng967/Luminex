@@ -44,6 +44,16 @@ baseline), use the best the CPU supports, and name it at the end of the
 `info string` that reports the network. Every level evaluates alike
 (nnuecheck in CI).
 
+The first release with these binaries says, under Downloads, that the old
+x86-64 assets are gone, since the README told users with fast CPUs to take
+`-modern`:
+
+> **One x86-64 download per OS now.** The `-modern`, `-glibc235` and
+> `-glibc235-modern` binaries are retired. If you used `-modern`, take
+> `luminex-linux-x86-64` or `luminex-windows-x86-64.exe`: it picks the
+> AVX2 or AVX-512 kernels `-modern` had by itself, and AVX-VNNI on CPUs
+> such as Arrow Lake.
+
 Needs is what the binary needs from the system: glibc and libstdc++ on Linux,
 any runtime to install on Windows, the oldest macOS. check-deps.py reads it
 from every binary's headers in CI and fails a build that needs more than its
