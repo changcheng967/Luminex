@@ -217,21 +217,22 @@ jobs:
       id: simd
       run: |
         bash .github/scripts/check-simd.sh ./luminex --net "net/$(sed -n 's#^url=.*/##p' .github/scripts/fetch-net.sh)"
-    # The negative control of the SDE checks in the linux and windows jobs:
-    # this build's kernels are compiled for the runner's CPU (AVX2 at least),
-    # so as Sandy Bridge, which has no AVX2, SDE's chip check must stop it.
-    # The binary's ISA-level note would make glibc refuse to start it first
-    # ("Fatal glibc error: CPU does not support x86-64-v3"), before any
-    # instruction runs, so the check runs a copy without the note.
+    # The negative control of the SDE checks in the linux and windows jobs: a
+    # build whose own code needs an instruction set the emulated CPU lacks
+    # must be stopped by SDE's chip check. An x86-64-v4 (AVX-512) build runs
+    # as Haswell, which has x86-64-v3 and no AVX-512. Not as Sandy Bridge, as
+    # in the linux job: this runner (ubuntu-latest, Ubuntu 26.04) has a C
+    # library built for x86-64-v3, which stops every program on a CPU without
+    # it ("Fatal glibc error: CPU does not support x86-64-v3") before SDE sees
+    # one of the program's instructions.
     - name: Check that SDE stops instructions the emulated CPU lacks
       run: |
+        make -j EXE=luminex-v4 MARCH=x86-64-v4 BUILD_DIR=build-v4
         SDE=$(bash .github/scripts/fetch-sde.sh)
         net="net/$(sed -n 's#^url=.*/##p' .github/scripts/fetch-net.sh)"
-        cp ./luminex ./luminex-nonote
-        objcopy --remove-section=.note.gnu.property ./luminex-nonote
-        if out=$("$SDE" -snb -chip-check-exe-only -- ./luminex-nonote nnuecheck "$net" 2>&1); then
+        if out=$("$SDE" -hsw -chip-check-exe-only -- ./luminex-v4 nnuecheck "$net" 2>&1); then
           printf '%s\n' "$out" | tail -5
-          echo "SDE ran a build for this CPU as Sandy Bridge and did not stop it" >&2
+          echo "SDE ran an x86-64-v4 build as Haswell and did not stop it" >&2
           exit 1
         fi
         printf '%s\n' "$out" | tail -n 12
