@@ -1,6 +1,7 @@
 #define _CRT_SECURE_NO_WARNINGS
 #include "luminex.h"
 #include "nnue.h"
+#include "threat_stats.h"
 #include "spsa_params.h"
 #include <algorithm>
 #include <chrono>
@@ -203,6 +204,9 @@ static inline void corr_sample(int c) {
     int a = c < 0 ? -c : c;
     corr_buckets[a < 16 ? 0 : a < 32 ? 1 : a < 64 ? 2 : a < 128 ? 3 : a < 200 ? 4 : 5]++;
 }
+
+// LUMINEX_THREAT_STATS (threat_stats.h): each ply's relations before its move
+static thread_local uint32_t ts_before[threat_stats::MAX_DEPTH][threat_stats::MAX_REL];
 
 // Thread-local node counter to avoid atomic overhead on every node
 static thread_local uint64_t local_nodes = 0;
@@ -472,6 +476,8 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
             corr_sample(correction);
         }
 
+        if (threat_stats::tick()) threat_stats::position(pos);
+
         // Draw-clock damping: a decisive eval counts for less as the
         // 50-move draw approaches.
         eval = pos.halfmove_clock() > 0
@@ -561,11 +567,18 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
         ss->current_move = it->move;
         ss->moved_piece = pos.piece_on(it->move.from());
 
+        int ts_nb = -1, ts_kind = 0;
+        bool ts_flip = false;
+        if (threat_stats::tick() && ss->ply < threat_stats::MAX_DEPTH) {
+            ts_kind = threat_stats::kind(pos, it->move, ts_flip);
+            ts_nb = threat_stats::relations(pos, ts_before[ss->ply]);
+        }
         if (!pos.do_move(it->move)) {
             // CRITICAL: do_move failed - atomic failure, no state change
             // Do NOT call undo_move - do_move already guarantees state is unchanged
             continue;
         }
+        if (ts_nb >= 0) threat_stats::move(pos, ts_kind, ts_flip, ts_before[ss->ply], ts_nb);
 
         // This move passed do_move - count it as searched
         moves_searched++;
@@ -774,6 +787,7 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
         // High uncertainty → eval is unreliable → search should be less aggressive.
         // Low uncertainty → eval is reliable → search can be more aggressive.
         eval_uncertainty = std::abs(get_total_correction(pos));
+        if (threat_stats::tick()) threat_stats::position(pos);
     }
     ss->static_eval = eval;
 
@@ -1304,9 +1318,16 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
         // credits were cancelling real reductions out of that signal.
         ss->reduction = lmr_reduction;
 
+        int ts_nb = -1, ts_kind = 0;
+        bool ts_flip = false;
+        if (threat_stats::tick() && ss->ply < threat_stats::MAX_DEPTH) {
+            ts_kind = threat_stats::kind(pos, m, ts_flip);
+            ts_nb = threat_stats::relations(pos, ts_before[ss->ply]);
+        }
         if (!pos.do_move(m)) {
             return false;
         }
+        if (ts_nb >= 0) threat_stats::move(pos, ts_kind, ts_flip, ts_before[ss->ply], ts_nb);
 
         Value value;
         if (do_lmr && new_depth > 0) {
@@ -2662,6 +2683,8 @@ Move search(Position& pos, Limits& lim) {
                 uci_safe_output(buf);
             }
         }
+
+        if (threat_stats::on()) uci_safe_output(threat_stats::report());
 
         if (!search_stats) return best_move;
 
