@@ -110,17 +110,17 @@ fi
   echo
   echo "## Which binary"
   echo
-  echo "| Platform | Binary | CPU |"
-  echo "|----------|--------|-----|"
-  echo "| Linux | \`luminex-linux-x86-64-modern\` | AVX2 (x86-64-v3) |"
-  echo "| Linux | \`luminex-linux-x86-64\` | SSE4.2 and POPCNT (x86-64-v2) |"
-  echo "| Linux, glibc 2.35 (Ubuntu 22.04) | \`luminex-linux-x86-64-glibc235-modern\` | AVX2 (x86-64-v3) |"
-  echo "| Linux, glibc 2.35 (Ubuntu 22.04) | \`luminex-linux-x86-64-glibc235\` | SSE4.2 and POPCNT (x86-64-v2) |"
-  echo "| Windows | \`luminex-windows-x86-64-modern.exe\` | AVX2 |"
-  echo "| Windows | \`luminex-windows-x86-64.exe\` | POPCNT, no AVX2 needed |"
-  echo "| macOS | \`luminex-macos-arm64\` | Apple silicon |"
+  echo "| Platform | Binary | CPU | Needs |"
+  echo "|---|---|---|---|"
+  echo "| Linux | \`luminex-linux-x86-64-modern\` | AVX2 (x86-64-v3) | Ubuntu 24.04 or newer (glibc 2.38, GCC 13's libstdc++) |"
+  echo "| Linux | \`luminex-linux-x86-64\` | SSE4.2, POPCNT (x86-64-v2) | Ubuntu 24.04 or newer (glibc 2.38, GCC 13's libstdc++) |"
+  echo "| Linux | \`luminex-linux-x86-64-glibc235-modern\` | AVX2 (x86-64-v3) | Ubuntu 22.04 or newer (glibc 2.35) |"
+  echo "| Linux | \`luminex-linux-x86-64-glibc235\` | SSE4.2, POPCNT (x86-64-v2) | Ubuntu 22.04 or newer (glibc 2.35) |"
+  echo "| Windows | \`luminex-windows-x86-64-modern.exe\` | AVX2 | nothing to install |"
+  echo "| Windows | \`luminex-windows-x86-64.exe\` | POPCNT | nothing to install |"
+  echo "| macOS | \`luminex-macos-arm64\` | Apple silicon | macOS 13.3 or newer |"
   echo
-  echo "The \`-modern\` builds need AVX2, which most x86-64 processors since 2015 have; on an older one take the plain build. Each binary is about 76 MB, the network included."
+  echo "Take a \`-modern\` build unless the CPU lacks AVX2 (Intel Core since 2013, AMD since 2015). Each binary is about 76 MB, the network included."
   echo
   echo "## Reporting a result or a bug"
   echo

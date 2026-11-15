@@ -51,25 +51,25 @@ and time management solved from measured data.
 ## Strength
 
 **v6.6.0 against v6.5.1** on OpenBench (one thread, 10+0.1, 2moves_v1):
-**+246.6 ± 13.1** over 2,010 games (W 1292, D 653, L 65;
+**+246.55 ± 13.37** over 2,010 games (W 1292, D 653, L 65;
 [test 131](https://bench.luminexchess.com/test/131/)).
 
 **Gauntlet 3**, the development build with gen768r_05q against twelve
 CCRL-rated engines (800 games each, 10+0.1;
 [gauntlet 3](https://bench.luminexchess.com/gauntlet/3/)): **3471 ± 16 on
 CCRL Blitz**, 3402 ± 21 on CCRL 40/15. v6.6.0's gen768r_06q adds
-+3.1 ± 2.5 in self-play ([test 128](https://bench.luminexchess.com/test/128/)),
++3.09 ± 2.46 in self-play ([test 128](https://bench.luminexchess.com/test/128/)),
 below what a repeat gauntlet resolves (about ± 10), so the rating stands.
 
 | Opponent (CCRL Blitz) | Elo |
 |---|---|
-| Stash 37 (3417) | +94 |
-| Smallbrain 7.0.0 (3454) | −13 |
-| Rice 8.0.0 (3530) | −102 |
-| Patricia 5 (3539) | −59 |
-| Elixir v3.0 (3567) | −124 |
-| Altair v7.0.0 (3579) | −160 |
-| Renegade, Quanticade, Clover, Berserk, Obsidian, PlentyChess (3694–3773) | −350 to −444 |
+| Stash 37 (3417) | +94.3 |
+| Smallbrain 7.0.0 (3454) | −13.0 |
+| Rice 8.0.0 (3530) | −101.8 |
+| Patricia 5 (3539) | −59.2 |
+| Elixir v3.0 (3567) | −123.5 |
+| Altair v7.0.0 (3579) | −160.3 |
+| Renegade, Quanticade, Clover, Berserk, Obsidian, PlentyChess (3694–3773) | −350.3 to −444.4 |
 
 **CCI, v6.5.1** (E1 list: Intel Core Ultra 7 265T E-cores, 1 thread, November 2026),
 the last release CCI has rated:
@@ -83,38 +83,40 @@ main of its day, at 10+0.1 unless noted:
 
 | Change | Elo |
 |---|---|
-| Correction history keyed by side to move | +61.4 ± 15.7 |
-| Clock spent by a solved time schedule (#44) | +72.2 ± 16.7 |
-| Search constants retuned by SPSA (tune 45, #40; tune 54) | +26.5 ± 10.4; +5.9 ± 4.2 |
-| Search stopped by measured best-move stability (#45) | +8.3 ± 5.3 |
-| Late quiet moves pruned without a history escape | +4.9 ± 3.7 |
-| Margin over beta for shallow null moves (#41) | +4.0 ± 3.1 |
-| Zero-increment clocks spent by value of time, at 10+0 (#47) | +5.6 ± 4.2 |
-| Moves-to-go clocks spent by value of time, at 40 moves in 10 s (#47) | +11.0 ± 6.2 |
-| The gen768r network: gen768r_03 with tune 65's constants, over the old network | +60.1 ± 15.4 |
-| then 03q (QAT), 04q, 05q, 06q, each over the one before | +13.4, +13.3, +22.0, +3.1 |
+| Correction history keyed by side to move | [+61.41 ± 15.85](https://bench.luminexchess.com/test/42/) |
+| Clock spent by a solved time schedule (#44) | [+72.22 ± 16.84](https://bench.luminexchess.com/test/51/) |
+| Search constants retuned by SPSA (tune 45, #40; tune 54) | [+26.49 ± 10.38](https://bench.luminexchess.com/test/46/); [+5.88 ± 4.15](https://bench.luminexchess.com/test/60/) |
+| Search stopped by measured best-move stability (#45) | [+8.32 ± 5.29](https://bench.luminexchess.com/test/52/) |
+| Late quiet moves pruned without a history escape | [+4.86 ± 3.74](https://bench.luminexchess.com/test/43/) |
+| Margin over beta for shallow null moves (#41) | [+4.00 ± 3.12](https://bench.luminexchess.com/test/47/) |
+| Zero-increment clocks spent by value of time, at 10+0 (#47) | [+5.60 ± 4.17](https://bench.luminexchess.com/test/56/) |
+| Moves-to-go clocks spent by value of time, at 40 moves in 10 s (#47) | [+11.01 ± 6.21](https://bench.luminexchess.com/test/57/) |
+| The gen768r network: gen768r_03 with tune 65's constants, over the old network | [+60.08 ± 15.55](https://bench.luminexchess.com/test/68/) |
+| then 03q (QAT), 04q, 05q, 06q, each over the one before | [+13.39](https://bench.luminexchess.com/test/73/), [+13.31](https://bench.luminexchess.com/test/82/), [+22.02](https://bench.luminexchess.com/test/112/), [+3.09](https://bench.luminexchess.com/test/128/) |
 
-The hash prefetch at make-move, the one-pass child accumulator and the lazy
-accumulator updates search the same trees about 9% faster.
+Each figure is its OpenBench page's. The hash prefetch at make-move, the
+one-pass child accumulator and the lazy accumulator updates search the same
+trees about 9.5% faster (+6.9% for the first two, +2.5% for the third).
 
 ## Download
 
 Latest release: [github.com/changcheng967/Luminex/releases](https://github.com/changcheng967/Luminex/releases)
 
-| Platform | Binary | CPU |
-|----------|--------|-----|
-| Linux | `luminex-linux-x86-64-modern` | AVX2 (x86-64-v3) |
-| Linux | `luminex-linux-x86-64` | SSE4.2 and POPCNT (x86-64-v2) |
-| Linux, glibc 2.35 (Ubuntu 22.04 and older hosts) | `luminex-linux-x86-64-glibc235-modern` | AVX2 (x86-64-v3) |
-| Linux, glibc 2.35 | `luminex-linux-x86-64-glibc235` | SSE4.2 and POPCNT (x86-64-v2) |
-| Windows | `luminex-windows-x86-64-modern.exe` | AVX2 |
-| Windows | `luminex-windows-x86-64.exe` | POPCNT, no AVX2 needed |
-| macOS | `luminex-macos-arm64` | Apple silicon |
+| Platform | Binary | CPU | Needs |
+|---|---|---|---|
+| Linux | `luminex-linux-x86-64-modern` | AVX2 (x86-64-v3) | Ubuntu 24.04 or newer (glibc 2.38, GCC 13's libstdc++) |
+| Linux | `luminex-linux-x86-64` | SSE4.2, POPCNT (x86-64-v2) | Ubuntu 24.04 or newer (glibc 2.38, GCC 13's libstdc++) |
+| Linux | `luminex-linux-x86-64-glibc235-modern` | AVX2 (x86-64-v3) | Ubuntu 22.04 or newer (glibc 2.35) |
+| Linux | `luminex-linux-x86-64-glibc235` | SSE4.2, POPCNT (x86-64-v2) | Ubuntu 22.04 or newer (glibc 2.35) |
+| Windows | `luminex-windows-x86-64-modern.exe` | AVX2 | nothing to install |
+| Windows | `luminex-windows-x86-64.exe` | POPCNT | nothing to install |
+| macOS | `luminex-macos-arm64` | Apple silicon | macOS 13.3 or newer |
 
-Take the modern build unless the CPU lacks AVX2; most x86 CPUs from 2013 on
-have it. The plain Linux builds need glibc 2.38 or newer (Ubuntu 24.04); the
-glibc235 builds run on older systems. Every build runs the network: the modern ones with AVX2 kernels, the
-others with a portable int8 path (NEON dot-product on Apple silicon).
+Take a `-modern` build unless the CPU lacks AVX2 (Intel Core since 2013, AMD
+since 2015). CI reads what every binary needs from its headers and fails a
+build that needs more than its row (`.github/scripts/check-deps.py`). Every build runs the network: the modern
+ones with AVX2 kernels, the others with a portable int8 path (NEON dot-product
+on Apple silicon).
 
 Every release binary carries the current network,
 `luminex_gen768r_06q_i8.nnue`, inside it, so the binary alone plays at full
