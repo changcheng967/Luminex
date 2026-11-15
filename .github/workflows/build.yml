@@ -220,11 +220,16 @@ jobs:
     # The negative control of the SDE checks in the linux and windows jobs:
     # this build's kernels are compiled for the runner's CPU (AVX2 at least),
     # so as Sandy Bridge, which has no AVX2, SDE's chip check must stop it.
+    # The binary's ISA-level note would make glibc refuse to start it first
+    # ("Fatal glibc error: CPU does not support x86-64-v3"), before any
+    # instruction runs, so the check runs a copy without the note.
     - name: Check that SDE stops instructions the emulated CPU lacks
       run: |
         SDE=$(bash .github/scripts/fetch-sde.sh)
         net="net/$(sed -n 's#^url=.*/##p' .github/scripts/fetch-net.sh)"
-        if out=$("$SDE" -snb -chip-check-exe-only -- ./luminex nnuecheck "$net" 2>&1); then
+        cp ./luminex ./luminex-nonote
+        objcopy --remove-section=.note.gnu.property ./luminex-nonote
+        if out=$("$SDE" -snb -chip-check-exe-only -- ./luminex-nonote nnuecheck "$net" 2>&1); then
           printf '%s\n' "$out" | tail -5
           echo "SDE ran a build for this CPU as Sandy Bridge and did not stop it" >&2
           exit 1
