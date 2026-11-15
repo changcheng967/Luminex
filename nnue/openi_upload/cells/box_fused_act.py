@@ -8,8 +8,10 @@ def _fused_act_test():
       2. The float phase as the runs train it (L1 768, NNUE_FT_DENSE=3, the draw head, compiled), from the float
          checkpoint, with NNUE_FT_ACT=0 and then =1: the trainer's own profile, 100 steps after 300 of warm-up,
          on 150M positions all on the card.
+    Each step runs in its own process group, killed at 15 minutes or when the cell stops, so a hung step can
+    neither hold the cell nor keep the GPU from the next run.
     The last line is FUSED_ACT_OK or FUSED_ACT_NOT_OK, with both step times."""
-    import glob, hashlib, os, re, subprocess, sys, textwrap, time, urllib.request
+    import glob, hashlib, os, re, signal, subprocess, sys, textwrap, threading, time, urllib.request
 
     # The cells' draw head (v5r2.py's PATCH_DRAW, verbatim), applied to this branch's trainer for the float runs.
     PATCH_DRAW = textwrap.dedent('''
@@ -134,21 +136,39 @@ def _fused_act_test():
     if r.returncode != 0:
         print("FAIL: the draw patch"); return
 
-    def stream(title, argv, env, keys, logname):
+    def stream(title, argv, env, keys, logname, limit=900):
+        """Runs one step in its own process group, killed at `limit` seconds or when the cell stops, so a
+        hung step can neither hold the cell nor leave a process on the GPU."""
         print(f"\n== {title}", flush=True)
         ta, lines = time.time(), []
         with open(f"{OUT}/{logname}", "w") as lg:
             pr = subprocess.Popen(argv, env=env, cwd=TOOLS, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                                  text=True, bufsize=1, errors="replace")
-            for line in pr.stdout:
-                lg.write(line)
-                lg.flush()
-                lines.append(line.rstrip())
-                m = re.search(r" step (\d+) loss=", line)
-                if any(k in line for k in keys) or (m and int(m.group(1)) % 100 == 0):
-                    print("   " + line.rstrip()[:220], flush=True)
-            rc = pr.wait()
-        print(f"   exit {rc} in {time.time() - ta:.0f} s", flush=True)
+                                  text=True, bufsize=1, errors="replace", start_new_session=True)
+
+            def kill():
+                try:
+                    os.killpg(pr.pid, signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
+
+            timer = threading.Timer(limit, kill)
+            timer.start()
+            try:
+                for line in pr.stdout:
+                    lg.write(line)
+                    lg.flush()
+                    lines.append(line.rstrip())
+                    m = re.search(r" step (\d+) loss=", line)
+                    if any(k in line for k in keys) or (m and int(m.group(1)) % 100 == 0):
+                        print("   " + line.rstrip()[:220], flush=True)
+                rc = pr.wait()
+            finally:
+                timer.cancel()
+                if pr.poll() is None:   # the cell was stopped
+                    kill()
+                    pr.wait()
+        print(f"   exit {rc} in {time.time() - ta:.0f} s"
+              + (f" (killed at the {limit} s limit)" if rc == -signal.SIGKILL else ""), flush=True)
         if rc != 0:
             print("\n".join("   " + x[:220] for x in lines[-25:]), flush=True)
         return rc, lines
