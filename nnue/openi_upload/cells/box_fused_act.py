@@ -1,285 +1,226 @@
-# Box test of NNUE_FT_ACT (branch fused-act): the feature layer's bias, SCReLU and side-to-move write fused into the
-# Triton kernels. ONE visible cell, ~25 minutes, no training run. Writes only under /marimo/fatest (delete it
-# afterwards); /marimo/data and /marimo/out are only read. It refuses to start while a run is alive or the GPU holds
-# more than 2 GB.
-#  1. check_fused.py --act on the first t91 part with the float checkpoint: the activations h and the gradient that
-#     goes into the table's kernel bit for bit against forward()'s elementwise ops, in float and under QAT, for one
-#     consumer and for two (the draw head's case); then fwd_loss end to end, ACT=0 against ACT=1.
-#  2. The trainer's own profile (NNUE_PROFILE: 100 steps after 300 of warm-up), the settings of the 2026-11-15
-#     profile except 0.6B positions instead of 1.5B (0.5B on the card, 0.1B in host RAM): the float phase (L1 768,
-#     NNUE_FT_DENSE=3, the draw head, the C++ feeder) with NNUE_FT_ACT=0 and =1; QAT from the qatstart checkpoint on
-#     NNUE_FT_DENSE=2 (dense fp32, as today), =3 (fused exact, PR #86) and =3 with NNUE_FT_ACT=1.
-# The summary at the end: per run, ms a step (wall and GPU) and the time by kind; the losses of the ACT=0 and =1 runs
-# side by side (equal up to the table kernel's atomics, ~1e-7 a step); the PASS/FAIL lines.
-import collections
-import os
-import re
-import signal
-import subprocess
-import sys
-import textwrap
-import threading
-import time
+def _fused_act_test():
+    """Box test of PR #88, NNUE_FT_ACT: the feature layer's bias, SCReLU and side-to-move write in the Triton
+    kernels. About 8 minutes, no training run: writes /marimo/fatest (delete it afterwards) and the log
+    /marimo/fatest.log; /marimo/data and /marimo/out are only read. Refuses while a training run is active or the
+    GPU holds more than 2 GB.
+      1. check_fused.py --act on the first t91 part: h and the gradient into the table's kernel bit for bit
+         against forward()'s elementwise ops (float and QAT, one consumer and two), then fwd_loss end to end.
+      2. The float phase as the runs train it (L1 768, NNUE_FT_DENSE=3, the draw head, compiled), from the float
+         checkpoint, with NNUE_FT_ACT=0 and then =1: the trainer's own profile, 100 steps after 300 of warm-up,
+         on 150M positions all on the card.
+    The last line is FUSED_ACT_OK or FUSED_ACT_NOT_OK, with both step times."""
+    import glob, hashlib, os, re, subprocess, sys, textwrap, time, urllib.request
 
-import marimo as mo
-
-COMMIT = "e6da953cd6375ddf672c924e300182b2a14c4d37"   # branch fused-act (on PR #86's cb44cca)
-HOME = "/marimo"
-TEST = HOME + "/fatest"
-LOG = TEST + "/fatest.log"
-FLOAT_CK = HOME + "/out/luminex_gen768s_02.pt"           # the float phase's checkpoint (with the draw head)
-QAT_CK = HOME + "/out/luminex_gen768s_02_qatstart.pt"    # the same without the head: QAT's start
-REFRESH_SECONDS = 5
-
-# The cells' draw head (v5r2.py's PATCH_DRAW, verbatim), applied to this branch's trainer for the float runs.
-PATCH_DRAW = textwrap.dedent('''
-    import sys
-    src, dst = sys.argv[1], sys.argv[2]
-    rt = open(src, encoding="utf-8").read()
+    # The cells' draw head (v5r2.py's PATCH_DRAW, verbatim), applied to this branch's trainer for the float runs.
+    PATCH_DRAW = textwrap.dedent('''
+        import sys
+        src, dst = sys.argv[1], sys.argv[2]
+        rt = open(src, encoding="utf-8").read()
 
 
-    def patch(old, new, what):
-        global rt
-        if rt.count(old) != 1:
-            sys.exit(f"draw patch: {what} appears {rt.count(old)} times")
-        rt = rt.replace(old, new)
+        def patch(old, new, what):
+            global rt
+            if rt.count(old) != 1:
+                sys.exit(f"draw patch: {what} appears {rt.count(old)} times")
+            rt = rt.replace(old, new)
 
 
-    patch("def forward(model, wf, bf, stm, cnt, acc=None):",
-          "def forward(model, wf, bf, stm, cnt, acc=None, want_h=False):", "forward()")
-    patch("    return F.linear(tail_act(z), Wo, bo).gather(1, bucket).view(n).float() * 300.0\\n",
-          "    _o = F.linear(tail_act(z), Wo, bo).gather(1, bucket).view(n).float() * 300.0\\n"
-          "    return (_o, h) if want_h else _o\\n", "the value's return")
-    patch('def fwd_loss(model, rec):\\n'
-          '    wf, bf, stm, tgt, flag, cnt = expand(rec)\\n'
-          '    acc = ft_fused(wf, bf, model.ft.weight) if FT_DENSE == 3 else None\\n'
-          '    with torch.autocast(device_type="cuda", dtype=torch.bfloat16):\\n'
-          '        pred = forward(model, wf, bf, stm, cnt, acc)\\n'
-          '    return batch_loss(pred.float(), tgt.clamp(-TARGET_CLIP, TARGET_CLIP), flag)\\n',
-          'DRAW_W = float(os.environ.get("NNUE_DRAW_W", "0"))\\n'
-          '\\n'
-          '\\n'
-          'def draw_logit(model, h, pred, cnt):\\n'
-          '    """The draw head: one logit per output bucket from the activations and the value\\'s size\\n'
-          '    (detached: the draw loss shapes the accumulator, not the value\\'s output directly)."""\\n'
-          '    n = h.shape[0]\\n'
-          '    bucket = ((cnt - 1) * model.num_buckets // 32).clamp(0, model.num_buckets - 1).view(n, 1)\\n'
-          '    z = model.dhead(h).float().gather(1, bucket).view(n)\\n'
-          '    return z + model.dhead_p[bucket.view(n)] * (pred.detach().float().abs() / 400.0)\\n'
-          '\\n'
-          '\\n'
-          'def fwd_loss(model, rec):\\n'
-          '    wf, bf, stm, tgt, flag, cnt = expand(rec)\\n'
-          '    acc = ft_fused(wf, bf, model.ft.weight) if FT_DENSE == 3 else None\\n'
-          '    dh = getattr(model, "dhead", None)\\n'
-          '    with torch.autocast(device_type="cuda", dtype=torch.bfloat16):\\n'
-          '        if dh is None:\\n'
-          '            pred = forward(model, wf, bf, stm, cnt, acc)\\n'
-          '        else:\\n'
-          '            pred, h = forward(model, wf, bf, stm, cnt, acc, want_h=True)\\n'
-          '            dlogit = draw_logit(model, h, pred, cnt)\\n'
-          '    vloss = batch_loss(pred.float(), tgt.clamp(-TARGET_CLIP, TARGET_CLIP), flag)\\n'
-          '    if dh is None:\\n'
-          '        return vloss\\n'
-          '    fl = rec[:, 26].to(torch.int64)\\n'
-          '    known = ((fl >> 3) & 1).float()\\n'
-          '    drawn = (((fl >> 4) & 3) == 1).float()\\n'
-          '    bce = F.binary_cross_entropy_with_logits(dlogit, drawn, reduction="none")\\n'
-          '    return vloss + DRAW_W * (bce * known).sum() / known.sum().clamp(min=1.0)\\n', "fwd_loss()")
-    patch("    model = LNNUE(L1=L1).to(dev)\\n",
-          "    model = LNNUE(L1=L1).to(dev)\\n"
-          "    if DRAW_W > 0:\\n"
-          "        model.dhead = torch.nn.Linear(2 * L1, model.num_buckets).to(dev)\\n"
-          "        torch.nn.init.zeros_(model.dhead.weight)\\n"
-          "        torch.nn.init.zeros_(model.dhead.bias)\\n"
-          "        model.dhead_p = torch.nn.Parameter(torch.zeros(model.num_buckets, device=dev))\\n"
-          '        print(f"[draw] draw head on, loss weight {DRAW_W:g}", flush=True)\\n', "model construction")
-    patch("    opt = torch.optim.AdamW(groups, lr=LR, amsgrad=True, fused=True)\\n",
-          '    if hasattr(model, "dhead"):   # its own group, the last: no weight decay, the tail learning rate\\n'
-          '        groups.append({"params": list(model.dhead.parameters()) + [model.dhead_p], "weight_decay": 0.0,\\n'
-          '                       "lr": LR * TAIL_LR_MULT})\\n'
-          "    opt = torch.optim.AdamW(groups, lr=LR, amsgrad=True, fused=True)\\n", "the optimizer line")
-    open(dst, "w", encoding="utf-8").write(rt)
-    print(f"  draw head: patched trainer {dst}")
-''')
+        patch("def forward(model, wf, bf, stm, cnt, acc=None):",
+              "def forward(model, wf, bf, stm, cnt, acc=None, want_h=False):", "forward()")
+        patch("    return F.linear(tail_act(z), Wo, bo).gather(1, bucket).view(n).float() * 300.0\\n",
+              "    _o = F.linear(tail_act(z), Wo, bo).gather(1, bucket).view(n).float() * 300.0\\n"
+              "    return (_o, h) if want_h else _o\\n", "the value's return")
+        patch('def fwd_loss(model, rec):\\n'
+              '    wf, bf, stm, tgt, flag, cnt = expand(rec)\\n'
+              '    acc = ft_fused(wf, bf, model.ft.weight) if FT_DENSE == 3 else None\\n'
+              '    with torch.autocast(device_type="cuda", dtype=torch.bfloat16):\\n'
+              '        pred = forward(model, wf, bf, stm, cnt, acc)\\n'
+              '    return batch_loss(pred.float(), tgt.clamp(-TARGET_CLIP, TARGET_CLIP), flag)\\n',
+              'DRAW_W = float(os.environ.get("NNUE_DRAW_W", "0"))\\n'
+              '\\n'
+              '\\n'
+              'def draw_logit(model, h, pred, cnt):\\n'
+              '    """The draw head: one logit per output bucket from the activations and the value\\'s size\\n'
+              '    (detached: the draw loss shapes the accumulator, not the value\\'s output directly)."""\\n'
+              '    n = h.shape[0]\\n'
+              '    bucket = ((cnt - 1) * model.num_buckets // 32).clamp(0, model.num_buckets - 1).view(n, 1)\\n'
+              '    z = model.dhead(h).float().gather(1, bucket).view(n)\\n'
+              '    return z + model.dhead_p[bucket.view(n)] * (pred.detach().float().abs() / 400.0)\\n'
+              '\\n'
+              '\\n'
+              'def fwd_loss(model, rec):\\n'
+              '    wf, bf, stm, tgt, flag, cnt = expand(rec)\\n'
+              '    acc = ft_fused(wf, bf, model.ft.weight) if FT_DENSE == 3 else None\\n'
+              '    dh = getattr(model, "dhead", None)\\n'
+              '    with torch.autocast(device_type="cuda", dtype=torch.bfloat16):\\n'
+              '        if dh is None:\\n'
+              '            pred = forward(model, wf, bf, stm, cnt, acc)\\n'
+              '        else:\\n'
+              '            pred, h = forward(model, wf, bf, stm, cnt, acc, want_h=True)\\n'
+              '            dlogit = draw_logit(model, h, pred, cnt)\\n'
+              '    vloss = batch_loss(pred.float(), tgt.clamp(-TARGET_CLIP, TARGET_CLIP), flag)\\n'
+              '    if dh is None:\\n'
+              '        return vloss\\n'
+              '    fl = rec[:, 26].to(torch.int64)\\n'
+              '    known = ((fl >> 3) & 1).float()\\n'
+              '    drawn = (((fl >> 4) & 3) == 1).float()\\n'
+              '    bce = F.binary_cross_entropy_with_logits(dlogit, drawn, reduction="none")\\n'
+              '    return vloss + DRAW_W * (bce * known).sum() / known.sum().clamp(min=1.0)\\n', "fwd_loss()")
+        patch("    model = LNNUE(L1=L1).to(dev)\\n",
+              "    model = LNNUE(L1=L1).to(dev)\\n"
+              "    if DRAW_W > 0:\\n"
+              "        model.dhead = torch.nn.Linear(2 * L1, model.num_buckets).to(dev)\\n"
+              "        torch.nn.init.zeros_(model.dhead.weight)\\n"
+              "        torch.nn.init.zeros_(model.dhead.bias)\\n"
+              "        model.dhead_p = torch.nn.Parameter(torch.zeros(model.num_buckets, device=dev))\\n"
+              '        print(f"[draw] draw head on, loss weight {DRAW_W:g}", flush=True)\\n', "model construction")
+        patch("    opt = torch.optim.AdamW(groups, lr=LR, amsgrad=True, fused=True)\\n",
+              '    if hasattr(model, "dhead"):   # its own group, the last: no weight decay, the tail learning rate\\n'
+              '        groups.append({"params": list(model.dhead.parameters()) + [model.dhead_p], "weight_decay": 0.0,\\n'
+              '                       "lr": LR * TAIL_LR_MULT})\\n'
+              "    opt = torch.optim.AdamW(groups, lr=LR, amsgrad=True, fused=True)\\n", "the optimizer line")
+        open(dst, "w", encoding="utf-8").write(rt)
+        print(f"  draw head: patched trainer {dst}")
+    ''')
 
-SCRIPT = r"""
-set -uo pipefail
-HOME_DIR="$1"; TEST="$2"; COMMIT="$3"; FLOAT_CK="$4"; QAT_CK="$5"; PY="$6"
-mkdir -p "$TEST/tools" "$TEST/out"
-sha() { sha256sum "$1" | cut -d' ' -f1; }
-ok() { [ -f "$1" ] && [ "$(sha "$1")" = "$2" ]; }
-echo "== 1/4: environment"
-nvidia-smi --query-gpu=name,memory.used,memory.total,driver_version --format=csv,noheader || { echo "FAIL: no GPU"; exit 1; }
-"$PY" -c 'import torch, triton; print("  torch", torch.__version__, "| triton", triton.__version__, "|", torch.cuda.get_device_name(0))'
-FREE_GB=$(df -BG --output=avail "$TEST" | tail -n 1 | tr -dc 0-9)
-[ "${FREE_GB:-0}" -ge 5 ] || { echo "FAIL: $TEST has ${FREE_GB} GB free; the test writes ~2 GB"; exit 1; }
-DATA="$HOME_DIR/data"
-ls $DATA/t91_2026-0[567].*.lcr > /dev/null 2>&1 || { echo "FAIL: no $DATA/t91_2026-0[567].*.lcr"; exit 1; }
-ls $DATA/jantail.*.lcr > /dev/null 2>&1 || { echo "FAIL: no $DATA/jantail.*.lcr"; exit 1; }
-[ -f "$FLOAT_CK" ] || { echo "FAIL: no $FLOAT_CK"; exit 1; }
-echo "  data: $(ls $DATA/t91_2026-0[567].*.lcr | wc -l) LCR1 parts of May-Jul, the January tail; float start $FLOAT_CK"
-echo "== 2/4: code at ${COMMIT:0:7} (branch fused-act)"
-GH=https://raw.githubusercontent.com/changcheng967/Luminex/$COMMIT/nnue/openi_upload
-for pair in "resident_train.py 62b59768bda410ccc7bbb05463471c139898d13a9de6d1f7437c931782c96539" "ft_fused.py dccb4415a925f4c0625e484cf8b68e1b92f232e923aac3399a2217fe0622ebef" "check_fused.py a918ecd79de2f99cf488a8df5771aaf320e004f6c40ee451108cd0fb826238a7" "luminex_nnue_train.py ea5b94f2026c82b7a111d54d75fcf87fc30a8986290332b3dd446bb64f1222a8" "feeder.cpp e01bbbf99c8bd712b3fe28cdb90287e91f310b3eba8ebd922ece92aabfed8779"; do
-    set -- $pair
-    ok "$TEST/tools/$1" "$2" || curl -fsSL --retry 5 -o "$TEST/tools/$1" "$GH/$1" || curl -fsSL --retry 5 -o "$TEST/tools/$1" "https://gh-proxy.com/$GH/$1" || true
-    ok "$TEST/tools/$1" "$2" || { echo "FAIL: $1 from GitHub does not match sha256 $2"; exit 1; }
-done
-echo "  code: sha256 ok"
-"$PY" "$TEST/tools/patch_draw.py" "$TEST/tools/resident_train.py" "$TEST/tools/resident_train_dh.py" || { echo "FAIL: the draw patch"; exit 1; }
-echo "== 3/4: check_fused.py --act (bit for bit, float and QAT)"
-"$PY" "$TEST/tools/check_fused.py" --act "$DATA" "$FLOAT_CK" || echo "FAIL: check_fused.py --act (exit $?)"
-echo "== 4/4: the trainer's profile, 100 steps after 300"
-BASE=("NNUE_DATA=$DATA/t91_2026-0[567].*.lcr" "NNUE_VAL_DATA=$DATA/jantail.*.lcr" NNUE_CONTINUE=0 NNUE_FEED_THREADS=8
-      NNUE_BUCKETS=8 NNUE_TAIL_LR_MULT=4 NNUE_L1=768 NNUE_BS=131072 NNUE_T_MAX_STEPS=100000 NNUE_BUDGET_SEC=0
-      NNUE_LOSS_POWER=3.0 NNUE_QUIET_LOSS=1,0.3,0 NNUE_GRAD_CLIP=1.0 NNUE_TARGET_CLIP=1500 NNUE_VAL_FRAC=0.002
-      NNUE_EVAL_EVERY=1000000 NNUE_SAVE_EVERY=1000000 NNUE_KEEP_EVERY=0 NNUE_COMPILE=1 NNUE_VRAM_POS=500000000
-      NNUE_MAX_POS=600000000 NNUE_SEED=6 "NNUE_OUT_DIR=$TEST/out" NNUE_PROFILE=100 NNUE_PROFILE_WARMUP=300)
-run() {   # title, script, settings...
-    local title="$1" script="$2"; shift 2
-    echo "== RUN $title"
-    env -u NNUE_BUCKET_MAP -u NNUE_PTOWER PYTHONUNBUFFERED=1 "${BASE[@]}" "$@" "$PY" -u "$TEST/tools/$script" || echo "FAIL: $title (exit $?)"
-}
-FLOAT=("NNUE_RESUME=$FLOAT_CK" NNUE_LR=5e-5 NNUE_QAT=0 NNUE_FT_DENSE=3 NNUE_DRAW_W=1e-3)
-run "float, NNUE_FT_ACT=0" resident_train_dh.py "${FLOAT[@]}" NNUE_FT_ACT=0 NNUE_OUT_NAME=fa_float0.nnue
-run "float, NNUE_FT_ACT=1" resident_train_dh.py "${FLOAT[@]}" NNUE_FT_ACT=1 NNUE_OUT_NAME=fa_float1.nnue
-if [ -f "$QAT_CK" ]; then
-    QAT=("NNUE_RESUME=$QAT_CK" NNUE_LR=2e-5 NNUE_QAT=1 NNUE_QAT_FT8=0 NNUE_DRAW_W=0)
-    run "QAT, NNUE_FT_DENSE=2" resident_train.py "${QAT[@]}" NNUE_FT_DENSE=2 NNUE_OUT_NAME=fa_qat2.nnue
-    run "QAT, NNUE_FT_DENSE=3, NNUE_FT_ACT=0" resident_train.py "${QAT[@]}" NNUE_FT_DENSE=3 NNUE_FT_ACT=0 NNUE_OUT_NAME=fa_qat30.nnue
-    run "QAT, NNUE_FT_DENSE=3, NNUE_FT_ACT=1" resident_train.py "${QAT[@]}" NNUE_FT_DENSE=3 NNUE_FT_ACT=1 NNUE_OUT_NAME=fa_qat31.nnue
-else echo "FAIL: no $QAT_CK: the QAT runs were skipped"; fi
-echo "== FINISHED (delete $TEST when the numbers are copied)"
-"""
-
-
-def busy():
-    """A training or conversion process, or a GPU in use: the reason not to start, else None."""
-    for pid in filter(str.isdigit, os.listdir("/proc")):
-        if int(pid) == os.getpid():
-            continue
-        try:
-            with open(f"/proc/{pid}/cmdline", "rb") as f:
-                argv = f.read().split(b"\0")
-        except OSError:
-            continue
-        if any(a.endswith((b"resident_train.py", b"resident_train_dh.py", b"c500_train_stream.py")) for a in argv) or \
-                any(a.endswith((b"binpack2lcr", b"luminex-featurize")) for a in argv[:1]):
-            return "a run is alive: " + b" ".join(argv).decode(errors="replace")[:200]
+    COMMIT = "e6da953cd6375ddf672c924e300182b2a14c4d37"   # branch fused-act (PR #88, on PR #86's cb44cca)
+    PINS = {"resident_train.py": "62b59768bda410ccc7bbb05463471c139898d13a9de6d1f7437c931782c96539",
+            "ft_fused.py": "dccb4415a925f4c0625e484cf8b68e1b92f232e923aac3399a2217fe0622ebef",
+            "check_fused.py": "a918ecd79de2f99cf488a8df5771aaf320e004f6c40ee451108cd0fb826238a7",
+            "luminex_nnue_train.py": "ea5b94f2026c82b7a111d54d75fcf87fc30a8986290332b3dd446bb64f1222a8",
+            "feeder.cpp": "e01bbbf99c8bd712b3fe28cdb90287e91f310b3eba8ebd922ece92aabfed8779"}
+    DATA, TEST = "/marimo/data", "/marimo/fatest"
+    TOOLS, OUT = TEST + "/tools", TEST + "/out"
+    FLOAT_CK = "/marimo/out/luminex_gen768s_02.pt"   # the float phase's checkpoint, with the draw head
+    t0 = time.time()
+    if subprocess.run("pgrep -f '[r]esident_train'", shell=True, capture_output=True).stdout.strip():
+        print("a training run is active; not starting"); return
     try:
         used = float(subprocess.run(["nvidia-smi", "--query-gpu=memory.used", "--format=csv,noheader,nounits"],
-                                    capture_output=True, text=True, timeout=20).stdout.split()[0])
-        if used > 2048:
-            return f"the GPU holds {used:.0f} MiB"
+                                    capture_output=True, text=True, timeout=30).stdout.split()[0])
     except Exception as e:
-        return f"nvidia-smi failed ({e.__class__.__name__})"
-    return None
+        print(f"nvidia-smi failed ({e.__class__.__name__}); not starting"); return
+    if used > 2048:
+        print(f"the GPU holds {used:.0f} MiB; not starting"); return
+    parts = sorted(glob.glob(DATA + "/t91_*.lcr"))
+    if not parts:
+        print(f"FAIL: no {DATA}/t91_*.lcr"); return
+    ck = FLOAT_CK if os.path.exists(FLOAT_CK) else ""
+    print(f"data: {len(parts)} LCR1 parts, the first {os.path.basename(parts[0])}; start: {ck or 'random weights'}", flush=True)
+    os.makedirs(TOOLS, exist_ok=True)
+    os.makedirs(OUT, exist_ok=True)
 
+    def sha(path):
+        return hashlib.sha256(open(path, "rb").read()).hexdigest() if os.path.exists(path) else ""
 
-def summary(lines):
-    """Per run: ms a step and the time by kind; ACT=0 against ACT=1 losses; PASS/FAIL lines."""
-    out, run, prof, losses, health, top = [], None, collections.defaultdict(list), {}, {}, collections.defaultdict(list)
-    for line in lines:
-        if line.startswith("== RUN "):
-            run = line[7:]
-            losses[run] = {}
-        m = re.search(r" step (\d+) loss=([0-9.]+)", line)
-        if m and run:
-            losses[run][int(m.group(1))] = float(m.group(2))
-        m = re.match(r"\[HEALTH step (\d+)\] val loss=([0-9.]+)", line)
-        if m and run:
-            health.setdefault(run, []).append(f"{m.group(1)}: {m.group(2)}")
-        if line.startswith("[profile]") and run:
-            body = line[9:].rstrip()
-            if "top kernels" in body:
-                top[run] = []
-            elif run in top:
-                if len(top[run]) < 12:
-                    top[run].append(body.strip())
-            else:
-                prof[run].append(body.strip())
-        if not line.startswith("== ") and any(k in line for k in ("ACT_PASS", "ACT_FAIL", "bit for bit", "fwd_loss:",
-                                                                  "FAIL", "DONE (")):
-            out.append(line.strip())
-    for r in prof:
-        out.append(f"-- {r}")
-        out.extend("   " + x for x in prof[r])
-        out.extend("   top: " + x for x in top.get(r, []))
-        if r in health:
-            out.append("   [HEALTH] " + " | ".join(health[r]))
-    for a, b in (("float, NNUE_FT_ACT=0", "float, NNUE_FT_ACT=1"),
-                 ("QAT, NNUE_FT_DENSE=3, NNUE_FT_ACT=0", "QAT, NNUE_FT_DENSE=3, NNUE_FT_ACT=1"),
-                 ("QAT, NNUE_FT_DENSE=2", "QAT, NNUE_FT_DENSE=3, NNUE_FT_ACT=1")):
-        common = sorted(set(losses.get(a, {})) & set(losses.get(b, {})))
-        if common:
-            worst = max(abs(losses[a][s] - losses[b][s]) for s in common)
-            out.append(f"losses, {a} vs {b}: {len(common)} steps, largest difference {worst:.5f} "
-                       f"(step {common[-1]}: {losses[a][common[-1]]:.5f} vs {losses[b][common[-1]]:.5f})")
-    return out
-
-
-os.makedirs(TEST + "/tools", exist_ok=True)
-why = busy()
-if why:
-    mo.output.replace(mo.plain_text(f"NOT STARTED: {why}. Run this cell when the box is free."))
-else:
-    with open(TEST + "/tools/patch_draw.py", "w", encoding="utf-8") as f:
-        f.write(PATCH_DRAW)
-    state = {"last": time.time(), "phase": "starting"}
-    recent, every = collections.deque(maxlen=4000), []
-    lock = threading.Lock()
-
-    def read_output(pipe):
-        log = open(LOG, "a", buffering=1, errors="replace")
-        for line in pipe:
-            log.write(line)
-            text = line.rstrip("\n")
-            with lock:
-                state["last"] = time.time()
-                if text.startswith("== "):
-                    state["phase"] = text[3:]
-                recent.append(text)
-                every.append(text)
-        log.close()
-
-    started = time.time()
-    proc = subprocess.Popen(["bash", "-c", SCRIPT, "bash", HOME, TEST, COMMIT, FLOAT_CK, QAT_CK, sys.executable],
-                            env=dict(os.environ, PYTHONUNBUFFERED="1"), stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
-                            stderr=subprocess.STDOUT, text=True, bufsize=1, errors="replace", start_new_session=True)
-    reader = threading.Thread(target=read_output, args=(proc.stdout,), daemon=True)
-    reader.start()
-
-    def panel(status):
-        with lock:
-            shown, s = list(recent)[-400:], dict(state)
-        up = int(time.time() - started)
-        return mo.plain_text(f"fused-act box test: {status} {up // 60}m {up % 60:02d}s · phase: {s['phase']} · "
-                             f"last output {int(time.time() - s['last'])} s ago · log {LOG}\n" + "─" * 46 + "\n"
-                             + "\n".join(shown))
-
-    try:
-        while True:
-            mo.output.replace(panel("running"))
-            try:
-                proc.wait(timeout=REFRESH_SECONDS)
+    gh = f"https://raw.githubusercontent.com/changcheng967/Luminex/{COMMIT}/nnue/openi_upload/"
+    for name, want in PINS.items():
+        path = f"{TOOLS}/{name}"
+        for url in (gh + name, "https://gh-proxy.com/" + gh + name):
+            if sha(path) == want:
                 break
-            except subprocess.TimeoutExpired:
-                pass
-        reader.join(timeout=5)
-        with lock:
-            lines = list(every)
-        result = summary(lines)
-        with open(LOG, "a") as f:
-            f.write("== SUMMARY\n" + "\n".join(result) + "\n")
-        for text in result:
-            print(text, flush=True)
-        mo.output.replace(mo.plain_text(f"fused-act box test finished (exit {proc.returncode}) after "
-                                        f"{int(time.time() - started) // 60} min\n" + "\n".join(result)))
-    finally:
-        if proc.poll() is None:   # the cell was stopped: stop the test
-            os.killpg(proc.pid, signal.SIGTERM)
             try:
-                proc.wait(timeout=20)
-            except subprocess.TimeoutExpired:
-                os.killpg(proc.pid, signal.SIGKILL)
+                with urllib.request.urlopen(url, timeout=60) as r:
+                    open(path, "wb").write(r.read())
+            except Exception as e:
+                print(f"  {name}: {url[:60]}... failed ({e.__class__.__name__})", flush=True)
+        if sha(path) != want:
+            print(f"FAIL: {name} at {COMMIT[:7]} does not match sha256 {want}"); return
+    print(f"code: {len(PINS)} files at {COMMIT[:7]}, sha256 ok", flush=True)
+    open(f"{TOOLS}/patch_draw.py", "w", encoding="utf-8").write(PATCH_DRAW)
+    r = subprocess.run([sys.executable, f"{TOOLS}/patch_draw.py", f"{TOOLS}/resident_train.py",
+                        f"{TOOLS}/resident_train_dh.py"], capture_output=True, text=True)
+    print((r.stdout + r.stderr).strip(), flush=True)
+    if r.returncode != 0:
+        print("FAIL: the draw patch"); return
+
+    def stream(title, argv, env, keys, logname):
+        print(f"\n== {title}", flush=True)
+        ta, lines = time.time(), []
+        with open(f"{OUT}/{logname}", "w") as lg:
+            pr = subprocess.Popen(argv, env=env, cwd=TOOLS, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                                  text=True, bufsize=1, errors="replace")
+            for line in pr.stdout:
+                lg.write(line)
+                lg.flush()
+                lines.append(line.rstrip())
+                m = re.search(r" step (\d+) loss=", line)
+                if any(k in line for k in keys) or (m and int(m.group(1)) % 100 == 0):
+                    print("   " + line.rstrip()[:220], flush=True)
+            rc = pr.wait()
+        print(f"   exit {rc} in {time.time() - ta:.0f} s", flush=True)
+        if rc != 0:
+            print("\n".join("   " + x[:220] for x in lines[-25:]), flush=True)
+        return rc, lines
+
+    env0 = {k: v for k, v in os.environ.items() if not k.startswith("NNUE_")}
+    env0["PYTHONUNBUFFERED"] = "1"
+    rc, lines = stream("1/2: check_fused.py --act (bit for bit, float and QAT)",
+                       [sys.executable, "-u", f"{TOOLS}/check_fused.py", "--act", DATA] + ([ck] if ck else []), env0,
+                       ("bit for bit", "fwd_loss", "ACT_", "Error", "FAIL"), "check_act.log")
+    act_pass = rc == 0 and any(x.startswith("ACT_PASS") for x in lines)
+    base = dict(env0, NNUE_DATA=DATA + "/t91_*.lcr", NNUE_MAX_POS="150000000", NNUE_VRAM_POS="150000000",
+                NNUE_CONTINUE="0", NNUE_FEED_THREADS="8", NNUE_BUCKETS="8", NNUE_TAIL_LR_MULT="4", NNUE_L1="768",
+                NNUE_BS="131072", NNUE_T_MAX_STEPS="100000", NNUE_BUDGET_SEC="0", NNUE_LOSS_POWER="3.0",
+                NNUE_QUIET_LOSS="1,0.3,0", NNUE_GRAD_CLIP="1.0", NNUE_TARGET_CLIP="1500", NNUE_VAL_FRAC="0.002",
+                NNUE_EVAL_EVERY="1000000", NNUE_SAVE_EVERY="1000000", NNUE_KEEP_EVERY="0", NNUE_COMPILE="1",
+                NNUE_SEED="6", NNUE_OUT_DIR=OUT, NNUE_PROFILE="100", NNUE_PROFILE_WARMUP="300", NNUE_LR="5e-5",
+                NNUE_QAT="0", NNUE_FT_DENSE="3", NNUE_DRAW_W="1e-3")
+    if ck:
+        base["NNUE_RESUME"] = ck
+    res = {}
+    for act in ("0", "1"):
+        rc, lines = stream(f"2/2: float phase, NNUE_FT_ACT={act}",
+                           [sys.executable, "-u", f"{TOOLS}/resident_train_dh.py"],
+                           dict(base, NNUE_FT_ACT=act, NNUE_OUT_NAME=f"fa_float{act}.nnue"),
+                           ("[profile]", "[data]", "[RESUME]", "[draw]", "[HEALTH", "DONE (", "FAIL", "Error", "Traceback"),
+                           f"fa_float{act}.log")
+        wall = gpu = None
+        losses = {}
+        for x in lines:
+            m = re.search(r"\[profile\] \d+ steps of .*: ([0-9.]+) ms a step \(wall\), GPU kernels ([0-9.]+) ms", x)
+            if m:
+                wall, gpu = float(m.group(1)), float(m.group(2))
+            m = re.search(r" step (\d+) loss=([0-9.]+)", x)
+            if m:
+                losses[int(m.group(1))] = float(m.group(2))
+        res[act] = (rc, wall, gpu, losses)
+    (rc0, w0, g0, l0), (rc1, w1, g1, l1) = res["0"], res["1"]
+    common = sorted(set(l0) & set(l1))
+    worst = max((abs(l0[s] - l1[s]) for s in common), default=float("nan"))
+    print(f"\nlosses, ACT=0 vs ACT=1: {len(common)} logged steps, largest difference {worst:.5f} (the table "
+          f"kernel's atomics differ run to run, ~1e-7 a step)", flush=True)
+    ok = act_pass and rc0 == 0 and rc1 == 0 and w0 and w1 and w1 < w0 and len(common) > 0 and worst < 2e-4
+    times = (f"float step {w0} ms -> {w1} ms wall, GPU {g0} -> {g1} ms"
+             + (f", {w0 / w1 - 1:+.0%} steps/s" if w0 and w1 else ""))
+    print(f"\n{'FUSED_ACT_OK' if ok else 'FUSED_ACT_NOT_OK'}: {times}; check_fused --act "
+          f"{'passed' if act_pass else 'FAILED'} | {time.time() - t0:.0f} s (delete {TEST} when copied)", flush=True)
+
+
+import sys as _sys
+
+
+class _Tee:
+    def __init__(self, *streams):
+        self.streams = streams
+
+    def write(self, x):
+        for t in self.streams:
+            t.write(x)
+            t.flush()
+
+    def flush(self):
+        for t in self.streams:
+            t.flush()
+
+
+with open("/marimo/fatest.log", "w") as _log:
+    _stdout = _sys.stdout
+    _sys.stdout = _Tee(_stdout, _log)
+    try:
+        _fused_act_test()
+    except BaseException:
+        import traceback as _tb
+        print("FAIL:", _tb.format_exc(), flush=True)
+    finally:
+        _sys.stdout = _stdout
