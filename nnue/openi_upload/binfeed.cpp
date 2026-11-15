@@ -178,7 +178,24 @@ struct Feeder {
     std::int64_t consumed = 0;                   // the ticket the consumer reads (all below are handed out)
     bool stop = false;
     std::atomic<int> failed{0};
+    // waits that found their condition true when a timed wait ran out, i.e. a wakeup that never
+    // came (or came within the last instant): each costs WAIT_MS instead of hanging the stream
+    std::atomic<std::int64_t> late_prod{0}, late_cons{0};
 };
+
+constexpr int WAIT_MS = 20;   // every wait re-checks its condition this often, woken or not
+
+// cv.wait(lk, ready) that also wakes every WAIT_MS: a wakeup that never arrives (a lost futex
+// wake in the platform's condition variable) then costs WAIT_MS instead of the stream, and is
+// counted in `late`. The protocol itself loses none: every change of a condition is made under
+// mu and followed by a notify.
+template <class Ready>
+void wait_until_ready(std::condition_variable& cv, std::unique_lock<std::mutex>& lk, Ready ready,
+                      std::atomic<std::int64_t>& late) {
+    while (!ready())
+        if (cv.wait_for(lk, std::chrono::milliseconds(WAIT_MS)) == std::cv_status::timeout && ready())
+            ++late;
+}
 
 std::mutex g_error_mu;
 std::string g_error;   // the last failure's message (bf_last_error)
@@ -320,8 +337,8 @@ void worker(Feeder* F) {
         const std::int64_t t = F->next_ticket.fetch_add(1);
         Slot& s = F->ring[t % R];
         {
-            std::unique_lock<std::mutex> lk(F->mu);
-            F->cv_prod.wait(lk, [&] { return F->stop || t < F->consumed + R; });   // the slot's last ticket is handed out
+            std::unique_lock<std::mutex> lk(F->mu);   // wait until the slot's last ticket is handed out
+            wait_until_ready(F->cv_prod, lk, [&] { return F->stop || t < F->consumed + R; }, F->late_prod);
             if (F->stop) return;
         }
         const std::uint64_t pass = static_cast<std::uint64_t>(t) / n;
@@ -577,6 +594,8 @@ int bf_stream_start(void* h, std::uint64_t seed, int threads, int ring) {
     F->failed = 0;
     F->next_ticket = 0;
     F->consumed = 0;
+    F->late_prod = 0;
+    F->late_cons = 0;
     F->ring.assign(static_cast<std::size_t>(std::max(ring, std::max(threads, 1) + 2)), Slot{});
     for (int t = 0; t < std::max(threads, 1); ++t) F->workers.emplace_back(worker, F);
     return 0;
@@ -592,7 +611,8 @@ std::int64_t bf_next(void* h, std::uint8_t* out, std::int64_t count, std::int64_
         Slot& s = F->ring[F->consumed % R];
         {
             std::unique_lock<std::mutex> lk(F->mu);
-            F->cv_cons.wait(lk, [&] { return F->stop || F->failed || (s.ready && s.ticket == F->consumed); });
+            wait_until_ready(F->cv_cons, lk, [&] { return F->stop || F->failed || (s.ready && s.ticket == F->consumed); },
+                             F->late_cons);
             if (F->stop || F->failed) {
                 set_error(F->failed ? "a position with more than 32 pieces" : "the stream was stopped");
                 return -1;
@@ -616,6 +636,22 @@ std::int64_t bf_next(void* h, std::uint8_t* out, std::int64_t count, std::int64_
 }
 
 void bf_stream_stop(void* h) { stop_stream(static_cast<Feeder*>(h)); }
+
+// The stream's state, for a stall report: out[12] = consumed ticket, next ticket, ring slots,
+// slots ready, the consumed slot's ticket and ready flag, late producer and consumer waits,
+// failed, stopped, decode threads, active chunks.
+void bf_state(void* h, std::int64_t* out) {
+    auto* F = static_cast<Feeder*>(h);
+    std::lock_guard<std::mutex> lk(F->mu);
+    const std::int64_t R = static_cast<std::int64_t>(F->ring.size());
+    std::int64_t ready = 0;
+    for (const auto& s : F->ring) ready += s.ready;
+    const Slot* s = R ? &F->ring[F->consumed % R] : nullptr;
+    const std::int64_t v[12] = {F->consumed, F->next_ticket.load(), R, ready, s ? s->ticket : -1, s ? s->ready : 0,
+                                F->late_prod.load(), F->late_cons.load(), F->failed.load(), F->stop,
+                                static_cast<std::int64_t>(F->workers.size()), static_cast<std::int64_t>(F->active)};
+    std::memcpy(out, v, sizeof v);
+}
 
 void bf_close(void* h) {
     auto* F = static_cast<Feeder*>(h);

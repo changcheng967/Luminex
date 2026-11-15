@@ -39,6 +39,10 @@ Environment (default in brackets):
   NNUE_READ_THREADS [8]  parallel reads of the binpacks into RAM
   NNUE_BINPACK_CACHE [1]  0: neither read nor write the index caches (<file>.bfx)
   NNUE_PYTORCH [<this dir>/nnue-pytorch]  checkout of official-stockfish/nnue-pytorch (binpack.h)
+  NNUE_STALL_SEC [300]  when no training step finishes, or no batch comes from the binpack feeder,
+                     for this long: print every thread's stack, the binpack stream's state and the
+                     GPU's load (again every NNUE_STALL_SEC); a feeder with no batch for 3x this
+                     raises instead of waiting forever
   NNUE_FENEVAL_FILE  fen<TAB>cp[<TAB>flag] lines (.xz, .zst or plain text)
   NNUE_DATA_VIA_FILE [0]  1: decompress to a temporary text file, then featurize
                      file to file (no pipe at all)
@@ -149,6 +153,8 @@ RESERVOIR = int(float(env("NNUE_RESERVOIR", "0")))
 DECODE_THREADS = max(1, int(env("NNUE_DECODE_THREADS", str(max(2, (os.cpu_count() or 8) - 4)))))
 READ_THREADS = max(1, int(env("NNUE_READ_THREADS", "8")))
 BINPACK_CACHE = env("NNUE_BINPACK_CACHE", "1") == "1"
+STALL_SEC = max(10.0, float(env("NNUE_STALL_SEC", "300")))
+PROGRESS = {"t": time.time(), "step": 0}   # the last finished training step (the stall watchdog's clock)
 VAL_DATA = env("NNUE_VAL_DATA", "")
 VAL_MAX = int(float(env("NNUE_VAL_MAX", "5e6")))
 EVAL_EVERY = int(env("NNUE_EVAL_EVERY", "1000"))
@@ -514,6 +520,7 @@ def binfeed_lib():
                             ("bf_select", i64, [vp, i64]), ("bf_val_count", i64, [vp]),
                             ("bf_val_copy", None, [vp, vp]), ("bf_stream_start", i32, [vp, u64, i32, i32]),
                             ("bf_next", i64, [vp, vp, i64, p64]), ("bf_stream_stop", None, [vp]),
+                            ("bf_state", None, [vp, p64]),
                             ("bf_close", None, [vp]), ("bf_bench", ctypes.c_double, [vp, i32, i64, p64]),
                             ("bf_sort", None, [vp, i64, i32]), ("bf_last_error", ctypes.c_char_p, [])):
         fn = getattr(lib, name)
@@ -596,6 +603,16 @@ class Binpacks:
             raise RuntimeError(f"binpack stream: {self.lib.bf_last_error().decode()}")
         return p.value
 
+    STATE = ("consumed", "next_ticket", "slots", "ready", "slot_ticket", "slot_ready", "late_prod", "late_cons",
+             "failed", "stopped", "threads", "active")
+
+    def state(self):
+        """The stream's state (bf_state): where the consumer and the decoders are, and how many
+        waits a wakeup failed to end (late_prod, late_cons)."""
+        out = (self.ct.c_int64 * len(self.STATE))()
+        self.lib.bf_state(self.h, out)
+        return dict(zip(self.STATE, out))
+
     def close(self):
         if self.h:
             self.lib.bf_close(self.h)
@@ -619,6 +636,55 @@ def material_check(all_rec, block=1 << 21):
             tally[name][0] += int(m.sum())
             tally[name][1] += int(((wt[m] * torch.sign(edge[m])) >= 800).sum())
     return {k: (c, w / c if c else float("nan")) for k, (c, w) in tally.items()}
+
+
+def stall_report(why, feeder=None):
+    """A stall's evidence, printed (never raised): every Python thread's stack, the feeder
+    thread's step and wait, the binpack stream's state (Binpacks.state) and the GPU's load."""
+    import traceback
+    print(f"[STALL] {why}; the last training step finished {time.time() - PROGRESS['t']:.0f} s ago "
+          f"(step {PROGRESS['step']})", flush=True)
+    if feeder is not None:
+        bp, q = getattr(feeder, "bp", None), getattr(feeder, "q", None)
+        print(f"[STALL] feeder thread at {getattr(feeder, 'where', '?')}; {q.qsize() if q is not None else '?'} "
+              f"batch(es) queued{'; stream ' + str(bp.state()) if bp is not None else ''}", flush=True)
+    try:
+        r = subprocess.run(["nvidia-smi", "--query-gpu=utilization.gpu,memory.used", "--format=csv,noheader"],
+                           capture_output=True, text=True, timeout=20)
+        print(f"[STALL] GPU: {(r.stdout or r.stderr).strip()}", flush=True)
+    except Exception as e:
+        print(f"[STALL] nvidia-smi: {e.__class__.__name__}", flush=True)
+    try:   # the native threads too (binfeed.cpp's decoders): how many run and how many sleep
+        states, running = {}, []
+        for tid in os.listdir("/proc/self/task"):
+            with open(f"/proc/self/task/{tid}/stat") as f:
+                st = f.read()
+            s = st[st.rindex(")") + 2]
+            states[s] = states.get(s, 0) + 1
+            if s == "R":
+                running.append(st[st.index("(") + 1:st.rindex(")")])
+        print(f"[STALL] threads by state {states}; running: {running[:24]}", flush=True)
+    except (OSError, ValueError, IndexError) as e:
+        print(f"[STALL] /proc/self/task: {e.__class__.__name__}", flush=True)
+    names = {t.ident: t.name for t in threading.enumerate()}
+    for ident, frame in sys._current_frames().items():
+        print(f"[STALL] thread {names.get(ident, ident)}:\n" + "".join(traceback.format_stack(frame)).rstrip(), flush=True)
+
+
+def stall_watchdog(feeder):
+    """stall_report() when no training step has finished for NNUE_STALL_SEC, again every
+    NNUE_STALL_SEC while it lasts; it never stops the run."""
+    def run():
+        last = None
+        while True:
+            time.sleep(min(30.0, STALL_SEC / 4))
+            idle = time.time() - PROGRESS["t"]
+            if idle < STALL_SEC:
+                last = None
+            elif last is None or time.time() - last >= STALL_SEC:
+                stall_report(f"no training step finished for {idle:.0f} s", feeder)
+                last = time.time()
+    threading.Thread(target=run, daemon=True, name="stall watchdog").start()
 
 
 class BinpackFeeder:
@@ -688,7 +754,8 @@ class BinpackFeeder:
         self.done_ev = [None] * nslot
         self.q = queue.Queue(maxsize=self.DEPTH)
         self.err = None
-        threading.Thread(target=self._run, daemon=True).start()
+        self.where = (0, "starting")   # the background thread's step and what it waits on (stall reports)
+        threading.Thread(target=self._run, daemon=True, name="BinpackFeeder").start()
 
     def sample(self, k):
         """k reservoir rows spread over it (for the start-up [DATA] line)."""
@@ -710,10 +777,14 @@ class BinpackFeeder:
         try:
             step, slot = 0, 0
             while True:
+                self.where = (step, "waiting for the slot's last copies")
                 if self.done_ev[slot] is not None:
                     self.done_ev[slot].synchronize()    # this slot's last copies have landed
+                self.where = (step, "places (feed_batch)")
                 self._places(step, slot)
+                self.where = (step, "records (bf_next)")
                 self.bp.next_into(self.pins[slot].data_ptr(), self.bs)
+                self.where = (step, "copies to the GPU, then the queue")
                 if self.stream is not None:
                     with torch.cuda.stream(self.stream):
                         g_idx = self.gpins[slot].to(dev, non_blocking=True)
@@ -731,7 +802,17 @@ class BinpackFeeder:
             self.q.put(None)
 
     def next(self):
-        item = self.q.get()
+        waited = 0.0
+        while True:
+            try:
+                item = self.q.get(timeout=STALL_SEC)
+                break
+            except queue.Empty:
+                waited += STALL_SEC
+                stall_report(f"no batch from the binpack feeder for {waited:.0f} s", self)
+                if waited >= 3 * STALL_SEC:
+                    raise RuntimeError(f"BinpackFeeder: no batch for {waited:.0f} s, its thread at {self.where} "
+                                       "(the stall report above has every thread's stack)")
         if item is None:
             raise RuntimeError(f"BinpackFeeder thread failed: {self.err!r}")
         g_idx, fresh, ev, epoch = item
@@ -1364,6 +1445,8 @@ def main():
     evaluate_disjoint(model, dval, gstep)
     seg0, t0, last_t, last_s = gstep, time.time(), time.time(), gstep
     epoch, done = 0, None
+    PROGRESS.update(t=time.time(), step=gstep)
+    stall_watchdog(feeder)
     while done is None:
         perm = shuffle.next_pass() if feeder is None else None
         for i in range(0, steps_per_pass * BS, BS):
@@ -1376,6 +1459,7 @@ def main():
             opt.step()
             sched.step()
             gstep += 1
+            PROGRESS.update(t=time.time(), step=gstep)
             sess = gstep - seg0
             if PROFILE and sess == PROFILE_WARMUP:
                 gpu = str(dev).startswith("cuda")
