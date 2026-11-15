@@ -204,6 +204,19 @@ static inline void corr_sample(int c) {
     corr_buckets[a < 16 ? 0 : a < 32 ? 1 : a < 64 ? 2 : a < 128 ? 3 : a < 200 ? 4 : 5]++;
 }
 
+// LUMINEX_QS_STATS: what qsearch's depth cut (the static eval returned below
+// depth -4) and its depth-loosened SEE threshold cost. At every cut, a capture
+// search without side effects (no TT, no histories, no node count; captures with
+// SEE >= 0 in MVV-LVA order, evasions when in check, stand pat on the same static
+// eval, no depth limit) gives the value the cut replaced. Captures that pass only
+// the loosened threshold are counted with how often they raise alpha. Main-thread
+// counters, cumulative over the process, printed after each search.
+static const bool g_qs_stats = std::getenv("LUMINEX_QS_STATS") != nullptr;
+static thread_local uint64_t qs_cut_n = 0, qs_cut_flip_beta = 0, qs_cut_flip_alpha = 0, qs_cut_sum = 0;
+static thread_local uint64_t qs_cut_hist[6] = {};   // |cut eval - resolved|: <10, 10-25, 25-50, 50-100, 100-200, >=200
+static thread_local uint64_t qs_probe_nodes = 0, qs_loose_n = 0, qs_loose_alpha = 0, qs_loose_beta = 0, qs_moves_n = 0;
+static thread_local uint64_t qs_depth_nodes[13] = {};   // qsearch nodes by -depth (0 .. 12)
+
 // Thread-local node counter to avoid atomic overhead on every node
 static thread_local uint64_t local_nodes = 0;
 static thread_local uint64_t last_reported_nodes = 0;
@@ -372,6 +385,45 @@ bool check_time() {
     return false;
 }
 
+// The LUMINEX_QS_STATS probe: the capture search the depth cut replaces.
+static Value qs_probe(Position& pos, Value alpha, Value beta, int ply) {
+    ++qs_probe_nodes;
+    const bool chk = pos.is_check();
+    Value best = Value(-VALUE_MATE + ply);
+    if (!chk) {
+        const Value stand = evaluate(pos, true);
+        if (stand >= beta) return stand;
+        best = stand;
+        if (stand > alpha) alpha = stand;
+    }
+    if (ply >= 40) return chk ? alpha : best;
+    ExtMove moves[MAX_MOVES];
+    ExtMove* end = chk ? generate<GEN_LEGAL>(pos, moves) : generate<GEN_CAPTURE>(pos, moves);
+    static constexpr int pv[] = {100, 320, 330, 500, 900, 20000, 0};
+    for (ExtMove* it = moves; it != end; ++it) {
+        const Move m = it->move;
+        PieceType captured = m.is_en_passant() ? PAWN : (m.is_capture() ? pos.piece_type_on(m.to()) : PT_NONE);
+        it->value = (captured != PT_NONE ? pv[captured] * 10 - pv[pos.piece_type_on(m.from())] : 0)
+                  + (m.is_promotion() ? pv[m.promotion_type()] : 0);
+    }
+    std::sort(moves, end, [](const ExtMove& a, const ExtMove& b) { return a.value > b.value; });
+    bool any = false;
+    for (ExtMove* it = moves; it != end; ++it) {
+        const Move m = it->move;
+        if (!chk && !pos.legal(m, true)) continue;
+        if (!chk && !m.is_promotion() && !pos.see_ge(m, VALUE_ZERO)) continue;
+        if (!pos.do_move(m)) continue;
+        any = true;
+        const Value v = -qs_probe(pos, -beta, -alpha, ply + 1);
+        pos.undo_move(m);
+        if (v > best) best = v;
+        if (v >= beta) return v;
+        if (v > alpha) alpha = v;
+    }
+    if (chk && !any) return Value(-VALUE_MATE + ply);
+    return best;
+}
+
 // Quiescence search
 Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
     // Check for max ply to prevent stack overflow
@@ -396,7 +448,17 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
         return evaluate(pos, true);
     }
     if (depth < -4 && !pos.is_check()) {
-        return evaluate(pos, true);
+        const Value e = evaluate(pos, true);
+        if (g_qs_stats) {
+            const Value v = qs_probe(pos, alpha, beta, 0);
+            const int d = std::abs(int(v) - int(e));
+            ++qs_cut_n;
+            qs_cut_sum += uint64_t(d);
+            ++qs_cut_hist[d < 10 ? 0 : d < 25 ? 1 : d < 50 ? 2 : d < 100 ? 3 : d < 200 ? 4 : 5];
+            if ((e >= beta) != (v >= beta)) ++qs_cut_flip_beta;
+            if ((e <= alpha) != (v <= alpha)) ++qs_cut_flip_alpha;
+        }
+        return e;
     }
 
     // Memory barrier for ensure we see the latest stop flag
@@ -406,6 +468,7 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
 
     ++local_nodes;
     g_stats.qs_nodes++;
+    if (g_qs_stats) ++qs_depth_nodes[std::min(-int(depth), 12)];
 
     // Check for draw
     if (pos.is_draw()) {
@@ -558,6 +621,10 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
             continue;
         }
 
+        // A capture that passed only because the threshold loosens below depth 0
+        const bool loose = g_qs_stats && !in_check && !it->move.is_promotion() && depth < 0
+                        && !pos.see_ge(it->move, VALUE_ZERO);
+
         ss->current_move = it->move;
         ss->moved_piece = pos.piece_on(it->move.from());
 
@@ -571,6 +638,14 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
         moves_searched++;
 
         Value value = -qsearch(pos, ss + 1, -beta, -alpha, depth - 1);
+        if (g_qs_stats) {
+            ++qs_moves_n;
+            if (loose) {
+                ++qs_loose_n;
+                if (value > alpha) ++qs_loose_alpha;
+                if (value >= beta) ++qs_loose_beta;
+            }
+        }
 
         // CRITICAL: Check stop immediately after recursive call
         if (stop.load(std::memory_order_relaxed)) {
@@ -2661,6 +2736,29 @@ Move search(Position& pos, Limits& lim) {
                     100.0 * corr_buckets[4] / tot, 100.0 * corr_buckets[5] / tot);
                 uci_safe_output(buf);
             }
+        }
+
+        if (g_qs_stats) {
+            uint64_t qn = 0;
+            for (uint64_t c : qs_depth_nodes) qn += c;
+            uint64_t deep = 0;
+            for (int i = 5; i < 13; ++i) deep += qs_depth_nodes[i];
+            const double qd = qn ? 100.0 / double(qn) : 0.0;
+            char buf[768];
+            std::snprintf(buf, sizeof buf,
+                "info string QS nodes=%llu at depth 0/-1/-2/-3/-4/-5..: %.1f/%.1f/%.1f/%.1f/%.1f/%.1f%% | depth cut %llu "
+                "(%.2f per 1K qs nodes): |eval - resolved| mean %.1f cp, <10/10-25/25-50/50-100/100-200/>=200 = "
+                "%llu/%llu/%llu/%llu/%llu/%llu, wrong side of beta %llu, of alpha %llu, probe nodes %llu | loosened SEE: "
+                "%llu of %llu qs moves, %llu raised alpha, %llu cut\n",
+                (unsigned long long)qn, qs_depth_nodes[0] * qd, qs_depth_nodes[1] * qd, qs_depth_nodes[2] * qd,
+                qs_depth_nodes[3] * qd, qs_depth_nodes[4] * qd, deep * qd, (unsigned long long)qs_cut_n,
+                qn ? 1000.0 * double(qs_cut_n) / double(qn) : 0.0, qs_cut_n ? double(qs_cut_sum) / double(qs_cut_n) : 0.0,
+                (unsigned long long)qs_cut_hist[0], (unsigned long long)qs_cut_hist[1], (unsigned long long)qs_cut_hist[2],
+                (unsigned long long)qs_cut_hist[3], (unsigned long long)qs_cut_hist[4], (unsigned long long)qs_cut_hist[5],
+                (unsigned long long)qs_cut_flip_beta, (unsigned long long)qs_cut_flip_alpha,
+                (unsigned long long)qs_probe_nodes, (unsigned long long)qs_loose_n, (unsigned long long)qs_moves_n,
+                (unsigned long long)qs_loose_alpha, (unsigned long long)qs_loose_beta);
+            uci_safe_output(buf);
         }
 
         if (!search_stats) return best_move;
