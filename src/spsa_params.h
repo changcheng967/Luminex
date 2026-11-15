@@ -67,9 +67,11 @@ struct SPSAParams {
     int corr_weight_max  = 15;
 
     // Null-move pruning at depth <= nmp_shallow_depth needs the static eval
-    // at least nmp_shallow_margin above beta (deeper: at beta)
+    // at least nmp_shallow_margin above beta (deeper: at beta). Null moves
+    // are wrong most often within 50 cp of beta at every depth, not only at
+    // the shallow ones, so the margin applies up to depth 12.
     int nmp_shallow_margin = 57;
-    int nmp_shallow_depth  = 5;
+    int nmp_shallow_depth  = 12;
 
     // Load from file (COUNT ints, one per line, in field order). Returns true if loaded.
     bool load(const std::string& path) {
