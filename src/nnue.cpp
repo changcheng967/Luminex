@@ -23,14 +23,12 @@
 #if defined(__ARM_FEATURE_DOTPROD)
 #include <arm_neon.h>
 #endif
-#if defined(__linux__)
-#include <sys/mman.h>
-#endif
 #include <fstream>
 #include <istream>
 #include <streambuf>
 #include <string>
 #include <vector>
+#include "large_pages.h"
 #if defined(__x86_64__) || defined(__i386__) || defined(_M_X64) || defined(_M_IX86)
 #include <immintrin.h>   // _mm_prefetch needs xmmintrin even without AVX2 (Debug builds)
 #endif
@@ -201,7 +199,9 @@ static int g_L1 = 0, g_L2 = 0, g_L3 = 0;
 // feature delta). The accumulator stays full float32 (no SCReLU precision loss).
 static constexpr float FT_WSCALE = 8192.0f;
 static constexpr float FT_WINV = 1.0f / FT_WSCALE;
-static std::vector<int16_t> ft_w;
+// In 2 MiB pages where the system allows (large_pages.h): the updates read its
+// rows at random.
+static LargeArray<int16_t> ft_w;
 static std::vector<int32_t> ft_b_i32;   // integer-domain FT bias (b*FT_WSCALE)
 // DOSL linear head (Step-0): per-feature scalar weights over the SAME HalfKAv2_hg
 // indices; accumulator keeps one int32 per perspective (O(1) qsearch stand-pat).
@@ -345,7 +345,7 @@ static bool load_stream(std::istream& f, const std::string& name) {
     g_L1 = L1; g_L2 = L2; g_L3 = L3;
     std::vector<float> ft_w_raw;
     if (!read_tensor(f, ft_w_raw, L1 * NUM_INPUTS)) return false;
-    ft_w.resize(static_cast<size_t>(NUM_INPUTS) * L1);
+    ft_w.reset(static_cast<size_t>(NUM_INPUTS) * L1);
     // int16 at x8192 holds |w| < 4.0; clamp instead of letting the cast wrap.
     long long clamped = 0;
     for (int i = 0; i < NUM_INPUTS; ++i)
@@ -464,12 +464,6 @@ static bool load_stream(std::istream& f, const std::string& name) {
     }
     g_loaded = true;
     ++g_net_id;   // refresh-cache entries of the previous net are stale
-#if defined(__linux__) && defined(MADV_HUGEPAGE)
-    // THP for the big weight tables: the incremental update path is
-    // memory-latency bound (random row access into ft_w); huge pages cut
-    // TLB misses. Best effort — silently ignored where disallowed.
-    madvise(ft_w.data(), (ft_w.size() * sizeof(int16_t) + 0xFFFFF) & ~0xFFFFF, MADV_HUGEPAGE);
-#endif
     // stdout carries UCI traffic, so the report is an info string.
     if (NB > 1)
         std::printf("info string NNUE evaluation using %s (int8 L1=%d L2=%d L3=%d, %d output buckets%s)\n",

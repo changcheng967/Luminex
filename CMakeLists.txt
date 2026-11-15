@@ -135,6 +135,7 @@ set(HEADERS
     src/search.h
     src/evaluation.h
     src/transposition.h
+    src/large_pages.h
     src/bitboard.h
     src/types.h
     src/book.h
