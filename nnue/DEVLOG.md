@@ -1612,12 +1612,24 @@ over 642 games** (test 140, pentanomial 1/28/141/131/20, LLR 2.95), the
 BT4 labels alone. Under the rule set before the tests (139 fails ->
 run B), gen768s_01q is the net to ship.
 
-**Run B's QAT was cut short.** On the trainer's 5M-position January
-check, run B's float net reached 0.001225, and its last 90K steps bought
--0.08%: more passes over the same 6.1B positions are nearly used up. Its
-30K-step QAT phase on the int16 grid went 0.001306 -> 0.001264 ->
-0.001246 and was still falling 1.4% per 10K steps when it ended, so the
-shipped net is 1.7% worse than its own float version: about the width
-test's whole loss gap, at no speed cost. A probe continues that QAT for
-30K steps (Nov 14), and the next runs' QAT phases run until the loss
-flattens.
+**Run B's QAT was not cut short (probe, Nov 14).** On the trainer's
+5M-position January check, run B's float net reached 0.001225, and its
+last 90K steps bought -0.08%: more passes over the same 6.1B positions
+are nearly used up. Its 30K-step QAT phase on the int16 grid went
+0.001306 -> 0.001264 -> 0.001246, which read as still falling; it was
+the cosine schedule annealing. A probe continued that QAT from its end
+for 30K more steps (a new cosine from lr 1e-5, the same 2026 months):
+
+| QAT step | 480K (start) | 485K | 490K | 495K | 500K | 505K | 510K |
+|---|---|---|---|---|---|---|---|
+| January check | 0.001246 | 0.001304 | 0.001321 | 0.001276 | 0.001266 | 0.001302 | 0.001251 |
+
+The loss jumped as soon as the rate came back, swung while it was up,
+and annealed back to where it started. With the rounding in the forward
+pass, small weight steps flip roundings and the loss moves in jumps;
+where the weights stop is set by the anneal, not by the number of steps.
+So the shipped net's 1.7% over its own float version (about the width
+test's whole loss gap, at no speed cost) is the cost of the
+quantization itself. It is recovered, if at all, by the quantization
+scheme, not by a longer QAT: the next measurement splits it between the
+feature grid, the tail's int8 weights and the activations' 127 levels.
