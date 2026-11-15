@@ -10,6 +10,10 @@ usage: python check_fused.py --fp8 MODE DATA_DIR [CKPT.pt]
     gradient, 2 = FP8 forward too): the loss, and each gradient's relative error and cosine
     similarity. Passes when the losses agree within 1e-2 and every cosine is above 0.99; the
     paired runs (--compare) decide whether training is the same.
+usage: python check_fused.py --qat DATA_DIR [CKPT.pt]
+    The same batch under NNUE_QAT=1: first the feature layer alone, the fused kernels' exact
+    forward (each rounded weight as two bf16 parts) against the dense path's fp32 bmm, which
+    must agree bit for bit; then the loss and gradients of FT_DENSE=3 against =2, as above.
 usage: python check_fused.py --compare ARM2.log ARM3.log
     Two paired short runs (same seed, data and schedule; FT_DENSE 2 vs 3). Passes when every
     [HEALTH] and [DISJOINT] loss they share (after step 0) agrees within 1% and the fused run
@@ -51,17 +55,42 @@ def compare(a, b):
     return ok
 
 
-def gradients(data, ckpt, fp8=0):
+def gradients(data, ckpt, fp8=0, qat=False):
     import numpy as np
     import torch
     sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
     os.environ.update(NNUE_BUCKETS="8", NNUE_L1="768", NNUE_BS="131072", NNUE_LOSS_POWER="3.0",
-                      NNUE_QUIET_LOSS="1,0.3,0", NNUE_TARGET_CLIP="1500", NNUE_QAT="0", NNUE_COMPILE="0")
+                      NNUE_QUIET_LOSS="1,0.3,0", NNUE_TARGET_CLIP="1500", NNUE_QAT="1" if qat else "0",
+                      NNUE_COMPILE="0")
     part = sorted(glob.glob(data + "/t91_*.lcr"))[0]
     rec = torch.from_numpy(np.fromfile(part, dtype=np.uint8, count=2_000_000 * 32).reshape(-1, 32)).to("cuda")
     g = torch.Generator(device="cuda").manual_seed(3)
     batch = rec[torch.randint(0, rec.shape[0], (131072,), device="cuda", generator=g)]
     out = {}
+    exact = True
+    if qat:   # the feature layer alone: fused (split bf16) against the dense fp32 bmm, bit for bit
+        os.environ["NNUE_FT_DENSE"], os.environ["NNUE_FT_FP8"] = "3", "0"
+        import resident_train
+        RT = importlib.reload(resident_train)
+        torch.manual_seed(1)
+        model = RT.LNNUE(L1=768).cuda()
+        if ckpt:
+            model.load_state_dict(torch.load(ckpt, map_location="cuda", weights_only=False)["model"], strict=False)
+        with torch.no_grad():
+            wf, bf = RT.expand(batch)[:2]
+            wq = RT.qat_ft(model.ft.weight)
+            hi, lo = RT.FF.split_bf16(wq[:RT.NUM_INPUTS].float())
+            split_ok = torch.equal(hi.float() + lo.float(), wq[:RT.NUM_INPUTS].float())
+            fw, fb = RT.ft_fused(wf, bf, model.ft.weight)
+            dw, db = RT.ft_dense(wf, wq), RT.ft_dense(bf, wq)
+            same = torch.equal(fw, dw) and torch.equal(fb, db)
+            worst = max(float((fw - dw).abs().max()), float((fb - db).abs().max()))
+        exact = split_ok and same and fw.dtype == torch.float32
+        print(f"  QAT feature layer: hi + lo == the rounded table: {split_ok}; fused == dense fp32 bit for bit: "
+              f"{same} (largest difference {worst:.3e}, fused dtype {fw.dtype}; "
+              f"|table| <= {float(wq.abs().max()):.4f})", flush=True)
+        del model
+        torch.cuda.empty_cache()
     modes = ((("2", "0"), ("3", "0")) if not fp8 else (("3", "0"), ("3", str(fp8))))
     for mode, f8 in modes:
         os.environ["NNUE_FT_DENSE"], os.environ["NNUE_FT_FP8"] = mode, f8
@@ -82,9 +111,11 @@ def gradients(data, ckpt, fp8=0):
         torch.cuda.empty_cache()
     (l2, g2), (l3, g3) = out[modes[0]], out[modes[1]]
     a, b = ("dense", "fused") if not fp8 else ("fused bf16", f"fused FP8 mode {fp8}")
+    if qat:
+        a, b = a + " QAT", b + " QAT"
     dl = abs(l3 - l2) / max(abs(l2), 1e-30)
     print(f"  loss: {a} {l2:.6f}, {b} {l3:.6f} (relative difference {dl:.1e})", flush=True)
-    worst, worst_cos, ok = 0.0, 1.0, dl < (1e-2 if fp8 else 2e-3) and set(g2) == set(g3)
+    worst, worst_cos, ok = 0.0, 1.0, exact and dl < (1e-2 if fp8 else 2e-3) and set(g2) == set(g3)
     for k in sorted(g2):
         if k not in g3:
             print(f"  {k}: no gradient under FT_DENSE=3", flush=True)
@@ -103,11 +134,13 @@ def gradients(data, ckpt, fp8=0):
 if __name__ == "__main__":
     if sys.argv[1] == "--compare":
         sys.exit(0 if compare(sys.argv[2], sys.argv[3]) else 1)
-    args, fp8 = sys.argv[1:], 0
+    args, fp8, qat = sys.argv[1:], 0, False
     if args[0] == "--fp8":
         fp8, args = int(args[1]), args[2:]
+    elif args[0] == "--qat":
+        qat, args = True, args[1:]
     try:
-        sys.exit(0 if gradients(args[0], args[1] if len(args) > 1 else "", fp8) else 1)
+        sys.exit(0 if gradients(args[0], args[1] if len(args) > 1 else "", fp8, qat) else 1)
     except Exception as ex:   # any failure here only means the run trains on the dense path
         print(f"GRAD_FAIL: {ex.__class__.__name__}: {ex}", flush=True)
         sys.exit(1)

@@ -89,7 +89,9 @@ Environment (default in brackets):
                      exact fp32, so it still equals the engine's int16 sums)
                      3 = ft_fused.py's Triton kernels: X tiles built on chip from piece
                      bitboards (no X in memory), both sides in one launch, bf16 forward and
-                     bf16 weight gradient with fp32 accumulation (not with NNUE_QAT)
+                     bf16 weight gradient with fp32 accumulation. With NNUE_QAT the forward is
+                     exact: each rounded weight split into two bf16 parts that sum to it, two
+                     dots into one fp32 accumulator, fp32 out (the engine's int16 sums, as =2)
   NNUE_FT_FP8 [0]    with NNUE_FT_DENSE=3: 1 = the weight gradient in FP8 (G in e4m3, one
                      global scale and a power-of-two boost per row), 2 = the forward too
                      (the table in e4m3 with a scale per column); 0 = bf16 both ways
@@ -960,8 +962,8 @@ if FT_FP8 and FT_DENSE != 3:
     raise SystemExit('NNUE_FT_FP8 needs NNUE_FT_DENSE=3')
 if FT_DENSE == 3:
     import ft_fused as FF
-    if QAT:
-        raise SystemExit('NNUE_FT_DENSE=3 has no QAT path (QAT needs the exact fp32 sums of FT_DENSE=2)')
+    if QAT and FT_FP8:
+        raise SystemExit('NNUE_FT_FP8 has no QAT path: QAT needs the exact sums of the bf16 split forward')
     FUSED_FWD = dict(BM=128, BN=128, num_warps=4, num_stages=2)    # best of the 2026-11-12 sweeps: 1.247 ms
     FUSED_BWD = dict(BMF=128, BN=128, BK=32, num_warps=4, num_stages=4)
     FUSED_CH = 8192
@@ -971,7 +973,9 @@ class FusedFT(torch.autograd.Function):
     """Both sides' feature-layer sums straight from the LCR1 records (ft_fused.py):
     bitboards, a stable sort by king bucket, the forward kernel, and in backward the
     weight-gradient kernel. Returns White's and Black's [n, L1] sums in bf16, bias not
-    added (the caller adds ft_bias, so autograd keeps its gradient)."""
+    added (the caller adds ft_bias, so autograd keeps its gradient). Under NNUE_QAT the
+    weight comes in rounded to the engine's grid (qat_ft) and the sums are exact, in fp32:
+    the table goes in as two bf16 parts that add up to it (ft_fused.split_bf16)."""
 
     @staticmethod
     def forward(ctx, wf, bf, weight):
@@ -981,7 +985,10 @@ class FusedFT(torch.autograd.Function):
         rb = FF.plan(kb, FUSED_CH)[1]
         planes_s = planes[order].contiguous()
         zero = torch.zeros(L1, dtype=torch.float32, device=wf.device)
-        if FT_FP8 >= 2:   # the table in e4m3, scaled per column
+        if QAT:   # exact: hi + lo is the rounded weight, the sums fp32
+            hi, lo = FF.split_bf16(weight[:NUM_INPUTS].float())
+            out_s = FF.ft_fwd(planes_s, rf, hi, zero, w_lo=lo, **FUSED_FWD)
+        elif FT_FP8 >= 2:   # the table in e4m3, scaled per column
             w8, wsc = FF.fp8_cols(weight[:NUM_INPUTS])
             out_s = FF.ft_fwd(planes_s, rf, w8, zero, fp8=True, wscale=wsc, **FUSED_FWD)
         else:
@@ -1008,24 +1015,32 @@ class FusedFT(torch.autograd.Function):
 
 @torch.compiler.disable
 def ft_fused(wf, bf, weight):
-    return FusedFT.apply(wf, bf, weight)
+    return FusedFT.apply(wf, bf, qat_ft(weight) if QAT else weight)
+
+
+def qat_ft(w):
+    """The first layer's weights as QAT rounds them, with a straight-through gradient: the
+    engine's int16 grid (src/nnue.cpp FT_WSCALE = 8192), or with NNUE_QAT_FT8 an LNF8 net's
+    int8 table (q << SHIFT on the x8192 grid, |q| <= 127)."""
+    if QAT_FT8:
+        k = float(2 ** (13 - QAT_FT8))
+        return w + (torch.clamp(torch.round(w * k), -127.0, 127.0) / k - w).detach()
+    return w + (torch.round(w * 8192.0) / 8192.0 - w).detach()
 
 
 def forward(model, wf, bf, stm, cnt, acc=None):
     """LNNUE.forward with the per-bucket loop replaced by one matmul per layer
     over all buckets and a gather of each position's own bucket: same values,
     static shapes, no host synchronization."""
-    if QAT:   # the first layer on the engine's int16 grid (src/nnue.cpp FT_WSCALE = 8192)
-        w = model.ft.weight
-        if QAT_FT8:   # an LNF8 net's int8 table: q << SHIFT on the x8192 grid, |q| <= 127
-            k = float(2 ** (13 - QAT_FT8))
-            wq = w + (torch.clamp(torch.round(w * k), -127.0, 127.0) / k - w).detach()
-        else:
-            wq = w + (torch.round(w * 8192.0) / 8192.0 - w).detach()
+    if QAT:   # the first layer on the engine's grid
         bq = model.ft_bias + (torch.round(model.ft_bias * 8192.0) / 8192.0 - model.ft_bias).detach()
-        if FT_DENSE:
+        if acc is not None:   # NNUE_FT_DENSE=3: fwd_loss ran the fused kernels on qat_ft's weights (exact)
+            acc_w, acc_b = acc[0] + bq, acc[1] + bq
+        elif FT_DENSE:
+            wq = qat_ft(model.ft.weight)
             acc_w, acc_b = ft_dense(wf, wq) + bq, ft_dense(bf, wq) + bq
         else:
+            wq = qat_ft(model.ft.weight)
             acc_w = F.embedding_bag(wf, wq, mode="sum", padding_idx=NUM_INPUTS) + bq
             acc_b = F.embedding_bag(bf, wq, mode="sum", padding_idx=NUM_INPUTS) + bq
     elif acc is not None:   # NNUE_FT_DENSE=3: fwd_loss ran the fused kernels on the records

@@ -14,6 +14,12 @@ instead of 768 values), so the matmuls read only the weights or the gradient.
 Both run over side-rows sorted by bucket (plan()). FP8 variants: the forward takes W in
 e4m3 with a per-column scale; the backward takes G in e4m3 with one global scale and a
 power-of-two boost per row, the boost's inverse riding in X's entries (exact in e4m3).
+
+Exact forward (QAT): a weight on the engine's int16 grid, k / 2^13 with |k| < 2^15, is the
+sum of two bf16 values, hi = bf16(w) and lo = w - hi (|lo| <= 64 / 2^13: at most 7 significant
+bits), split_bf16(). The forward then runs two bf16 dots into one fp32 accumulator and stores
+fp32: every product and partial sum is a multiple of 2^-13 below 2^7, which fp32 holds exactly,
+so the output is the engine's integer sum whatever the order of the additions.
 """
 import torch
 import triton
@@ -130,8 +136,8 @@ def plan(kb, block, nkb=NKB):
 
 
 @triton.jit
-def _ft_fwd(planes, ranges, w, bias, wscale, out,
-            L1: tl.constexpr, BM: tl.constexpr, BN: tl.constexpr, FP8: tl.constexpr):
+def _ft_fwd(planes, ranges, w, bias, wscale, out, wlo,
+            L1: tl.constexpr, BM: tl.constexpr, BN: tl.constexpr, FP8: tl.constexpr, SPLIT: tl.constexpr):
     t = tl.program_id(0)
     nb = tl.program_id(1)
     r0 = tl.load(ranges + 3 * t)
@@ -147,6 +153,7 @@ def _ft_fwd(planes, ranges, w, bias, wscale, out,
     upper = j >= 32
     acc = tl.zeros((BM, BN), dtype=tl.float32)
     wrow = w + kb * (768 * L1)
+    wrow_lo = wlo + kb * (768 * L1)
     for p in range(12):
         lo = tl.load(planes + rows * 24 + 2 * p, mask=rmask, other=0)
         hi = tl.load(planes + rows * 24 + 2 * p + 1, mask=rmask, other=0)
@@ -158,10 +165,15 @@ def _ft_fwd(planes, ranges, w, bias, wscale, out,
             acc = tl.dot(bit.to(tl.float8e4nv), wt, acc)
         else:
             acc = tl.dot(bit.to(tl.bfloat16), wt, acc)
+            if SPLIT:   # the rest of each weight: hi + lo is exact (split_bf16)
+                acc = tl.dot(bit.to(tl.bfloat16), tl.load(wrow_lo + k[:, None] * L1 + cols[None, :]), acc)
     if FP8:
         acc = acc * tl.load(wscale + cols)[None, :]
     acc = acc + tl.load(bias + cols)[None, :]
-    tl.store(out + rows[:, None] * L1 + cols[None, :], acc.to(tl.bfloat16), mask=rmask[:, None])
+    if SPLIT:
+        tl.store(out + rows[:, None] * L1 + cols[None, :], acc, mask=rmask[:, None])
+    else:
+        tl.store(out + rows[:, None] * L1 + cols[None, :], acc.to(tl.bfloat16), mask=rmask[:, None])
 
 
 @triton.jit
@@ -201,16 +213,29 @@ def _ft_bwd(planes, ranges, g, gscale, dw,
     tl.atomic_add(dst, acc, sem="relaxed")
 
 
-def ft_fwd(planes_s, ranges, w, bias, BM, BN, fp8=False, wscale=None, num_warps=8, num_stages=3, out=None):
+def ft_fwd(planes_s, ranges, w, bias, BM, BN, fp8=False, wscale=None, num_warps=8, num_stages=3, out=None,
+           w_lo=None):
     """planes_s: side-rows in sorted order; ranges from plan(kb, BM). w: [32 * 768, L1]
-    bf16 (or e4m3 with wscale [L1] fp32 = 1 / column scale). Returns [R, L1] bf16 in sorted order."""
+    bf16 (or e4m3 with wscale [L1] fp32 = 1 / column scale). Returns [R, L1] bf16 in sorted order.
+    With w_lo (bf16, split_bf16's second part), the table is w + w_lo and the output fp32: exact
+    for weights on the int16 grid."""
     R, L1 = planes_s.shape[0], w.shape[1]
+    split = w_lo is not None
+    if split and fp8:
+        raise ValueError("the exact (split) forward is bf16 only")
     if out is None:
-        out = torch.empty(R, L1, dtype=torch.bfloat16, device=planes_s.device)
+        out = torch.empty(R, L1, dtype=torch.float32 if split else torch.bfloat16, device=planes_s.device)
     grid = (ranges.shape[0], L1 // BN)
-    _ft_fwd[grid](planes_s, ranges, w, bias, wscale if fp8 else bias, out,
-                  L1=L1, BM=BM, BN=BN, FP8=fp8, num_warps=num_warps, num_stages=num_stages)
+    _ft_fwd[grid](planes_s, ranges, w, bias, wscale if fp8 else bias, out, w_lo if split else w,
+                  L1=L1, BM=BM, BN=BN, FP8=fp8, SPLIT=split, num_warps=num_warps, num_stages=num_stages)
     return out
+
+
+def split_bf16(w):
+    """w [NI, L1] fp32 -> (hi, lo) bf16 with hi + lo == w exactly for weights on the int16
+    grid (k / 2^13, |k| < 2^15): hi = w rounded to bf16, lo = what is left (<= 7 bits)."""
+    hi = w.to(torch.bfloat16)
+    return hi.contiguous(), (w - hi.float()).to(torch.bfloat16).contiguous()
 
 
 def ft_bwd(planes_s, ranges, g_s, dw, BMF, BN, BK, fp8=False, gscale=None, num_warps=8, num_stages=3):
