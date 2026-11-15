@@ -8,7 +8,8 @@ usage: python check_binfeed.py FILE.binpack [--work DIR] [--threads 1,2,4,8] [--
 1. Exactness: binpack2lcr's records of the file (converted into --work) against everything the
    feeder yields from it: one pass of its stream plus the held-out set of its index pass. The
    same counts as binpack2lcr's DONE line (positions, marked skip, quiet/capture/check,
-   won/drew/lost, chunks) and the same sha256 of the records sorted into byte order; no held-out
+   won/drew/lost, search-tree samples with no result, chunks) and the same sha256 of the records
+   sorted into byte order (so the same flags, result bits included); no held-out
    position in the stream and only held-out ones in the held-out set; and the run cells'
    material check (check_data.py) on both record sets.
 2. The index cache: a second open reads <file>.bfx and gives the same counts and held-out set.
@@ -112,7 +113,10 @@ def parse_done(line):
     if not m:
         raise SystemExit(f"FAIL: cannot read binpack2lcr's DONE line: {line}")
     k = ("positions", "quiet", "capture", "check", "won", "drew", "lost", "chunks", "marked")
-    return dict(zip(k, map(int, m.groups())))
+    d = dict(zip(k, map(int, m.groups())))
+    t = re.search(r"; (\d+) search-tree samples \(ply 9999\) with no game result", line)   # only when any
+    d["no_result"] = int(t.group(1)) if t else 0
+    return d
 
 
 def stream(bp, seed, count, threads, out=None):
@@ -173,7 +177,7 @@ def main():
           f"positions: feeder {n:,} training + {len(held):,} held out = {n + len(held):,}; "
           f"binpack2lcr {d['positions']:,} (records in its files {len(ref):,})")
     check(i["marked"] == d["marked"], f"marked skip (VALUE_NONE) left out: feeder {i['marked']:,}, binpack2lcr {d['marked']:,}")
-    for k in ("quiet", "capture", "check", "won", "drew", "lost", "chunks"):
+    for k in ("quiet", "capture", "check", "won", "drew", "lost", "no_result", "chunks"):
         check(i[k] == d[k], f"{k}: feeder {i[k]:,}, binpack2lcr {d[k]:,}")
     t = time.time()
     rec = np.empty((n + len(held), RT.REC), dtype=np.uint8)

@@ -59,7 +59,12 @@ Environment (default in brackets):
                      month): a [DISJOINT] line beside each [HEALTH] line. The hash split
                      shares games with the training data, so only these positions show
                      a net memorising games or fitting a biased corpus
-  NNUE_VAL_MAX [5e6] positions of NNUE_VAL_DATA to load
+  NNUE_VAL_TREE      LCR1 file(s), binpacks or globs of search-tree samples the run never trains
+                     on (xushawn/sf-searchtree-bt4: positions from inside Stockfish's search):
+                     a [TREE] line with [DISJOINT]'s fields beside it, the accuracy where the
+                     engine evaluates
+  NNUE_VAL_MAX [5e6] positions of NNUE_VAL_DATA (and of NNUE_VAL_TREE) to load: a binpack's
+                     first whole chunks, so a large file is never read whole
   NNUE_EVAL_EVERY [1000] steps between [HEALTH] validation lines
   NNUE_SAVE_EVERY [3000] steps between checkpoint saves
   NNUE_KEEP_EVERY [0 = off] steps between numbered copies of the float net
@@ -156,6 +161,7 @@ BINPACK_CACHE = env("NNUE_BINPACK_CACHE", "1") == "1"
 STALL_SEC = max(10.0, float(env("NNUE_STALL_SEC", "300")))
 PROGRESS = {"t": time.time(), "step": 0}   # the last finished training step (the stall watchdog's clock)
 VAL_DATA = env("NNUE_VAL_DATA", "")
+VAL_TREE = env("NNUE_VAL_TREE", "")
 VAL_MAX = int(float(env("NNUE_VAL_MAX", "5e6")))
 EVAL_EVERY = int(env("NNUE_EVAL_EVERY", "1000"))
 SAVE_EVERY = int(env("NNUE_SAVE_EVERY", "3000"))
@@ -277,18 +283,26 @@ def load_data(paths):
     return train[:nt], (torch.from_numpy(host[:nh]) if host is not None and nh else None), val
 
 
-def load_records(paths, cap):
+def load_records(paths, cap, what="game-disjoint"):
     """LCR1 files or binpacks -> one uint8 [n, 32] tensor on the GPU, at most cap
-    positions in file order (the game-disjoint validation set). A binpack gives
-    every position binpack2lcr would write, in its order (binfeed.cpp)."""
+    positions in file order (a held-out validation set). A binpack gives every
+    position binpack2lcr would write, in its order (binfeed.cpp), read only as far
+    as the cap needs: its first whole chunks within 4 bytes a position (game files
+    take ~3), then 4x as many bytes until the cap is met (search-tree files take 34
+    a position) or the file is read whole."""
     parts, n = [], 0
     for p in paths:
         if n >= cap:
             break
         if p.endswith(".binpack"):
-            bp = Binpacks([p], 2 ** 32, False, quiet=True)   # threshold 2^32: every position "held out"
-            a = bp.val_records()[:cap - n]
-            bp.close()
+            size, want = os.path.getsize(p), (cap - n) * 4 + (64 << 20)
+            while True:   # threshold 2^32: every position "held out"
+                bp = Binpacks([p], 2 ** 32, False, quiet=True, max_bytes=want)
+                a, whole = bp.val_records(cap - n), bp.info["bytes"] >= size
+                bp.close()
+                if len(a) >= cap - n or whole:
+                    break
+                want *= 4
         else:
             a = np.fromfile(p, dtype=np.uint8, count=(cap - n) * REC)
             if a.size % REC:
@@ -297,8 +311,23 @@ def load_records(paths, cap):
         n += len(parts[-1])
     rec = (torch.from_numpy(np.concatenate(parts)).to(dev) if parts
            else torch.empty((0, REC), dtype=torch.uint8, device=dev))
-    print(f"[data] game-disjoint validation: {len(rec):,} positions from {len(paths)} file(s)", flush=True)
+    print(f"[data] {what} validation: {len(rec):,} positions from {len(parts)} of {len(paths)} file(s)", flush=True)
     return rec
+
+
+def held_out_set(spec, name, files, what):
+    """NNUE_VAL_DATA or NNUE_VAL_TREE: at most NNUE_VAL_MAX positions of files the run never
+    trains on (none of them may be a training file); None when unset."""
+    if not spec:
+        return None
+    vfiles = data_files(spec)
+    if not vfiles or not all(os.path.exists(p) for p in vfiles):
+        raise SystemExit(f"FAIL: {name} {spec} not found")
+    shared = set(map(os.path.realpath, vfiles)) & set(map(os.path.realpath, files))
+    if shared:
+        raise SystemExit(f"FAIL: {name} shares {len(shared)} file(s) with the training data, "
+                         f"e.g. {sorted(shared)[0]}: those positions are trained on")
+    return load_records(vfiles, VAL_MAX, what)
 
 
 class HostShuffle:
@@ -515,10 +544,10 @@ def binfeed_lib():
     lib = ctypes.CDLL(so)
     vp, i32, i64, u64 = ctypes.c_void_p, ctypes.c_int, ctypes.c_int64, ctypes.c_uint64
     p64 = ctypes.POINTER(ctypes.c_int64)
-    for name, res, args in (("bf_open", vp, [ctypes.c_char_p, u64, i32, i32]), ("bf_index", i32, [vp, i32]),
+    for name, res, args in (("bf_open", vp, [ctypes.c_char_p, u64, i32, i32, u64]), ("bf_index", i32, [vp, i32]),
                             ("bf_info", None, [vp, p64]), ("bf_file_counts", None, [vp, p64]),
                             ("bf_select", i64, [vp, i64]), ("bf_val_count", i64, [vp]),
-                            ("bf_val_copy", None, [vp, vp]), ("bf_stream_start", i32, [vp, u64, i32, i32]),
+                            ("bf_val_copy", None, [vp, vp, i64]), ("bf_stream_start", i32, [vp, u64, i32, i32]),
                             ("bf_next", i64, [vp, vp, i64, p64]), ("bf_stream_stop", None, [vp]),
                             ("bf_state", None, [vp, p64]),
                             ("bf_close", None, [vp]), ("bf_bench", ctypes.c_double, [vp, i32, i64, p64]),
@@ -531,16 +560,17 @@ def binfeed_lib():
 class Binpacks:
     """Binpack files read into host RAM by binfeed.cpp and indexed: each chunk's training
     positions counted and its held-out ones (hash below thr; 2^32 holds out all) collected, in
-    one decode of every chunk, or from the files' caches (<file>.bfx) when they match."""
+    one decode of every chunk, or from the files' caches (<file>.bfx) when they match.
+    max_bytes > 0 reads only each file's first whole chunks within that many bytes."""
 
     INFO = ("files", "chunks", "bytes", "train", "held", "marked", "cached",
             "quiet", "capture", "check", "won", "drew", "lost", "active")
 
-    def __init__(self, paths, thr, cache, quiet=False):
+    def __init__(self, paths, thr, cache, quiet=False, max_bytes=0):
         import ctypes
         self.ct, self.lib, self.paths = ctypes, binfeed_lib(), list(paths)
         t = time.time()
-        self.h = self.lib.bf_open("\n".join(self.paths).encode(), int(thr), READ_THREADS, int(cache))
+        self.h = self.lib.bf_open("\n".join(self.paths).encode(), int(thr), READ_THREADS, int(cache), int(max_bytes))
         if not self.h:
             raise SystemExit(f"FAIL: binpacks: {self.lib.bf_last_error().decode()}")
         t_read, t = time.time() - t, time.time()
@@ -568,7 +598,9 @@ class Binpacks:
     def _info(self):
         out = (self.ct.c_int64 * len(self.INFO))()
         self.lib.bf_info(self.h, out)
-        return dict(zip(self.INFO, out))
+        i = dict(zip(self.INFO, out))
+        i["no_result"] = i["train"] + i["held"] - i["won"] - i["drew"] - i["lost"]   # search-tree samples
+        return i
 
     def file_counts(self):
         """Per file: (training, held out, marked skip, 1 if read from its cache)."""
@@ -583,12 +615,15 @@ class Binpacks:
         self.info = self._info()
         return n
 
-    def val_records(self):
-        """The held-out records of the selected chunks, in file order: uint8 [n, 32] numpy."""
+    def val_records(self, limit=-1):
+        """The held-out records of the selected chunks, in file order (the first `limit` of
+        them if limit >= 0): uint8 [n, 32] numpy."""
         n = int(self.lib.bf_val_count(self.h))
+        if 0 <= limit < n:
+            n = int(limit)
         out = np.empty((n, REC), dtype=np.uint8)
         if n:
-            self.lib.bf_val_copy(self.h, out.ctypes.data)
+            self.lib.bf_val_copy(self.h, out.ctypes.data, n)
         return out
 
     def start(self, seed, threads, ring):
@@ -715,7 +750,8 @@ class BinpackFeeder:
             raise SystemExit(f"FAIL: the binpacks hold {self.n:,} training positions, fewer than a batch")
         print(f"[data] training {self.n:,} positions a pass, {len(held):,} held out ({VAL_FRAC:.2%} by hash) "
               f"| all files: {i['marked']:,} marked skip left out; quiet {i['quiet']:,}, capture {i['capture']:,}, "
-              f"check {i['check']:,}; side to move won {i['won']:,}, drew {i['drew']:,}, lost {i['lost']:,}", flush=True)
+              f"check {i['check']:,}; side to move won {i['won']:,}, drew {i['drew']:,}, lost {i['lost']:,}"
+              + (f"; {i['no_result']:,} search-tree samples with no game result" if i["no_result"] else ""), flush=True)
         mc = material_check(self.val)
         print("  [DATA] material check (held-out quiet positions labelled beyond +800 for the side up): "
               + ", ".join(f"{k} up {s:.0%} (of {c:,})" for k, (c, s) in mc.items()), flush=True)
@@ -1242,11 +1278,12 @@ def evaluate(model, val, gstep):
 
 
 @torch.no_grad()
-def evaluate_disjoint(model, dval, gstep):
+def evaluate_disjoint(model, dval, gstep, tag="DISJOINT"):
     """The game-disjoint set (NNUE_VAL_DATA): the training loss and errors on
     games the run never sees, the correlation where labels still order
     positions (|target| < 800), and, for quiet positions a piece, rook or queen
-    up, the mean prediction against the mean label from the stronger side."""
+    up, the mean prediction against the mean label from the stronger side.
+    The same line for the search-tree set (NNUE_VAL_TREE) is tagged [TREE]."""
     if dval is None or len(dval) == 0:
         return
     P, T, FL, E = [], [], [], []
@@ -1271,7 +1308,7 @@ def evaluate_disjoint(model, dval, gstep):
         if int(q.sum()) >= 100:
             s = torch.sign(e[q]).float()
             mat.append(f"{nm} {float((p[q] * s).mean()):+.0f}/{float((t[q] * s).mean()):+.0f}")
-    print(f"[DISJOINT step {gstep}] loss={loss:.6f} MAE={float(err.mean()):.1f}cp ({by_class}) "
+    print(f"[{tag} step {gstep}] loss={loss:.6f} MAE={float(err.mean()):.1f}cp ({by_class}) "
           f"corr(|t|<800)={corr:.3f} | quiet material up, pred/label: {' '.join(mat) or '-'} | "
           f"{len(dval):,} positions", flush=True)
 
@@ -1338,16 +1375,8 @@ def main():
         train, host, val = load_data(files)
         n = len(train) + (len(host) if host is not None else 0)
         feeder = PoolFeeder(train, host, SEED, BS) if host is not None else None
-    dval = None
-    if VAL_DATA:
-        vfiles = data_files(VAL_DATA)
-        if not vfiles or not all(os.path.exists(p) for p in vfiles):
-            raise SystemExit(f"FAIL: NNUE_VAL_DATA {VAL_DATA} not found")
-        shared = set(map(os.path.realpath, vfiles)) & set(map(os.path.realpath, files))
-        if shared:
-            raise SystemExit(f"FAIL: NNUE_VAL_DATA shares {len(shared)} file(s) with the training data, "
-                             f"e.g. {sorted(shared)[0]}: those positions are trained on")
-        dval = load_records(vfiles, VAL_MAX)
+    dval = held_out_set(VAL_DATA, "NNUE_VAL_DATA", files, "game-disjoint")
+    tval = held_out_set(VAL_TREE, "NNUE_VAL_TREE", files, "search-tree")
     shuffle = HostShuffle(n, SEED) if feeder is None else None
 
     model = LNNUE(L1=L1).to(dev)
@@ -1443,6 +1472,7 @@ def main():
 
     evaluate(model, val, gstep)   # the starting point, for the curve
     evaluate_disjoint(model, dval, gstep)
+    evaluate_disjoint(model, tval, gstep, "TREE")
     seg0, t0, last_t, last_s = gstep, time.time(), time.time(), gstep
     epoch, done = 0, None
     PROGRESS.update(t=time.time(), step=gstep)
@@ -1494,6 +1524,7 @@ def main():
             if sess % EVAL_EVERY == 0:
                 evaluate(model, val, gstep)
                 evaluate_disjoint(model, dval, gstep)
+                evaluate_disjoint(model, tval, gstep, "TREE")
             if sess % SAVE_EVERY == 0:
                 save("checkpoint")
             if KEEP_EVERY > 0 and gstep % KEEP_EVERY == 0:
@@ -1507,6 +1538,7 @@ def main():
         epoch += 1
     evaluate(model, val, gstep)
     evaluate_disjoint(model, dval, gstep)
+    evaluate_disjoint(model, tval, gstep, "TREE")
     save("final")
     print(f"DONE ({done}) - {OUT}: {gstep} steps, {(gstep - seg0) * BS:,} positions in "
           f"{time.time() - t_start:.0f} s ({(gstep - seg0) / (time.time() - t0):.2f} steps/s)", flush=True)
