@@ -2,10 +2,14 @@
 
 ## 1. General Metadata
 - **Network Name**: gen768s
-- **Target Engine / Application**: None yet: a design, not trained or in any release (LNS1 net format: gen768r's LNB8 plus one error head per output bucket)
-- **Primary Use Case**: Chess position evaluation, and the evaluation's own expected error, read by the search's pruning margins
-- **Weight Quantization Scheme**: QAT, as gen768r_03q and 04q (feature layer on the engine's int16 grid x8192, dense layers int8 with one scale per layer per bucket). The error head trains after the value net, on its frozen accumulator, through the same int8 rounding
-- **Internal Output Scale**: float centipawns (trainer), int32 centipawns (engine), for both outputs
+- **Target Engine / Application**: Luminex. gen768s_01q has been main's net since #84 (value net only, LNB8). LNR8 (PR #89) is LNB8 with one int8 scale per tail row. The heads are an optional LHE1 section after the tails (PR #87), and engines without that code skip it
+- **Primary Use Case**: Chess position evaluation. Per position the net also gives the evaluation's expected error (the error head, read by the search's pruning margins) and the chance of a draw (the draw head, stored but not read by the search)
+- **Weight Quantization Scheme**: QAT. The feature layer is on the engine's int16 grid x8192, as in gen768r. The dense layers are int8:
+  - gen768s_01q and 02q: one scale per layer per bucket (LNB8).
+  - gen768s_02qr: one scale per row (output neuron) of L2 and L3 (LNR8), from a QAT that rounds each row on its own scale.
+
+  In the float phase, a draw logit of the heads' form trains jointly with the value (binary cross-entropy, weight 1e-3). It shapes the accumulator, and it is dropped before QAT. Both shipped heads are fitted on the QAT net's activations (ridge regression per bucket), with int8 weights, one scale per head per bucket
+- **Internal Output Scale**: value: float centipawns (trainer), int32 centipawns (engine). Heads: expected-score units in `[0, 1]`, in steps of 1/10000 in the engine
 
 ---
 
@@ -20,7 +24,7 @@
 
 ## 3. Perspective Accumulator Subnet
 - **Input Dimension**: `[24576]` (Sparse boolean)
-- **Output Dimension**: `[1536]` (Combined `[768]` side-to-move + `[768]` other side), shared by the value tail and the error head
+- **Output Dimension**: `[1536]` (Combined `[768]` side-to-move + `[768]` other side), shared by the value tail and both heads
 - **Layer Breakdown**:
   - `Sparse Linear`: Input `[24576]` -> Output `[768]` per perspective | Weights: `FP<i16, x8192>`, Bias: `FP<i32, x8192>`
   - `Activation`: SCReLU `clamp(in, 0, 1)^2` after the stm / nstm concatenation, requantized to `u8` (x127)
@@ -30,27 +34,29 @@
 ## 4. Subnet Selection & Bucketing Logic
 - **Routing Factor**: Piece count (men on the board, kings included)
 - **Bucket Selection Logic**: `Index = (piece_count - 1) * 8 / 32` (2-4, 5-8, ..., 29-32 men)
-- **Number of Buckets**: `8`; each bucket holds a value tail and an error head
-- **Combined Perspective State**: Concatenated `[1536]` tensor fed into the selected bucket's value tail, and into its error head when the search asks for it
+- **Number of Buckets**: `8`; each bucket holds a value tail and one readout of each head
+- **Combined Perspective State**: Concatenated `[1536]` `u8` tensor. It feeds the selected bucket's value tail on every evaluation, and its error head when the search reads it (`HeadK > 0`). The engine never computes the draw head
 
 ---
 
 ## 5. Main Subnet Architecture
 
-Value tail (per bucket, every evaluation; unchanged from gen768r: the capacity test keeps L2 at 16, DEVLOG §19 S2):
+Value tail (per bucket, every evaluation; unchanged from gen768r):
 
 | Layer Index | Layer Type | Input Shape | Output Shape | Activation / Operation | Fixed-Point Type |
 | :--- | :--- | :--- | :--- | :--- | :--- |
-| **L2** | Dense Linear | `[1536]` | `[16]` | SCReLU `clamp(in, 0, 1)^2`, requantized to `u8` (x127) | `i8` weights (per-bucket scale), `f32` bias |
-| **L3** | Dense Linear | `[16]` | `[32]` | SCReLU `clamp(in, 0, 1)^2`, requantized to `u8` (x127) | `i8` weights (per-bucket scale), `f32` bias |
+| **L2** | Dense Linear | `[1536]` | `[16]` | SCReLU `clamp(in, 0, 1)^2`, requantized to `u8` (x127) | `i8` weights (one scale per bucket in LNB8, per row in LNR8), `f32` bias |
+| **L3** | Dense Linear | `[16]` | `[32]` | SCReLU `clamp(in, 0, 1)^2`, requantized to `u8` (x127) | `i8` weights (one scale per bucket in LNB8, per row in LNR8), `f32` bias |
 | **Out** | Dense Linear | `[32]` | `[1]` | None | `i8` weights (own scale), `f32` bias |
 
-Error head (per bucket, computed only where the search reads it):
+Heads (per bucket; each a single linear readout with no hidden layer, 1,536 multiply-adds):
 
 | Layer Index | Layer Type | Input Shape | Output Shape | Activation / Operation | Fixed-Point Type |
 | :--- | :--- | :--- | :--- | :--- | :--- |
-| **E1** | Dense Linear | `[1536]` | `[8]` | SCReLU `clamp(in, 0, 1)^2`, requantized to `u8` (x127) | `i8` weights (per-bucket scale), `f32` bias |
-| **E2** | Dense Linear | `[8]` | `[1]` | ReLU `max(0, in)` | `i8` weights (own scale), `f32` bias |
+| **Error** | Linear readout | `[1536]` activations + `\|v\|/400` | `[1]` | clamp to `[0, 1]` | `i8` weights (one scale per head per bucket), `f32` coefficient of `\|v\|/400`, `f32` bias |
+| **Draw** | Linear readout | `[1536]` activations + `\|v\|/400` | `[1]` | clamp to `[0, 1]` | `i8` weights (one scale per head per bucket), `f32` coefficient of `\|v\|/400`, `f32` bias |
+
+`v` is the value tail's output for the same position.
 
 ---
 
@@ -59,10 +65,12 @@ Error head (per bucket, computed only where the search reads it):
 - **Output Addition**: None
 - **Final Rescaling Formula**:
   $$
-  \text{Value} = \text{round}(out \times 300) \qquad \text{Error} = \text{round}(e \times 300)
+  \text{Value} = \text{round}(out \times 300) \qquad e = \text{clamp}\Big(\frac{q \cdot a}{127\,s} + w_p \frac{|v|}{400} + b,\ 0,\ 1\Big)
   $$
-  Error is non-negative: the predicted size of the gap between this static evaluation and a deep search's value of the position (the label and the quantile are set by DEVLOG §19, gate 1)
-- **Final Return Type**: Signed Integer (`int32`) / Centipawns, side-to-move relative (value); unsigned centipawns (error)
+  Here `q` are a head's int8 weights, `s` their scale, `a` the `[1536]` activation bytes, and `w_p` and `b` the head's float coefficient and bias. Each head stores `round(e x 10000)`.
+  - Error head: trained toward `|sigmoid(v/400) - sigmoid(t/400)|`, the expected-score gap between the value and its training target `t`. The search converts it to centipawns at the position's eval: `cp = min(400, e x 400 / sigmoid'(v/400))`, with `sigmoid'` floored at 0.01.
+  - Draw head: trained toward "the game was drawn".
+- **Final Return Type**: value: signed integer (`int32`) centipawns, side-to-move relative. Heads: integer, 1/10000 of expected score
 
 ---
 
@@ -80,22 +88,22 @@ Error head (per bucket, computed only where the search reads it):
                                                               Bucket Routing Logic
                                                            (piece_count - 1) * 8 / 32
                                                                           │
-                          ┌───────────────────────────────────────────────┴───────────────────────────┐
-                          ▼                                                                           ▼
-             [ Value tail, bucket b ]                                                  [ Error head, bucket b ]
-                          │                                                          (only when the search asks)
-                  Dense Linear (16)                                                                   │
-                          │                                                                   Dense Linear (8)
-                  SCReLU clamp(0,1)^2                                                                 │
-                          │                                                                   SCReLU clamp(0,1)^2
-                  Dense Linear (32)                                                                   │
-                          │                                                                   Dense Linear (1)
-                  SCReLU clamp(0,1)^2                                                                 │
-                          │                                                                     ReLU max(0, x)
-                  Dense Linear (1)                                                                    │
-                          │                                                                    x 300 -> cp
-                    x 300 -> int32                                                                    │
-                          │                                                                           ▼
-                          ▼                                                          [ Expected error (cp) ]
-               [ Evaluation Output ]                                               read by the pruning margins
+                     ┌────────────────────────────────────────────────────┼──────────────────────────────┐
+                     ▼                                                    ▼                              ▼
+        [ Value tail, bucket b ]                          [ Error head, bucket b ]          [ Draw head, bucket b ]
+                     │                                    (when the search reads it)          (not computed by the
+             Dense Linear (16)                                            │                         engine)
+                     │                                       Linear readout + |v|/400                    │
+             SCReLU clamp(0,1)^2                                          │                  Linear readout + |v|/400
+                     │                                             clamp [0, 1]                          │
+             Dense Linear (32)                                            │                         clamp [0, 1]
+                     │                                     x 400 / sigmoid'(v/400), <= 400               │
+             SCReLU clamp(0,1)^2                                          │                              ▼
+                     │                                                    ▼                     [ P(draw) ]
+             Dense Linear (1)                                 [ Expected error (cp) ]
+                     │                                       read by the pruning margins
+               x 300 -> int32
+                     │
+                     ▼
+          [ Evaluation Output ] ──── v ────► both heads' |v|/400 input
 ```
