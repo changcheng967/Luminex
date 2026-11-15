@@ -306,6 +306,7 @@ def _binfeed_retest():
     print(f"{'QAT86_OK' if ok6 else 'QAT86_NOT_OK'}: in-process QAT {'ran' if qat_ran else 'did not run'} at "
           f"{ra.get('qat', 'n/a')} steps/s; check_fused --qat exit {rcC} | {time.time() - t0:.0f} s "
           f"(delete {TEST} when copied)", flush=True)
+    return True
 
 
 
@@ -329,10 +330,14 @@ class _Tee:
 with open("/marimo/bfre.log", "w") as _log:
     _stdout = _sys.stdout
     _sys.stdout = _Tee(_stdout, _log)
+    _done = False
     try:
-        _binfeed_retest()
+        _done = _binfeed_retest()
     except BaseException:
         import traceback as _tb
         print("FAIL:", _tb.format_exc(), flush=True)
     finally:
+        if not _done:   # every exit, a refusal or a failure too, ends on the verdict a chain waits for
+            print("RUN3_BINPACKS_NOT_OK: the test did not run to its end (the lines above say why)", flush=True)
+            print("QAT86_NOT_OK: the test did not run to its end (the lines above say why)", flush=True)
         _sys.stdout = _stdout

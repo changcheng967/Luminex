@@ -215,6 +215,7 @@ def _fused_act_test():
              + (f", {w0 / w1 - 1:+.0%} steps/s" if w0 and w1 else ""))
     print(f"\n{'FUSED_ACT_OK' if ok else 'FUSED_ACT_NOT_OK'}: {times}; check_fused --act "
           f"{'passed' if act_pass else 'FAILED'} | {time.time() - t0:.0f} s (delete {TEST} when copied)", flush=True)
+    return True
 
 
 import sys as _sys
@@ -237,10 +238,13 @@ class _Tee:
 with open("/marimo/fatest.log", "w") as _log:
     _stdout = _sys.stdout
     _sys.stdout = _Tee(_stdout, _log)
+    _done = False
     try:
-        _fused_act_test()
+        _done = _fused_act_test()
     except BaseException:
         import traceback as _tb
         print("FAIL:", _tb.format_exc(), flush=True)
     finally:
+        if not _done:   # every exit, a refusal or a failure too, ends on the verdict a chain waits for
+            print("FUSED_ACT_NOT_OK: the test did not run to its end (the lines above say why)", flush=True)
         _sys.stdout = _stdout
