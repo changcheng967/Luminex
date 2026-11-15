@@ -4,7 +4,7 @@
 
 namespace luminex {
 
-void TTEntry::save(uint64_t k, Value v, bool pv, Bound b, Depth d, Move m, Value ev, uint8_t g) {
+void TTEntry::save(uint64_t k, Value v, bool pv, Bound b, Depth d, Move m, Value ev, uint8_t g, int herr) {
     // A store without a move (a fail-low node, a qsearch node with no capture
     // worth recording) keeps the move already saved for this position: that
     // move is still the best ordering hint the position has.
@@ -14,6 +14,7 @@ void TTEntry::save(uint64_t k, Value v, bool pv, Bound b, Depth d, Move m, Value
     key32 = uint32_t(k >> 32);
     value_ = int32_t(v);
     eval_ = int32_t(ev);
+    herr_ = herr >= 0 && herr <= 10000 ? uint16_t(herr) : uint16_t(0xFFFF);
     // Stored as d + 127 for d in [0, 128]: qsearch entries keep depth 0, so a
     // main-search node (depth >= 1) never takes a cutoff from a qsearch bound.
     // depth_ == 0 is the empty slot left by clear(); 128 caps the uint8 range.

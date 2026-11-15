@@ -236,6 +236,36 @@ static inline int bucket_of(const Position& pos) {
     return b < 0 ? 0 : (b >= g_buckets ? g_buckets - 1 : b);
 }
 
+// Optional heads: an "LHE1" section after the tails (engines without this code
+// skip it, as they skip LINH). Per head and output bucket, a linear readout of
+// the 2*L1 activation bytes the tail reads (side to move first, 0..127) plus the
+// value's size |v|/400 and a bias. Head 0 predicts the value's own error,
+// |sigmoid(v/400) - sigmoid(truth/400)|; head 1, when present, the chance of a
+// draw (stored, not read by the search yet).
+struct HeadSet {
+    int count = 0;                    // heads in the section; 0 = no section
+    std::vector<int8_t> w;            // [head][bucket][2*L1]
+    std::vector<float> inv_scale;     // [head][bucket]: 1 / (127 * weight scale)
+    std::vector<float> wp, bias;      // [head][bucket]
+};
+static HeadSet g_heads;
+static bool g_use_heads = false;      // the search reads head 0 (set per search)
+thread_local int t_head_err = -1;     // head 0 of the last evaluate(), 1/10000; -1 = none
+
+// Head k of bucket b on the activation bytes h (n = 2*L1), clamped to [0, 1]
+// and returned in 1/10000.
+static inline int head_value(int k, int b, const uint8_t* h, int n, Value v) {
+    const size_t i = static_cast<size_t>(k) * g_buckets + b;
+#if defined(__AVX512VNNI__)
+    const int32_t d = dot_i8_vnni(&g_heads.w[i * n], h, n);
+#else
+    const int32_t d = dot_i8(&g_heads.w[i * n], h, n);
+#endif
+    float e = d * g_heads.inv_scale[i] + g_heads.wp[i] * (std::abs(static_cast<int>(v)) * (1.0f / 400.0f)) + g_heads.bias[i];
+    e = e < 0.0f ? 0.0f : (e > 1.0f ? 1.0f : e);
+    return static_cast<int>(e * 10000.0f + 0.5f);
+}
+
 static bool g_enabled = true;
 static uint32_t g_net_id = 0;   // incremented by every successful load(); keys the refresh cache
 
@@ -290,6 +320,9 @@ static inline KingBoard* nnue_king_boards() {
 
 bool loaded() { return g_loaded; }
 bool enabled() { return g_loaded && g_enabled; }
+int heads() { return g_loaded ? g_heads.count : 0; }
+void set_use_heads(bool on) { g_use_heads = on; }
+int last_head_error() { return t_head_err; }
 void set_enabled(bool on) { g_enabled = on; }
 int l1() { return g_L1; }
 
@@ -439,6 +472,47 @@ static bool load_stream(std::istream& f, const std::string& name) {
             f.seekg(save);   // not a LINH section — rewind (older net format)
         }
     }
+    // Optional heads section (HeadSet): "LHE1", L1, buckets, heads; then per head
+    // and bucket the int8 weight scale (float), 2*L1 int8 weights, the |v|/400
+    // coefficient and the bias (floats). A section that does not fit is ignored.
+    g_heads = HeadSet{};
+    if (mg == "LNB8" || mg == "LNI8") {
+        f.clear();
+        char tag[4] = {0, 0, 0, 0};
+        std::streampos save = f.tellg();
+        f.read(tag, 4);
+        if (f.gcount() == 4 && std::memcmp(tag, "LHE1", 4) == 0) {
+            int32_t hh[3] = {0, 0, 0};
+            f.read(reinterpret_cast<char*>(hh), sizeof(hh));
+            if (f && hh[0] == L1 && hh[1] == NB && hh[2] >= 1 && hh[2] <= 4) {
+                HeadSet hs;
+                hs.count = hh[2];
+                const size_t per = static_cast<size_t>(2) * L1, k_all = static_cast<size_t>(hs.count) * NB;
+                hs.w.resize(k_all * per);
+                hs.inv_scale.resize(k_all);
+                hs.wp.resize(k_all);
+                hs.bias.resize(k_all);
+                bool ok = true;
+                for (size_t k = 0; k < k_all && ok; ++k) {
+                    float sc = 0.0f;
+                    f.read(reinterpret_cast<char*>(&sc), 4);
+                    f.read(reinterpret_cast<char*>(&hs.w[k * per]), static_cast<std::streamsize>(per));
+                    f.read(reinterpret_cast<char*>(&hs.wp[k]), 4);
+                    f.read(reinterpret_cast<char*>(&hs.bias[k]), 4);
+                    ok = static_cast<bool>(f) && sc > 0.0f;
+                    hs.inv_scale[k] = ok ? 1.0f / (127.0f * sc) : 0.0f;
+                }
+                if (ok) g_heads = std::move(hs);
+                else std::fprintf(stderr, "nnue: truncated heads section, heads ignored\n");
+            } else {
+                std::fprintf(stderr, "nnue: heads section for L1=%d buckets=%d heads=%d does not fit the net, ignored\n",
+                             hh[0], hh[1], hh[2]);
+            }
+        } else {
+            f.clear();
+            f.seekg(save);
+        }
+    }
     g_loaded = true;
     ++g_net_id;   // refresh-cache entries of the previous net are stale
 #if defined(__linux__) && defined(MADV_HUGEPAGE)
@@ -457,6 +531,9 @@ static bool load_stream(std::istream& f, const std::string& name) {
     if (clamped > 0)
         std::printf("info string NNUE warning: %lld feature weights exceed the int16 range and were clamped\n",
                     clamped);
+    if (g_heads.count > 0)
+        std::printf("info string NNUE heads: %d (error%s), %d output buckets\n", g_heads.count,
+                    g_heads.count > 1 ? ", draw" : "", NB);
     return true;
 }
 
@@ -889,6 +966,7 @@ Value evaluate(const Position& pos) {
     // Bring this ply's accumulator up to date first (lazy updates); its cost is
     // timed apart from st_eval, so cyc/eval stays the forward pass alone.
     make_current(pos);
+    t_head_err = -1;
     bool pr = profile_on();
     long long t0 = pr ? rdtsc() : 0;
     Accumulator* const acc_stack = nnue_acc_stack();
@@ -937,7 +1015,8 @@ Value evaluate(const Position& pos) {
     const int16_t* acc_nstm = stm_white ? a.v[1] : a.v[0];
     // This position's dense tail (the only one unless the net has output
     // buckets), bound to the names the kernels below use.
-    const DenseTail& tail = g_tails[bucket_of(pos)];
+    const int bkt = bucket_of(pos);
+    const DenseTail& tail = g_tails[bkt];
     const std::vector<int8_t>& l2_w_i8 = tail.l2_w_i8;
     const std::vector<int8_t>& l3_w_i8 = tail.l3_w_i8;
     const std::vector<int8_t>& out_w_i8 = tail.out_w_i8;
@@ -1126,6 +1205,7 @@ Value evaluate(const Position& pos) {
         float ov = out_b + dot_i8(out_w_i8.data(), h3_i8, L3) * icso;
 #endif
         Value v = static_cast<Value>(std::llround(ov * OUT_SCALE));
+        if (g_use_heads && g_heads.count) t_head_err = head_value(0, bkt, h_i8, 2 * L1, v);
         if (pr) { st_eval.cyc += rdtsc() - t0; st_eval.n++; }
         return v;
     }
@@ -1248,7 +1328,9 @@ Value evaluate(const Position& pos) {
             acc = vdotq_s32(acc, vld1q_s8(out_w_i8.data() + i), vld1q_u8(h3_i8 + i));
         int32_t dot = vaddvq_s32(acc);
         float ov = out_b + dot * icso;
-        return static_cast<Value>(std::llround(ov * OUT_SCALE));
+        Value v = static_cast<Value>(std::llround(ov * OUT_SCALE));
+        if (g_use_heads && g_heads.count) t_head_err = head_value(0, bkt, h_i8, 2 * L1, v);
+        return v;
     }
 #else
     // Scalar fallback for ARM without dotprod (older ARMv8.0)
@@ -1288,7 +1370,9 @@ Value evaluate(const Position& pos) {
         int32_t acc = 0;
         for (int i = 0; i < L3; ++i) acc += out_w_i8[i] * h3_i8[i];
         float ov = out_b + acc * icso;
-        return static_cast<Value>(std::llround(ov * OUT_SCALE));
+        Value v = static_cast<Value>(std::llround(ov * OUT_SCALE));
+        if (g_use_heads && g_heads.count) t_head_err = head_value(0, bkt, h_i8, 2 * L1, v);
+        return v;
     }
 #endif // __ARM_FEATURE_DOTPROD
     float h[2 * NNUE_L1_MAX];

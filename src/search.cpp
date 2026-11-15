@@ -138,7 +138,9 @@ struct EvalCacheEntry {
     uint64_t key;
     int32_t value;  // Changed from int16_t to match Value type
     uint8_t tactical;  // 1 = HCE tactical_only eval (qsearch), 0 = full eval
+    int16_t herr;      // the net's error head for value, 1/10000 (-1 = none); fits the padding
 };
+static_assert(sizeof(EvalCacheEntry) == 16, "EvalCacheEntry must stay 16 bytes");
 constexpr int EVAL_CACHE_SIZE = 65536;  // 64K entries — measured best (32K too small, 512K too much)
 // THREAD_LOCAL + heap-allocated (vector): shared, every eval-miss write bounces this
 // cache line across threads — the same contention failure as g_stats above. A per-thread
@@ -237,7 +239,16 @@ inline int combined_history(const SearchWorker* w, const Stack* ss, Piece pc, Sq
     return score;
 }
 
-inline Value eval_cached(const Position& pos) {
+// The error head's expected-score error (1/10000) as centipawns at this eval:
+// e * 400 / sigmoid'(eval/400), the eval shift that changes the expected score
+// by e, capped at 400.
+static inline int head_error_cp(int e1e4, Value eval) {
+    const double s = 1.0 / (1.0 + std::exp(-double(eval) / 400.0));
+    const double d = std::max(s * (1.0 - s), 0.01);
+    return int(std::min(400.0, e1e4 * 1e-4 * 400.0 / d));
+}
+
+inline Value eval_cached(const Position& pos, int* herr = nullptr) {
     uint64_t key = pos.key();
     uint32_t idx = uint32_t(key) & (EVAL_CACHE_SIZE - 1);
 
@@ -245,6 +256,7 @@ inline Value eval_cached(const Position& pos) {
     // a loaded net makes both writers store the same value, so any entry hits.
     if (eval_cache[idx].key == key && (nnue::loaded() || eval_cache[idx].tactical == 0)) {
         g_stats.eval_cache_hits_main++;
+        if (herr) *herr = eval_cache[idx].herr;
         int correction = get_total_correction(pos);
         correction = std::max(-200, std::min(200, correction));
         return Value(eval_cache[idx].value + correction);
@@ -255,6 +267,8 @@ inline Value eval_cached(const Position& pos) {
     eval_cache[idx].key = key;
     eval_cache[idx].value = int32_t(eval);
     eval_cache[idx].tactical = 0;
+    eval_cache[idx].herr = int16_t(nnue::enabled() ? nnue::last_head_error() : -1);
+    if (herr) *herr = eval_cache[idx].herr;
     int correction = get_total_correction(pos);
     correction = std::max(-200, std::min(200, correction));
     return Value(eval + correction);
@@ -464,6 +478,7 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
                 eval_cache[idx].key = key;
                 eval_cache[idx].value = int32_t(raw_eval);
                 eval_cache[idx].tactical = 1;
+                eval_cache[idx].herr = int16_t(nnue::enabled() ? nnue::last_head_error() : -1);
                 g_stats.eval_cache_misses_qs++;
             }
             int correction = get_total_correction(pos);
@@ -761,11 +776,17 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
     Value eval = VALUE_ZERO;
     Value tt_store_eval = VALUE_INFINITE;
     int eval_uncertainty = 0;  // Magnitude of correction history (measures eval unreliability)
+    int head_err = -1;         // the net's error head for this eval, 1/10000 (-1 = none)
     if (!pos.is_check()) {
         // The stored TT eval (correction-adjusted at store time) skips the
         // eval-cache probe and the NNUE call; VALUE_INFINITE marks entries
         // saved without one (root stores, in-check nodes)
-        tt_store_eval = (found && tte->eval() != VALUE_INFINITE) ? tte->eval() : eval_cached(pos);
+        if (found && tte->eval() != VALUE_INFINITE) {
+            tt_store_eval = tte->eval();
+            head_err = tte->head_err();
+        } else {
+            tt_store_eval = eval_cached(pos, &head_err);
+        }
         // Draw-clock damping: decisive evals count for less as the 50-move
         // draw nears. Caches and the TT keep the undamped value.
         eval = pos.halfmove_clock() > 0
@@ -774,6 +795,11 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
         // High uncertainty → eval is unreliable → search should be less aggressive.
         // Low uncertainty → eval is reliable → search can be more aggressive.
         eval_uncertainty = std::abs(get_total_correction(pos));
+        // The net's own estimate of its error moves the margins around their
+        // usual size: wider where it expects to be wrong, narrower where not.
+        const SPSAParams& hp = SPSAParams::get();
+        if (hp.head_k > 0 && head_err >= 0)
+            eval_uncertainty = std::max(0, eval_uncertainty + hp.head_k * (head_error_cp(head_err, eval) - hp.head_c) / 64);
     }
     ss->static_eval = eval;
 
@@ -1491,7 +1517,7 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
                 // move set than its key describes: it must not write the entry.
                 if (!stop.load(std::memory_order_relaxed) && !ss->excluded_move
                     && TT.should_store(tte, found, depth)) {
-                    tte->save(pos.key(), value_to_tt(value, ss->ply), pv_node, BOUND_LOWER, depth, m, tt_store_eval, TT.generation());
+                    tte->save(pos.key(), value_to_tt(value, ss->ply), pv_node, BOUND_LOWER, depth, m, tt_store_eval, TT.generation(), head_err);
                 }
                 // A cutoff proves the node is worth at least `value`. Above the
                 // static eval, that says the eval was too low here, so cut nodes
@@ -1796,7 +1822,7 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
         // earlier search found (TTEntry::save preserves it).
         if (TT.should_store(tte, found, depth))
             tte->save(pos.key(), value_to_tt(best_value, ss->ply), pv_node, bound, depth,
-                      bound == BOUND_UPPER ? MOVE_NONE : best_move_found, tt_store_eval, TT.generation());
+                      bound == BOUND_UPPER ? MOVE_NONE : best_move_found, tt_store_eval, TT.generation(), head_err);
 
         // Update multi-table correction history: learn from the difference between
         // search result and static eval, indexed by multiple position aspects.
@@ -1984,6 +2010,9 @@ Move search(Position& pos, Limits& lim) {
     local_nodes = 0;
     last_reported_nodes = 0;
     g_stats = SearchStats{};  // Reset stats for each search
+    // The net's error head costs one dot product per eval: computed only when the
+    // margins read it (HeadK > 0) and the net carries it.
+    nnue::set_use_heads(SPSAParams::get().head_k > 0 && nnue::heads() > 0);
 
     // Track search start time for time management
     search_start = std::chrono::steady_clock::now();

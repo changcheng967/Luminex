@@ -71,6 +71,13 @@ struct SPSAParams {
     int nmp_shallow_margin = 57;
     int nmp_shallow_depth  = 5;
 
+    // The net's error head (an LHE1 section): the eval's uncertainty for the
+    // reverse-futility and futility margins is |correction| + head_k / 64 x
+    // (the head's error in cp at this eval - head_c), at least 0. head_k = 0:
+    // the head is neither computed nor read; the search is the one without it.
+    int head_k = 0;
+    int head_c = 100;
+
     // Load from file (COUNT ints, one per line, in field order). Returns true if loaded.
     bool load(const std::string& path) {
         FILE* f = std::fopen(path.c_str(), "r");
@@ -140,6 +147,8 @@ inline constexpr SPSAOption SPSA_OPTIONS[] = {
     {"CorrWeightMax",   &SPSAParams::corr_weight_max,     1,   128},
     {"NmpShallowMargin", &SPSAParams::nmp_shallow_margin, 0,  300},
     {"NmpShallowDepth", &SPSAParams::nmp_shallow_depth,   0,   12},
+    {"HeadK",           &SPSAParams::head_k,              0,  128},
+    {"HeadC",           &SPSAParams::head_c,              0,  400},
 };
 
 inline const SPSAOption* find_spsa_option(const std::string& name) {

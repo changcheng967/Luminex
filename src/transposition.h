@@ -11,6 +11,7 @@ namespace luminex {
 struct TTEntry {
     uint32_t key32;
     uint16_t move16;
+    uint16_t herr_;  // the net's error head for eval_, 1/10000 (0xFFFF = none); fills the padding before value_
     int32_t value_;  // Changed from int16_t to prevent truncation (Value is int32_t)
     int32_t eval_;   // Changed from int16_t to prevent truncation
     uint8_t depth_;
@@ -24,10 +25,12 @@ struct TTEntry {
     bool is_pv() const { return pv_flag != 0; }
     Value value() const { return Value(value_); }
     Value eval() const { return Value(eval_); }
+    int head_err() const { return herr_ == 0xFFFF ? -1 : int(herr_); }
     uint8_t search_age(uint8_t now) const { return uint8_t(now - search_id_); }
 
-    void save(uint64_t k, Value v, bool pv, Bound b, Depth d, Move m, Value ev, uint8_t g);
+    void save(uint64_t k, Value v, bool pv, Bound b, Depth d, Move m, Value ev, uint8_t g, int herr = -1);
 };
+static_assert(sizeof(TTEntry) == 20, "TTEntry must stay 20 bytes (3 per 64-byte cluster)");
 
 // Transposition table cluster (cache line size = 64 bytes)
 // Entry size is 20 bytes (3 * 20 = 60), padding = 4 bytes

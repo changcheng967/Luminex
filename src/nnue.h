@@ -48,6 +48,18 @@ Value evaluate(const Position& pos);
 // Whether a net is currently loaded (independent of the enabled flag).
 bool loaded();
 
+// Heads carried by the loaded net (an LHE1 section after its tails): 0 = none,
+// 1 = the error head, 2 = error and draw heads.
+int heads();
+
+// Compute the error head in evaluate() (the search sets this per search; off,
+// evaluate() costs and returns exactly what it did without heads).
+void set_use_heads(bool on);
+
+// The error head of this thread's last evaluate(): the value's predicted error
+// |sigmoid(v/400) - sigmoid(truth/400)| in 1/10000, or -1 when not computed.
+int last_head_error();
+
 // Runtime L1 width of the loaded net (0 if none loaded).
 int l1();
 
