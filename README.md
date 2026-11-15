@@ -59,7 +59,11 @@ CCRL-rated engines (800 games each, 10+0.1;
 [gauntlet 3](https://bench.luminexchess.com/gauntlet/3/)): **3471 ± 16 on
 CCRL Blitz**, 3402 ± 21 on CCRL 40/15. v6.6.0's gen768r_06q adds
 +3.09 ± 2.46 in self-play ([test 128](https://bench.luminexchess.com/test/128/)),
-below what a repeat gauntlet resolves (about ± 10), so the rating stands.
+below what a repeat gauntlet resolves (about ± 10), so the rating stands
+for v6.6.0. Main and the development builds now carry gen768s_01q,
++77.57 ± 15.21 over gen768r_06q in self-play
+([test 140](https://bench.luminexchess.com/test/140/)); the rating above
+predates it.
 
 | Opponent (CCRL Blitz) | Elo |
 |---|---|
@@ -93,6 +97,7 @@ main of its day, at 10+0.1 unless noted:
 | Moves-to-go clocks spent by value of time, at 40 moves in 10 s (#47) | [+11.01 ± 6.21](https://bench.luminexchess.com/test/57/) |
 | The gen768r network: gen768r_03 with tune 65's constants, over the old network | [+60.08 ± 15.55](https://bench.luminexchess.com/test/68/) |
 | then 03q (QAT), 04q, 05q, 06q, each over the one before | [+13.39](https://bench.luminexchess.com/test/73/), [+13.31](https://bench.luminexchess.com/test/82/), [+22.02](https://bench.luminexchess.com/test/112/), [+3.09](https://bench.luminexchess.com/test/128/) |
+| gen768s_01q: gen768r_06 trained on Leela BT4's labels, over 06q | [+77.57 ± 15.21](https://bench.luminexchess.com/test/140/) |
 
 Each figure is its OpenBench page's. The hash prefetch at make-move, the
 one-pass child accumulator and the lazy accumulator updates search the same
@@ -118,8 +123,9 @@ build that needs more than its row (`.github/scripts/check-deps.py`). Every buil
 ones with AVX2 kernels, the others with a portable int8 path (NEON dot-product
 on Apple silicon).
 
-Every release binary carries the current network,
-`luminex_gen768r_06q_i8.nnue`, inside it, so the binary alone plays at full
+Every release binary carries its network inside it (v6.6.0:
+`luminex_gen768r_06q_i8.nnue`; main and the development builds:
+`luminex_gen768s_01q_i8.nnue`), so the binary alone plays at full
 strength, and reports it by that name. The network loads at
 the first `isready` or `go`. To play with another network, point `NNUEFile`
 at its file; it is looked for as given, then next to the binary. Left at its
@@ -152,7 +158,7 @@ go movetime 1000
 | `UCI_ShowWDL` | false | Append `wdl W D L` (per mille, approximate model) to info lines |
 | `Ponder` | false | Allow pondering (`go ponder` / `ponderhit`) |
 | `UseNNUE` | true | NNUE evaluation (falls back to the HCE when no network loads) |
-| `NNUEFile` | `luminex_gen768r_06q_i8.nnue` | Network file to load; the default, the shipped network's own name, selects the built-in network |
+| `NNUEFile` | `luminex_gen768s_01q_i8.nnue` | Network file to load; the default, the shipped network's own name, selects the built-in network |
 | `Contempt` | 0 | Draw avoidance (centipawns) |
 | `Move Overhead` | 30 | Time-management safety margin per move (ms) |
 | `TimeSchedule` | 2 | Clock schedule with an increment: 0 = the old formula, 1 and 2 = schedules solved by dynamic programming (2: early moves are worth more) |
@@ -256,16 +262,19 @@ before it lands:
 
 ## NNUE training
 
-The current network, gen768r_06q, is gen768's 768-wide HalfKAv2_hm feature
-layer with a revived dense tail split into eight output buckets. Six training
-runs took it to 1.95M steps of 131,072 positions on Leela Chess Zero's test91
-self-play games: the binpacks of the t91 LGS store, every month from November
-2025 to October 2026, with every position kept except those the binpacks mark
-to skip. The loss (power 3.0 on the win-probability error) weights quiet
-positions, which are what the search consumes; the last 30K steps of each
-release net train through the engine's int8 rounding (QAT). It is the gen768r
-line's last network: [`nnue/DEVLOG.md`](nnue/DEVLOG.md) has the runs and the
-measurements behind them.
+The current network, gen768s_01q, keeps gen768r's architecture: gen768's
+768-wide HalfKAv2_hm feature layer with a revived dense tail split into eight
+output buckets. What changed is the labels. gen768r_06, the gen768r line's
+last network (1.95M steps of 131,072 positions on Leela Chess Zero's test91
+self-play games), trained on for 450K more steps with a fresh optimizer on
+Leela BT4's relabel of the same games: the binpacks of the t91 LGS store,
+November 2025 and January to August and October 2026 (6.1B positions, with
+every position kept except those the binpacks mark to skip, and January's
+last chunks held out). The loss (power 3.0 on the win-probability error)
+weights quiet positions, which are what the search consumes; the last 30K
+steps train through the engine's int8 rounding (QAT).
+[`nnue/DEVLOG.md`](nnue/DEVLOG.md) has the runs and the measurements behind
+them.
 
 The training and data tooling lives in `nnue/` and `src/`:
 - the streaming trainer;
@@ -294,7 +303,7 @@ cmake --build build --config Release
 ```
 
 That binary has no network inside; it loads the shipped network,
-`luminex_gen768r_06q_i8.nnue`, from the working directory or its own
+`luminex_gen768s_01q_i8.nnue`, from the working directory or its own
 directory. The name comes from `.github/scripts/fetch-net.sh`, which pins the
 network: CMake reads it there, so a build always names the network it ships
 with. To build the network in, as the releases do, fetch the pinned file and
