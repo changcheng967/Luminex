@@ -542,18 +542,26 @@ float forward_int8(const int16_t* acc_stm, const int16_t* acc_nstm, const TailVi
             int32_t v; std::memcpy(&v, h_i8 + 4 * c, 4);
             return _mm512_set1_epi32(v);
         };
-        __m512i s0 = _mm512_setzero_si512(), s1 = s0, s2 = s0, s3 = s0;
+        // Eight sums in flight: VPDPBUSD's latency is about five cycles, so four
+        // chains left it waiting on itself.
+        __m512i s0 = _mm512_setzero_si512(), s1 = s0, s2 = s0, s3 = s0, s4 = s0, s5 = s0, s6 = s0, s7 = s0;
         int c = 0;
-        for (; c + 4 <= n4; c += 4) {
+        for (; c + 8 <= n4; c += 8) {
             s0 = _mm512_dpbusd_epi32(s0, chunk(c + 0), _mm512_loadu_si512(w + 64 * (c + 0)));
             s1 = _mm512_dpbusd_epi32(s1, chunk(c + 1), _mm512_loadu_si512(w + 64 * (c + 1)));
             s2 = _mm512_dpbusd_epi32(s2, chunk(c + 2), _mm512_loadu_si512(w + 64 * (c + 2)));
             s3 = _mm512_dpbusd_epi32(s3, chunk(c + 3), _mm512_loadu_si512(w + 64 * (c + 3)));
+            s4 = _mm512_dpbusd_epi32(s4, chunk(c + 4), _mm512_loadu_si512(w + 64 * (c + 4)));
+            s5 = _mm512_dpbusd_epi32(s5, chunk(c + 5), _mm512_loadu_si512(w + 64 * (c + 5)));
+            s6 = _mm512_dpbusd_epi32(s6, chunk(c + 6), _mm512_loadu_si512(w + 64 * (c + 6)));
+            s7 = _mm512_dpbusd_epi32(s7, chunk(c + 7), _mm512_loadu_si512(w + 64 * (c + 7)));
         }
         for (; c < n4; ++c)
             s0 = _mm512_dpbusd_epi32(s0, chunk(c), _mm512_loadu_si512(w + 64 * c));
+        s0 = _mm512_add_epi32(_mm512_add_epi32(s0, s1), _mm512_add_epi32(s2, s3));
+        s4 = _mm512_add_epi32(_mm512_add_epi32(s4, s5), _mm512_add_epi32(s6, s7));
         alignas(64) int32_t d[16];
-        _mm512_store_si512(d, _mm512_add_epi32(_mm512_add_epi32(s0, s1), _mm512_add_epi32(s2, s3)));
+        _mm512_store_si512(d, _mm512_add_epi32(s0, s4));
         for (int o = 0; o < 16; ++o) h2[o] = clip01(bias_add(t.l2_b[o], d[o], t.ics2[o]));
     } else
     // VPDPBUSD: 64 MACs/instruction. Per-output dot (output-major weights, no reorder).
