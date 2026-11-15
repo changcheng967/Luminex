@@ -21,8 +21,8 @@ generation to the V13/V14 architecture program. Dates are first-commit dates fro
 | V13 | Sep 2026+ | FM interaction, factorized buckets, material bucketing | — | **Spec complete**; DCU search picking hyperparams |
 | V14 | future | Residual topology + mobility + policy head | — | **Spec complete** |
 | gen768r | Nov 2026 | gen768's feature layer, the revived tail through 8 output buckets; QAT (03q to 06q) | t91 binpacks Feb–Oct 2026 (3.7B); 05: Nov–Dec 2025 + Feb–May 2026 (6.6B); 06: Dec 2025 + Jan + Jun–Oct 2026 (6.0B) | **Released in v6.6.0** as gen768r_06q (E3397B0F), the line's last net; [V3-GEN768R.md](V3-GEN768R.md) |
-| gen768s | Nov 2026 | gen768r + one error head per bucket on the accumulator, read by the pruning margins | gen768r's + error labels | **Design**; gate 1a passed (§20); gen768s_01's value net is gen1024s_01's width control; §19 and [V4-GEN768S.md](V4-GEN768S.md) |
-| gen1024s (V5) | Nov 2026 | gen768s's value tails and a linear error head per bucket, on a 1024-wide 8-bit feature table (LNF8 grid) | t91 relabelled by Leela BT4 (binpacks/v6-bt4, 8.6B); game-disjoint check: the Stockfish-19-refereed forensics positions (January is spent) | **Design**, gen1024s_01's value net in training; §20 and [V5-GEN1024S.md](V5-GEN1024S.md) |
+| gen768s | Nov 2026 | gen768r + one error head per bucket on the accumulator, read by the pruning margins | gen768r's + error labels | gen768s_01q (6665F301), the value net only (gen768r_06 on BT4's labels): +77.57 +- 15.21 over 06q (test 140), the net to ship; heads not trained yet; §19, §20 and [V4-GEN768S.md](V4-GEN768S.md) |
+| gen1024s (V5) | Nov 2026 | gen768s's value tails and a linear error head per bucket, on a 1024-wide 8-bit feature table (LNF8 grid) | t91 relabelled by Leela BT4 (binpacks/v6-bt4, 8.6B); game-disjoint check: the Stockfish-19-refereed forensics positions (January is spent) | gen1024s_01q lost the width test to gen768s_01q at 10+0.1 (test 139, -4.10 +- 4.08); 60+0.6 (test 141) decides; §20 and [V5-GEN1024S.md](V5-GEN1024S.md) |
 
 ---
 
@@ -1482,3 +1482,142 @@ which read worse. Screens of this size can no longer resolve the small
 search changes left (qsearch's hash stores, #69, had already gone from
 +31.4 in an earlier screen to +1.29 at 10+0.1), so small search changes
 go straight to an SPRT, and a screen's pass is triage, not evidence.
+
+**The heads' gate (Nov 14), on run A's frozen net.** gen1024s_01's
+float value net (step 450,000) stays frozen; one linear readout per
+output bucket of the 2,048 activations its value tail reads, fitted by
+ridge regression on 3M positions of the BT4 January tail's first 16
+files and scored on 1M of its last 4 (other games; 61.5% of them
+drawn). Ridge strengths from 1e-4 to 1e-2 move nothing past the third
+decimal. The error label is gate 1a's; the draw label is the game's
+result.
+
+| held out, 1M positions | readout | the eval alone |
+|---|---|---|
+| error, Spearman, whole tail | 0.602 | \|pred\| 0.577 |
+| error, buckets 0-4 (up to 20 men) | 0.76 0.55 0.28 0.36 0.38 | 0.88 0.71 0.48 0.50 0.40 |
+| error, buckets 5-7 (21-32 men) | 0.40 0.42 0.61 | 0.33 0.30 0.39 |
+| drawn, AUC, whole tail | 0.701 | -\|pred\| 0.749 |
+| drawn, AUC, \|pred\| < 50 cp (356,610) | 0.738 | -\|pred\| 0.600 |
+
+On BT4's labels the eval's size alone already ranks the error at 0.577
+(gen768r_05 on T91's: 0.478), and the readout adds 0.025 over the whole
+tail. The gain sits where the loss is: in buckets 5-7, which hold 84%
+of the confirmed loss in the Stockfish 19 games, the readout beats
+\|pred\| by 0.07, 0.12 and 0.22, while in the endgame buckets \|pred\|
+wins. The draw readout is the same story: an eval near zero is most of
+what "drawn" means, and over the whole tail -\|pred\| ranks better, but
+among near-equal positions, where the eval says nothing (0.600), the
+activations tell a dead-equal position from an open one (0.738). That
+is the case the draw head exists for. A linear readout cannot form
+\|pred\| from the activations, so both heads take the value's own
+output as one more input: one multiply-add each in the engine. Both
+pass this cheap gate with that change. No intervals were computed this
+time; gate 1a's bootstrap over files gave about +-0.01 at this size.
+Still to come for the error head: gate 1b against Stockfish 19 on the
+forensics positions; for both: trained inside a run, then each search
+use in an SPRT.
+
+**The bucket gate (Nov 14): today's cut stays.** Two arms from run A's
+float net with a fresh optimizer, 25K steps each on May and June 2026
+(963M positions; seed 6, lr 5e-5, the same schedule), differing only in
+the piece-count-to-bucket map. The re-cut gives 21-32 men six buckets
+instead of three (21-22, 23-24, ..., 31-32) and pays for it by merging
+2-14 men into one; each new bucket starts as a copy of the old bucket
+that covered its range. Held-out loss (x1e3) on 2.0M positions of the
+January tail's last 4 files:
+
+| men | 2-14 | 15-20 | 21-24 | 25-28 | 29-32 | all |
+|---|---|---|---|---|---|---|
+| positions | 749K | 349K | 218K | 250K | 435K | 2.0M |
+| control (today's cut) | 1.648 | 2.962 | 2.464 | 1.232 | 0.198 | 1.599 |
+| re-cut | 1.681 | 2.963 | 2.466 | 1.230 | 0.197 | 1.612 |
+| re-cut against control | +1.96% | +0.06% | +0.11% | -0.12% | -0.13% | +0.78% |
+
+The trainer's own checks agree: in-month validation 0.001242 against
+0.001222, its 5M-position January check 0.001226 against 0.001211.
+Twice the buckets bought nothing where the loss is (within +-0.13%),
+and the endgame lost 2% when its four buckets became one. The merged
+bucket started from the 9-12-men tail, a worse start than the control's
+own, but the finer middlegame buckets started from exact copies and
+still found nothing. So the middlegame's loss is not for want of tails
+cut finer by piece count; the re-cut is out.
+
+**The sparse forward pass's first gate (Nov 14): weak.** NNUE_PROFILE=1
+on mscope, 500K-node searches from three game positions: 50.1-54.0% of
+06q's L1 activations are non-zero, 47.6-51.9% of gen1024s_01q's. At
+half density, if neurons were independent, about 6% of the four-byte
+blocks one VPDPBUSD reads would be all zero (perhaps 10-15% with the
+correlation real activations have), so an L2 that skips zero blocks
+buys little on these nets. It stays a candidate only if training makes
+the activations much sparser (E3).
+
+**The gates' noise floor (Nov 14).** The bucket gate's control arm
+again with only the seed changed (seed 7, another data order): +0.02%
+overall against the control (-0.02% weighted like the training loss),
+within +-0.14% in every band, and the trainer's own checks agree
+(in-month 0.001221 against 0.001222, January 0.001211 both). A gate
+difference means something only well beyond +-0.15% in a band or
++-0.05% overall: the re-cut's +0.78% (+1.09% weighted) is real, its
+middlegame bands are not.
+
+**The pawn-tower gate (Nov 14): out.** A net over pawns and kings only
+(256 one-hot inputs, each side's squares in its own oriented frame, ->
+128 -> 128 -> 1024) added to both accumulators before the activation,
+its output layer starting at zero; one arm of 25K steps against the
+control. The tower learned (its output layer's norm grew from 0 to
+4.69) but moves the activations little (a mean change of 0.0013 against
+their mean of 0.099), and held out it is noise: +0.01% overall (-0.01%
+weighted), every band within +-0.2%, January's check identical
+(0.001211). The in-month validation's -0.25% (0.001219 against
+0.001222) is not confirmed by held-out data. A 25K-step fine-tune is the
+cheapest test of new capacity, so this does not prove a tower useless
+from scratch; but with no held-out gain, and an engine cost of several
+forward passes per pawn-and-king cache miss, it is out of V5. (As an
+EmbeddingBag over 256 rows, every position's backward adds onto the same
+rows: the arm trained at 21.3 steps/s against 65.)
+
+**The draw head trained with the value (Nov 14): neutral for the value,
+strong as a head.** One logit per bucket from the 2,048 activations and
+the value's own size (detached), trained jointly on the game result at
+loss weights 3e-4 and 3e-3, otherwise as the control. The value's
+held-out loss moved -0.04% and -0.05% (weighted -0.01% and +0.04%), and
+January's check read 0.001211 and 0.001212 against 0.001211: inside the
+noise floor at both weights. The head itself, on the tail's last 4
+files:
+
+| AUC for "the game was drawn" | whole tail | \|pred\| < 50 cp (712K) |
+|---|---|---|
+| -\|pred\| (the eval's size) | 0.745 | 0.597 |
+| frozen linear readout on run A, no \|pred\| input | 0.701 | 0.738 |
+| head trained jointly, weight 3e-4 / 3e-3 | 0.808 / 0.809 | 0.795 / 0.795 |
+
+It is calibrated in the middle (predicted 0.455 -> actual 0.434, 0.572
+-> 0.575, 0.667 -> 0.674) and under-confident at the ends (0.811 ->
+0.866, 0.951 -> 0.992). So joint training neither helps nor hurts the
+value: the draw head can train in the full run or in a final stage,
+whichever is simpler, and its worth is the search's use of it, priced
+in an SPRT. (As written, the head's concatenation copies the
+activations: 46 steps/s against 56.6; a split product avoids it.)
+
+**Width and labels in games (Nov 14).** gen1024s_01q against
+gen768s_01q, same labels, data, seed, schedule and 16-bit table, at
+10+0.1: -4.10 +- 4.08 over 6,864 games (test 139, pentanomial
+57/681/2016/642/36, H0 at LLR -3.06), although 1024's held-out loss is
+2.4% lower (0.001217 against 0.001246): at this clock its ~10% speed
+cost takes the accuracy back. The same pair at 60+0.6 (test 141), where
+speed should weigh less and where CCRL rates, decides the next runs'
+width. gen768s_01q against gen768r_06q, same width: **+77.57 +- 15.21
+over 642 games** (test 140, pentanomial 1/28/141/131/20, LLR 2.95), the
+BT4 labels alone. Under the rule set before the tests (139 fails ->
+run B), gen768s_01q is the net to ship.
+
+**Run B's QAT was cut short.** On the trainer's 5M-position January
+check, run B's float net reached 0.001225, and its last 90K steps bought
+-0.08%: more passes over the same 6.1B positions are nearly used up. Its
+30K-step QAT phase on the int16 grid went 0.001306 -> 0.001264 ->
+0.001246 and was still falling 1.4% per 10K steps when it ended, so the
+shipped net is 1.7% worse than its own float version: about the width
+test's whole loss gap, at no speed cost. A probe continues that QAT for
+30K steps (Nov 14), and the next runs' QAT phases run until the loss
+flattens.
