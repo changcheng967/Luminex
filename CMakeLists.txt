@@ -23,6 +23,24 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
+# One x86-64 binary for every CPU, as the releases ship: the engine compiled
+# for x86-64-v2 (x86-64 with POPCNT under clang-cl), and the network kernels
+# (src/nnue_kernels.inc) compiled once per instruction-set level, each
+# src/nnue_k_<level>.cpp with its level's flags; at run time nnue.cpp uses the
+# best level the CPU and its OS support (cpuid and xgetbv), or a lower one the
+# SimdLevel option asks for. LUMINEX_MARCH and LUMINEX_MSVC_ARCH do not apply.
+# Off, the default and OpenBench's build, the kernels are compiled into
+# nnue.cpp for LUMINEX_MARCH and called directly.
+option(LUMINEX_DISPATCH "One x86-64 binary that picks its network kernels for the CPU at run time" OFF)
+if(LUMINEX_DISPATCH)
+    if(NOT CMAKE_SYSTEM_PROCESSOR MATCHES "^(x86_64|AMD64|amd64|x64)$")
+        message(FATAL_ERROR "LUMINEX_DISPATCH builds for x86-64, not ${CMAKE_SYSTEM_PROCESSOR}")
+    endif()
+    if(MSVC AND NOT CMAKE_CXX_COMPILER_ID STREQUAL "Clang")
+        message(FATAL_ERROR "LUMINEX_DISPATCH needs GCC, Clang or clang-cl (-T ClangCL): the kernel files take GCC-style instruction-set flags")
+    endif()
+endif()
+
 # Detect CPU features
 include(CheckCXXCompilerFlag)
 
@@ -57,12 +75,16 @@ if(MSVC)
     # The probe's HAS_ names never matched either, so every accepted flag was
     # added: MSVC kept the last valid one (AVX2) and clang-cl, whose last one
     # (SSE4_2) is not a valid x64 level, dropped them all and built for SSE2.
-    # Release builds pass AVX2 (modern) or SSE2 (compatibility).
+    # The release build is LUMINEX_DISPATCH, which takes no /arch.
     set(LUMINEX_MSVC_ARCH "AVX2" CACHE STRING "/arch level for MSVC and clang-cl: AVX512, AVX2 or SSE2 (the x64 default, no flag)")
     if(NOT LUMINEX_MSVC_ARCH MATCHES "^(AVX512|AVX2|SSE2)$")
         message(FATAL_ERROR "LUMINEX_MSVC_ARCH must be AVX512, AVX2 or SSE2, not '${LUMINEX_MSVC_ARCH}'")
     endif()
-    if(NOT CMAKE_BUILD_TYPE STREQUAL "Debug" AND NOT LUMINEX_MSVC_ARCH STREQUAL "SSE2")
+    if(LUMINEX_DISPATCH)
+        # The x64 default (SSE2) with POPCNT, as the compatibility build ran:
+        # MSVC emits popcnt for __popcnt64 at any level, clang-cl only with it.
+        add_compile_options(-mpopcnt)
+    elseif(NOT CMAKE_BUILD_TYPE STREQUAL "Debug" AND NOT LUMINEX_MSVC_ARCH STREQUAL "SSE2")
         add_compile_options(/arch:${LUMINEX_MSVC_ARCH})
     endif()
 else()
@@ -79,7 +101,7 @@ else()
         # CI to x86-64-v3 (AVX2 + BMI2); LUMINEX_MARCH overrides both for
         # portable binaries. The static featurizer is built on one machine and
         # shipped to others, where a native build SIGILLs (a Hygon Zen-1 pod
-        # lacks AVX2), and the release's compatibility builds use x86-64-v2.
+        # lacks AVX2). The release builds are LUMINEX_DISPATCH: x86-64-v2 here.
         # A -march in CMAKE_CXX_FLAGS cannot do this: the options added here
         # come later on the command line and win, which is how the v6.3.0
         # "SSE4.2" Linux binary came out byte-identical to the AVX2 one.
@@ -94,12 +116,19 @@ else()
             set(_lux_march_default "native")
         endif()
         set(LUMINEX_MARCH "${_lux_march_default}" CACHE STRING "-march level (native, x86-64-v2, x86-64-v3, ...)")
-        try_add_flag(-march=${LUMINEX_MARCH})
-        string(REPLACE "-" "_" _lux_march_ok "HAS__march_${LUMINEX_MARCH}")
-        if(NOT ${_lux_march_ok} AND NOT LUMINEX_MARCH STREQUAL "native")
-            message(FATAL_ERROR "the compiler rejects -march=${LUMINEX_MARCH}")
+        # The universal build's engine runs on any x86-64-v2 CPU; its kernel
+        # files carry the higher levels (below).
+        if(LUMINEX_DISPATCH)
+            set(_lux_march "x86-64-v2")
+        else()
+            set(_lux_march "${LUMINEX_MARCH}")
         endif()
-        if(LUMINEX_MARCH STREQUAL "native")
+        try_add_flag(-march=${_lux_march})
+        string(REPLACE "-" "_" _lux_march_ok "HAS__march_${_lux_march}")
+        if(NOT ${_lux_march_ok} AND NOT _lux_march STREQUAL "native")
+            message(FATAL_ERROR "the compiler rejects -march=${_lux_march}")
+        endif()
+        if(_lux_march STREQUAL "native")
             try_add_flag(-mtune=native)
         endif()
 
@@ -109,6 +138,33 @@ else()
             add_link_options(-flto)
         endif()
     endif()
+endif()
+
+# The network: nnue.cpp, and in the universal build one kernel file per
+# instruction-set level, best first, each with the flags of its level. They
+# are compiled without LTO, so the link keeps each one's code for its own
+# level, and without FMA contraction, so every level rounds alike (the bias
+# adds are FMAs, written out: see src/nnue_kernels.inc).
+set(LUMINEX_NNUE_SOURCES src/nnue.cpp)
+if(LUMINEX_DISPATCH)
+    add_compile_definitions(LUMINEX_NNUE_DISPATCH)
+    set(_lux_k_avx512vnni -march=x86-64-v4 -mavx512vnni)
+    set(_lux_k_avx512 -march=x86-64-v4)
+    set(_lux_k_avxvnni -march=x86-64-v3 -mavxvnni)
+    set(_lux_k_avx2 -march=x86-64-v3)
+    set(_lux_k_base "")   # the engine's own level
+    if(MSVC)   # clang-cl
+        set(_lux_k_common /clang:-ffp-contract=off)
+    else()
+        set(_lux_k_common -ffp-contract=off -fno-lto)
+    endif()
+    foreach(_lux_level IN ITEMS avx512vnni avx512 avxvnni avx2 base)
+        set(_lux_src src/nnue_k_${_lux_level}.cpp)
+        set(_lux_opts ${_lux_k_${_lux_level}} ${_lux_k_common})
+        list(APPEND LUMINEX_NNUE_SOURCES ${_lux_src})
+        set_source_files_properties(${_lux_src} PROPERTIES COMPILE_OPTIONS "${_lux_opts}")
+    endforeach()
+    message(STATUS "Universal x86-64 build: the engine for x86-64-v2, network kernels for avx512vnni, avx512, avxvnni, avx2 and base")
 endif()
 
 # Source files
@@ -123,7 +179,7 @@ set(SOURCES
     src/magic.cpp
     src/tuner_params.cpp
     src/book.cpp
-    src/nnue.cpp
+    ${LUMINEX_NNUE_SOURCES}
     src/embedded_net.cpp
 )
 
@@ -140,6 +196,9 @@ set(HEADERS
     src/types.h
     src/book.h
     src/embedded_net.h
+    src/nnue.h
+    src/nnue_kernels.h
+    src/nnue_kernels.inc
 )
 
 add_executable(luminex ${SOURCES} ${HEADERS})
@@ -208,7 +267,9 @@ endif()
 # Optimize for the BUILD machine. The NNUE AVX-512/VNNI paths only compile in
 # with the right -march level; measured +12% nps on Xeon 2.6GHz (688K -> 770K).
 option(LUMINEX_NATIVE "Optimize for the build machine (-march=native)" OFF)
-if(LUMINEX_NATIVE)
+if(LUMINEX_NATIVE AND LUMINEX_DISPATCH)
+    message(FATAL_ERROR "LUMINEX_NATIVE builds for this machine, LUMINEX_DISPATCH for every x86-64 CPU: choose one")
+elseif(LUMINEX_NATIVE)
     target_compile_options(luminex PRIVATE -march=native)
 endif()
 
@@ -236,7 +297,7 @@ if(BUILD_FEATURIZER)
         src/board.cpp
         src/movegen.cpp
         src/evaluation.cpp
-        src/nnue.cpp
+        ${LUMINEX_NNUE_SOURCES}
         src/embedded_net.cpp
         src/magic.cpp
         src/transposition.cpp
@@ -255,7 +316,7 @@ if(BUILD_EVALTRACE)
         src/board.cpp
         src/movegen.cpp
         src/evaluation.cpp
-        src/nnue.cpp
+        ${LUMINEX_NNUE_SOURCES}
         src/embedded_net.cpp
         src/magic.cpp
         src/transposition.cpp
@@ -274,7 +335,7 @@ if(BUILD_LC0PACK)
         src/board.cpp
         src/movegen.cpp
         src/evaluation.cpp
-        src/nnue.cpp
+        ${LUMINEX_NNUE_SOURCES}
         src/embedded_net.cpp
         src/magic.cpp
         src/transposition.cpp

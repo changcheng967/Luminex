@@ -6,6 +6,7 @@
 #include "book.h"
 #include "spsa_params.h"
 #include <algorithm>
+#include <cctype>
 #include <chrono>
 #include <cstdarg>
 #include <format>
@@ -307,6 +308,19 @@ static void ensure_net_loaded(bool force = false) {
         safe_output("info string no NNUE network loaded, using the classical evaluation\n");
 }
 
+// luminex nnuecheck [NETFILE]: the nnuecheck command from the command line,
+// with NETFILE or the default network (the built-in one, or the file of its
+// name) loaded as NNUEFile would load it. True when every level agrees.
+bool run_nnuecheck(const std::string& net_file) {
+    g_net_option = net_file;
+    g_net_attempted = false;
+    ensure_net_loaded(true);
+    std::string report;
+    const bool ok = nnue::check_simd(report);
+    safe_output(report + "\n");
+    return ok;
+}
+
 void handle_uci() {
     init_evaluation();
     // Development builds report their build id (CMake's LUMINEX_BUILD_ID,
@@ -348,6 +362,13 @@ void handle_uci() {
     // NNUE evaluation; without a loadable net the engine uses the HCE and says so.
     safe_output("option name UseNNUE type check default true\n");
     safe_output(std::string("option name NNUEFile type string default ") + nnue::DEFAULT_NET + "\n");
+    // The universal x86-64 build picks its network kernels for the CPU; this
+    // forces a lower level, for testing (one the CPU lacks gives the best below it).
+    if (nnue::simd_dispatch()) {
+        std::string opt = "option name SimdLevel type combo default auto var auto";
+        for (const std::string& level : nnue::simd_levels()) opt += " var " + level;
+        safe_output(opt + "\n");
+    }
     // Eval parameters (self-engineered defaults)
     safe_output("option name BishopPairMG type spin default 40 min -100 max 200\n");
     safe_output("option name BishopPairEG type spin default 100 min -100 max 300\n");
@@ -624,6 +645,17 @@ void handle_setoption(const std::string& cmd) {
         g_net_attempted = false;
         ensure_net_loaded(true);
     }
+    else if (name == "SimdLevel") {
+        // The network's dense layers are rearranged for the new kernels, so
+        // no search may be reading them.
+        stop.store(true, std::memory_order_seq_cst);
+        wait_for_search_thread();
+        stop.store(false, std::memory_order_seq_cst);
+        std::string level = value;
+        std::transform(level.begin(), level.end(), level.begin(),
+                       [](unsigned char ch) { return char(std::tolower(ch)); });
+        safe_output("info string " + nnue::set_simd_level(level) + "\n");
+    }
     else if (name == "SearchDepth") { g_search_depth = std::stoi(value); }
     else if (name == "NodesPerMove") { g_nodes_per_move = std::stoi(value); }
     else if (const SPSAOption* o = find_spsa_option(name)) {
@@ -745,6 +777,16 @@ void uci_loop() {
             break;
         } else if (cmd == "d") {
             safe_output(pos.fen() + "\n");
+        } else if (cmd == "nnuecheck") {
+            // Every kernel level the CPU supports must evaluate a fixed set of
+            // games alike (nnue::check_simd); not during a search.
+            stop.store(true, std::memory_order_seq_cst);
+            wait_for_search_thread();
+            stop.store(false, std::memory_order_seq_cst);
+            ensure_net_loaded();
+            std::string report;
+            nnue::check_simd(report);
+            safe_output(report + "\n");
         } else if (cmd == "eval") {
             // Static eval of the current position (NNUE if enabled, else HCE),
             // side-to-move-relative cp. Used to validate the NNUE inference

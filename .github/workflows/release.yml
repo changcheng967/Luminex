@@ -14,64 +14,17 @@ on:
 # no more from the system than the release notes' Needs column says
 # (check-deps.py). The network is also attached on its own, for builds
 # without it and for NNUEFile.
+#
+# One binary per platform. The x86-64 ones are universal (CMake
+# LUMINEX_DISPATCH): they carry the network kernels of every instruction-set
+# level and run the best one the CPU supports, and nnuecheck (check-simd.sh)
+# fails the build unless every level the runner has evaluates alike. build.yml
+# runs the same check under Intel SDE for the levels the runners lack.
 jobs:
+  # Ubuntu 22.04 with libstdc++ and libgcc linked in, so the binary runs on
+  # glibc 2.35 and newer. gcc-13 from the toolchain PPA.
   build-linux:
-    runs-on: ubuntu-latest
-    strategy:
-      matrix:
-        include:
-          - arch: modern
-            cmake_flags: -DLUMINEX_MARCH=x86-64-v3
-            level: avx2
-            suffix: linux-x86-64-modern
-          - arch: compat
-            cmake_flags: -DLUMINEX_MARCH=x86-64-v2
-            level: baseline
-            suffix: linux-x86-64
-    steps:
-    - uses: actions/checkout@v5
-    - name: Install dependencies
-      run: sudo apt-get update && sudo apt-get install -y ninja-build
-    - name: Fetch the network
-      run: bash .github/scripts/fetch-net.sh
-    - name: Configure
-      run: cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DCI=ON ${{ matrix.cmake_flags }} -DLUMINEX_EMBED_PINNED=ON
-    - name: Build
-      run: cmake --build build --config Release
-    - name: Check instruction set
-      run: bash .github/scripts/check-isa.sh build/luminex ${{ matrix.level }}
-    - name: Check the built-in network
-      run: bash .github/scripts/check-net.sh build/luminex
-    - name: Package
-      run: |
-        strip build/luminex
-        chmod +x build/luminex
-        mv build/luminex luminex-${{ matrix.suffix }}
-    - name: Check what it needs from the system
-      shell: bash
-      run: |
-        py=python3; [ "$RUNNER_OS" = Windows ] && py=python
-        "$py" .github/scripts/check-deps.py luminex-${{ matrix.suffix }} luminex-${{ matrix.suffix }}
-    - uses: actions/upload-artifact@v4
-      with:
-        name: luminex-${{ matrix.suffix }}
-        path: luminex-${{ matrix.suffix }}
-
-  # glibc-2.35 builds for older hosts (Ubuntu 22.04 and its kind), as build.yml
-  # makes for the development builds: the ubuntu-latest binaries above need
-  # glibc 2.38 and GLIBCXX 3.4.32. gcc-13 on the 22.04 image, libstdc++ and
-  # libgcc linked statically, both instruction-set levels.
-  build-linux-legacy:
     runs-on: ubuntu-22.04
-    strategy:
-      matrix:
-        include:
-          - suffix: linux-x86-64-glibc235-modern
-            march: x86-64-v3
-            level: avx2
-          - suffix: linux-x86-64-glibc235
-            march: x86-64-v2
-            level: baseline
     steps:
     - uses: actions/checkout@v5
     - name: Install dependencies
@@ -81,27 +34,29 @@ jobs:
     - name: Fetch the network
       run: bash .github/scripts/fetch-net.sh
     - name: Configure
-      run: cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DCI=ON -DCMAKE_CXX_COMPILER=g++-13 -DLUMINEX_MARCH=${{ matrix.march }} -DCMAKE_CXX_FLAGS="-static-libstdc++ -static-libgcc" -DLUMINEX_EMBED_PINNED=ON
+      run: cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DCI=ON -DCMAKE_CXX_COMPILER=g++-13 -DLUMINEX_DISPATCH=ON -DCMAKE_CXX_FLAGS="-static-libstdc++ -static-libgcc" -DLUMINEX_EMBED_PINNED=ON
     - name: Build
       run: cmake --build build --config Release
     - name: Check instruction set
-      run: bash .github/scripts/check-isa.sh build/luminex ${{ matrix.level }}
+      run: bash .github/scripts/check-isa.sh build/luminex universal
     - name: Check the built-in network
       run: bash .github/scripts/check-net.sh build/luminex
+    - name: Check the kernel levels agree
+      run: bash .github/scripts/check-simd.sh build/luminex
     - name: Package
       run: |
         strip build/luminex
         chmod +x build/luminex
-        mv build/luminex luminex-${{ matrix.suffix }}
+        mv build/luminex luminex-linux-x86-64
     - name: Check what it needs from the system
       shell: bash
       run: |
         py=python3; [ "$RUNNER_OS" = Windows ] && py=python
-        "$py" .github/scripts/check-deps.py luminex-${{ matrix.suffix }} luminex-${{ matrix.suffix }}
+        "$py" .github/scripts/check-deps.py luminex-linux-x86-64 luminex-linux-x86-64
     - uses: actions/upload-artifact@v4
       with:
-        name: luminex-${{ matrix.suffix }}
-        path: luminex-${{ matrix.suffix }}
+        name: luminex-linux-x86-64
+        path: luminex-linux-x86-64
 
   build-windows:
     runs-on: windows-2022  # pin: windows-latest image no longer exposes a VS instance to cmake
@@ -111,44 +66,36 @@ jobs:
     defaults:
       run:
         shell: cmd
-    strategy:
-      matrix:
-        include:
-          - arch: modern
-            cmake_flags: -T ClangCL -DLUMINEX_MSVC_ARCH=AVX2
-            level: avx2
-            suffix: windows-x86-64-modern
-          - arch: compat
-            cmake_flags: -DLUMINEX_MSVC_ARCH=SSE2
-            level: baseline
-            suffix: windows-x86-64
     steps:
     - uses: actions/checkout@v5
     - name: Fetch the network
       shell: bash
       run: bash .github/scripts/fetch-net.sh
     - name: Configure
-      run: cmake -B build -G "Visual Studio 17 2022" -A x64 ${{ matrix.cmake_flags }} -DLUMINEX_EMBED_PINNED=ON
+      run: cmake -B build -G "Visual Studio 17 2022" -A x64 -T ClangCL -DLUMINEX_DISPATCH=ON -DLUMINEX_EMBED_PINNED=ON
     - name: Build
       run: cmake --build build --config Release
     - name: Check instruction set
       shell: bash
-      run: bash .github/scripts/check-isa.sh build/Release/luminex.exe ${{ matrix.level }}
+      run: bash .github/scripts/check-isa.sh build/Release/luminex.exe universal
     - name: Check the built-in network
       shell: bash
       run: bash .github/scripts/check-net.sh build/Release/luminex.exe
+    - name: Check the kernel levels agree
+      shell: bash
+      run: bash .github/scripts/check-simd.sh build/Release/luminex.exe
     - name: Package
       shell: bash
-      run: mv build/Release/luminex.exe luminex-${{ matrix.suffix }}.exe
+      run: mv build/Release/luminex.exe luminex-windows-x86-64.exe
     - name: Check what it needs from the system
       shell: bash
       run: |
         py=python3; [ "$RUNNER_OS" = Windows ] && py=python
-        "$py" .github/scripts/check-deps.py luminex-${{ matrix.suffix }}.exe luminex-${{ matrix.suffix }}.exe
+        "$py" .github/scripts/check-deps.py luminex-windows-x86-64.exe luminex-windows-x86-64.exe
     - uses: actions/upload-artifact@v4
       with:
-        name: luminex-${{ matrix.suffix }}
-        path: luminex-${{ matrix.suffix }}.exe
+        name: luminex-windows-x86-64
+        path: luminex-windows-x86-64.exe
 
   build-macos:
     runs-on: macos-latest
@@ -182,7 +129,7 @@ jobs:
         path: luminex-macos-arm64
 
   upload-assets:
-    needs: [build-linux, build-linux-legacy, build-windows, build-macos]
+    needs: [build-linux, build-windows, build-macos]
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -212,11 +159,7 @@ jobs:
         net_name=$(sed -n 's#^url=.*/##p' .github/scripts/fetch-net.sh)
         [ -f "net/$net_name" ] || { echo "net/$net_name is missing"; exit 1; }
         gh release upload "$TAG" \
-          artifacts/luminex-linux-x86-64-modern/luminex-linux-x86-64-modern \
           artifacts/luminex-linux-x86-64/luminex-linux-x86-64 \
-          artifacts/luminex-linux-x86-64-glibc235-modern/luminex-linux-x86-64-glibc235-modern \
-          artifacts/luminex-linux-x86-64-glibc235/luminex-linux-x86-64-glibc235 \
-          artifacts/luminex-windows-x86-64-modern/luminex-windows-x86-64-modern.exe \
           artifacts/luminex-windows-x86-64/luminex-windows-x86-64.exe \
           artifacts/luminex-macos-arm64/luminex-macos-arm64 \
           "net/$net_name" \

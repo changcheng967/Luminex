@@ -1179,3 +1179,16 @@ for a knowledge hole the forensics name; none so far.
 first: test 82 (04q against CEB7B240), the margin tune, its values SPRT,
 the ladder, the tag. Gate 1 needs the box for minutes, so it fits any box
 session after that.
+
+## 22. The arm64 digest is expected to change (PR #81, Nov 15)
+
+nnuecheck's digest is the same at every x86-64 level and in OpenBench's
+build (768402b4a2534710 with gen768s_03q), and different on Apple silicon
+(b6c6458504d1b038). One known path explains it. ARM builds run the
+portable child update, which clamps parent + add0 - sub0 once, while every
+x86 level saturates after each row; the two agree except where a lane
+saturates. The ARM phase (NEON saturating adds and subtracts, one row at a
+time) will make arm64 saturate as x86 does, and its digest will then become
+x86's. That change is the fix landing, not a regression: its check is the
+arm64 digest equalling x86's. Expect arm64 evaluations to move only in the
+positions where a lane saturates. (Numbered after #77's sections 20 and 21.)

@@ -5,13 +5,13 @@
 // nnue/luminex_nnue_train.py (header LNN1 + float32 weights).
 #pragma once
 #include "luminex.h"
+#include <string>
+#include <vector>
 
 namespace luminex::nnue {
 
-// Compile-time cap on L1 width (the runtime L1, read from the net, may be smaller).
-// Bumped 512->1024 to allow L1=1024 nets (raw-strength push toward 3000 Elo). The
-// accumulator buffers (float [2][NNUE_L1_MAX]) and h_i8/h2 stacks are sized from this.
-inline constexpr int NNUE_L1_MAX = 1024;
+// The cap on L1 width (NNUE_L1_MAX) and the kernels' interface are in
+// nnue_kernels.h.
 
 // Network shipped with each release, by its real name: CMake reads it from the
 // file name of the asset .github/scripts/fetch-net.sh pins, so the default
@@ -69,5 +69,29 @@ void update(Position& pos, Move m, Piece moved, PieceType captured);
 // Null move: board unchanged, so the child accumulator is just a copy of the parent's.
 // Call from do_null_move AFTER st_ advance.
 void copy_for_null(Position& pos);
+
+// ---- SIMD kernel levels ----
+// Whether the binary picks its kernels at run time (the universal x86-64
+// build, CMake LUMINEX_DISPATCH). Only then do the levels below offer a choice.
+bool simd_dispatch();
+
+// The kernels' instruction-set level in use: avx512vnni, avx512, avxvnni,
+// avx2 or base on x86-64; dotprod or base on ARM.
+const char* simd_level();
+
+// The levels this build carries, best first (the values of the SimdLevel
+// option after auto).
+std::vector<std::string> simd_levels();
+
+// The SimdLevel option: "auto" for the best level the CPU supports, or a
+// level's name, which gives the best supported level at or below it. Returns
+// what to report: the level now in use, and why if it is not the one asked for.
+std::string set_simd_level(const std::string& request);
+
+// nnuecheck: the evaluations of a fixed set of games under every level the
+// CPU supports, which must agree exactly, and their digest for comparing
+// builds. Fills report (lines, the last "nnuecheck ok" or "nnuecheck FAILED:
+// ..."); false on a difference or without an int8 network.
+bool check_simd(std::string& report);
 
 } // namespace luminex::nnue

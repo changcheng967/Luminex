@@ -112,19 +112,28 @@ Latest release: [github.com/changcheng967/Luminex/releases](https://github.com/c
 
 | Platform | Binary | CPU | Needs |
 |---|---|---|---|
-| Linux | `luminex-linux-x86-64-modern` | AVX2 (x86-64-v3) | Ubuntu 24.04 or newer (glibc 2.38, GCC 13's libstdc++) |
-| Linux | `luminex-linux-x86-64` | SSE4.2, POPCNT (x86-64-v2) | Ubuntu 24.04 or newer (glibc 2.38, GCC 13's libstdc++) |
-| Linux | `luminex-linux-x86-64-glibc235-modern` | AVX2 (x86-64-v3) | Ubuntu 22.04 or newer (glibc 2.35) |
-| Linux | `luminex-linux-x86-64-glibc235` | SSE4.2, POPCNT (x86-64-v2) | Ubuntu 22.04 or newer (glibc 2.35) |
-| Windows | `luminex-windows-x86-64-modern.exe` | AVX2 | nothing to install |
-| Windows | `luminex-windows-x86-64.exe` | POPCNT | nothing to install |
+| Linux | `luminex-linux-x86-64` | any x86-64 with SSE4.2 and POPCNT (x86-64-v2) | Ubuntu 22.04 or newer (glibc 2.35) |
+| Windows | `luminex-windows-x86-64.exe` | any x86-64 with POPCNT | nothing to install |
 | macOS | `luminex-macos-arm64` | Apple silicon | macOS 13.3 or newer |
 
-Take a `-modern` build unless the CPU lacks AVX2 (Intel Core since 2013, AMD
-since 2015). CI reads what every binary needs from its headers and fails a
-build that needs more than its row (`.github/scripts/check-deps.py`). Every build runs the network: the modern
-ones with AVX2 kernels, the others with a portable int8 path (NEON dot-product
-on Apple silicon).
+One binary per platform. The x86-64 binaries carry the network kernels of
+every instruction-set level and use the best one the CPU supports, found at
+startup; the `info string` that reports the network ends with it (`SIMD level
+avxvnni`):
+
+| Level | CPUs | Network kernels |
+|---|---|---|
+| `avx512vnni` | AVX-512 with VNNI: Intel Cascade Lake, Ice Lake, Sapphire Rapids and later Xeons, AMD Zen 4 and later | AVX-512 lanes, `VPDPBUSD` dense layers |
+| `avx512` | AVX-512 without VNNI: Skylake-SP and Skylake-X | AVX-512 lanes, AVX2 dense layers |
+| `avxvnni` | AVX2 with AVX-VNNI: Intel Alder Lake and later (Core Ultra included) | AVX2, dense layers on VEX `VPDPBUSD` |
+| `avx2` | AVX2 (x86-64-v3): Intel since Haswell (2013), AMD since Excavator (2015) | AVX2 |
+| `base` | every other x86-64 | SSE2; the dense layers on SSSE3's `pmaddubsw` on Linux (whose base is x86-64-v2) |
+
+Every level computes the same evaluation, bit for bit; CI checks it on each
+binary (`nnuecheck`, under Intel SDE for CPUs the runners lack). CI also
+reads what every binary needs from its headers and fails a build that needs
+more than its row (`.github/scripts/check-deps.py`). On Apple silicon the
+network runs on NEON dot-product kernels.
 
 Every release binary carries its network inside it (v6.6.0:
 `luminex_gen768r_06q_i8.nnue`; main and the development builds:
@@ -162,6 +171,7 @@ go movetime 1000
 | `Ponder` | false | Allow pondering (`go ponder` / `ponderhit`) |
 | `UseNNUE` | true | NNUE evaluation (falls back to the HCE when no network loads) |
 | `NNUEFile` | `luminex_gen768s_03q_i8.nnue` | Network file to load; the default, the shipped network's own name, selects the built-in network |
+| `SimdLevel` | auto | x86-64 release binaries only: the network kernels' instruction-set level, `auto` for the best the CPU supports, or a lower one for testing (`avx512vnni`, `avx512`, `avxvnni`, `avx2`, `base`; one the CPU lacks gives the best below it). Every level evaluates alike |
 | `Contempt` | 0 | Draw avoidance (centipawns) |
 | `Move Overhead` | 30 | Time-management safety margin per move (ms) |
 | `TimeSchedule` | 2 | Clock schedule with an increment: 0 = the old formula, 1 and 2 = schedules solved by dynamic programming (2: early moves are worth more) |
@@ -197,7 +207,7 @@ Two interchangeable evaluation functions, selected at runtime with `UseNNUE`:
     SCReLU activations.
   - Dense tail: int8 16 → 32 → 1 layers, one per output bucket (eight, chosen
     by the number of pieces on the board). On AVX-512 VNNI hardware it runs on
-    `VPDPBUSD` with a batched L3.
+    `VPDPBUSD` with a batched L3, on AVX-VNNI hardware on its VEX form.
   - The accumulator is updated lazily. A move only records its change, and the
     change is applied when a position is actually evaluated (many nodes are
     answered by the hash table first). King moves rebuild from a per-square
@@ -321,16 +331,25 @@ cmake -B build -DCMAKE_BUILD_TYPE=Release -DLUMINEX_EMBED_PINNED=ON
 cmake --build build --config Release
 ```
 
-**Choosing the network kernels.** They are selected at compile time: AVX-512
-VNNI (`__AVX512VNNI__`), AVX2, NEON dot-product on ARM, or a portable int8
-path elsewhere.
-- **Default target.** CMake targets the build machine with GCC and Clang, and
-  AVX2 with MSVC.
-- **Portable binaries.** For binaries that must run on other machines, set
-  `LUMINEX_MARCH` (GCC/Clang, e.g. `x86-64-v2`) or `LUMINEX_MSVC_ARCH` (MSVC
-  and clang-cl: `AVX512`, `AVX2` or `SSE2`).
-- **Makefile.** The `Makefile` picks the AVX-512 VNNI build by itself on CPUs
-  that support it.
+**Choosing the network kernels.** The kernels (`src/nnue_kernels.inc`) are
+written once for every level: AVX-512 VNNI, AVX-512, AVX-VNNI, AVX2, a
+baseline, and NEON dot-product on ARM.
+- **Default target.** A build has the one level its compiler targets, called
+  directly: the build machine's with GCC and Clang, AVX2 with MSVC.
+- **One binary for every x86-64 CPU** (the releases): `-DLUMINEX_DISPATCH=ON`
+  compiles the engine for x86-64-v2 (x86-64 with POPCNT under clang-cl) and
+  the kernels once per level, each file with its level's flags, and picks the
+  best level the CPU and its OS support at startup (`cpuid`, `xgetbv`). It
+  needs GCC, Clang or clang-cl (`-T ClangCL`).
+- **One level for other machines.** Set `LUMINEX_MARCH` (GCC/Clang, e.g.
+  `x86-64-v3`) or `LUMINEX_MSVC_ARCH` (MSVC and clang-cl: `AVX512`, `AVX2` or
+  `SSE2`).
+- **Makefile.** The `Makefile`, OpenBench's build, picks the AVX-512 VNNI build
+  by itself on CPUs that support it.
+- **Checking them.** `luminex nnuecheck [NETFILE]` (or `nnuecheck` at the UCI
+  prompt) evaluates a fixed set of games under every level the CPU supports,
+  fails on any difference, and prints a digest of the evaluations, the same
+  for every x86-64 build of a network.
 
 ## Source layout
 
@@ -345,7 +364,9 @@ src/
   evaluation.h / .cpp   hand-crafted evaluation (HCE)
   eval_feat.h, eval_fitted.h, kpk_bitbase.h   HCE features, fitted weights, KPK bitbase
   tuner_params.h / .cpp HCE material and mobility tables (148 tunable values)
-  nnue.h / .cpp         NNUE evaluation and the lazy incremental accumulator
+  nnue.h / .cpp         NNUE evaluation, the lazy incremental accumulator, kernel levels
+  nnue_kernels.h / .inc the network's SIMD kernels, written once for every level
+  nnue_k_<level>.cpp    the kernels compiled per level (LUMINEX_DISPATCH builds)
   embedded_net.h / .cpp the network built into release binaries
   search.h / .cpp       search and time management
   spsa_params.h         the SPSA-tunable search constants and their ranges

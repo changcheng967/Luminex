@@ -9,6 +9,10 @@ class Position;
 // UCI loop - main entry point
 void uci_loop();
 
+// luminex nnuecheck [NETFILE]: load NETFILE (empty: the default network) and
+// check that every SIMD kernel level evaluates alike; true when they do.
+bool run_nnuecheck(const std::string& net_file);
+
 // UCI command handlers
 void handle_uci();
 void handle_isready();
