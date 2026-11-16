@@ -13,6 +13,7 @@
 #include <cstdlib>
 #include <chrono>
 #include <cstdarg>
+#include <expected>
 #include <format>
 #include <iterator>
 #include <iostream>
@@ -572,6 +573,17 @@ void handle_go(Position& pos, const std::string& cmd) {
     launch_search_thread(pos, limits);
 }
 
+// A spin option's value as std::stoi reads it (leading blanks, a sign, digits;
+// anything after them ignored), or why it is not one.
+static std::expected<int, std::string> parse_spin(const std::string& value) {
+    errno = 0;
+    char* end = nullptr;
+    const long parsed = std::strtol(value.c_str(), &end, 10);
+    if (end == value.c_str() || errno == ERANGE || parsed > INT_MAX || parsed < INT_MIN)
+        return std::unexpected("'" + value + "' is not an integer");
+    return int(parsed);
+}
+
 void handle_setoption(const std::string& cmd) {
     std::istringstream ss(cmd);
     std::string token;
@@ -591,29 +603,28 @@ void handle_setoption(const std::string& cmd) {
         value += token;
     }
 
-    // Every option but these is a spin, read with std::stoi, which ends the engine
-    // (release builds have no exceptions) on a value that is not an int: such a
-    // value is reported and the option left as it was.
+    // Every option but these is a spin, parsed once here: a value that is not an
+    // int is reported and the option left as it was (release builds have no
+    // exceptions, so std::stoi on such a value used to end the engine).
     const bool text_option = name == "Ponder" || name == "Clear Hash" || name == "BookFile" ||
         name == "SyzygyPath" || name == "UCI_ShowWDL" || name == "UCI_LimitStrength" ||
         name == "UseNNUE" || name == "NNUEFile" || name == "SimdLevel" ||
-        name == "UCI_Chess960" || name == "Analysis";
+        name == "UCI_Chess960" || name == "Analysis" || name == "UCI_AnalyseMode";
+    int v = 0;
     if (!text_option) {
-        // Accept exactly what std::stoi accepts (a leading integer, as strtol reads it)
-        errno = 0;
-        char* end = nullptr;
-        const long parsed = std::strtol(value.c_str(), &end, 10);
-        if (end == value.c_str() || errno == ERANGE || parsed > INT_MAX || parsed < INT_MIN) {
-            safe_output("info string option " + name + ": '" + value + "' is not an integer; left unchanged\n");
+        const std::expected<int, std::string> spin = parse_spin(value);
+        if (!spin) {
+            safe_output("info string option " + name + ": " + spin.error() + "; left unchanged\n");
             return;
         }
+        v = *spin;
     }
 
     if (name == "SyzygyPath" || name == "Skill Level" ||
         name == "UCI_Elo" || name == "UCI_LimitStrength" ||
         name == "UCI_Chess960" || name == "Analysis") { /* accepted — UCI GUI/bot compatibility */ }
     else if (name == "MultiPV") {
-        int n = std::stoi(value);
+        int n = v;
         if (n < 1) n = 1;
         if (n > 256) n = 256;
         params.multi_pv = n;
@@ -622,22 +633,22 @@ void handle_setoption(const std::string& cmd) {
         params.show_wdl = (value == "true");
     }
     else if (name == "Move Overhead") {
-        int ov = std::stoi(value);
+        int ov = v;
         if (ov < 0) ov = 0;
         if (ov > 5000) ov = 5000;
         params.move_overhead_ms = ov;
     }
     else if (name == "TimeSchedule") {
-        params.time_schedule = std::clamp(std::stoi(value), 0, 2);
+        params.time_schedule = std::clamp(v, 0, 2);
     }
     else if (name == "TimeStability") {
-        params.time_stability = std::clamp(std::stoi(value), 0, 1);
+        params.time_stability = std::clamp(v, 0, 1);
     }
     else if (name == "TimeZeroInc") {
-        params.time_zero_inc = std::clamp(std::stoi(value), 0, 1);
+        params.time_zero_inc = std::clamp(v, 0, 1);
     }
     else if (name == "TimeMovesToGo") {
-        params.time_moves_to_go = std::clamp(std::stoi(value), 0, 1);
+        params.time_moves_to_go = std::clamp(v, 0, 1);
     }
     else if (name == "UseNNUE") {
         g_use_nnue = (value == "true");
@@ -661,43 +672,43 @@ void handle_setoption(const std::string& cmd) {
                        [](unsigned char ch) { return char(std::tolower(ch)); });
         safe_output("info string " + nnue::set_simd_level(level) + "\n");
     }
-    else if (name == "SearchDepth") { g_search_depth = std::stoi(value); }
-    else if (name == "NodesPerMove") { g_nodes_per_move = std::stoi(value); }
+    else if (name == "SearchDepth") { g_search_depth = v; }
+    else if (name == "NodesPerMove") { g_nodes_per_move = v; }
     else if (const SPSAOption* o = find_spsa_option(name)) {
-        SPSAParams::get().*o->field = std::clamp(std::stoi(value), o->min, o->max);
+        SPSAParams::get().*o->field = std::clamp(v, o->min, o->max);
         if (o->field == &SPSAParams::lmr_scale_quiet)
             init_search_params();  // the reduction table is derived from it
     }
     else if (name == "Contempt" || name == "UCI_AnalyseMode") {
         if (name == "Contempt") {
-            params.contempt = std::stoi(value);
+            params.contempt = v;
         }
-    } else if (name == "BishopPairMG") { g_eval_params.bishop_pair_mg = std::stoi(value);
-    } else if (name == "BishopPairEG") { g_eval_params.bishop_pair_eg = std::stoi(value);
-    } else if (name == "RookOpenMG") { g_eval_params.rook_open_mg = std::stoi(value);
-    } else if (name == "RookOpenEG") { g_eval_params.rook_open_eg = std::stoi(value);
-    } else if (name == "RookSemiOpenMG") { g_eval_params.rook_semi_open_mg = std::stoi(value);
-    } else if (name == "RookSemiOpenEG") { g_eval_params.rook_semi_open_eg = std::stoi(value);
-    } else if (name == "Rook7thMG") { g_eval_params.rook_7th_mg = std::stoi(value);
-    } else if (name == "Rook7thEG") { g_eval_params.rook_7th_eg = std::stoi(value);
-    } else if (name == "PawnShieldCenter") { g_eval_params.pawn_shield_center = std::stoi(value);
-    } else if (name == "PawnShieldKnight") { g_eval_params.pawn_shield_knight = std::stoi(value);
-    } else if (name == "PawnShieldRook") { g_eval_params.pawn_shield_rook = std::stoi(value);
-    } else if (name == "PawnStorm") { g_eval_params.pawn_storm = std::stoi(value);
-    } else if (name == "OpenFilePenaltyMG") { g_eval_params.open_file_penalty_mg = std::stoi(value);
-    } else if (name == "OpenFilePenaltyEG") { g_eval_params.open_file_penalty_eg = std::stoi(value);
-    } else if (name == "OutpostKnightMG") { g_eval_params.outpost_knight_mg = std::stoi(value);
-    } else if (name == "OutpostKnightEG") { g_eval_params.outpost_knight_eg = std::stoi(value);
-    } else if (name == "OutpostBishopMG") { g_eval_params.outpost_bishop_mg = std::stoi(value);
-    } else if (name == "OutpostBishopEG") { g_eval_params.outpost_bishop_eg = std::stoi(value);
-    } else if (name == "HangingPawnMG") { g_eval_params.hanging_pawn_mg = std::stoi(value);
-    } else if (name == "HangingPawnEG") { g_eval_params.hanging_pawn_eg = std::stoi(value);
-    } else if (name == "FarKnightMG") { g_eval_params.far_knight_mg = std::stoi(value);
-    } else if (name == "FarKnightEG") { g_eval_params.far_knight_eg = std::stoi(value);
-    } else if (name == "FarBishopMG") { g_eval_params.far_bishop_mg = std::stoi(value);
-    } else if (name == "FarBishopEG") { g_eval_params.far_bishop_eg = std::stoi(value);
+    } else if (name == "BishopPairMG") { g_eval_params.bishop_pair_mg = v;
+    } else if (name == "BishopPairEG") { g_eval_params.bishop_pair_eg = v;
+    } else if (name == "RookOpenMG") { g_eval_params.rook_open_mg = v;
+    } else if (name == "RookOpenEG") { g_eval_params.rook_open_eg = v;
+    } else if (name == "RookSemiOpenMG") { g_eval_params.rook_semi_open_mg = v;
+    } else if (name == "RookSemiOpenEG") { g_eval_params.rook_semi_open_eg = v;
+    } else if (name == "Rook7thMG") { g_eval_params.rook_7th_mg = v;
+    } else if (name == "Rook7thEG") { g_eval_params.rook_7th_eg = v;
+    } else if (name == "PawnShieldCenter") { g_eval_params.pawn_shield_center = v;
+    } else if (name == "PawnShieldKnight") { g_eval_params.pawn_shield_knight = v;
+    } else if (name == "PawnShieldRook") { g_eval_params.pawn_shield_rook = v;
+    } else if (name == "PawnStorm") { g_eval_params.pawn_storm = v;
+    } else if (name == "OpenFilePenaltyMG") { g_eval_params.open_file_penalty_mg = v;
+    } else if (name == "OpenFilePenaltyEG") { g_eval_params.open_file_penalty_eg = v;
+    } else if (name == "OutpostKnightMG") { g_eval_params.outpost_knight_mg = v;
+    } else if (name == "OutpostKnightEG") { g_eval_params.outpost_knight_eg = v;
+    } else if (name == "OutpostBishopMG") { g_eval_params.outpost_bishop_mg = v;
+    } else if (name == "OutpostBishopEG") { g_eval_params.outpost_bishop_eg = v;
+    } else if (name == "HangingPawnMG") { g_eval_params.hanging_pawn_mg = v;
+    } else if (name == "HangingPawnEG") { g_eval_params.hanging_pawn_eg = v;
+    } else if (name == "FarKnightMG") { g_eval_params.far_knight_mg = v;
+    } else if (name == "FarKnightEG") { g_eval_params.far_knight_eg = v;
+    } else if (name == "FarBishopMG") { g_eval_params.far_bishop_mg = v;
+    } else if (name == "FarBishopEG") { g_eval_params.far_bishop_eg = v;
     } else if (name == "Threads") {
-        int t = std::stoi(value);
+        int t = v;
         if (t < 1) t = 1;
         if (t > 64) t = 64;
         num_threads = t;
@@ -713,10 +724,8 @@ void handle_setoption(const std::string& cmd) {
             g_book.close();
         }
     } else if (name == "Hash") {
-        if (!value.empty()) {
-            size_t hash_size = std::stoi(value);
-            TT.resize(hash_size);
-        }
+        // The declared bounds: a negative value used to wrap to an enormous size.
+        TT.resize(size_t(std::clamp(v, 1, 1048576)));
     }
 }
 

@@ -1458,7 +1458,6 @@ int main(int argc, char** argv) {
     }
 
     luminex::init_magic_bitboards();   // attack tables (set()/eval depend on these)
-    luminex::init_line_tables();       // BetweenBB/LineBB for pin detection
     luminex::init_zobrist();
     luminex::init_evaluation();
     luminex::init_coefs();

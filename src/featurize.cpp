@@ -441,7 +441,6 @@ int main(int argc, char** argv) {
     }
 
     init_magic_bitboards();
-    init_line_tables();
     if (fen_eval) {
         // --input / --output read and write files directly instead of stdin/stdout.
         if (in_path && *in_path && !std::freopen(in_path, "rb", stdin)) { std::perror(in_path); return 1; }
@@ -451,9 +450,6 @@ int main(int argc, char** argv) {
     }
 
     if (!stream_mode) mkdir(out_dir, 0755);   // create output dir if missing (fopen "wb" won't)
-    init_line_tables();   // CRITICAL: populates BetweenBB/LineBB; without it pin detection
-                          // fails and generate<GEN_LEGAL> returns illegal moves (the C featurizer
-                          // would then emit wrong move indices on any pinned position).
 
     // Load the frame. For a FILE we mmap it (lazy page-in -> low RAM, fits in 16 GB,
     // lets us test on a small box); for stdin (pipe, e.g. the C500's `xz -dc | featurize`)

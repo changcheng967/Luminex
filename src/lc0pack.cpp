@@ -442,7 +442,6 @@ int main(int argc, char** argv) {
     }
     if (inputs.empty() || !out_path) { fprintf(stderr, "usage: lc0pack --out frame.raw [--threads N] tars...\n"); return 2; }
     init_magic_bitboards();
-    init_line_tables();
     init_maps();
     init_move_table();
 

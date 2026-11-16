@@ -2,6 +2,8 @@
 
 #include "types.h"
 #include <algorithm>
+#include <array>
+#include <bit>      // std::countr_zero, std::countl_zero, std::popcount (C++20)
 #include <cstdint>
 #include <utility>  // std::to_underlying (C++23)
 
@@ -78,16 +80,11 @@ constexpr Bitboard BB_CORNERS = BB_SQUARES[A1] | BB_SQUARES[H1] | BB_SQUARES[A8]
 constexpr Bitboard square_bb(Square s) {
     return (s >= 0 && s < 64) ? BB_SQUARES[s] : BB_EMPTY;
 }
-#if defined(_MSC_VER)
-#include <intrin.h>
-inline Square lsb(Bitboard b) { unsigned long idx; _BitScanForward64(&idx, b); return static_cast<Square>(idx); }
-inline Square msb(Bitboard b) { unsigned long idx; _BitScanReverse64(&idx, b); return static_cast<Square>(idx); }
-inline int popcount(Bitboard b) { return static_cast<int>(__popcnt64(b)); }
-#else
-constexpr Square lsb(Bitboard b) { return static_cast<Square>(__builtin_ctzll(b)); }
-constexpr Square msb(Bitboard b) { return static_cast<Square>(63 - __builtin_clzll(b)); }
-constexpr int popcount(Bitboard b) { return static_cast<int>(__builtin_popcountll(b)); }
-#endif
+// Bit scans and counts from <bit>: constexpr on every compiler, and one
+// instruction each with BMI1 and POPCNT (tzcnt, lzcnt, popcnt; x86-64-v3).
+constexpr Square lsb(Bitboard b) { return static_cast<Square>(std::countr_zero(b)); }
+constexpr Square msb(Bitboard b) { return static_cast<Square>(63 - std::countl_zero(b)); }
+constexpr int popcount(Bitboard b) { return std::popcount(b); }
 constexpr Bitboard square_bb(File f, Rank r) { return BB_SQUARES[make_square(f, r)]; }
 constexpr Bitboard rank_bb(Rank r) { return BB_RANKS[r]; }
 constexpr Bitboard file_bb(File f) { return BB_FILES[f]; }
@@ -139,21 +136,26 @@ constexpr Bitboard king_attacks_bb(Square s) {
          | ((b << 1) & ~BB_FILE_A) | ((b >> 1) & ~BB_FILE_H);
 }
 
-// Precomputed line and between tables
-extern Bitboard LineBB[64][64];
-extern Bitboard BetweenBB[64][64];
+// The squares strictly between two squares on one rank, file or diagonal
+// (empty for any other pair), built at compile time: there is no init call to
+// forget (a featurizer that skipped one generated illegal moves on pins).
+inline constexpr std::array<std::array<Bitboard, 64>, 64> BetweenBB = [] {
+    std::array<std::array<Bitboard, 64>, 64> t{};
+    for (int s1 = 0; s1 < 64; ++s1)
+        for (int s2 = 0; s2 < 64; ++s2) {
+            const int df = s2 % 8 - s1 % 8, dr = s2 / 8 - s1 / 8;
+            const int adf = df < 0 ? -df : df, adr = dr < 0 ? -dr : dr;
+            if ((df == 0 && dr == 0) || (df != 0 && dr != 0 && adf != adr)) continue;
+            const int step = ((dr > 0) - (dr < 0)) * 8 + ((df > 0) - (df < 0));
+            Bitboard b = 0;
+            for (int s = s1 + step; s != s2; s += step) b |= Bitboard(1) << s;
+            t[s1][s2] = b;
+        }
+    return t;
+}();
 
-inline Bitboard line_bb(Square s1, Square s2) {
-    return LineBB[std::to_underlying(s1)][std::to_underlying(s2)];
-}
-
-inline Bitboard between_bb(Square s1, Square s2) {
+constexpr Bitboard between_bb(Square s1, Square s2) {
     return BetweenBB[std::to_underlying(s1)][std::to_underlying(s2)];
-}
-
-// Check if two squares are aligned
-inline bool aligned(Square s1, Square s2, Square s3) {
-    return LineBB[std::to_underlying(s1)][std::to_underlying(s2)] & square_bb(s3);
 }
 
 // Distance between squares
@@ -239,8 +241,5 @@ inline Bitboard bb_diag_attacks(Square s, Bitboard occupied) {
 
 // Initialize magic bitboard tables - call once at startup
 void init_magic_bitboards();
-
-// Initialize line/between tables
-void init_line_tables();
 
 } // namespace luminex

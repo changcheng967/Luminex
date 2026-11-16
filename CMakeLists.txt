@@ -284,6 +284,16 @@ endif()
 find_package(Threads REQUIRED)
 target_link_libraries(luminex PRIVATE Threads::Threads)
 
+# A crash prints the crashing thread's stack (std::stacktrace). Off in every
+# release; libstdc++ keeps <stacktrace> in libstdc++exp (GCC 14 and later).
+option(LUMINEX_STACKTRACE "Print a stack trace when the engine crashes (debugging aid)" OFF)
+if(LUMINEX_STACKTRACE)
+    target_compile_definitions(luminex PRIVATE LUMINEX_STACKTRACE)
+    if(NOT MSVC)
+        target_link_libraries(luminex PRIVATE stdc++exp)
+    endif()
+endif()
+
 # === Tuner target ===
 option(BUILD_FEATURIZER "Build Game-Pack NNUE featurizer" OFF)
 option(BUILD_EVALTRACE "Build HCE eval trace tool" OFF)
