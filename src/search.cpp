@@ -238,6 +238,11 @@ inline int combined_history(const SearchWorker* w, const Stack* ss, Piece pc, Sq
 }
 
 inline Value eval_cached(const Position& pos) {
+    // Known endgames are taken as they are: no cache, and no correction, whose
+    // hashed keys would add position-dependent noise to the mating gradient
+    Value known;
+    if (known_endgame(pos, known)) return known;
+
     uint64_t key = pos.key();
     uint32_t idx = uint32_t(key) & (EVAL_CACHE_SIZE - 1);
 
@@ -445,9 +450,14 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
     // what stand-pat decisions see.
     Value eval = VALUE_ZERO;
     Value raw_eval = VALUE_ZERO;
+    Value known_value = VALUE_ZERO;
+    const bool known_eg = !in_check && known_endgame(pos, known_value);
 
     if (!in_check) {
-        if (tt_found && tte->eval() != VALUE_INFINITE) {
+        if (known_eg) {
+            // A known endgame's score, without correction (see eval_cached)
+            raw_eval = known_value;
+        } else if (tt_found && tte->eval() != VALUE_INFINITE) {
             // Stored static eval (already correction-adjusted at store time)
             raw_eval = tte->eval();
         } else {
@@ -473,8 +483,10 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
         }
 
         // Draw-clock damping: a decisive eval counts for less as the
-        // 50-move draw approaches.
-        eval = pos.halfmove_clock() > 0
+        // 50-move draw approaches. Not in a known endgame: there it scales the
+        // whole known-win score, so one ply of leaf depth moves it by more than
+        // the mating gradient does, and the search follows leaf depth instead.
+        eval = pos.halfmove_clock() > 0 && !known_eg
              ? Value(raw_eval * (200 - pos.halfmove_clock()) / 200) : raw_eval;
 
         if (eval >= beta) {
@@ -761,19 +773,25 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
     Value eval = VALUE_ZERO;
     Value tt_store_eval = VALUE_INFINITE;
     int eval_uncertainty = 0;  // Magnitude of correction history (measures eval unreliability)
+    // A known endgame (a bare king on one side) is scored as it is: no damping,
+    // no correction, and it teaches the correction history nothing
+    bool known_eg = false;
     if (!pos.is_check()) {
+        Value known_value;
+        known_eg = known_endgame(pos, known_value);
         // The stored TT eval (correction-adjusted at store time) skips the
         // eval-cache probe and the NNUE call; VALUE_INFINITE marks entries
         // saved without one (root stores, in-check nodes)
-        tt_store_eval = (found && tte->eval() != VALUE_INFINITE) ? tte->eval() : eval_cached(pos);
+        tt_store_eval = known_eg ? known_value
+                      : (found && tte->eval() != VALUE_INFINITE) ? tte->eval() : eval_cached(pos);
         // Draw-clock damping: decisive evals count for less as the 50-move
         // draw nears. Caches and the TT keep the undamped value.
-        eval = pos.halfmove_clock() > 0
+        eval = pos.halfmove_clock() > 0 && !known_eg
              ? Value(tt_store_eval * (200 - pos.halfmove_clock()) / 200) : tt_store_eval;
         // Correction history magnitude = how wrong the eval has been in similar positions.
         // High uncertainty → eval is unreliable → search should be less aggressive.
         // Low uncertainty → eval is reliable → search can be more aggressive.
-        eval_uncertainty = std::abs(get_total_correction(pos));
+        eval_uncertainty = known_eg ? 0 : std::abs(get_total_correction(pos));
     }
     ss->static_eval = eval;
 
@@ -1498,7 +1516,7 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
                 // static eval, that says the eval was too low here, so cut nodes
                 // teach the correction history too, not only fail-low ends.
                 if (!stop.load(std::memory_order_relaxed) && !ss->excluded_move && !pv_node
-                    && !pos.is_check() && !m.is_capture() && value > eval
+                    && !pos.is_check() && !m.is_capture() && value > eval && !known_eg
                     && std::abs(value) < VALUE_KNOWN_WIN && std::abs(eval) < VALUE_KNOWN_WIN
                     && depth >= 2) {
                     update_all_corrections(pos, depth, value - eval);
@@ -1806,7 +1824,7 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
         // proves the eval too high when it lies below it, and proves nothing
         // when it lies above (the true score may be anywhere beneath it).
         bool best_is_capture = best_move_found.is_capture();
-        if (!pv_node && !pos.is_check() && !best_is_capture && best_value < eval
+        if (!pv_node && !pos.is_check() && !best_is_capture && best_value < eval && !known_eg
             && abs(best_value) < VALUE_KNOWN_WIN && abs(eval) < VALUE_KNOWN_WIN
             && moves_played > 0 && depth >= 2) {
             update_all_corrections(pos, depth, best_value - eval);
