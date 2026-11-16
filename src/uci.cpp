@@ -5,8 +5,12 @@
 #include "nnue.h"
 #include "book.h"
 #include "spsa_params.h"
+#include "search_thread.h"
 #include <algorithm>
 #include <cctype>
+#include <cerrno>
+#include <climits>
+#include <cstdlib>
 #include <chrono>
 #include <cstdarg>
 #include <format>
@@ -41,11 +45,8 @@ static Position pos;
 int g_search_depth = 0;
 int g_nodes_per_move = 0;  // NodesPerMove: >0 = fixed-node search (SPSA tuning, no clock forfeits)
 
-// Search thread management
-static std::thread search_thread;
-#ifdef _WIN32
-static HANDLE native_thread_handle = nullptr;
-#endif
+// Search thread management: one search thread at a time, on a large stack (search_thread.h)
+static SearchThread search_thread;
 static std::mutex io_mutex;
 
 // Debug logging
@@ -126,47 +127,16 @@ void uci_debug_log(const char* format, ...) {
 // Forward declaration
 static void search_worker(Position pos_copy, Limits lim);
 
-// Wait for search thread to finish (handles both std::thread and native thread)
+// Wait for search thread to finish
 static void wait_for_search_thread() {
-    if (search_thread.joinable()) {
-        search_thread.join();
-    }
-#ifdef _WIN32
-    if (native_thread_handle) {
-        WaitForSingleObject(native_thread_handle, INFINITE);
-        CloseHandle(native_thread_handle);
-        native_thread_handle = nullptr;
-    }
-#endif
+    if (search_thread.joinable()) search_thread.join();
 }
 
-// Launch search with large stack (4MB on Windows, default on other platforms)
+// Launch the search on its own thread with a large stack, on every platform: the
+// default for secondary threads (1 MiB on Windows, 512 KiB on macOS) is too small
 static void launch_search_thread(Position pos_copy, Limits lim) {
-#ifdef _WIN32
-    // Wait for previous native thread if any
-    if (native_thread_handle) {
-        WaitForSingleObject(native_thread_handle, INFINITE);
-        CloseHandle(native_thread_handle);
-        native_thread_handle = nullptr;
-    }
-    auto* thread_args = new std::pair<Position, Limits>(pos_copy, lim);
-    native_thread_handle = reinterpret_cast<HANDLE>(_beginthreadex(
-        nullptr, 8 * 1024 * 1024,  // 8MB stack
-        [](void* arg) -> unsigned {
-            auto* p = static_cast<std::pair<Position, Limits>*>(arg);
-            search_worker(p->first, p->second);
-            delete p;
-            return 0;
-        },
-        thread_args, 0, nullptr));
-    if (!native_thread_handle) {
-        delete thread_args;
-        // Fallback to std::thread
-        search_thread = std::thread(search_worker, pos_copy, lim);
-    }
-#else
-    search_thread = std::thread(search_worker, pos_copy, lim);
-#endif
+    wait_for_search_thread();
+    search_thread = SearchThread([pos_copy, lim] { search_worker(pos_copy, lim); });
 }
 
 // Worker function that runs search in a separate thread
@@ -458,7 +428,7 @@ void handle_position(Position& pos, const std::string& cmd) {
     pos.set(fen);
 
     if (moves_idx != std::string::npos) {
-        std::string moves_str = cmd.substr(moves_idx + 6);
+        std::string moves_str = cmd.substr(moves_idx + 5);   // + 6 is past the end of "... moves"
         std::istringstream ss(moves_str);
         std::string move_str;
 
@@ -470,7 +440,7 @@ void handle_position(Position& pos, const std::string& cmd) {
 
             PieceType promo_pt = PT_NONE;
             if (move_str.length() > 4) {
-                switch (move_str[4]) {
+                switch (std::tolower(static_cast<unsigned char>(move_str[4]))) {
                     case 'q': promo_pt = QUEEN; break;
                     case 'r': promo_pt = ROOK; break;
                     case 'b': promo_pt = BISHOP; break;
@@ -482,7 +452,11 @@ void handle_position(Position& pos, const std::string& cmd) {
             ExtMove* legal_end = generate<GEN_LEGAL>(pos, legal_moves);
             Move matched = MOVE_NONE;
             for (ExtMove* lit = legal_moves; lit != legal_end; ++lit) {
-                if (lit->move.from() == from && lit->move.to() == to) {
+                // Castling may also be written as the king taking its own rook
+                // (e1h1, e8a8): the rook's corner is one file past g, two before c
+                const bool rook_square_castle = lit->move.is_castling()
+                    && to == Square(lit->move.to() + (file_of(lit->move.to()) == 6 ? 1 : -2));
+                if (lit->move.from() == from && (lit->move.to() == to || rook_square_castle)) {
                     if (promo_pt != PT_NONE) {
                         if (lit->move.is_promotion() && lit->move.promotion_type() == promo_pt) {
                             matched = lit->move;
@@ -507,8 +481,17 @@ void handle_position(Position& pos, const std::string& cmd) {
 }
 
 void handle_go(Position& pos, const std::string& cmd) {
-    // Wait for any previous search thread to finish
+    // A "go" while a search runs (outside the protocol, but tools send it) ends
+    // that search first: waiting for it to end by itself would block this reader
+    // for ever behind a "go infinite", so no "stop" could be read.
+    stop.store(true, std::memory_order_seq_cst);
+    g_stop_requested = true;
     wait_for_search_thread();
+    // The stop flags are cleared here, before the search thread starts, not by
+    // the search itself: a "stop" read between the launch and the search's first
+    // line would otherwise be erased, and a "go infinite" would never end.
+    stop.store(false, std::memory_order_seq_cst);
+    g_stop_requested = false;
 
     // "go perft <depth>": per-root-move node counts, then the total. No
     // search state is touched, so no TT reset and no search thread.
@@ -602,6 +585,24 @@ void handle_setoption(const std::string& cmd) {
     while (ss >> token) {
         if (!value.empty()) value += " ";
         value += token;
+    }
+
+    // Every option but these is a spin, read with std::stoi, which ends the engine
+    // (release builds have no exceptions) on a value that is not an int: such a
+    // value is reported and the option left as it was.
+    const bool text_option = name == "Ponder" || name == "Clear Hash" || name == "BookFile" ||
+        name == "SyzygyPath" || name == "UCI_ShowWDL" || name == "UCI_LimitStrength" ||
+        name == "UseNNUE" || name == "NNUEFile" || name == "SimdLevel" ||
+        name == "UCI_Chess960" || name == "Analysis";
+    if (!text_option) {
+        // Accept exactly what std::stoi accepts (a leading integer, as strtol reads it)
+        errno = 0;
+        char* end = nullptr;
+        const long parsed = std::strtol(value.c_str(), &end, 10);
+        if (end == value.c_str() || errno == ERANGE || parsed > INT_MAX || parsed < INT_MIN) {
+            safe_output("info string option " + name + ": '" + value + "' is not an integer; left unchanged\n");
+            return;
+        }
     }
 
     if (name == "SyzygyPath" || name == "Skill Level" ||
@@ -813,6 +814,9 @@ void uci_loop() {
         }
     }
 
+    // End of input: a search still running (go infinite) is stopped, not waited for
+    stop.store(true, std::memory_order_seq_cst);
+    g_stop_requested = true;
     wait_for_search_thread();
 
     if (dbglog) { fclose(dbglog); }

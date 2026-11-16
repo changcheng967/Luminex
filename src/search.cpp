@@ -2,6 +2,7 @@
 #include "luminex.h"
 #include "nnue.h"
 #include "spsa_params.h"
+#include "search_thread.h"
 #include <algorithm>
 #include <chrono>
 #include <cmath>
@@ -129,7 +130,7 @@ static SearchWorker* main_search_worker = nullptr;
 // (counter_moves / continuation_history moved into SearchWorker — see struct)
 
 // Lazy SMP helper thread management (inside anonymous namespace for internal linkage)
-static std::vector<std::thread> helper_threads;
+static std::vector<SearchThread> helper_threads;   // large stacks: search_thread.h
 static std::atomic<bool> helpers_running{false};
 
 
@@ -272,6 +273,12 @@ static std::chrono::steady_clock::time_point search_start;
 // draw at -contempt/2 for it, wherever the draw is found; set by search()
 // before any helper thread starts.
 static std::atomic<int> root_side{WHITE};
+
+// Set when the first iteration has finished: until then a clock limit does not
+// stop the search, so the move played is always one the search has scored. Depth
+// one costs a few milliseconds, inside any move overhead; without it a 1 ms budget
+// played the first legal move in generation order.
+static std::atomic<bool> depth1_done{false};
 // INVARIANT: both are written exactly once per search, before the helper
 // threads are created, and never modified afterwards. That ordering is what
 // makes them safe to read from every worker without atomics — do not move the
@@ -346,7 +353,7 @@ bool check_time() {
         auto now = std::chrono::steady_clock::now();
         int elapsed = static_cast<int>(std::chrono::duration_cast<std::chrono::milliseconds>(
             now - search_start).count());
-        if (elapsed >= limits.movetime) {
+        if (elapsed >= limits.movetime && depth1_done.load(std::memory_order_relaxed)) {
             stop = true;
             return true;
         }
@@ -357,7 +364,7 @@ bool check_time() {
         int elapsed = static_cast<int>(std::chrono::duration_cast<std::chrono::milliseconds>(
             now - search_start).count());
         // Hard limit: stop immediately when max_time is exceeded
-        if (elapsed >= max_time) {
+        if (elapsed >= max_time && depth1_done.load(std::memory_order_relaxed)) {
             stop = true;
             return true;
         }
@@ -1985,8 +1992,9 @@ static void helper_thread_func(Position pos_copy, int thread_id) {
 Move search(Position& pos, Limits& lim) {
     limits = lim;
     root_side.store(int(pos.side_to_move()), std::memory_order_relaxed);
-    g_stop_requested = false;
-    stop = false;
+    // The stop flags are the caller's to clear (handle_go, bench) before the
+    // search starts: clearing them here lost a "stop" sent right after "go".
+    depth1_done.store(false, std::memory_order_relaxed);
     nodes = 0;
     local_nodes = 0;
     last_reported_nodes = 0;
@@ -2130,7 +2138,7 @@ Move search(Position& pos, Limits& lim) {
     // Launch helper threads for lazy SMP (after the time budget is published)
     helpers_running = true;
     for (int i = 1; i < num_threads; ++i) {
-        helper_threads.emplace_back(helper_thread_func, pos, i);
+        helper_threads.emplace_back([pos, i] { helper_thread_func(pos, i); });
     }
 
     // Initialize killers (clear for new search)
@@ -2507,6 +2515,7 @@ Move search(Position& pos, Limits& lim) {
             last_aspiration_attempts = aspiration_attempts;
             best_value = depth_best_value;
             best_move = depth_best_move;
+            depth1_done.store(true, std::memory_order_relaxed);
         }
 
         // Save root position to TT for PV extraction
