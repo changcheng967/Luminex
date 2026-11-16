@@ -1199,9 +1199,15 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
         if (!pos.legal(m, true)) return false;  // Skip pseudo_legal check for generated moves
         any_legal_move = true;  // Legal move exists (even if later pruned)
 
+        // The move-count and history prunings below skip moves without searching
+        // them. Not while in check: the skipped quiet may be the only evasion. Not
+        // while every move searched so far is mated: the skipped one may be the
+        // defence, and the node would return (and store) a mate that isn't there.
+        const bool may_skip_quiets = !pos.is_check() && best_value > -VALUE_MATE_IN_MAX_PLY;
+
         // Continuation pruning: skip quiet moves with very poor history at low depth
         // Combined counter+continuation history
-        if (is_quiet && !pv_node && depth <= 4 && moves_played > 0) {
+        if (is_quiet && !pv_node && depth <= 4 && moves_played > 0 && may_skip_quiets) {
             Piece pc = pos.piece_on(m.from());
             if (pc != NO_PIECE) {
                 int hist_score = combined_history(worker, ss, pc, m.to());
@@ -1220,14 +1226,17 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
         // ones it rates lowest. The count is tunable in hundredths of a move.
         int lmp_threshold = (sp.lmp_base + ((ss->improving || opponent_worsening) ? 100 : 0)
                              + depth * depth * sp.lmp_coeff) / 100;
-        if (is_quiet && !pv_node && ss->ply > 0 && depth <= 8 && moves_played >= lmp_threshold
+        if (is_quiet && !pv_node && ss->ply > 0 && depth <= 8 && moves_played >= lmp_threshold && may_skip_quiets
             && m != worker->killers[ss->ply][0] && m != worker->killers[ss->ply][1]) {
             g_stats.lmp_prunes++;
             return false;
         }
 
-        // Futility pruning: skip quiet moves that can't improve alpha
-        if (is_quiet && !pv_node && ss->ply > 0 && !pos.is_check() && depth <= 5) {
+        // Futility pruning: skip quiet moves that can't improve alpha. Static eval
+        // says nothing about a check (qsearch has no quiet checks to find a mate
+        // behind it) or about the TT move, which an earlier search chose.
+        bool gives_chk = gives_check(m);
+        if (is_quiet && !pv_node && ss->ply > 0 && !pos.is_check() && depth <= 5 && !gives_chk && m != tt_move) {
             int margin = depth * sp.fut_coeff + (ss->improving ? sp.fut_improving : sp.fut_base);
             margin += std::min(eval_uncertainty / 3, 50);  // Less pruning when eval uncertain
             if (eval + margin < alpha) {
@@ -1242,7 +1251,6 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
         // But NEVER reduce moves that give check — they are forcing
         Depth new_depth = depth - 1;
         int lmr_reduction = 0;  // actual reduction, before extensions
-        bool gives_chk = gives_check(m);
         bool is_losing_capture = m.is_capture() && !m.is_promotion() && depth >= 1 &&
                                   !pos.see_ge(m, VALUE_ZERO);
         bool do_lmr = depth >= 3 && moves_played >= (pv_node ? 3 : 1) &&
@@ -1726,8 +1734,9 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
                 }
             }
 
-            // Skip TT move (already searched in Phase 1)
-            if (it->value == -1) continue;
+            // Skip TT move (already searched in Phase 1), by identity: a quiet's
+            // history sum can be exactly -1, and that move was never searched
+            if (it->move == tt_move) continue;
 
             if (search_move(it->move, true)) {
                 if (!stop.load(std::memory_order_relaxed)) {
