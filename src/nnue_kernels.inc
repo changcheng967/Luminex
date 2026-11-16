@@ -460,15 +460,15 @@ float forward_int8(const int16_t* acc_stm, const int16_t* acc_nstm, const TailVi
     uint8_t h_i8[2 * NNUE_L1_MAX];
     const __m256 sc127 = _mm256_set1_ps(127.0f);  // shared for quant8 (L3/out)
 #if defined(LK_AVX512)
-    // AVX-512, 64 lanes per pass. Clamping to the SCReLU window [0, 8192]
-    // in int16 and then rounding fl(fl(a*a) * 127*2^-26) gives the same
-    // bytes as the float clamp-square-scale below: scaling by a power of
-    // two never rounds, so both round the same product (all 8193 window
-    // values checked). Packing 4 vectors at a time replaces two narrowing
-    // converts per 16 lanes.
+    // AVX-512, 64 lanes per pass. Clamping to the SCReLU window
+    // [0, NNUE_FT_SCALE] in int16 and then rounding fl(a*a * 127/SCALE^2)
+    // gives the same bytes as the float clamp-square-scale below: a*a is at
+    // most 2^22, exact in a float, and scaling by a power of two never
+    // rounds, so both round the same product. Packing 4 vectors at a time
+    // replaces two narrowing converts per 16 lanes.
     if (L1 % 64 == 0) {
-        const __m512i lo16 = _mm512_setzero_si512(), hi16 = _mm512_set1_epi16(8192);
-        const __m512 k = _mm512_set1_ps(127.0f / 67108864.0f);   // 127 * 2^-26, exact
+        const __m512i lo16 = _mm512_setzero_si512(), hi16 = _mm512_set1_epi16(int16_t(NNUE_FT_SCALE));
+        const __m512 k = _mm512_set1_ps(127.0f / (NNUE_FT_SCALE * NNUE_FT_SCALE));   // 127 * 2^-22, exact
         // packs/packus work inside 128-bit lanes; this dword permute (a 4x4
         // transpose of 4-byte groups) restores input order
         const __m512i order = _mm512_setr_epi32(0, 4, 8, 12, 1, 5, 9, 13, 2, 6, 10, 14, 3, 7, 11, 15);
