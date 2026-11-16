@@ -570,6 +570,18 @@ bool known_endgame(const Position& pos, Value& value) {
     const Bitboard pawns = pos.pieces(strong, PAWN);
     if (!pawns) { value = VALUE_DRAW; return true; }
     if (!more_than_one(pawns) && !bishops && !knights) { value = kpk_value(pos); return true; }
+    // Rook pawns on one file whose queening square no bishop of the strong side covers (all its bishops on
+    // the other colour, or none): once the lone king stands on or next to that square it cannot be driven
+    // out of the corner, a draw however many pawns there are. Every other bare king with pawns is the
+    // evaluator's.
+    if (!knights && (!(pawns & ~BB_FILE_A) || !(pawns & ~BB_FILE_H))) {
+        const int file = (pawns & BB_FILE_A) ? 0 : 7;
+        const Square queening = Square(file + 8 * (strong == WHITE ? 7 : 0));
+        const bool dark = DARK_SQUARES & square_bb(queening);
+        const bool covered = bishops & (dark ? DARK_SQUARES : ~DARK_SQUARES);
+        const Color weak = strong == WHITE ? BLACK : WHITE;
+        if (!covered && distance(pos.king_sq(weak), queening) <= 1) { value = VALUE_DRAW; return true; }
+    }
     return false;
 }
 
