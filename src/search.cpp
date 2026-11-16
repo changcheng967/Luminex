@@ -862,9 +862,14 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
     // Null move pruning. R grows continuously with depth and with how far
     // eval sits above beta. Consecutive nulls are banned (a second null
     // proves nothing the first didn't) and nulls are banned inside a
-    // verification search's ply window.
+    // verification search's ply window. The side to move needs a piece of
+    // its own: with only king and pawns, passing is the move zugzwang
+    // forbids, whatever the opponent holds. piece_count (both sides'
+    // pieces) still sizes R and the verification.
     int piece_count = popcount(pos.pieces()) - popcount(pos.pieces(PAWN)) - 2;
-    bool null_move_ok = !pv_node && !pos.is_check() && depth >= 2 && piece_count >= 1 &&
+    const Color stm = pos.side_to_move();
+    int own_pieces = popcount(pos.pieces(stm)) - popcount(pos.pieces(stm, PAWN)) - 1;
+    bool null_move_ok = !pv_node && !pos.is_check() && depth >= 2 && own_pieces >= 1 &&
                           eval >= beta + (depth <= sp.nmp_shallow_depth ? sp.nmp_shallow_margin : 0) &&
                           ss->ply >= 1 && !ss->excluded_move &&
                           (ss - 1)->current_move != MOVE_NULL &&
@@ -894,11 +899,15 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
 
             // Verification: same position, nulls banned for the first
             // 3/4 of the remaining depth. High depth always verifies; low
-            // piece counts verify early (zugzwang-prone endgames).
+            // piece counts verify early (zugzwang-prone endgames). At least
+            // one ply: R reaches depth - 1 below depth 12, and a depth-0
+            // verification is the stand-pat, which passes by construction
+            // (eval >= beta let the null move in).
             if (depth >= 14 || (piece_count < 4 && depth >= 6)) {
+                int verify_depth = std::max(1, (depth - R) * 3 / 4);
                 int saved_disable_ply = worker->nmp_disabled_ply;
-                worker->nmp_disabled_ply = ss->ply + 3 * (depth - R) / 4;
-                Value verify = search_worker(pos, ss, beta - 1, beta, (depth - R) * 3 / 4, !cut_node);
+                worker->nmp_disabled_ply = ss->ply + verify_depth;
+                Value verify = search_worker(pos, ss, beta - 1, beta, verify_depth, !cut_node);
                 worker->nmp_disabled_ply = saved_disable_ply;
                 if (verify >= beta) {
                     g_stats.null_move_prunes++;
