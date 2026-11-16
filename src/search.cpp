@@ -2365,6 +2365,12 @@ Move search(Position& pos, Limits& lim) {
         // Clean aspiration loop with root PVS
         Value depth_best_value = -VALUE_INFINITE;
         Move depth_best_move = MOVE_NONE;
+        // A move this iteration has proven better than what it replaces: one that
+        // failed high in an earlier aspiration attempt, or one that beat the
+        // current attempt's alpha. A stop mid-iteration plays it rather than the
+        // previous iteration's move.
+        Move proven_move = MOVE_NONE;
+        Value proven_value = -VALUE_INFINITE;
 
         int aspiration_attempts = 0;
         int fail_high_streak = 0;
@@ -2430,7 +2436,8 @@ Move search(Position& pos, Limits& lim) {
                 pos.undo_move(it->move);
                 root_moves_searched++;
 
-                if (check_time()) break;
+                // No clock check here: it threw away the move just finished. The
+                // check at the top of the loop stops before the next one.
 
                 // Track node effort per root move
                 uint64_t nodes_spent_on_move = nodes.load(std::memory_order_relaxed) - nodes_before_move;
@@ -2446,10 +2453,13 @@ Move search(Position& pos, Limits& lim) {
                 if (value >= beta) break;  // Beta cutoff
             }
 
-            // Check if time ran out during search
+            // Check if time ran out during search: a move that beat this attempt's
+            // alpha in a finished search is proven better than the previous best
             if (stop.load(std::memory_order_relaxed)) {
-                // Use whatever we have from this iteration
-                // depth_best_value and depth_best_move already set
+                if (depth_best_move != MOVE_NONE && depth_best_value > alpha) {
+                    proven_move = depth_best_move;
+                    proven_value = depth_best_value;
+                }
                 break;
             }
 
@@ -2466,6 +2476,8 @@ Move search(Position& pos, Limits& lim) {
                 aspiration_delta += aspiration_delta / 2;
             } else if (depth_best_value >= beta) {
                 // Fail high - widen upward (raise beta only, keep alpha)
+                proven_move = depth_best_move;
+                proven_value = depth_best_value;
                 fail_high_streak++;
                 beta = std::min(Value(VALUE_INFINITE),
                                 Value(depth_best_value + aspiration_delta));
@@ -2485,7 +2497,13 @@ Move search(Position& pos, Limits& lim) {
 
         // Check time after all moves searched
         check_time();
-        if (stop.load(std::memory_order_relaxed)) break;
+        if (stop.load(std::memory_order_relaxed)) {
+            if (proven_move != MOVE_NONE) {
+                best_move = proven_move;
+                best_value = proven_value;
+            }
+            break;
+        }
 
         // Update overall best with this depth's result
         if (depth_best_move != MOVE_NONE) {
