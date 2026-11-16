@@ -49,9 +49,10 @@ extern EvalParams g_eval_params;
 // Main evaluation function
 Value evaluate(const Position& pos, bool tactical_only = false);
 
-// A bare king on one side settles the score from the material: mating material against it is a known win
-// (VALUE_KNOWN_WIN plus a gradient toward the mate), K+P vs K comes from the exact bitbase, and no mating
-// material is a draw. Sets value (side-to-move relative) and returns true there, false everywhere else.
+// Endgames the material settles. A bare king on one side: mating material against it is a known win
+// (VALUE_KNOWN_WIN plus a gradient toward the mate), K+P vs K comes from the exact bitbase, wrong-bishop rook
+// pawns with the king in the corner and no mating material are draws. K+Q vs K+R gets the same gradient at
+// the net's level. Sets value (side-to-move relative) and returns true there, false everywhere else.
 // evaluate() returns this value first, and the search takes it as it is: no 50-move damping, no correction.
 bool known_endgame(const Position& pos, Value& value);
 

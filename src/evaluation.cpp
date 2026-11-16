@@ -498,6 +498,15 @@ constexpr Bitboard DARK_SQUARES = 0xAA55AA55AA55AA55ULL;   // a1, c1, ..., b2, .
 // A file's (or rank's) distance from the two central ones: 0 for d and e, 3 for a and h
 inline int centre_dist(int x) { return std::max(3 - x, x - 4); }
 
+// A defending king driven out of the centre: 0 in the centre, 120 in the middle of an edge, 180 in a corner
+inline int edge_drive(Square k) {
+    const int cf = centre_dist(file_of(k)), cr = centre_dist(rank_of(k));
+    return 20 * (cf + cr) + 20 * std::max(cf, cr);
+}
+
+// The attacking king brought to the defending one: 0 at the greatest distance, 100 in opposition
+inline int kings_close(Square strong_k, Square weak_k) { return 20 * (7 - distance(strong_k, weak_k)); }
+
 // K+P vs K from the exact WDL bitbase (retrograde, verified against the lichess tablebase): a win scores
 // more the further the pawn has run, a draw scores 0. Side-to-move relative.
 Value kpk_value(const Position& pos) {
@@ -532,14 +541,22 @@ Value mating_value(const Position& pos, Color strong) {
                                                     : std::min(f + 7 - r, 7 - f + r);
         drive = 40 * (7 - corner) + 10 * (cf + cr);
     } else {
-        // 0 in the centre, 120 in the middle of an edge, 180 in a corner
-        drive = 20 * (cf + cr) + 20 * std::max(cf, cr);
+        drive = edge_drive(wk);
     }
-    const int close = 20 * (7 - distance(pos.king_sq(strong), wk));
     int material = 0;
     for (PieceType pt : {PAWN, KNIGHT, BISHOP, ROOK, QUEEN})
         material += popcount(pos.pieces(strong, pt)) * PieceValueEG[pt];
-    return Value(VALUE_KNOWN_WIN + material + drive + close);
+    return Value(VALUE_KNOWN_WIN + material + drive + kings_close(pos.king_sq(strong), wk));
+}
+
+// K+Q vs K+R, from the queen's side: won, though slowly, and the net scores it flat (+10 pawns for quite
+// different positions). It keeps the net's level, so trading into it or out of it is judged as before, and
+// gains the bare-king gradient: the defending king driven to the edge, where the queen wins the rook with
+// a fork or a skewer (and K+Q vs K is a known win), the attacking king close.
+constexpr int KQKR_BASE = 1000;
+Value kqkr_value(const Position& pos, Color strong) {
+    const Square wk = pos.king_sq(strong == WHITE ? BLACK : WHITE);
+    return Value(KQKR_BASE + edge_drive(wk) + kings_close(pos.king_sq(strong), wk));
 }
 
 } // namespace
@@ -547,7 +564,14 @@ Value mating_value(const Position& pos, Color strong) {
 bool known_endgame(const Position& pos, Value& value) {
     const bool white_bare = !more_than_one(pos.pieces(WHITE));
     const bool black_bare = !more_than_one(pos.pieces(BLACK));
-    if (!white_bare && !black_bare) return false;
+    if (!white_bare && !black_bare) {
+        // Each side has one piece when four are left and neither king is bare: a queen and a rook is K+Q v K+R
+        if (popcount(pos.pieces()) != 4 || !pos.pieces(QUEEN) || !pos.pieces(ROOK)) return false;
+        const Color strong = pos.pieces(WHITE, QUEEN) ? WHITE : BLACK;
+        const Value v = kqkr_value(pos, strong);
+        value = pos.side_to_move() == strong ? v : -v;
+        return true;
+    }
     if (white_bare && black_bare) { value = VALUE_DRAW; return true; }
 
     const Color strong = white_bare ? BLACK : WHITE;
