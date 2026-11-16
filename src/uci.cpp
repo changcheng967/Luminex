@@ -20,6 +20,7 @@
 #include <string>
 #include <thread>
 #include <atomic>
+#include <memory>
 #include <mutex>
 #include <cstdio>
 #include <fstream>
@@ -134,9 +135,12 @@ static void wait_for_search_thread() {
 
 // Launch the search on its own thread with a large stack, on every platform: the
 // default for secondary threads (1 MiB on Windows, 512 KiB on macOS) is too small
-static void launch_search_thread(Position pos_copy, Limits lim) {
+static void launch_search_thread(const Position& pos, const Limits& lim) {
     wait_for_search_thread();
-    search_thread = SearchThread([pos_copy, lim] { search_worker(pos_copy, lim); });
+    // The copy of the position (~230 KB) is made on the heap, not on this thread's
+    // stack: the UCI thread may have as little as the search threads used to
+    auto copy = std::make_shared<Position>(pos);
+    search_thread = SearchThread([copy, lim] { search_worker(*copy, lim); });
 }
 
 // Worker function that runs search in a separate thread
