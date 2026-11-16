@@ -119,6 +119,9 @@ struct SearchWorker {
     // Ply below which null moves are banned while a null-move verification
     // search is running (0 = no ban)
     int nmp_disabled_ply = 0;
+    // This thread's iteration depth: lines deeper than twice it get no further
+    // extension, so stacked extensions cannot grow a line without bound
+    int root_depth = 0;
 };
 
 // Thread-local pointer to current thread's search state
@@ -1019,7 +1022,11 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
         is_shuffling = tt_move.from() == (ss - 2)->current_move.to() &&
                        (ss - 2)->current_move.from() == (ss - 4)->current_move.to();
     }
-    if (tt_move != MOVE_NONE && !pv_node && found && tt_depth >= depth - 3 && depth >= 6 &&
+    // Never inside the singular verification itself: it runs on this ply's stack
+    // entry with the TT move excluded, so at depth 13 and more it passed this same
+    // test, ran its own verification and then cleared the exclusion (below), and
+    // went on to search the very move it was measuring the alternatives to.
+    if (tt_move != MOVE_NONE && !pv_node && !ss->excluded_move && found && tt_depth >= depth - 3 && depth >= 6 &&
         (tte->bound() & BOUND_LOWER) && abs(tt_value) < VALUE_KNOWN_WIN && !is_shuffling) {
         // Singular margin scales with depth; _singular_margin default 200
         // reproduces the prior depth*10/16 (= depth*200/320) exactly.
@@ -1320,6 +1327,7 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
         // Depth-explosion guard: a line of checks + singular doubles could
         // otherwise extend faster than depth shrinks
         if (ext_count > 2) ext_count = 2;
+        if (ext_count > 0 && ss->ply >= 2 * worker->root_depth) ext_count = 0;
         new_depth += ext_count;
         // Every full-window search must keep the extension. The pre-fix code
         // passed literal depth - 1 at all full-depth call sites, so extensions
@@ -1877,6 +1885,7 @@ static void helper_thread_func(Position pos_copy, int thread_id) {
     int start_depth = 1 + thread_id;
 
     for (int d = start_depth; d <= effective_depth; ++d) {
+        worker->root_depth = d;
         if (stop.load(std::memory_order_relaxed) || g_stop_requested) break;
 
         // Check time periodically
@@ -2203,6 +2212,7 @@ Move search(Position& pos, Limits& lim) {
     int last_iteration_ms = 0;  // wall time of the last completed iteration
 
     for (root_depth = start_depth; root_depth <= effective_depth; ++root_depth) {
+        worker->root_depth = root_depth;
         // Check stop at the very start of each depth iteration
         if (g_stop_requested || stop.load(std::memory_order_relaxed)) {
             break;
