@@ -8,7 +8,7 @@ forward pass by hand and reports, per layer and per piece-count bucket:
   FT  (768 per perspective): share of lanes below 0 (SCReLU zero, no gradient),
       above 1 (saturated, no gradient), live in between; neurons that are dead
       or saturated on >= 99% of positions; lanes beyond the int16 range at the
-      engine's x8192 scale (|a| >= 4.0);
+      engine's x2048 scale (|a| >= 16.0);
   L2 (16) / L3 (32): the same live / dead / saturated split per neuron;
   the effective dimension of the 1536-wide activation (components for 90/99%
   of variance) and of the 16-wide L2 activation.
@@ -128,8 +128,8 @@ def main():
 
     Aft = np.concatenate([A[:, :L1], A[:, L1:]])   # both perspectives pooled per FT neuron
     d, s, live = split(Aft)
-    print(f"FT lanes: zero {d:.1%}  saturated {s:.1%}  live {live:.1%};  |a|>=4 (int16 x8192 overflow) "
-          f"{(np.abs(Aft) >= 4.0).mean():.4%}, max |a| {np.abs(Aft).max():.2f}")
+    print(f"FT lanes: zero {d:.1%}  saturated {s:.1%}  live {live:.1%};  |a|>=16 (int16 x2048 overflow) "
+          f"{(np.abs(Aft) >= 16.0).mean():.4%}, max |a| {np.abs(Aft).max():.2f}")
     live_n = ((Aft > 0) & (Aft < 1)).mean(0)
     dead_n = (Aft <= 0).mean(0)
     sat_n = (Aft >= 1).mean(0)
