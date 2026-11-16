@@ -549,14 +549,17 @@ Value mating_value(const Position& pos, Color strong) {
     return Value(VALUE_KNOWN_WIN + material + drive + kings_close(pos.king_sq(strong), wk));
 }
 
-// K+Q vs K+R, from the queen's side: won, though slowly, and the net scores it flat (+10 pawns for quite
-// different positions). It keeps the net's level, so trading into it or out of it is judged as before, and
-// gains the bare-king gradient: the defending king driven to the edge, where the queen wins the rook with
-// a fork or a skewer (and K+Q vs K is a known win), the attacking king close.
-constexpr int KQKR_BASE = 1000;
-Value kqkr_value(const Position& pos, Color strong) {
+// A queen against one rook, bishop or knight, from the queen's side: won, the rook slowly, and the net
+// scores each flat (about +10 pawns against a rook and +12 against a minor, for quite different positions).
+// The score keeps the net's level, so trading into or out of these endings is judged as before: 1000 against
+// a rook, plus the rook-minor difference against a minor. It gains the bare-king gradient: the defending
+// king driven to the edge, where the queen wins the piece with a fork or a skewer (and K+Q vs K is a known
+// win), the attacking king close.
+constexpr int QUEEN_VS_ROOK_BASE = 1000;
+Value queen_vs_piece_value(const Position& pos, Color strong, PieceType defender) {
     const Square wk = pos.king_sq(strong == WHITE ? BLACK : WHITE);
-    return Value(KQKR_BASE + edge_drive(wk) + kings_close(pos.king_sq(strong), wk));
+    const int base = QUEEN_VS_ROOK_BASE + PieceValueEG[ROOK] - PieceValueEG[defender];
+    return Value(base + edge_drive(wk) + kings_close(pos.king_sq(strong), wk));
 }
 
 } // namespace
@@ -565,10 +568,14 @@ bool known_endgame(const Position& pos, Value& value) {
     const bool white_bare = !more_than_one(pos.pieces(WHITE));
     const bool black_bare = !more_than_one(pos.pieces(BLACK));
     if (!white_bare && !black_bare) {
-        // Each side has one piece when four are left and neither king is bare: a queen and a rook is K+Q v K+R
-        if (popcount(pos.pieces()) != 4 || !pos.pieces(QUEEN) || !pos.pieces(ROOK)) return false;
+        // Each side has one piece when four are left and neither king is bare: a queen against a rook, a
+        // bishop or a knight (not a queen, not a pawn)
+        if (popcount(pos.pieces()) != 4 || !pos.pieces(QUEEN) || pos.pieces(PAWN)) return false;
         const Color strong = pos.pieces(WHITE, QUEEN) ? WHITE : BLACK;
-        const Value v = kqkr_value(pos, strong);
+        const Color weak = strong == WHITE ? BLACK : WHITE;
+        if (pos.pieces(weak, QUEEN)) return false;
+        const PieceType defender = pos.pieces(weak, ROOK) ? ROOK : pos.pieces(weak, BISHOP) ? BISHOP : KNIGHT;
+        const Value v = queen_vs_piece_value(pos, strong, defender);
         value = pos.side_to_move() == strong ? v : -v;
         return true;
     }
