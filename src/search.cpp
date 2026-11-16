@@ -267,6 +267,11 @@ inline Value eval_cached(const Position& pos) {
 
 // Search start time for time management
 static std::chrono::steady_clock::time_point search_start;
+
+// The side to move at the root: the side the engine plays. Contempt scores a
+// draw at -contempt/2 for it, wherever the draw is found; set by search()
+// before any helper thread starts.
+static std::atomic<int> root_side{WHITE};
 // INVARIANT: both are written exactly once per search, before the helper
 // threads are created, and never modified afterwards. That ordering is what
 // makes them safe to read from every worker without atomics — do not move the
@@ -411,7 +416,7 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
     if (pos.is_draw()) {
         if (alpha >= VALUE_DRAW) return alpha;
         Value draw_noise = (local_nodes & 2) - 1;
-        return VALUE_DRAW + draw_noise - (pos.side_to_move() == WHITE ? params.contempt / 2 : -params.contempt / 2);
+        return VALUE_DRAW + draw_noise - (int(pos.side_to_move()) == root_side.load(std::memory_order_relaxed) ? params.contempt / 2 : -params.contempt / 2);
     }
 
     // TT probe: memoizes qsearch nodes (the bulk of the tree). Bound-consistent
@@ -641,7 +646,7 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
     if (pos.is_draw()) {
         if (alpha >= VALUE_DRAW) return alpha;
         Value draw_noise = (local_nodes & 2) - 1;
-        return VALUE_DRAW + draw_noise - (pos.side_to_move() == WHITE ? params.contempt / 2 : -params.contempt / 2);
+        return VALUE_DRAW + draw_noise - (int(pos.side_to_move()) == root_side.load(std::memory_order_relaxed) ? params.contempt / 2 : -params.contempt / 2);
     }
 
     ++local_nodes;
@@ -1774,7 +1779,7 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
         if (pos.is_check()) {
             return -VALUE_MATE + ss->ply;
         }
-        return VALUE_DRAW - (pos.side_to_move() == WHITE ? params.contempt / 2 : -params.contempt / 2);
+        return VALUE_DRAW - (int(pos.side_to_move()) == root_side.load(std::memory_order_relaxed) ? params.contempt / 2 : -params.contempt / 2);
     }
 
     // All legal moves were pruned: return eval as best estimate
@@ -1979,6 +1984,7 @@ static void helper_thread_func(Position pos_copy, int thread_id) {
 // Root search with iterative deepening
 Move search(Position& pos, Limits& lim) {
     limits = lim;
+    root_side.store(int(pos.side_to_move()), std::memory_order_relaxed);
     g_stop_requested = false;
     stop = false;
     nodes = 0;
