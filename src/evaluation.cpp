@@ -485,91 +485,149 @@ static void evaluate_pawns(const Position& pos, int32_t& mg_out, int32_t& eg_out
 }
 
 // ============================================================
+// Known endgames: a bare king on one side
+// ============================================================
+// These are scored from the material alone, before the network or the hand-crafted terms see them. The net
+// has hardly ever met a bare king (Leela's games end before), and its near-flat score there (+12 to +15
+// pawns wherever the kings stand, on the K+R vs K of Lichess game 7KjurpKn) gives the search nothing to
+// climb toward the mate: that game was drawn by the 50-move rule.
+namespace {
+
+constexpr Bitboard DARK_SQUARES = 0xAA55AA55AA55AA55ULL;   // a1, c1, ..., b2, ...: file + rank even
+
+// A file's (or rank's) distance from the two central ones: 0 for d and e, 3 for a and h
+inline int centre_dist(int x) { return std::max(3 - x, x - 4); }
+
+// A defending king driven out of the centre: 0 in the centre, 120 in the middle of an edge, 180 in a corner
+inline int edge_drive(Square k) {
+    const int cf = centre_dist(file_of(k)), cr = centre_dist(rank_of(k));
+    return 20 * (cf + cr) + 20 * std::max(cf, cr);
+}
+
+// The attacking king brought to the defending one: 0 at the greatest distance, 100 in opposition
+inline int kings_close(Square strong_k, Square weak_k) { return 20 * (7 - distance(strong_k, weak_k)); }
+
+// K+P vs K from the exact WDL bitbase (retrograde, verified against the lichess tablebase): a win scores
+// more the further the pawn has run, a draw scores 0. Side-to-move relative.
+Value kpk_value(const Position& pos) {
+    bool wp = (pos.pieces(WHITE, PAWN) != 0);
+    int wksq = (int)pos.king_sq(WHITE), bksq = (int)pos.king_sq(BLACK);
+    int psq = (int)(wp ? lsb(pos.pieces(WHITE, PAWN)) : lsb(pos.pieces(BLACK, PAWN)));
+    bool won = wp ? kpk_white_wins(wksq, bksq, psq, pos.side_to_move() == WHITE)
+                  : kpk_white_wins(bksq ^ 56, wksq ^ 56, psq ^ 56, pos.side_to_move() == BLACK);
+    if (won) {
+        int adv = wp ? (rank_of(static_cast<Square>(psq)) - 1) : (6 - rank_of(static_cast<Square>(psq)));
+        int bonus = 600 + adv * 80;
+        int score = wp ? bonus : -bonus;
+        return pos.side_to_move() == WHITE ? score : -score;
+    }
+    return VALUE_DRAW;
+}
+
+// Mating material against a bare king, from the strong side's point of view: a certain win, so
+// VALUE_KNOWN_WIN plus the material, plus a gradient the search climbs to the mate. The bare king is driven
+// to the edge and into a corner (with bishop and knight, toward the two corners of the bishop's colour, the
+// only ones where that mate can be forced), and the attacking king comes close.
+Value mating_value(const Position& pos, Color strong) {
+    const Color weak = strong == WHITE ? BLACK : WHITE;
+    const Square wk = pos.king_sq(weak);
+    const int f = file_of(wk), r = rank_of(wk);
+    const int cf = centre_dist(f), cr = centre_dist(r);
+    const Bitboard bishops = pos.pieces(strong, BISHOP);
+    int drive;
+    if (popcount(pos.pieces(strong)) == 3 && bishops && pos.pieces(strong, KNIGHT)) {
+        // Manhattan distance (0..7) to the nearer corner of the bishop's colour: a1/h8 dark, a8/h1 light
+        const int corner = (bishops & DARK_SQUARES) ? std::min(f + r, 14 - f - r)
+                                                    : std::min(f + 7 - r, 7 - f + r);
+        drive = 40 * (7 - corner) + 10 * (cf + cr);
+    } else {
+        drive = edge_drive(wk);
+    }
+    int material = 0;
+    for (PieceType pt : {PAWN, KNIGHT, BISHOP, ROOK, QUEEN})
+        material += popcount(pos.pieces(strong, pt)) * PieceValueEG[pt];
+    return Value(VALUE_KNOWN_WIN + material + drive + kings_close(pos.king_sq(strong), wk));
+}
+
+// A queen against one rook, bishop or knight, from the queen's side: won, the rook slowly, and the net
+// scores each flat (about +10 pawns against a rook and +12 against a minor, for quite different positions).
+// The score keeps the net's level, so trading into or out of these endings is judged as before: 1000 against
+// a rook, plus the rook-minor difference against a minor. It gains the bare-king gradient: the defending
+// king driven to the edge, where the queen wins the piece with a fork or a skewer (and K+Q vs K is a known
+// win), the attacking king close.
+constexpr int QUEEN_VS_ROOK_BASE = 1000;
+Value queen_vs_piece_value(const Position& pos, Color strong, PieceType defender) {
+    const Square wk = pos.king_sq(strong == WHITE ? BLACK : WHITE);
+    const int base = QUEEN_VS_ROOK_BASE + PieceValueEG[ROOK] - PieceValueEG[defender];
+    return Value(base + edge_drive(wk) + kings_close(pos.king_sq(strong), wk));
+}
+
+} // namespace
+
+bool known_endgame(const Position& pos, Value& value) {
+    const bool white_bare = !more_than_one(pos.pieces(WHITE));
+    const bool black_bare = !more_than_one(pos.pieces(BLACK));
+    if (!white_bare && !black_bare) {
+        // Each side has one piece when four are left and neither king is bare: a queen against a rook, a
+        // bishop or a knight (not a queen, not a pawn)
+        if (popcount(pos.pieces()) != 4 || !pos.pieces(QUEEN) || pos.pieces(PAWN)) return false;
+        const Color strong = pos.pieces(WHITE, QUEEN) ? WHITE : BLACK;
+        const Color weak = strong == WHITE ? BLACK : WHITE;
+        if (pos.pieces(weak, QUEEN)) return false;
+        const PieceType defender = pos.pieces(weak, ROOK) ? ROOK : pos.pieces(weak, BISHOP) ? BISHOP : KNIGHT;
+        const Value v = queen_vs_piece_value(pos, strong, defender);
+        value = pos.side_to_move() == strong ? v : -v;
+        return true;
+    }
+    if (white_bare && black_bare) { value = VALUE_DRAW; return true; }
+
+    const Color strong = white_bare ? BLACK : WHITE;
+    const Bitboard bishops = pos.pieces(strong, BISHOP);
+    const int knights = popcount(pos.pieces(strong, KNIGHT));
+    const bool mating = pos.pieces(strong, QUEEN) || pos.pieces(strong, ROOK)
+                     || ((bishops & DARK_SQUARES) && (bishops & ~DARK_SQUARES))
+                     || (bishops && knights) || knights >= 3;
+    if (mating) {
+        // A stalemated bare king draws; the search sees that only at nodes that generate moves
+        if (pos.side_to_move() != strong && !pos.is_check()) {
+            ExtMove moves[MAX_MOVES];
+            if (generate<GEN_LEGAL>(pos, moves) == moves) { value = VALUE_DRAW; return true; }
+        }
+        const Value v = mating_value(pos, strong);
+        value = pos.side_to_move() == strong ? v : -v;
+        return true;
+    }
+    // Lone minors, two knights and same-coloured bishops cannot force mate
+    const Bitboard pawns = pos.pieces(strong, PAWN);
+    if (!pawns) { value = VALUE_DRAW; return true; }
+    if (!more_than_one(pawns) && !bishops && !knights) { value = kpk_value(pos); return true; }
+    // Rook pawns on one file whose queening square no bishop of the strong side covers (all its bishops on
+    // the other colour, or none): once the lone king stands on or next to that square it cannot be driven
+    // out of the corner, a draw however many pawns there are. Every other bare king with pawns is the
+    // evaluator's.
+    if (!knights && (!(pawns & ~BB_FILE_A) || !(pawns & ~BB_FILE_H))) {
+        const int file = (pawns & BB_FILE_A) ? 0 : 7;
+        const Square queening = Square(file + 8 * (strong == WHITE ? 7 : 0));
+        const bool dark = DARK_SQUARES & square_bb(queening);
+        const bool covered = bishops & (dark ? DARK_SQUARES : ~DARK_SQUARES);
+        const Color weak = strong == WHITE ? BLACK : WHITE;
+        if (!covered && distance(pos.king_sq(weak), queening) <= 1) { value = VALUE_DRAW; return true; }
+    }
+    return false;
+}
+
+// ============================================================
 // Main evaluation function
 // ============================================================
 Value evaluate(const Position& pos, bool tactical_only) {
+    // Known endgames first, under either evaluator
+    Value known;
+    if (known_endgame(pos, known)) return known;
+
     // Optional NNUE evaluation: when a net is loaded AND the user enabled it
     // via UCI "UseNNUE", the engine uses NNUE instead of HCE. Otherwise the
     // pure hand-crafted eval below runs unchanged. NNUE is fully optional.
     if (nnue::enabled()) return nnue::evaluate(pos);
-
-    // KPK endgame specialization: exact WDL bitbase (retrograde, verified vs
-    // lichess tablebase). Direct return — bypasses scale_factor (which zeroes
-    // KPK via insufficient-material logic). Fires for BOTH qsearch + full paths.
-    if (popcount(pos.pieces(PAWN)) == 1
-        && (pos.pieces(KNIGHT) | pos.pieces(BISHOP) | pos.pieces(ROOK) | pos.pieces(QUEEN)) == 0) {
-        bool wp = (pos.pieces(WHITE, PAWN) != 0);
-        int wksq = (int)pos.king_sq(WHITE), bksq = (int)pos.king_sq(BLACK);
-        int psq = (int)(wp ? lsb(pos.pieces(WHITE, PAWN)) : lsb(pos.pieces(BLACK, PAWN)));
-        bool won = wp ? kpk_white_wins(wksq, bksq, psq, pos.side_to_move() == WHITE)
-                      : kpk_white_wins(bksq ^ 56, wksq ^ 56, psq ^ 56, pos.side_to_move() == BLACK);
-        if (won) {
-            int adv = wp ? (rank_of(static_cast<Square>(psq)) - 1) : (6 - rank_of(static_cast<Square>(psq)));
-            int bonus = 600 + adv * 80;
-            int score = wp ? bonus : -bonus;
-            return pos.side_to_move() == WHITE ? score : -score;
-        }
-        return 0;  // drawn KPK
-    }
-
-    // KXK endgame: one side has only a king
-    for (int strong = 0; strong < 2; ++strong) {
-        Color c = Color(strong);
-        Color weak = Color(strong ^ 1);
-        int strong_material = popcount(pos.pieces(c)) - 1;
-        int weak_material = popcount(pos.pieces(weak)) - 1;
-        if (strong_material >= 1 && weak_material == 0) {
-            bool has_major = (pos.pieces(c, QUEEN) || pos.pieces(c, ROOK));
-            bool has_bn = (pos.pieces(c, BISHOP) && pos.pieces(c, KNIGHT));
-            bool has_two_bishops = (popcount(pos.pieces(c, BISHOP)) >= 2);
-            bool has_three_knights = (popcount(pos.pieces(c, KNIGHT)) >= 3);
-            if (has_major || has_bn || has_two_bishops || has_three_knights) {
-                Square weak_ksq = pos.king_sq(weak);
-                Square strong_ksq = pos.king_sq(c);
-
-                // Push weak king to corner
-                int wfile = file_of(weak_ksq);
-                int wrank = rank_of(weak_ksq);
-                int center_dist_file = std::max(wfile - 3, 7 - wfile);
-                int center_dist_rank = std::max(wrank - 3, 7 - wrank);
-
-                int corner_bonus;
-                if (has_bn && strong_material == 2) {
-                    // KBN vs K: drive to corner matching bishop's color
-                    Square bsq = lsb(pos.pieces(c, BISHOP));
-                    bool bishop_light = ((int(bsq) + int(bsq) / 8) % 2) == 0;
-                    bool weak_light = ((int(weak_ksq) + int(weak_ksq) / 8) % 2) == 0;
-                    if (bishop_light == weak_light) {
-                        corner_bonus = center_dist_file * center_dist_file + center_dist_rank * center_dist_rank;
-                    } else {
-                        corner_bonus = (center_dist_file * center_dist_file + center_dist_rank * center_dist_rank) / 2;
-                    }
-                } else {
-                    corner_bonus = center_dist_file * center_dist_file + center_dist_rank * center_dist_rank;
-                }
-
-                // Keep kings close for mating
-                int king_dist = std::abs(file_of(strong_ksq) - wfile) + std::abs(rank_of(strong_ksq) - wrank);
-                int close_bonus = 70 - king_dist * 10;
-
-                int score = (50 - corner_bonus) * 2 + close_bonus;
-                score += VALUE_KNOWN_WIN;
-
-                score += popcount(pos.pieces(c, QUEEN)) * PieceValueEG[QUEEN];
-                score += popcount(pos.pieces(c, ROOK)) * PieceValueEG[ROOK];
-                score += popcount(pos.pieces(c, BISHOP)) * PieceValueEG[BISHOP];
-                score += popcount(pos.pieces(c, KNIGHT)) * PieceValueEG[KNIGHT];
-
-                // evaluate() is side-to-move relative, like every other return
-                int white_score = (strong == WHITE) ? score : -score;
-                return pos.side_to_move() == WHITE ? white_score : -white_score;
-            }
-            // A lone minor or two knights cannot force mate; with pawns left the
-            // position is evaluated normally below
-            if (!pos.pieces(c, PAWN)) return VALUE_DRAW;
-        }
-    }
-
 
     Score mg_score = 0;
     Score eg_score = 0;
