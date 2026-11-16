@@ -23,14 +23,12 @@
 #if defined(__ARM_FEATURE_DOTPROD)
 #include <arm_neon.h>
 #endif
-#if defined(__linux__)
-#include <sys/mman.h>
-#endif
 #include <fstream>
 #include <istream>
 #include <streambuf>
 #include <string>
 #include <vector>
+#include "large_pages.h"
 #if defined(__x86_64__) || defined(__i386__) || defined(_M_X64) || defined(_M_IX86)
 #include <immintrin.h>   // _mm_prefetch needs xmmintrin even without AVX2 (Debug builds)
 #endif
@@ -201,7 +199,9 @@ static int g_L1 = 0, g_L2 = 0, g_L3 = 0;
 // feature delta). The accumulator stays full float32 (no SCReLU precision loss).
 static constexpr float FT_WSCALE = 8192.0f;
 static constexpr float FT_WINV = 1.0f / FT_WSCALE;
-static std::vector<int16_t> ft_w;
+// In 2 MiB pages where the system allows (large_pages.h): the updates read its
+// rows at random.
+static LargeArray<int16_t> ft_w;
 static std::vector<int32_t> ft_b_i32;   // integer-domain FT bias (b*FT_WSCALE)
 // DOSL linear head (Step-0): per-feature scalar weights over the SAME HalfKAv2_hg
 // indices; accumulator keeps one int32 per perspective (O(1) qsearch stand-pat).
@@ -217,8 +217,11 @@ static bool g_loaded = false;
 // and LNI8 nets have one tail; LNB8 and LNR8 nets have one per output bucket,
 // chosen by the number of pieces on the board (bucket_of). LNI8 and LNB8 hold
 // one weight scale per layer, LNR8 one per row (output neuron) of L2 and L3.
+// The dense weights start on cache lines (large_pages.h): the kernels read them
+// 32 or 64 bytes at a time.
+using WeightBytes = std::vector<int8_t, CacheAligned<int8_t>>;
 struct DenseTail {
-    std::vector<int8_t> l2_w_i8, l3_w_i8, out_w_i8;
+    WeightBytes l2_w_i8, l3_w_i8, out_w_i8;
     std::vector<float> l2_b, l3_b;
     // A dot of int8 weights (w x s) with uint8 activations (a x 127) becomes
     // the float sum when multiplied by 1 / (s x 127): one factor per output.
@@ -345,7 +348,7 @@ static bool load_stream(std::istream& f, const std::string& name) {
     g_L1 = L1; g_L2 = L2; g_L3 = L3;
     std::vector<float> ft_w_raw;
     if (!read_tensor(f, ft_w_raw, L1 * NUM_INPUTS)) return false;
-    ft_w.resize(static_cast<size_t>(NUM_INPUTS) * L1);
+    ft_w.reset(static_cast<size_t>(NUM_INPUTS) * L1);
     // int16 at x8192 holds |w| < 4.0; clamp instead of letting the cast wrap.
     long long clamped = 0;
     for (int i = 0; i < NUM_INPUTS; ++i)
@@ -360,7 +363,7 @@ static bool load_stream(std::istream& f, const std::string& name) {
     if (g_int8) {
         // LNI8 / LNB8: per tail, int8 weights + float bias + float scale per layer.
         // LNR8: the L2 and L3 scales are float tensors, one per row.
-        auto read_i8 = [&](std::vector<int8_t>& v, int expected) -> bool {
+        auto read_i8 = [&](WeightBytes& v, int expected) -> bool {
             int32_t n = 0; f.read(reinterpret_cast<char*>(&n), 4);
             if (n != expected) { std::fprintf(stderr, "nnue: i8 size %d != %d\n", n, expected); return false; }
             v.resize(n); f.read(reinterpret_cast<char*>(v.data()), n); return f.good(); };
@@ -385,7 +388,7 @@ static bool load_stream(std::istream& f, const std::string& name) {
         // Batched-L3 layout: dpbusd lane (o*4+j) accumulates h2-slice j against
         // l3_w[o] slice j — one interleaved row per 4 outputs, 2 dpbusd for all 32.
         if (L2 == 16 && (L3 % 4) == 0) {
-            std::vector<int8_t> tmp(static_cast<size_t>(L3) * L2);
+            WeightBytes tmp(static_cast<size_t>(L3) * L2);
             for (int o = 0; o < L3; ++o)
                 for (int j = 0; j < 4; ++j)
                     std::memcpy(&tmp[(static_cast<size_t>(o) * 4 + j) * 4], &t.l3_w_i8[static_cast<size_t>(o) * L2 + j * 4], 4);
@@ -397,7 +400,7 @@ static bool load_stream(std::istream& f, const std::string& name) {
         // broadcast 4-byte input chunk updates all 16 output sums at once.
         if (L2 == 16 && (2 * L1) % 4 == 0) {
             const int total_in = 2 * L1;
-            std::vector<int8_t> tmp(static_cast<size_t>(L2) * total_in);
+            WeightBytes tmp(static_cast<size_t>(L2) * total_in);
             for (int c = 0; c < total_in / 4; ++c)
                 for (int o = 0; o < L2; ++o)
                     std::memcpy(&tmp[(static_cast<size_t>(c) * L2 + o) * 4],
@@ -424,7 +427,7 @@ static bool load_stream(std::istream& f, const std::string& name) {
         {
             int total_in = 2 * L1;
             int chunks = total_in / 32;
-            std::vector<int8_t> tmp(static_cast<size_t>(L2) * total_in);
+            WeightBytes tmp(static_cast<size_t>(L2) * total_in);
             for (int c = 0; c < chunks; ++c)
                 for (int o = 0; o < L2; ++o)
                     std::memcpy(&tmp[(static_cast<size_t>(c) * L2 + o) * 32],
@@ -464,12 +467,6 @@ static bool load_stream(std::istream& f, const std::string& name) {
     }
     g_loaded = true;
     ++g_net_id;   // refresh-cache entries of the previous net are stale
-#if defined(__linux__) && defined(MADV_HUGEPAGE)
-    // THP for the big weight tables: the incremental update path is
-    // memory-latency bound (random row access into ft_w); huge pages cut
-    // TLB misses. Best effort — silently ignored where disallowed.
-    madvise(ft_w.data(), (ft_w.size() * sizeof(int16_t) + 0xFFFFF) & ~0xFFFFF, MADV_HUGEPAGE);
-#endif
     // stdout carries UCI traffic, so the report is an info string.
     if (NB > 1)
         std::printf("info string NNUE evaluation using %s (int8 L1=%d L2=%d L3=%d, %d output buckets%s)\n",
@@ -961,9 +958,9 @@ Value evaluate(const Position& pos) {
     // This position's dense tail (the only one unless the net has output
     // buckets), bound to the names the kernels below use.
     const DenseTail& tail = g_tails[bucket_of(pos)];
-    const std::vector<int8_t>& l2_w_i8 = tail.l2_w_i8;
-    const std::vector<int8_t>& l3_w_i8 = tail.l3_w_i8;
-    const std::vector<int8_t>& out_w_i8 = tail.out_w_i8;
+    const WeightBytes& l2_w_i8 = tail.l2_w_i8;
+    const WeightBytes& l3_w_i8 = tail.l3_w_i8;
+    const WeightBytes& out_w_i8 = tail.out_w_i8;
     const std::vector<float>& l2_b = tail.l2_b;
     const std::vector<float>& l3_b = tail.l3_b;
     [[maybe_unused]] const float* const ics2 = tail.ics2.data();

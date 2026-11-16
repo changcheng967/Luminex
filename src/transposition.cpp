@@ -27,8 +27,6 @@ void TTEntry::save(uint64_t k, Value v, bool pv, Bound b, Depth d, Move m, Value
 }
 
 void TranspositionTable::resize(size_t mb) {
-    table.clear();
-
     // Round size down to power of 2 for fast bitwise AND indexing
     size_t new_size = mb > 0 ? (mb * 1024 * 1024) / sizeof(TTCluster) : 0;
     if (new_size > 0) {
@@ -45,10 +43,7 @@ void TranspositionTable::resize(size_t mb) {
         if (new_size < 1024) new_size = 1024;
     }
     entries = new_size * 3;
-
-    if (new_size > 0) {
-        table.resize(new_size);  // value-initialized: already zero
-    }
+    table.reset(new_size);   // frees the old table first; zeroed
 }
 
 void TranspositionTable::clear() {

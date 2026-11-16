@@ -4,6 +4,7 @@
 #include <cstdint>
 #include <cstring>
 #include <vector>
+#include "large_pages.h"
 
 namespace luminex {
 
@@ -72,7 +73,7 @@ public:
     size_t hashfull() const;
 
 private:
-    std::vector<TTCluster> table;
+    LargeArray<TTCluster> table;   // 2 MiB pages where the system allows (large_pages.h)
     size_t entries;
     uint8_t generation8 = 0;
     uint8_t search_id8 = 0;
