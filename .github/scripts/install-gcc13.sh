@@ -13,6 +13,14 @@ set -uo pipefail
 
 sudo apt-get update -q && sudo apt-get install -y -q ninja-build || exit 1
 
+# A down PPA costs apt minutes per try (it fails package by package), so ask its
+# index first and skip straight to the fallback when even that is refused.
+PPA=https://ppa.launchpadcontent.net/ubuntu-toolchain-r/test/ubuntu/dists/jammy/Release
+if [ "${GCC13_SOURCE:-}" != conda ] && ! curl -fsS -o /dev/null --max-time 20 "$PPA"; then
+    echo "::warning::toolchain PPA index unreachable"
+    GCC13_SOURCE=conda
+fi
+
 if [ "${GCC13_SOURCE:-}" != conda ]; then
     for i in 1 2 3; do
         if sudo add-apt-repository -y ppa:ubuntu-toolchain-r/test && sudo apt-get install -y -q g++-13; then
