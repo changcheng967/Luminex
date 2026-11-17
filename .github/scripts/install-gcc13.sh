@@ -1,0 +1,35 @@
+#!/usr/bin/env bash
+# gcc-13 for the Linux builds on Ubuntu 22.04, whose own gcc (11) has no <format>.
+#
+# First choice: the ubuntu-toolchain-r PPA, three tries. When Launchpad cannot
+# serve it (its 503s failed every Linux job on 2026-11-17), the same gcc 13 from
+# conda-forge instead. Its compiler targets an older glibc through its own sysroot,
+# so the binary still runs on glibc 2.35 and newer; check-deps.py checks that
+# whichever compiler built it.
+#
+# GCC13_SOURCE=conda skips the PPA, to exercise the fallback on purpose.
+# Writes CXX=<the compiler> to $GITHUB_ENV.
+set -uo pipefail
+
+sudo apt-get update -q && sudo apt-get install -y -q ninja-build || exit 1
+
+if [ "${GCC13_SOURCE:-}" != conda ]; then
+    for i in 1 2 3; do
+        if sudo add-apt-repository -y ppa:ubuntu-toolchain-r/test && sudo apt-get install -y -q g++-13; then
+            echo "CXX=g++-13" >> "$GITHUB_ENV"
+            echo "gcc-13 from the toolchain PPA"
+            exit 0
+        fi
+        echo "::warning::toolchain PPA: attempt $i of 3 failed"
+        [ "$i" -lt 3 ] && sleep $((i * 30))
+    done
+    # Launchpad is unreachable: drop its source so no later apt call trips on it
+    sudo add-apt-repository -y --remove ppa:ubuntu-toolchain-r/test || true
+fi
+
+curl -fsSL --retry 3 https://micro.mamba.pm/api/micromamba/linux-64/latest | tar -xj -C "$HOME" bin/micromamba || exit 1
+"$HOME/bin/micromamba" create -y -q -p "$HOME/gcc13" -c conda-forge "gxx_linux-64=13" || exit 1
+CXX="$HOME/gcc13/bin/x86_64-conda-linux-gnu-g++"
+"$CXX" --version | head -n 1 || exit 1
+echo "CXX=$CXX" >> "$GITHUB_ENV"
+echo "::warning::gcc-13 from conda-forge, because the toolchain PPA could not serve it"

@@ -28,13 +28,11 @@ jobs:
     steps:
     - uses: actions/checkout@v5
     - name: Install dependencies
-      run: |
-        sudo add-apt-repository -y ppa:ubuntu-toolchain-r/test
-        sudo apt-get update && sudo apt-get install -y ninja-build g++-13
+      run: bash .github/scripts/install-gcc13.sh
     - name: Fetch the network
       run: bash .github/scripts/fetch-net.sh
     - name: Configure
-      run: cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DCI=ON -DCMAKE_CXX_COMPILER=g++-13 -DLUMINEX_DISPATCH=ON -DCMAKE_CXX_FLAGS="-static-libstdc++ -static-libgcc" -DLUMINEX_EMBED_PINNED=ON
+      run: cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DCI=ON -DCMAKE_CXX_COMPILER="$CXX" -DLUMINEX_DISPATCH=ON -DCMAKE_CXX_FLAGS="-static-libstdc++ -static-libgcc" -DLUMINEX_EMBED_PINNED=ON
     - name: Build
       run: cmake --build build --config Release
     - name: Check instruction set
