@@ -210,6 +210,68 @@ static inline void corr_sample(int c) {
 
 // Thread-local node counter to avoid atomic overhead on every node
 static thread_local uint64_t local_nodes = 0;
+
+// ---------------------------------------------------------------------------
+// Allocation profile: research tooling for the node-allocation gate, inert
+// unless LUMINEX_ALLOC_PROFILE names an output file. A deterministic sample of
+// the moves whose depth the search decides (LMR-reduced moves, and quiets
+// pruned by history pruning, LMP or futility) is searched again inside a
+// shadow whose own moves are never sampled, with the same zero window at
+// alpha: an LMR move one ply less reduced and at full depth, a pruned move at
+// the depth it would have got. Each sample's features, verdicts and node
+// counts are a line in the file; each sampled node's final result follows as
+// its own line when the node returns. LUMINEX_ALLOC_RATE="a,b,c" samples 1 in
+// a, b, c moves at depths 3-5, 6-9 and 10+; LUMINEX_ALLOC_FULL=0 skips the
+// full-depth shadow. One search thread.
+// ---------------------------------------------------------------------------
+namespace alloc_profile {
+struct Config {
+    FILE* out = nullptr;
+    unsigned rate[3] = {1024, 256, 256};
+    bool full = true;
+};
+static const Config& cfg() {
+    static const Config c = [] {
+        Config k;
+        if (const char* path = std::getenv("LUMINEX_ALLOC_PROFILE")) {
+            k.out = std::fopen(path, "a");
+            if (const char* r = std::getenv("LUMINEX_ALLOC_RATE"))
+                std::sscanf(r, "%u,%u,%u", &k.rate[0], &k.rate[1], &k.rate[2]);
+            for (unsigned& x : k.rate) x = std::max(1u, x);
+            if (const char* f = std::getenv("LUMINEX_ALLOC_FULL")) k.full = f[0] != '0';
+        }
+        return k;
+    }();
+    return c;
+}
+static thread_local int in_shadow = 0;
+static thread_local uint64_t last_node_id = 0;
+
+static bool sampled(Key key, Move m, int depth) {
+    const Config& c = cfg();
+    if (!c.out || in_shadow || depth < 1) return false;
+    const unsigned n = c.rate[depth <= 5 ? 0 : depth <= 9 ? 1 : 2];
+    const uint64_t h = (key ^ (uint64_t(m.raw()) * 0x9E3779B97F4A7C15ULL)) * 0xD6E8FEB86659FD93ULL;
+    return (h >> 33) % n == 0;
+}
+
+// Writes a sampled node's result (0 fail low, 1 exact, 2 fail high) when the
+// node returns; a node without samples, or cut short by a stop, writes nothing.
+struct NodeGuard {
+    const Value& best;
+    const Value alpha0, beta;
+    uint64_t id = 0;
+    NodeGuard(const Value& b, Value a0, Value bt) : best(b), alpha0(a0), beta(bt) {}
+    NodeGuard(const NodeGuard&) = delete;
+    NodeGuard& operator=(const NodeGuard&) = delete;
+    uint64_t node_id() { return id ? id : (id = ++last_node_id); }
+    ~NodeGuard() {
+        if (id && !stop.load(std::memory_order_relaxed))
+            std::fprintf(cfg().out, "N %llu %d\n", (unsigned long long)id,
+                         best >= beta ? 2 : best > alpha0 ? 1 : 0);
+    }
+};
+}  // namespace alloc_profile
 static thread_local uint64_t last_reported_nodes = 0;
 
 // Precomputed LMR reduction table. Only quiet moves take the formula
@@ -987,6 +1049,7 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
     // ================================================================
 
     Value best_value = -VALUE_INFINITE;
+    alloc_profile::NodeGuard alloc_node(best_value, original_alpha, beta);
     int moves_played = 0;
     bool any_legal_move = false;  // Track if any legal move exists (vs all pruned)
 
@@ -1216,6 +1279,56 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
         return bishop_snipers != 0 || rook_snipers != 0;
     };
 
+    // Allocation profile: the features every sample line starts with, read on
+    // this node's position before the move is made.
+    auto alloc_features = [&](char* buf, size_t len, Move m, bool quiet, bool losing_cap) {
+        const Piece pc = pos.piece_on(m.from());
+        const int hist = (quiet && pc != NO_PIECE) ? combined_history(worker, ss, pc, m.to()) : 0;
+        const int killer = m == worker->killers[ss->ply][0] ? 1 : m == worker->killers[ss->ply][1] ? 2 : 0;
+        const int ev = pos.is_check() ? 0 : std::clamp(int(eval) - int(alpha), -3000, 3000);
+        std::snprintf(buf, len, "%llu %d %d %d %d %d %d %d %d %d %d %d %d %d %d %d %d %d %d",
+                      (unsigned long long)alloc_node.node_id(), int(depth), int(ss->ply), moves_played,
+                      int(quiet), int(losing_cap), killer, int(m == tt_move), int(tt_move != MOVE_NONE),
+                      int(cut_node), int(pv_node), int(ttPv), int(ss->improving), int(opponent_worsening),
+                      int(pos.is_check()), int(ss->ply >= 1 && (ss - 1)->current_move.is_capture()),
+                      hist, ev, int(eval_uncertainty));
+    };
+    // Allocation profile: a sampled pruned quiet, searched in a shadow at the
+    // depth it would have got (as search_move below would set it), with the
+    // zero window at alpha. kind 1 history pruning, 2 LMP, 3 futility.
+    auto alloc_pruned = [&](Move m, int kind) {
+        char feat[192];
+        alloc_features(feat, sizeof feat, m, true, false);
+        const bool chk = gives_check(m);
+        int ext = (chk && pos.see_ge(m, VALUE_ZERO)) ? 1 : 0;
+        if (ss->forced_ply_count >= 3 && ext == 0 && depth >= 4) ext = 1;
+        if (ext > 0 && ss->ply >= 2 * worker->root_depth) ext = 0;
+        Depth d = depth - 1;
+        if (depth >= 3 && moves_played >= 1 && !chk)
+            d = std::max(1, depth - 1 - compute_reduction(m, moves_played, chk));
+        d += ext;
+        const Move saved_move = ss->current_move;
+        const Piece saved_piece = ss->moved_piece;
+        const int saved_reduction = ss->reduction;
+        ss->current_move = m;
+        ss->moved_piece = pos.piece_on(m.from());
+        ss->reduction = depth - 1 + ext - d;
+        if (pos.do_move(m)) {
+            ++alloc_profile::in_shadow;
+            const uint64_t n0 = local_nodes;
+            const Value v = -search_worker(pos, ss + 1, -alpha - 1, -alpha, d, !cut_node);
+            const uint64_t n = local_nodes - n0;
+            --alloc_profile::in_shadow;
+            pos.undo_move(m);
+            if (!stop.load(std::memory_order_relaxed))
+                std::fprintf(alloc_profile::cfg().out, "P %d %s %d %d %d %llu\n", kind, feat, int(d),
+                             int(v > alpha), int(v), (unsigned long long)n);
+        }
+        ss->current_move = saved_move;
+        ss->moved_piece = saved_piece;
+        ss->reduction = saved_reduction;
+    };
+
     // Helper lambda: search a single move, return true if beta cutoff
     auto search_move = [&](Move m, bool is_quiet) -> bool {
         if (stop.load(std::memory_order_relaxed)) return false;
@@ -1251,6 +1364,7 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
                 // Prune if history is very negative (move has historically been bad)
                 if (hist_score < sp.hist_prune_base - sp.hist_prune_coeff * (depth - 1)) {
                     g_stats.history_prunes++;
+                    if (alloc_profile::sampled(pos.key(), m, depth)) alloc_pruned(m, 1);
                     return false;
                 }
             }
@@ -1266,6 +1380,7 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
         if (is_quiet && !pv_node && ss->ply > 0 && depth <= 8 && moves_played >= lmp_threshold && may_skip_quiets
             && m != worker->killers[ss->ply][0] && m != worker->killers[ss->ply][1]) {
             g_stats.lmp_prunes++;
+            if (alloc_profile::sampled(pos.key(), m, depth)) alloc_pruned(m, 2);
             return false;
         }
 
@@ -1278,6 +1393,7 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
             margin += std::min(eval_uncertainty / 3, 50);  // Less pruning when eval uncertain
             if (eval + margin < alpha) {
                 g_stats.futility_prunes++;
+                if (alloc_profile::sampled(pos.key(), m, depth)) alloc_pruned(m, 3);
                 return false;
             }
         }
@@ -1351,6 +1467,11 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
         // credits were cancelling real reductions out of that signal.
         ss->reduction = lmr_reduction;
 
+        // Allocation profile: an LMR sample's features are read before the move.
+        char alloc_feat[192];
+        const bool alloc_sample = do_lmr && new_depth > 0 && alloc_profile::sampled(pos.key(), m, depth);
+        if (alloc_sample) alloc_features(alloc_feat, sizeof alloc_feat, m, is_quiet, is_losing_capture);
+
         if (!pos.do_move(m)) {
             return false;
         }
@@ -1358,10 +1479,40 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
         Value value;
         if (do_lmr && new_depth > 0) {
             // LMR: reduced zero-window search
+            const uint64_t alloc_n0 = local_nodes;
             value = -search_worker(pos, ss + 1, -alpha - 1, -alpha, new_depth, !cut_node);
             if (stop.load(std::memory_order_relaxed)) {
                 pos.undo_move(m);
                 return false;
+            }
+            if (alloc_sample) {
+                // Shadows: one ply less reduced, and full depth, same zero window.
+                const uint64_t n_red = local_nodes - alloc_n0;
+                const Depth d_step = std::min<Depth>(new_depth + 1, full_depth);
+                ++alloc_profile::in_shadow;
+                uint64_t n1 = local_nodes;
+                const Value v_step = -search_worker(pos, ss + 1, -alpha - 1, -alpha, d_step, !cut_node);
+                const uint64_t n_step = local_nodes - n1;
+                Value v_full = v_step;
+                uint64_t n_full = n_step;
+                const bool do_full = full_depth > d_step && alloc_profile::cfg().full;
+                if (do_full) {
+                    n1 = local_nodes;
+                    v_full = -search_worker(pos, ss + 1, -alpha - 1, -alpha, full_depth, !cut_node);
+                    n_full = local_nodes - n1;
+                }
+                --alloc_profile::in_shadow;
+                if (stop.load(std::memory_order_relaxed)) {
+                    pos.undo_move(m);
+                    return false;
+                }
+                std::fprintf(alloc_profile::cfg().out,
+                             "L %s %d %d %d %d %d %d %d %d %d %d %d %llu %llu %llu\n", alloc_feat,
+                             lmr_reduction, ext_count, int(new_depth), int(full_depth), int(d_step),
+                             int(value > alpha), int(v_step > alpha), do_full ? int(v_full > alpha) : -1,
+                             int(value), int(v_step), do_full ? int(v_full) : 0,
+                             (unsigned long long)n_red, (unsigned long long)n_step,
+                             (unsigned long long)(do_full ? n_full : 0));
             }
             // A reduced move that beats alpha is searched again unreduced
             // with a zero window. Its depth follows the reduced score: far
