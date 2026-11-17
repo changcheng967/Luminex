@@ -245,6 +245,25 @@ static const Config& cfg() {
     return c;
 }
 static thread_local int in_shadow = 0;
+
+// Part B: one allocation class shifted at a time, named by LUMINEX_ALLOC_SHIFT.
+enum Shift { NONE, HIST_PRUNE_OFF, PRUNE_NEAR_ALPHA_OFF, LMR_R1_DEEP_OFF, LMR_SECOND_LESS, LMR_HIST_TOP_LESS,
+             LMR_LATE_MORE };
+struct ShiftConfig { Shift shift = NONE; int arg = 0; };
+static const ShiftConfig& shift_cfg() {
+    static const ShiftConfig c = [] {
+        ShiftConfig k;
+        if (const char* v = std::getenv("LUMINEX_ALLOC_SHIFT")) {
+            const std::string n(v);
+            k.shift = n == "hist_prune_off" ? HIST_PRUNE_OFF : n == "prune_near_alpha_off" ? PRUNE_NEAR_ALPHA_OFF
+                    : n == "lmr_r1_deep_off" ? LMR_R1_DEEP_OFF : n == "lmr_second_less" ? LMR_SECOND_LESS
+                    : n == "lmr_hist_top_less" ? LMR_HIST_TOP_LESS : n == "lmr_late_more" ? LMR_LATE_MORE : NONE;
+            if (const char* a = std::getenv("LUMINEX_ALLOC_SHIFT_ARG")) k.arg = std::atoi(a);
+        }
+        return k;
+    }();
+    return c;
+}
 static thread_local uint64_t last_node_id = 0;
 
 static bool sampled(Key key, Move m, int depth) {
@@ -1367,7 +1386,11 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
 
         // Continuation pruning: skip quiet moves with very poor history at low depth
         // Combined counter+continuation history
-        if (is_quiet && !pv_node && depth <= 4 && moves_played > 0 && may_skip_quiets) {
+        const alloc_profile::Shift alloc_shift = alloc_profile::shift_cfg().shift;
+        const bool alloc_keep_near_alpha = alloc_shift == alloc_profile::PRUNE_NEAR_ALPHA_OFF
+                                           && !pos.is_check() && eval >= alpha - 50;
+        if (is_quiet && !pv_node && depth <= 4 && moves_played > 0 && may_skip_quiets
+            && alloc_shift != alloc_profile::HIST_PRUNE_OFF && !alloc_keep_near_alpha) {
             Piece pc = pos.piece_on(m.from());
             if (pc != NO_PIECE) {
                 int hist_score = combined_history(worker, ss, pc, m.to());
@@ -1388,7 +1411,7 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
         int lmp_threshold = (sp.lmp_base + ((ss->improving || opponent_worsening) ? 100 : 0)
                              + depth * depth * sp.lmp_coeff) / 100;
         if (is_quiet && !pv_node && ss->ply > 0 && depth <= 8 && moves_played >= lmp_threshold && may_skip_quiets
-            && m != worker->killers[ss->ply][0] && m != worker->killers[ss->ply][1]) {
+            && m != worker->killers[ss->ply][0] && m != worker->killers[ss->ply][1] && !alloc_keep_near_alpha) {
             g_stats.lmp_prunes++;
             if (alloc_profile::sampled(pos.key(), m, depth)) alloc_pruned(m, 2);
             return false;
@@ -1429,8 +1452,17 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
             } else {
                 reduction = compute_reduction(m, moves_played, gives_chk);
             }
+            if (alloc_shift == alloc_profile::LMR_SECOND_LESS && moves_played == 1) reduction -= 1;
+            if (alloc_shift == alloc_profile::LMR_HIST_TOP_LESS && is_quiet && depth <= 5) {
+                const Piece hpc = pos.piece_on(m.from());
+                if (hpc != NO_PIECE && combined_history(worker, ss, hpc, m.to()) >= alloc_profile::shift_cfg().arg)
+                    reduction -= 1;
+            }
+            if (alloc_shift == alloc_profile::LMR_LATE_MORE && depth <= 5 && moves_played >= 9) reduction += 1;
+            reduction = std::max(reduction, 0);
             // Reduce less in PV nodes
             if (pv_node) reduction = std::max(1, reduction - 1);
+            if (alloc_shift == alloc_profile::LMR_R1_DEEP_OFF && depth >= 6 && reduction == 1) reduction = 0;
             new_depth = depth - 1 - reduction;
             if (new_depth < 1) new_depth = 1;
             lmr_reduction = depth - 1 - new_depth;
