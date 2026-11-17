@@ -3,12 +3,16 @@
 #include <chrono>
 #include <iostream>
 #include <cstdio>
+#if defined(LUMINEX_STACKTRACE)
+#include <csignal>
+#include <stacktrace>
+#include <string>
+#endif
 
 namespace luminex {
 
 void init() {
     init_magic_bitboards();
-    init_line_tables();
     init_zobrist();
     init_evaluation();
     // SPSA overrides from the working directory; UCI options set later win
@@ -61,10 +65,28 @@ uint64_t perft_divide(Position& pos, Depth depth) {
     return total;
 }
 
+#if defined(LUMINEX_STACKTRACE)
+// A debugging aid, never in a release (cmake -DLUMINEX_STACKTRACE=ON): a crash
+// prints the crashing thread's stack to stderr, then the default action ends
+// the process as before. Formatting a trace is not async-signal-safe, which a
+// process that is already dying can afford; a stack overflow, whose handler
+// would need the very stack that ran out, is not traced.
+static void crash_trace(int sig) {
+    std::signal(sig, SIG_DFL);
+    const std::string trace = std::to_string(std::stacktrace::current());
+    std::fprintf(stderr, "luminex: signal %d, stack:\n%s\n", sig, trace.c_str());
+    std::fflush(stderr);
+    std::raise(sig);
+}
+#endif
+
 } // namespace luminex
 
 int main(int argc, char* argv[]) {
     using namespace luminex;
+#if defined(LUMINEX_STACKTRACE)
+    for (int sig : {SIGSEGV, SIGABRT, SIGFPE, SIGILL}) std::signal(sig, crash_trace);
+#endif
 
     // CRITICAL: Unbuffered stdout for immediate UCI response
     // Keep sync_with_stdio TRUE for proper getline/stdin interaction on Windows

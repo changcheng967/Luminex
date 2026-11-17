@@ -2,10 +2,6 @@
 
 namespace luminex {
 
-// Precomputed line and between tables
-Bitboard LineBB[64][64];
-Bitboard BetweenBB[64][64];
-
 // Magic bitboard tables
 Magic RookMagics[64];
 Magic BishopMagics[64];
@@ -176,48 +172,6 @@ void init_magic_bitboards() {
 
     init_magics(RookMagics, RookTable, true);
     init_magics(BishopMagics, BishopTable, false);
-}
-
-void init_line_tables() {
-    static bool initialized = false;
-    if (initialized) return;
-    initialized = true;
-
-    for (int s1 = 0; s1 < 64; ++s1) {
-        for (int s2 = 0; s2 < 64; ++s2) {
-            int f1 = file_of(Square(s1)), r1 = rank_of(Square(s1));
-            int f2 = file_of(Square(s2)), r2 = rank_of(Square(s2));
-            int df = f2 - f1, dr = r2 - r1;
-
-            if (df == 0 && dr == 0) {
-                LineBB[s1][s2] = BB_EMPTY;
-                BetweenBB[s1][s2] = BB_EMPTY;
-                continue;
-            }
-
-            bool is_aligned = (df == 0 || dr == 0 ||
-                              (df < 0 ? -df : df) == (dr < 0 ? -dr : dr));
-
-            if (!is_aligned) {
-                LineBB[s1][s2] = BB_EMPTY;
-                BetweenBB[s1][s2] = BB_EMPTY;
-                continue;
-            }
-
-            Bitboard line = 0;
-            int step_f = df == 0 ? 0 : (df > 0 ? 1 : -1);
-            int step_r = dr == 0 ? 0 : (dr > 0 ? 1 : -1);
-
-            Square s = Square(s1);
-            while (s != Square(s2)) {
-                s = Square(s + step_r * 8 + step_f);
-                line |= square_bb(s);
-            }
-            line |= square_bb(Square(s1));
-            LineBB[s1][s2] = line;
-            BetweenBB[s1][s2] = line & ~(square_bb(Square(s1)) | square_bb(Square(s2)));
-        }
-    }
 }
 
 } // namespace luminex
