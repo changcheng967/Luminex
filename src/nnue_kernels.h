@@ -25,8 +25,12 @@ inline constexpr int NNUE_L1_MAX = 1024;
 // buffers are sized from it.
 inline constexpr int NNUE_DENSE_MAX = 64;
 // Feature weights and accumulator lanes are int16 at this scale: SCReLU's
-// window [0, 1] is lanes [0, 8192].
-inline constexpr float NNUE_FT_SCALE = 8192.0f;
+// window [0, 1] is lanes [0, 2048], and int16 holds sums to +-16.0 window
+// units. At x8192 int16 ended at 4.0, below the sums real nets reach (11.5
+// on gen768s_03q), and the saturating updates drifted: 12.7% of a search's
+// evaluations were not the net's output. The trainer's QAT rounds to the same
+// grid (nnue/openi_upload/resident_train.py, FT_GRID).
+inline constexpr float NNUE_FT_SCALE = 2048.0f;
 
 // How a kernel set wants L2's int8 weights (2*L1 inputs x L2 outputs)
 // arranged; the file stores them output-major.
