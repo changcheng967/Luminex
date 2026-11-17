@@ -1318,11 +1318,21 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
             const uint64_t n0 = local_nodes;
             const Value v = -search_worker(pos, ss + 1, -alpha - 1, -alpha, d, !cut_node);
             const uint64_t n = local_nodes - n0;
+            // A fail high at a reduced depth is re-searched at full depth, as
+            // search_move does, so the event can be confirmed or refuted.
+            const Depth d_full = depth - 1 + ext;
+            int fh_full = -1;
+            uint64_t n_full = 0;
+            if (v > alpha && d < d_full) {
+                const uint64_t n1 = local_nodes;
+                fh_full = int(-search_worker(pos, ss + 1, -alpha - 1, -alpha, d_full, !cut_node) > alpha);
+                n_full = local_nodes - n1;
+            }
             --alloc_profile::in_shadow;
             pos.undo_move(m);
             if (!stop.load(std::memory_order_relaxed))
-                std::fprintf(alloc_profile::cfg().out, "P %d %s %d %d %d %llu\n", kind, feat, int(d),
-                             int(v > alpha), int(v), (unsigned long long)n);
+                std::fprintf(alloc_profile::cfg().out, "P %d %s %d %d %d %llu %d %llu\n", kind, feat, int(d),
+                             int(v > alpha), int(v), (unsigned long long)n, fh_full, (unsigned long long)n_full);
         }
         ss->current_move = saved_move;
         ss->moved_piece = saved_piece;
