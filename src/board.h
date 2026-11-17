@@ -157,7 +157,10 @@ private:
     Bitboard castling_path_[NO_COLOR][2] = {};
 
     // Position history for repetition detection
-    static constexpr int MAX_HISTORY = 1024;
+    // As deep as the state stack: a game plus its search can never outgrow it, so
+    // every do_move records its key and every undo_move removes one (at 1024, a
+    // game past ~775 plies stopped recording while undo_move kept removing).
+    static constexpr int MAX_HISTORY = MAX_STATES;
     Key position_history[MAX_HISTORY];
     int history_size = 0;
 };

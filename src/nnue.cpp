@@ -166,11 +166,11 @@ static uint32_t g_net_id = 0;   // incremented by every successful load(); keys 
 
 // Per-thread accumulator stack, indexed by Position::st_ply(). v[perspective][neuron].
 // Cache-line aligned for clean loads during the SCReLU/quant8 pass.
-// int16 saturating accumulator: exact integer sums, clip window [0, 8192]
-// (1.0x FT_WSCALE); int16 saturation at +-32767 sits 4x above the window, so
-// saturating lanes were already fully clipped by SCReLU.
-// that saturates was already fully clipped. Simulated on 6000 real perspectives:
-// 2 single-lane activation-quant diffs out of 3.07M lanes (0.03% of perspectives).
+// int16 accumulator: exact integer sums as long as every lane stays inside
+// int16, which on the x2048 grid (FT_WSCALE) is +-16.0 window units against the
+// 11.5 of the largest sum measured (gen768s_03q). The adds saturate instead of
+// wrapping, but a lane that saturated would carry its clipped value into later
+// updates, so the grid, not the SCReLU clip, is what keeps the lanes exact.
 // Halves copy/update/eval traffic vs the int32 accumulator.
 struct alignas(64) Accumulator { int16_t v[2][NNUE_L1_MAX]; int32_t lin[2]; };
 
@@ -208,10 +208,6 @@ static inline KingBoard* nnue_king_boards() {
     thread_local std::vector<KingBoard> store(NNUE_MAX_PLY);
     return store.data();
 }
-
-// at startpos (beyond int16's +-4.0 = 32767/8192) — the soft NNUE_ACC_REG did
-// not pull the extremes into int16 range, so saturating int16 adds corrupt
-// lanes that leave and re-enter the clip window (spec §3 fallback stands).
 
 bool loaded() { return g_loaded; }
 bool enabled() { return g_loaded && g_enabled; }
@@ -478,7 +474,7 @@ static bool load_stream(std::istream& f, const std::string& name) {
     std::vector<float> ft_w_raw;
     if (!read_tensor(f, ft_w_raw, L1 * NUM_INPUTS)) return false;
     ft_w.reset(static_cast<size_t>(NUM_INPUTS) * L1);
-    // int16 at x8192 holds |w| < 4.0; clamp instead of letting the cast wrap.
+    // int16 at x2048 holds |w| < 16.0; clamp instead of letting the cast wrap.
     long long clamped = 0;
     for (int i = 0; i < NUM_INPUTS; ++i)
         for (int l = 0; l < L1; ++l) {
@@ -886,13 +882,11 @@ Value evaluate(const Position& pos) {
                     // was the bias alone, so any real position aborted here
                     ref += ft_w[(size_t)idx * g_L1 + l];
                 }
-                // int16 saturating acc: saturated lanes differ from the exact
-                // reference in raw value but are IDENTICAL after the SCReLU clip
-                // (window [0,8192] sits 4x below saturation). Compare activations.
-                // g_sat_events tracks how often the exact value even reaches the
-                // int16 boundary — it should stay at zero under range-constrained
-                // training; if it grows, the fused/sequential divergence above
-                // becomes live and the training constraint has failed.
+                // Compare activations, which is what the dense layers read.
+                // g_sat_events counts exact sums that reach the int16 boundary:
+                // on the x2048 grid it stays at zero, and a lane past it would
+                // carry a clipped value into the moves after (the drift x8192
+                // had).
                 if (std::fabs(ref) >= 32768.0f) ++g_sat_events;
                 float ref_a = std::min(1.0f, std::max(0.0f, ref * FT_WINV));
                 float inc_a = std::min(1.0f, std::max(0.0f, inc.v[p][l] * FT_WINV));

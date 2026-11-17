@@ -2,6 +2,7 @@
 #include "luminex.h"
 #include "nnue.h"
 #include "spsa_params.h"
+#include "search_thread.h"
 #include <algorithm>
 #include <chrono>
 #include <cmath>
@@ -129,7 +130,7 @@ static SearchWorker* main_search_worker = nullptr;
 // (counter_moves / continuation_history moved into SearchWorker — see struct)
 
 // Lazy SMP helper thread management (inside anonymous namespace for internal linkage)
-static std::vector<std::thread> helper_threads;
+static std::vector<SearchThread> helper_threads;   // large stacks: search_thread.h
 static std::atomic<bool> helpers_running{false};
 
 
@@ -238,6 +239,11 @@ inline int combined_history(const SearchWorker* w, const Stack* ss, Piece pc, Sq
 }
 
 inline Value eval_cached(const Position& pos) {
+    // Known endgames are taken as they are: no cache, and no correction, whose
+    // hashed keys would add position-dependent noise to the mating gradient
+    Value known;
+    if (known_endgame(pos, known)) return known;
+
     uint64_t key = pos.key();
     uint32_t idx = uint32_t(key) & (EVAL_CACHE_SIZE - 1);
 
@@ -267,6 +273,17 @@ inline Value eval_cached(const Position& pos) {
 
 // Search start time for time management
 static std::chrono::steady_clock::time_point search_start;
+
+// The side to move at the root: the side the engine plays. Contempt scores a
+// draw at -contempt/2 for it, wherever the draw is found; set by search()
+// before any helper thread starts.
+static std::atomic<int> root_side{WHITE};
+
+// Set when the first iteration has finished: until then a clock limit does not
+// stop the search, so the move played is always one the search has scored. Depth
+// one costs a few milliseconds, inside any move overhead; without it a 1 ms budget
+// played the first legal move in generation order.
+static std::atomic<bool> depth1_done{false};
 // INVARIANT: both are written exactly once per search, before the helper
 // threads are created, and never modified afterwards. That ordering is what
 // makes them safe to read from every worker without atomics — do not move the
@@ -341,7 +358,7 @@ bool check_time() {
         auto now = std::chrono::steady_clock::now();
         int elapsed = static_cast<int>(std::chrono::duration_cast<std::chrono::milliseconds>(
             now - search_start).count());
-        if (elapsed >= limits.movetime) {
+        if (elapsed >= limits.movetime && depth1_done.load(std::memory_order_relaxed)) {
             stop = true;
             return true;
         }
@@ -352,7 +369,7 @@ bool check_time() {
         int elapsed = static_cast<int>(std::chrono::duration_cast<std::chrono::milliseconds>(
             now - search_start).count());
         // Hard limit: stop immediately when max_time is exceeded
-        if (elapsed >= max_time) {
+        if (elapsed >= max_time && depth1_done.load(std::memory_order_relaxed)) {
             stop = true;
             return true;
         }
@@ -411,7 +428,7 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
     if (pos.is_draw()) {
         if (alpha >= VALUE_DRAW) return alpha;
         Value draw_noise = (local_nodes & 2) - 1;
-        return VALUE_DRAW + draw_noise - (pos.side_to_move() == WHITE ? params.contempt / 2 : -params.contempt / 2);
+        return VALUE_DRAW + draw_noise - (int(pos.side_to_move()) == root_side.load(std::memory_order_relaxed) ? params.contempt / 2 : -params.contempt / 2);
     }
 
     // TT probe: memoizes qsearch nodes (the bulk of the tree). Bound-consistent
@@ -445,9 +462,14 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
     // what stand-pat decisions see.
     Value eval = VALUE_ZERO;
     Value raw_eval = VALUE_ZERO;
+    Value known_value = VALUE_ZERO;
+    const bool known_eg = !in_check && known_endgame(pos, known_value);
 
     if (!in_check) {
-        if (tt_found && tte->eval() != VALUE_INFINITE) {
+        if (known_eg) {
+            // A known endgame's score, without correction (see eval_cached)
+            raw_eval = known_value;
+        } else if (tt_found && tte->eval() != VALUE_INFINITE) {
             // Stored static eval (already correction-adjusted at store time)
             raw_eval = tte->eval();
         } else {
@@ -473,8 +495,10 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
         }
 
         // Draw-clock damping: a decisive eval counts for less as the
-        // 50-move draw approaches.
-        eval = pos.halfmove_clock() > 0
+        // 50-move draw approaches. Not in a known endgame: there it scales the
+        // whole known-win score, so one ply of leaf depth moves it by more than
+        // the mating gradient does, and the search follows leaf depth instead.
+        eval = pos.halfmove_clock() > 0 && !known_eg
              ? Value(raw_eval * (200 - pos.halfmove_clock()) / 200) : raw_eval;
 
         if (eval >= beta) {
@@ -641,7 +665,7 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
     if (pos.is_draw()) {
         if (alpha >= VALUE_DRAW) return alpha;
         Value draw_noise = (local_nodes & 2) - 1;
-        return VALUE_DRAW + draw_noise - (pos.side_to_move() == WHITE ? params.contempt / 2 : -params.contempt / 2);
+        return VALUE_DRAW + draw_noise - (int(pos.side_to_move()) == root_side.load(std::memory_order_relaxed) ? params.contempt / 2 : -params.contempt / 2);
     }
 
     ++local_nodes;
@@ -761,19 +785,25 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
     Value eval = VALUE_ZERO;
     Value tt_store_eval = VALUE_INFINITE;
     int eval_uncertainty = 0;  // Magnitude of correction history (measures eval unreliability)
+    // A known endgame (a bare king on one side) is scored as it is: no damping,
+    // no correction, and it teaches the correction history nothing
+    bool known_eg = false;
     if (!pos.is_check()) {
+        Value known_value;
+        known_eg = known_endgame(pos, known_value);
         // The stored TT eval (correction-adjusted at store time) skips the
         // eval-cache probe and the NNUE call; VALUE_INFINITE marks entries
         // saved without one (root stores, in-check nodes)
-        tt_store_eval = (found && tte->eval() != VALUE_INFINITE) ? tte->eval() : eval_cached(pos);
+        tt_store_eval = known_eg ? known_value
+                      : (found && tte->eval() != VALUE_INFINITE) ? tte->eval() : eval_cached(pos);
         // Draw-clock damping: decisive evals count for less as the 50-move
         // draw nears. Caches and the TT keep the undamped value.
-        eval = pos.halfmove_clock() > 0
+        eval = pos.halfmove_clock() > 0 && !known_eg
              ? Value(tt_store_eval * (200 - pos.halfmove_clock()) / 200) : tt_store_eval;
         // Correction history magnitude = how wrong the eval has been in similar positions.
         // High uncertainty → eval is unreliable → search should be less aggressive.
         // Low uncertainty → eval is reliable → search can be more aggressive.
-        eval_uncertainty = std::abs(get_total_correction(pos));
+        eval_uncertainty = known_eg ? 0 : std::abs(get_total_correction(pos));
     }
     ss->static_eval = eval;
 
@@ -1498,7 +1528,7 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
                 // static eval, that says the eval was too low here, so cut nodes
                 // teach the correction history too, not only fail-low ends.
                 if (!stop.load(std::memory_order_relaxed) && !ss->excluded_move && !pv_node
-                    && !pos.is_check() && !m.is_capture() && value > eval
+                    && !pos.is_check() && !m.is_capture() && value > eval && !known_eg
                     && std::abs(value) < VALUE_KNOWN_WIN && std::abs(eval) < VALUE_KNOWN_WIN
                     && depth >= 2) {
                     update_all_corrections(pos, depth, value - eval);
@@ -1774,7 +1804,7 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
         if (pos.is_check()) {
             return -VALUE_MATE + ss->ply;
         }
-        return VALUE_DRAW - (pos.side_to_move() == WHITE ? params.contempt / 2 : -params.contempt / 2);
+        return VALUE_DRAW - (int(pos.side_to_move()) == root_side.load(std::memory_order_relaxed) ? params.contempt / 2 : -params.contempt / 2);
     }
 
     // All legal moves were pruned: return eval as best estimate
@@ -1806,7 +1836,7 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
         // proves the eval too high when it lies below it, and proves nothing
         // when it lies above (the true score may be anywhere beneath it).
         bool best_is_capture = best_move_found.is_capture();
-        if (!pv_node && !pos.is_check() && !best_is_capture && best_value < eval
+        if (!pv_node && !pos.is_check() && !best_is_capture && best_value < eval && !known_eg
             && abs(best_value) < VALUE_KNOWN_WIN && abs(eval) < VALUE_KNOWN_WIN
             && moves_played > 0 && depth >= 2) {
             update_all_corrections(pos, depth, best_value - eval);
@@ -1979,8 +2009,10 @@ static void helper_thread_func(Position pos_copy, int thread_id) {
 // Root search with iterative deepening
 Move search(Position& pos, Limits& lim) {
     limits = lim;
-    g_stop_requested = false;
-    stop = false;
+    root_side.store(int(pos.side_to_move()), std::memory_order_relaxed);
+    // The stop flags are the caller's to clear (handle_go, bench) before the
+    // search starts: clearing them here lost a "stop" sent right after "go".
+    depth1_done.store(false, std::memory_order_relaxed);
     nodes = 0;
     local_nodes = 0;
     last_reported_nodes = 0;
@@ -2124,7 +2156,7 @@ Move search(Position& pos, Limits& lim) {
     // Launch helper threads for lazy SMP (after the time budget is published)
     helpers_running = true;
     for (int i = 1; i < num_threads; ++i) {
-        helper_threads.emplace_back(helper_thread_func, pos, i);
+        helper_threads.emplace_back([pos, i] { helper_thread_func(pos, i); });
     }
 
     // Initialize killers (clear for new search)
@@ -2519,6 +2551,7 @@ Move search(Position& pos, Limits& lim) {
             last_aspiration_attempts = aspiration_attempts;
             best_value = depth_best_value;
             best_move = depth_best_move;
+            depth1_done.store(true, std::memory_order_relaxed);
         }
 
         // Save root position to TT for PV extraction

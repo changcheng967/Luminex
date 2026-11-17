@@ -157,6 +157,7 @@ int main(int argc, char* argv[]) {
             // speed that includes zeroing 256 MB, which OpenBench then scales
             // every time control by.
             TT.ensure_allocated();
+            stop = false;   // search() leaves the stop flags to its caller
             auto t0 = high_resolution_clock::now();
             search(probe, lim);
             auto sms = duration_cast<milliseconds>(high_resolution_clock::now() - t0).count();
