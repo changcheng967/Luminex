@@ -23,7 +23,7 @@
 //   (a) mirror == evaluate(pos) exactly            (structure is faithful)
 //   (b) dot(features, current coefs) == mirror <=2 (features are complete)
 //
-// Positions hitting the non-linear early returns (KPK bitbase, KXK) are not
+// Positions hitting the non-linear early returns (known endgames) are not
 // linear-representable: printed as "<ph> <sf> <stm> G" so the fit drops them.
 // ============================================================================
 #include "luminex.h"
@@ -436,19 +436,9 @@ static TraceOut trace_eval(const Position& pos, Tracer& t) {
     TraceOut out;
     out.stm = (pos.side_to_move() == WHITE) ? 1 : 0;
 
-    // --- non-linear gates (KPK bitbase / KXK): not linear-representable ---
-    if (popcount(pos.pieces(PAWN)) == 1
-        && (pos.pieces(KNIGHT) | pos.pieces(BISHOP) | pos.pieces(ROOK) | pos.pieces(QUEEN)) == 0) {
-        out.linear = false;
-        return out;
-    }
-    for (int strong = 0; strong < 2; ++strong) {
-        Color c = Color(strong);
-        Color weak = Color(strong ^ 1);
-        int strong_material = popcount(pos.pieces(c)) - 1;
-        int weak_material = popcount(pos.pieces(weak)) - 1;
-        if (strong_material >= 1 && weak_material == 0) { out.linear = false; return out; }
-    }
+    // --- non-linear gate (known endgames: KPK bitbase, bare king): not linear-representable ---
+    Value known;
+    if (known_endgame(pos, known)) { out.linear = false; return out; }
 
     int mg_score = 0;
     int eg_score = 0;
