@@ -899,15 +899,11 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
 
             // Verification: same position, nulls banned for the first
             // 3/4 of the remaining depth. High depth always verifies; low
-            // piece counts verify early (zugzwang-prone endgames). At least
-            // one ply: R reaches depth - 1 below depth 12, and a depth-0
-            // verification is the stand-pat, which passes by construction
-            // (eval >= beta let the null move in).
+            // piece counts verify early (zugzwang-prone endgames).
             if (depth >= 14 || (piece_count < 4 && depth >= 6)) {
-                int verify_depth = std::max(1, (depth - R) * 3 / 4);
                 int saved_disable_ply = worker->nmp_disabled_ply;
-                worker->nmp_disabled_ply = ss->ply + verify_depth;
-                Value verify = search_worker(pos, ss, beta - 1, beta, verify_depth, !cut_node);
+                worker->nmp_disabled_ply = ss->ply + 3 * (depth - R) / 4;
+                Value verify = search_worker(pos, ss, beta - 1, beta, (depth - R) * 3 / 4, !cut_node);
                 worker->nmp_disabled_ply = saved_disable_ply;
                 if (verify >= beta) {
                     g_stats.null_move_prunes++;
