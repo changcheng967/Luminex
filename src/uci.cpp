@@ -5,9 +5,15 @@
 #include "nnue.h"
 #include "book.h"
 #include "spsa_params.h"
+#include "search_thread.h"
 #include <algorithm>
+#include <cctype>
+#include <cerrno>
+#include <climits>
+#include <cstdlib>
 #include <chrono>
 #include <cstdarg>
+#include <expected>
 #include <format>
 #include <iterator>
 #include <iostream>
@@ -15,6 +21,7 @@
 #include <string>
 #include <thread>
 #include <atomic>
+#include <memory>
 #include <mutex>
 #include <cstdio>
 #include <fstream>
@@ -40,11 +47,8 @@ static Position pos;
 int g_search_depth = 0;
 int g_nodes_per_move = 0;  // NodesPerMove: >0 = fixed-node search (SPSA tuning, no clock forfeits)
 
-// Search thread management
-static std::thread search_thread;
-#ifdef _WIN32
-static HANDLE native_thread_handle = nullptr;
-#endif
+// Search thread management: one search thread at a time, on a large stack (search_thread.h)
+static SearchThread search_thread;
 static std::mutex io_mutex;
 
 // Debug logging
@@ -125,47 +129,19 @@ void uci_debug_log(const char* format, ...) {
 // Forward declaration
 static void search_worker(Position pos_copy, Limits lim);
 
-// Wait for search thread to finish (handles both std::thread and native thread)
+// Wait for search thread to finish
 static void wait_for_search_thread() {
-    if (search_thread.joinable()) {
-        search_thread.join();
-    }
-#ifdef _WIN32
-    if (native_thread_handle) {
-        WaitForSingleObject(native_thread_handle, INFINITE);
-        CloseHandle(native_thread_handle);
-        native_thread_handle = nullptr;
-    }
-#endif
+    if (search_thread.joinable()) search_thread.join();
 }
 
-// Launch search with large stack (4MB on Windows, default on other platforms)
-static void launch_search_thread(Position pos_copy, Limits lim) {
-#ifdef _WIN32
-    // Wait for previous native thread if any
-    if (native_thread_handle) {
-        WaitForSingleObject(native_thread_handle, INFINITE);
-        CloseHandle(native_thread_handle);
-        native_thread_handle = nullptr;
-    }
-    auto* thread_args = new std::pair<Position, Limits>(pos_copy, lim);
-    native_thread_handle = reinterpret_cast<HANDLE>(_beginthreadex(
-        nullptr, 8 * 1024 * 1024,  // 8MB stack
-        [](void* arg) -> unsigned {
-            auto* p = static_cast<std::pair<Position, Limits>*>(arg);
-            search_worker(p->first, p->second);
-            delete p;
-            return 0;
-        },
-        thread_args, 0, nullptr));
-    if (!native_thread_handle) {
-        delete thread_args;
-        // Fallback to std::thread
-        search_thread = std::thread(search_worker, pos_copy, lim);
-    }
-#else
-    search_thread = std::thread(search_worker, pos_copy, lim);
-#endif
+// Launch the search on its own thread with a large stack, on every platform: the
+// default for secondary threads (1 MiB on Windows, 512 KiB on macOS) is too small
+static void launch_search_thread(const Position& pos, const Limits& lim) {
+    wait_for_search_thread();
+    // The copy of the position (~230 KB) is made on the heap, not on this thread's
+    // stack: the UCI thread may have as little as the search threads used to
+    auto copy = std::make_shared<Position>(pos);
+    search_thread = SearchThread([copy, lim] { search_worker(*copy, lim); });
 }
 
 // Worker function that runs search in a separate thread
@@ -307,6 +283,19 @@ static void ensure_net_loaded(bool force = false) {
         safe_output("info string no NNUE network loaded, using the classical evaluation\n");
 }
 
+// luminex nnuecheck [NETFILE]: the nnuecheck command from the command line,
+// with NETFILE or the default network (the built-in one, or the file of its
+// name) loaded as NNUEFile would load it. True when every level agrees.
+bool run_nnuecheck(const std::string& net_file) {
+    g_net_option = net_file;
+    g_net_attempted = false;
+    ensure_net_loaded(true);
+    std::string report;
+    const bool ok = nnue::check_simd(report);
+    safe_output(report + "\n");
+    return ok;
+}
+
 void handle_uci() {
     init_evaluation();
     // Development builds report their build id (CMake's LUMINEX_BUILD_ID,
@@ -348,6 +337,13 @@ void handle_uci() {
     // NNUE evaluation; without a loadable net the engine uses the HCE and says so.
     safe_output("option name UseNNUE type check default true\n");
     safe_output(std::string("option name NNUEFile type string default ") + nnue::DEFAULT_NET + "\n");
+    // The universal x86-64 build picks its network kernels for the CPU; this
+    // forces a lower level, for testing (one the CPU lacks gives the best below it).
+    if (nnue::simd_dispatch()) {
+        std::string opt = "option name SimdLevel type combo default auto var auto";
+        for (const std::string& level : nnue::simd_levels()) opt += " var " + level;
+        safe_output(opt + "\n");
+    }
     // Eval parameters (self-engineered defaults)
     safe_output("option name BishopPairMG type spin default 40 min -100 max 200\n");
     safe_output("option name BishopPairEG type spin default 100 min -100 max 300\n");
@@ -437,7 +433,7 @@ void handle_position(Position& pos, const std::string& cmd) {
     pos.set(fen);
 
     if (moves_idx != std::string::npos) {
-        std::string moves_str = cmd.substr(moves_idx + 6);
+        std::string moves_str = cmd.substr(moves_idx + 5);   // + 6 is past the end of "... moves"
         std::istringstream ss(moves_str);
         std::string move_str;
 
@@ -449,7 +445,7 @@ void handle_position(Position& pos, const std::string& cmd) {
 
             PieceType promo_pt = PT_NONE;
             if (move_str.length() > 4) {
-                switch (move_str[4]) {
+                switch (std::tolower(static_cast<unsigned char>(move_str[4]))) {
                     case 'q': promo_pt = QUEEN; break;
                     case 'r': promo_pt = ROOK; break;
                     case 'b': promo_pt = BISHOP; break;
@@ -461,7 +457,11 @@ void handle_position(Position& pos, const std::string& cmd) {
             ExtMove* legal_end = generate<GEN_LEGAL>(pos, legal_moves);
             Move matched = MOVE_NONE;
             for (ExtMove* lit = legal_moves; lit != legal_end; ++lit) {
-                if (lit->move.from() == from && lit->move.to() == to) {
+                // Castling may also be written as the king taking its own rook
+                // (e1h1, e8a8): the rook's corner is one file past g, two before c
+                const bool rook_square_castle = lit->move.is_castling()
+                    && to == Square(lit->move.to() + (file_of(lit->move.to()) == 6 ? 1 : -2));
+                if (lit->move.from() == from && (lit->move.to() == to || rook_square_castle)) {
                     if (promo_pt != PT_NONE) {
                         if (lit->move.is_promotion() && lit->move.promotion_type() == promo_pt) {
                             matched = lit->move;
@@ -486,8 +486,17 @@ void handle_position(Position& pos, const std::string& cmd) {
 }
 
 void handle_go(Position& pos, const std::string& cmd) {
-    // Wait for any previous search thread to finish
+    // A "go" while a search runs (outside the protocol, but tools send it) ends
+    // that search first: waiting for it to end by itself would block this reader
+    // for ever behind a "go infinite", so no "stop" could be read.
+    stop.store(true, std::memory_order_seq_cst);
+    g_stop_requested = true;
     wait_for_search_thread();
+    // The stop flags are cleared here, before the search thread starts, not by
+    // the search itself: a "stop" read between the launch and the search's first
+    // line would otherwise be erased, and a "go infinite" would never end.
+    stop.store(false, std::memory_order_seq_cst);
+    g_stop_requested = false;
 
     // "go perft <depth>": per-root-move node counts, then the total. No
     // search state is touched, so no TT reset and no search thread.
@@ -564,6 +573,17 @@ void handle_go(Position& pos, const std::string& cmd) {
     launch_search_thread(pos, limits);
 }
 
+// A spin option's value as std::stoi reads it (leading blanks, a sign, digits;
+// anything after them ignored), or why it is not one.
+static std::expected<int, std::string> parse_spin(const std::string& value) {
+    errno = 0;
+    char* end = nullptr;
+    const long parsed = std::strtol(value.c_str(), &end, 10);
+    if (end == value.c_str() || errno == ERANGE || parsed > INT_MAX || parsed < INT_MIN)
+        return std::unexpected("'" + value + "' is not an integer");
+    return int(parsed);
+}
+
 void handle_setoption(const std::string& cmd) {
     std::istringstream ss(cmd);
     std::string token;
@@ -583,11 +603,28 @@ void handle_setoption(const std::string& cmd) {
         value += token;
     }
 
+    // Every option but these is a spin, parsed once here: a value that is not an
+    // int is reported and the option left as it was (release builds have no
+    // exceptions, so std::stoi on such a value used to end the engine).
+    const bool text_option = name == "Ponder" || name == "Clear Hash" || name == "BookFile" ||
+        name == "SyzygyPath" || name == "UCI_ShowWDL" || name == "UCI_LimitStrength" ||
+        name == "UseNNUE" || name == "NNUEFile" || name == "SimdLevel" ||
+        name == "UCI_Chess960" || name == "Analysis" || name == "UCI_AnalyseMode";
+    int v = 0;
+    if (!text_option) {
+        const std::expected<int, std::string> spin = parse_spin(value);
+        if (!spin) {
+            safe_output("info string option " + name + ": " + spin.error() + "; left unchanged\n");
+            return;
+        }
+        v = *spin;
+    }
+
     if (name == "SyzygyPath" || name == "Skill Level" ||
         name == "UCI_Elo" || name == "UCI_LimitStrength" ||
         name == "UCI_Chess960" || name == "Analysis") { /* accepted — UCI GUI/bot compatibility */ }
     else if (name == "MultiPV") {
-        int n = std::stoi(value);
+        int n = v;
         if (n < 1) n = 1;
         if (n > 256) n = 256;
         params.multi_pv = n;
@@ -596,22 +633,22 @@ void handle_setoption(const std::string& cmd) {
         params.show_wdl = (value == "true");
     }
     else if (name == "Move Overhead") {
-        int ov = std::stoi(value);
+        int ov = v;
         if (ov < 0) ov = 0;
         if (ov > 5000) ov = 5000;
         params.move_overhead_ms = ov;
     }
     else if (name == "TimeSchedule") {
-        params.time_schedule = std::clamp(std::stoi(value), 0, 2);
+        params.time_schedule = std::clamp(v, 0, 2);
     }
     else if (name == "TimeStability") {
-        params.time_stability = std::clamp(std::stoi(value), 0, 1);
+        params.time_stability = std::clamp(v, 0, 1);
     }
     else if (name == "TimeZeroInc") {
-        params.time_zero_inc = std::clamp(std::stoi(value), 0, 1);
+        params.time_zero_inc = std::clamp(v, 0, 1);
     }
     else if (name == "TimeMovesToGo") {
-        params.time_moves_to_go = std::clamp(std::stoi(value), 0, 1);
+        params.time_moves_to_go = std::clamp(v, 0, 1);
     }
     else if (name == "UseNNUE") {
         g_use_nnue = (value == "true");
@@ -624,43 +661,54 @@ void handle_setoption(const std::string& cmd) {
         g_net_attempted = false;
         ensure_net_loaded(true);
     }
-    else if (name == "SearchDepth") { g_search_depth = std::stoi(value); }
-    else if (name == "NodesPerMove") { g_nodes_per_move = std::stoi(value); }
+    else if (name == "SimdLevel") {
+        // The network's dense layers are rearranged for the new kernels, so
+        // no search may be reading them.
+        stop.store(true, std::memory_order_seq_cst);
+        wait_for_search_thread();
+        stop.store(false, std::memory_order_seq_cst);
+        std::string level = value;
+        std::transform(level.begin(), level.end(), level.begin(),
+                       [](unsigned char ch) { return char(std::tolower(ch)); });
+        safe_output("info string " + nnue::set_simd_level(level) + "\n");
+    }
+    else if (name == "SearchDepth") { g_search_depth = v; }
+    else if (name == "NodesPerMove") { g_nodes_per_move = v; }
     else if (const SPSAOption* o = find_spsa_option(name)) {
-        SPSAParams::get().*o->field = std::clamp(std::stoi(value), o->min, o->max);
+        SPSAParams::get().*o->field = std::clamp(v, o->min, o->max);
         if (o->field == &SPSAParams::lmr_scale_quiet)
             init_search_params();  // the reduction table is derived from it
     }
     else if (name == "Contempt" || name == "UCI_AnalyseMode") {
         if (name == "Contempt") {
-            params.contempt = std::stoi(value);
+            params.contempt = v;
         }
-    } else if (name == "BishopPairMG") { g_eval_params.bishop_pair_mg = std::stoi(value);
-    } else if (name == "BishopPairEG") { g_eval_params.bishop_pair_eg = std::stoi(value);
-    } else if (name == "RookOpenMG") { g_eval_params.rook_open_mg = std::stoi(value);
-    } else if (name == "RookOpenEG") { g_eval_params.rook_open_eg = std::stoi(value);
-    } else if (name == "RookSemiOpenMG") { g_eval_params.rook_semi_open_mg = std::stoi(value);
-    } else if (name == "RookSemiOpenEG") { g_eval_params.rook_semi_open_eg = std::stoi(value);
-    } else if (name == "Rook7thMG") { g_eval_params.rook_7th_mg = std::stoi(value);
-    } else if (name == "Rook7thEG") { g_eval_params.rook_7th_eg = std::stoi(value);
-    } else if (name == "PawnShieldCenter") { g_eval_params.pawn_shield_center = std::stoi(value);
-    } else if (name == "PawnShieldKnight") { g_eval_params.pawn_shield_knight = std::stoi(value);
-    } else if (name == "PawnShieldRook") { g_eval_params.pawn_shield_rook = std::stoi(value);
-    } else if (name == "PawnStorm") { g_eval_params.pawn_storm = std::stoi(value);
-    } else if (name == "OpenFilePenaltyMG") { g_eval_params.open_file_penalty_mg = std::stoi(value);
-    } else if (name == "OpenFilePenaltyEG") { g_eval_params.open_file_penalty_eg = std::stoi(value);
-    } else if (name == "OutpostKnightMG") { g_eval_params.outpost_knight_mg = std::stoi(value);
-    } else if (name == "OutpostKnightEG") { g_eval_params.outpost_knight_eg = std::stoi(value);
-    } else if (name == "OutpostBishopMG") { g_eval_params.outpost_bishop_mg = std::stoi(value);
-    } else if (name == "OutpostBishopEG") { g_eval_params.outpost_bishop_eg = std::stoi(value);
-    } else if (name == "HangingPawnMG") { g_eval_params.hanging_pawn_mg = std::stoi(value);
-    } else if (name == "HangingPawnEG") { g_eval_params.hanging_pawn_eg = std::stoi(value);
-    } else if (name == "FarKnightMG") { g_eval_params.far_knight_mg = std::stoi(value);
-    } else if (name == "FarKnightEG") { g_eval_params.far_knight_eg = std::stoi(value);
-    } else if (name == "FarBishopMG") { g_eval_params.far_bishop_mg = std::stoi(value);
-    } else if (name == "FarBishopEG") { g_eval_params.far_bishop_eg = std::stoi(value);
+    } else if (name == "BishopPairMG") { g_eval_params.bishop_pair_mg = v;
+    } else if (name == "BishopPairEG") { g_eval_params.bishop_pair_eg = v;
+    } else if (name == "RookOpenMG") { g_eval_params.rook_open_mg = v;
+    } else if (name == "RookOpenEG") { g_eval_params.rook_open_eg = v;
+    } else if (name == "RookSemiOpenMG") { g_eval_params.rook_semi_open_mg = v;
+    } else if (name == "RookSemiOpenEG") { g_eval_params.rook_semi_open_eg = v;
+    } else if (name == "Rook7thMG") { g_eval_params.rook_7th_mg = v;
+    } else if (name == "Rook7thEG") { g_eval_params.rook_7th_eg = v;
+    } else if (name == "PawnShieldCenter") { g_eval_params.pawn_shield_center = v;
+    } else if (name == "PawnShieldKnight") { g_eval_params.pawn_shield_knight = v;
+    } else if (name == "PawnShieldRook") { g_eval_params.pawn_shield_rook = v;
+    } else if (name == "PawnStorm") { g_eval_params.pawn_storm = v;
+    } else if (name == "OpenFilePenaltyMG") { g_eval_params.open_file_penalty_mg = v;
+    } else if (name == "OpenFilePenaltyEG") { g_eval_params.open_file_penalty_eg = v;
+    } else if (name == "OutpostKnightMG") { g_eval_params.outpost_knight_mg = v;
+    } else if (name == "OutpostKnightEG") { g_eval_params.outpost_knight_eg = v;
+    } else if (name == "OutpostBishopMG") { g_eval_params.outpost_bishop_mg = v;
+    } else if (name == "OutpostBishopEG") { g_eval_params.outpost_bishop_eg = v;
+    } else if (name == "HangingPawnMG") { g_eval_params.hanging_pawn_mg = v;
+    } else if (name == "HangingPawnEG") { g_eval_params.hanging_pawn_eg = v;
+    } else if (name == "FarKnightMG") { g_eval_params.far_knight_mg = v;
+    } else if (name == "FarKnightEG") { g_eval_params.far_knight_eg = v;
+    } else if (name == "FarBishopMG") { g_eval_params.far_bishop_mg = v;
+    } else if (name == "FarBishopEG") { g_eval_params.far_bishop_eg = v;
     } else if (name == "Threads") {
-        int t = std::stoi(value);
+        int t = v;
         if (t < 1) t = 1;
         if (t > 64) t = 64;
         num_threads = t;
@@ -676,10 +724,8 @@ void handle_setoption(const std::string& cmd) {
             g_book.close();
         }
     } else if (name == "Hash") {
-        if (!value.empty()) {
-            size_t hash_size = std::stoi(value);
-            TT.resize(hash_size);
-        }
+        // The declared bounds: a negative value used to wrap to an enormous size.
+        TT.resize(size_t(std::clamp(v, 1, 1048576)));
     }
 }
 
@@ -745,6 +791,16 @@ void uci_loop() {
             break;
         } else if (cmd == "d") {
             safe_output(pos.fen() + "\n");
+        } else if (cmd == "nnuecheck") {
+            // Every kernel level the CPU supports must evaluate a fixed set of
+            // games alike (nnue::check_simd); not during a search.
+            stop.store(true, std::memory_order_seq_cst);
+            wait_for_search_thread();
+            stop.store(false, std::memory_order_seq_cst);
+            ensure_net_loaded();
+            std::string report;
+            nnue::check_simd(report);
+            safe_output(report + "\n");
         } else if (cmd == "eval") {
             // Static eval of the current position (NNUE if enabled, else HCE),
             // side-to-move-relative cp. Used to validate the NNUE inference
@@ -771,6 +827,9 @@ void uci_loop() {
         }
     }
 
+    // End of input: a search still running (go infinite) is stopped, not waited for
+    stop.store(true, std::memory_order_seq_cst);
+    g_stop_requested = true;
     wait_for_search_thread();
 
     if (dbglog) { fclose(dbglog); }

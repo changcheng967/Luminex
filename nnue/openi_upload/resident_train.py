@@ -82,7 +82,7 @@ Environment (default in brackets):
   NNUE_LIVE_CLAMP [0]  tail activations pass this gradient slope outside [0, 1];
                      the forward pass (and so the engine's net) is unchanged
   NNUE_QAT [0]       1: train the network the way the engine runs it. The first layer
-                     is rounded to the engine's int16 grid (x8192); each bucket's L2, L3
+                     is rounded to the engine's int16 grid (x2048); each bucket's L2, L3
                      and output weights to int8 with quantize_i8.py's scale (127 / max|w|);
                      every activation into them to the engine's 1/127 steps. Gradients
                      pass straight through the rounding and the tail runs in fp32, so the
@@ -197,6 +197,9 @@ if QAT_AFTER and QAT:
     raise SystemExit("FAIL: NNUE_QAT_AFTER continues a float phase into QAT: it needs NNUE_QAT=0")
 if QAT_FT8 and not ((QAT or QAT_AFTER) and 1 <= QAT_FT8 <= 8):
     raise SystemExit(f"FAIL: NNUE_QAT_FT8={QAT_FT8} needs NNUE_QAT=1 (or NNUE_QAT_AFTER) and a shift from 1 to 8")
+# The engine's first-layer int16 grid (src/nnue_kernels.h NNUE_FT_SCALE): QAT rounds the feature weights
+# and biases to it
+FT_GRID = 2048.0
 FT_DENSE = int(env("NNUE_FT_DENSE", "0"))
 FT_TILE = int(env("NNUE_FT_TILE", "1024"))
 FT_FP8 = int(env("NNUE_FT_FP8", "0"))
@@ -1048,7 +1051,7 @@ class DenseFT(torch.autograd.Function):
 
     The dense forward runs in bf16 on the GPU, except under NNUE_QAT (and on the
     CPU), where it runs in exact fp32 with autocast and TF32 off: QAT's weights sit
-    on the engine's int16 grid (k / 8192), and any sum of a position's 32 of them is
+    on the engine's int16 grid (k / 2048), and any sum of a position's 32 of them is
     exact in fp32, so the layer equals the engine's integer sums. bf16 would round
     each weight to 8 significant bits and undo what QAT trains for."""
 

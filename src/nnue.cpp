@@ -11,126 +11,41 @@
 // stack-local). thread_local also makes it safe across Luminex's helper threads.
 //
 // HalfKAv2_hm feature indexer mirrored EXACTLY from nnue/luminex_nnue_train.py.
+//
+// The loops over lanes and the forward pass are the kernels of
+// nnue_kernels.inc. Built as usual they are compiled into this file for the
+// instruction-set level the compiler targets and called directly; the
+// universal x86-64 build (CMake LUMINEX_DISPATCH) carries one set per level,
+// each in its own file, and this file calls the best set the CPU supports
+// (see "Kernel levels" below).
 #include "nnue.h"
 #include "board.h"
+#include "movegen.h"
 #include "embedded_net.h"
+#include "nnue_kernels.h"
+#include <algorithm>
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <chrono>
-#if defined(__ARM_FEATURE_DOTPROD)
-#include <arm_neon.h>
-#endif
-#if defined(__linux__)
-#include <sys/mman.h>
-#endif
 #include <fstream>
 #include <istream>
+#include <memory>
 #include <streambuf>
 #include <string>
+#include <thread>
 #include <vector>
+#include "large_pages.h"
 #if defined(__x86_64__) || defined(__i386__) || defined(_M_X64) || defined(_M_IX86)
 #include <immintrin.h>   // _mm_prefetch needs xmmintrin even without AVX2 (Debug builds)
 #endif
+#if !defined(LUMINEX_NNUE_DISPATCH)
+#include "nnue_kernels.inc"   // the kernels of the level the compiler targets (k_native)
+#endif
 
 namespace luminex::nnue {
-
-#if defined(__AVX2__)
-// Horizontal sum of 8 floats -> scalar.
-static inline float hsum256(__m256 v) {
-    __m128 lo = _mm256_castps256_ps128(v);
-    __m128 hi = _mm256_extractf128_ps(v, 1);
-    __m128 s  = _mm_add_ps(lo, hi);
-    s = _mm_hadd_ps(s, s);
-    s = _mm_hadd_ps(s, s);
-    return _mm_cvtss_f32(s);
-}
-// SCReLU on 8 floats: clamp to [0,1], then square.
-static inline __m256 screlu8(__m256 x, __m256 z, __m256 one) {
-    __m256 c = _mm256_min_ps(_mm256_max_ps(x, z), one);
-    return _mm256_mul_ps(c, c);
-}
-// Quantize 8 floats ([0,1]) -> 8 uint8 ([0,127]), stored contiguously at dst.
-static inline void quant8(const float* h, uint8_t* dst, __m256 scale127) {
-    __m256i i32 = _mm256_cvtps_epi32(_mm256_mul_ps(_mm256_loadu_ps(h), scale127));
-    __m128i lo = _mm256_castsi256_si128(i32);
-    __m128i hi = _mm256_extracti128_si256(i32, 1);
-    __m128i i16 = _mm_packs_epi32(lo, hi);        // 8 int16 (in-order)
-    __m128i i8 = _mm_packus_epi16(i16, i16);      // 16 uint8 (low 8 = ours)
-    _mm_storel_epi64((__m128i*)dst, i8);          // store low 8 bytes
-}
-// int8 dot product over n bytes: sum(w_signed[i] * a_unsigned[i]) -> int32. Handles
-// any n (SIMD for multiples of 32, scalar tail for the remainder, e.g. L2=16 inputs).
-static inline int32_t dot_i8(const int8_t* w, const uint8_t* a, int n) {
-    __m256i acc = _mm256_setzero_si256();
-    const __m256i ones = _mm256_set1_epi16(1);
-    int i = 0;
-    for (; i + 32 <= n; i += 32) {
-        __m256i wv = _mm256_loadu_si256((const __m256i*)(w + i));
-        __m256i av = _mm256_loadu_si256((const __m256i*)(a + i));
-        __m256i p16 = _mm256_maddubs_epi16(av, wv);   // a(uint8) × w(int8) -> 16 int16
-        acc = _mm256_add_epi32(acc, _mm256_madd_epi16(p16, ones));  // -> 8 int32, accumulate
-    }
-    __m128i lo = _mm256_castsi256_si128(acc);
-    __m128i hi = _mm256_extracti128_si256(acc, 1);
-    __m128i s = _mm_hadd_epi32(_mm_add_epi32(lo, hi), _mm_setzero_si128());
-    int32_t sum = _mm_cvtsi128_si32(_mm_hadd_epi32(s, s));
-    for (; i < n; ++i) sum += (int32_t)w[i] * (int32_t)a[i];
-    return sum;
-}
-#endif
-#if defined(__AVX512VNNI__)
-// VPDPBUSD: 64 uint8 × int8 → 16 int32 accumulate in ONE instruction.
-// ~6x throughput vs AVX2 (2x width + 3x fewer instructions per MAC chunk).
-static inline int32_t dot_i8_vnni(const int8_t* w, const uint8_t* a, int n) {
-    // 4 independent accumulator chains: a single chain serializes on vpdpbusd
-    // latency (~4-5 cyc), so a 1024-byte L2 dot alone costs ~70+ cycles of pure
-    // stalls. Integer adds are associative -> the result is bit-identical.
-    __m512i acc0 = _mm512_setzero_si512(), acc1 = _mm512_setzero_si512(),
-            acc2 = _mm512_setzero_si512(), acc3 = _mm512_setzero_si512();
-    int i = 0;
-    for (; i + 256 <= n; i += 256) {
-        acc0 = _mm512_dpbusd_epi32(acc0, _mm512_loadu_si512((const __m512i*)(a + i)),       _mm512_loadu_si512((const __m512i*)(w + i)));
-        acc1 = _mm512_dpbusd_epi32(acc1, _mm512_loadu_si512((const __m512i*)(a + i + 64)),  _mm512_loadu_si512((const __m512i*)(w + i + 64)));
-        acc2 = _mm512_dpbusd_epi32(acc2, _mm512_loadu_si512((const __m512i*)(a + i + 128)), _mm512_loadu_si512((const __m512i*)(w + i + 128)));
-        acc3 = _mm512_dpbusd_epi32(acc3, _mm512_loadu_si512((const __m512i*)(a + i + 192)), _mm512_loadu_si512((const __m512i*)(w + i + 192)));
-    }
-    for (; i + 64 <= n; i += 64)
-        acc0 = _mm512_dpbusd_epi32(acc0, _mm512_loadu_si512((const __m512i*)(a + i)), _mm512_loadu_si512((const __m512i*)(w + i)));
-    __m512i acc = _mm512_add_epi32(_mm512_add_epi32(acc0, acc1), _mm512_add_epi32(acc2, acc3));
-    int32_t sum = _mm512_reduce_add_epi32(acc);
-    for (; i < n; ++i) sum += (int32_t)w[i] * (int32_t)a[i];
-    return sum;
-}
-// Small-n dot (n <= 64): one VPDPBUSD over zero-extended inputs, then reduce.
-// For L3 (n=L2=16) and out (n=L3=32) this replaces ~512 scalar int muls with a
-// single VNNI instruction — the dominant eval cost after L2.
-static inline int32_t dot_i8_vnni_small(const int8_t* w, const uint8_t* a, int n) {
-    __m512i av, wv;
-    if (n <= 16) {
-        av = _mm512_zextsi128_si512(_mm_loadu_si128((const __m128i*)a));
-        wv = _mm512_zextsi128_si512(_mm_loadu_si128((const __m128i*)w));
-    } else if (n <= 32) {
-        av = _mm512_zextsi256_si512(_mm256_loadu_si256((const __m256i*)a));
-        wv = _mm512_zextsi256_si512(_mm256_loadu_si256((const __m256i*)w));
-    } else {  // 32 < n <= 64: load full 64 bytes (caller guarantees bounds).
-        av = _mm512_loadu_si512((const void*)a);
-        wv = _mm512_loadu_si512((const void*)w);
-    }
-    __m512i acc = _mm512_dpbusd_epi32(_mm512_setzero_si512(), av, wv);
-    return _mm512_reduce_add_epi32(acc);
-}
-#endif
-
-#if !defined(__AVX2__)
-static inline int32_t dot_i8(const int8_t* w, const uint8_t* a, int n) {
-    int32_t sum = 0;
-    for (int i = 0; i < n; ++i) sum += (int32_t)w[i] * (int32_t)a[i];
-    return sum;
-}
-#endif
 
 // ---- profiling counters (data-driven: find the NPS bottleneck from numbers) ----
 namespace { struct Stat { long long n = 0, cyc = 0; }; }
@@ -199,9 +114,11 @@ static inline int halfka_idx(bool white_pov, int king_sq, int sq, Piece p) {
 static int g_L1 = 0, g_L2 = 0, g_L3 = 0;
 // FT weights stored as int16 (half the memory traffic vs float → fewer L3 misses on
 // feature delta). The accumulator stays full float32 (no SCReLU precision loss).
-static constexpr float FT_WSCALE = 8192.0f;
-static constexpr float FT_WINV = 1.0f / FT_WSCALE;
-static std::vector<int16_t> ft_w;
+static constexpr float FT_WSCALE = NNUE_FT_SCALE;
+[[maybe_unused]] static constexpr float FT_WINV = 1.0f / FT_WSCALE;   // the debug self-check's; the kernels have their own
+// In 2 MiB pages where the system allows (large_pages.h): the updates read its
+// rows at random.
+static LargeArray<int16_t> ft_w;
 static std::vector<int32_t> ft_b_i32;   // integer-domain FT bias (b*FT_WSCALE)
 // DOSL linear head (Step-0): per-feature scalar weights over the SAME HalfKAv2_hg
 // indices; accumulator keeps one int32 per perspective (O(1) qsearch stand-pat).
@@ -213,16 +130,24 @@ static bool g_int8 = false;
 static bool g_loaded = false;
 
 // The dense tail after the feature transformer: L2/L3/out biases, and for int8
-// nets the int8 weights with their per-layer scales (the FT stays float on
-// disk). LNN1 and LNI8 nets have one tail; LNB8 nets have one per output
-// bucket, chosen by the number of pieces on the board (bucket_of).
+// nets the int8 weights with their scales (the FT stays float on disk). LNN1
+// and LNI8 nets have one tail; LNB8 and LNR8 nets have one per output bucket,
+// chosen by the number of pieces on the board (bucket_of). LNI8 and LNB8 hold
+// one weight scale per layer, LNR8 one per row (output neuron) of L2 and L3.
+// The dense weights start on cache lines (large_pages.h): the kernels read them
+// 32 or 64 bytes at a time.
+using WeightBytes = std::vector<int8_t, CacheAligned<int8_t>>;
 struct DenseTail {
-    std::vector<int8_t> l2_w_i8, l3_w_i8, out_w_i8;
+    std::vector<int8_t> l2_w_file, l3_w_file;   // L2 and L3 as the file stores them (output-major)
+    WeightBytes l2_w_i8, l3_w_i8;       // the same, arranged for the kernels in use (arrange_tails)
+    WeightBytes out_w_i8;
     std::vector<float> l2_b, l3_b;
-    float s2 = 1.0f, s3 = 1.0f, so = 1.0f;   // weight quant scales
+    // A dot of int8 weights (w x s) with uint8 activations (a x 127) becomes
+    // the float sum when multiplied by 1 / (s x 127): one factor per output.
+    std::vector<float> ics2, ics3;
+    float icso = 1.0f;
     float out_b = 0.0f;
-    bool l3_batched = false;    // l3_w_i8 interleaved for batched VNNI L3
-    bool l2_by_input = false;   // l2_w_i8 in 64-byte input-chunk blocks for VNNI L2
+    TailView view;   // what the kernels read: the vectors above, and the layouts they got
 };
 constexpr int MAX_BUCKETS = 16;
 static std::vector<DenseTail> g_tails(1);
@@ -241,11 +166,11 @@ static uint32_t g_net_id = 0;   // incremented by every successful load(); keys 
 
 // Per-thread accumulator stack, indexed by Position::st_ply(). v[perspective][neuron].
 // Cache-line aligned for clean loads during the SCReLU/quant8 pass.
-// int16 saturating accumulator: exact integer sums, clip window [0, 8192]
-// (1.0x FT_WSCALE); int16 saturation at +-32767 sits 4x above the window, so
-// saturating lanes were already fully clipped by SCReLU.
-// that saturates was already fully clipped. Simulated on 6000 real perspectives:
-// 2 single-lane activation-quant diffs out of 3.07M lanes (0.03% of perspectives).
+// int16 accumulator: exact integer sums as long as every lane stays inside
+// int16, which on the x2048 grid (FT_WSCALE) is +-16.0 window units against the
+// 11.5 of the largest sum measured (gen768s_03q). The adds saturate instead of
+// wrapping, but a lane that saturated would carry its clipped value into later
+// updates, so the grid, not the SCReLU clip, is what keeps the lanes exact.
 // Halves copy/update/eval traffic vs the int32 accumulator.
 struct alignas(64) Accumulator { int16_t v[2][NNUE_L1_MAX]; int32_t lin[2]; };
 
@@ -284,14 +209,221 @@ static inline KingBoard* nnue_king_boards() {
     return store.data();
 }
 
-// at startpos (beyond int16's +-4.0 = 32767/8192) — the soft NNUE_ACC_REG did
-// not pull the extremes into int16 range, so saturating int16 adds corrupt
-// lanes that leave and re-enter the clip window (spec §3 fallback stands).
-
 bool loaded() { return g_loaded; }
 bool enabled() { return g_loaded && g_enabled; }
 void set_enabled(bool on) { g_enabled = on; }
 int l1() { return g_L1; }
+
+// ---- Kernel levels ----
+// The kernel set in use (g_k). A build without LUMINEX_DISPATCH has one, for
+// the level its compiler targets, and calls it directly. The universal x86-64
+// build has every level's, best first, and uses the best one the CPU and its
+// OS support, or the best at or below the one the SimdLevel option asks for.
+// The choice is made once, before the first network is arranged for it, and
+// again only when SimdLevel changes.
+#if defined(LUMINEX_NNUE_DISPATCH)
+#if !defined(__GNUC__) && !defined(__clang__)
+#error "LUMINEX_DISPATCH needs GCC or Clang (clang-cl included): cpuid and xgetbv below are GNU inline assembly"
+#endif
+static const Kernels* const LEVELS[] = {
+    &k_avx512vnni::kernels, &k_avx512::kernels, &k_avxvnni::kernels, &k_avx2::kernels, &k_base::kernels,
+};
+static const Kernels* g_k = &k_base::kernels;
+static bool g_k_chosen = false;
+#define NNUE_K(fn) (g_k->fn)
+#else
+static const Kernels* const LEVELS[] = { &k_native::kernels };
+static const Kernels* const g_k = &k_native::kernels;
+#define NNUE_K(fn) (k_native::fn)
+#endif
+constexpr int NUM_LEVELS = int(sizeof(LEVELS) / sizeof(LEVELS[0]));
+static int g_request = -1;   // SimdLevel: an index into LEVELS, -1 for auto
+
+#if defined(LUMINEX_NNUE_DISPATCH)
+namespace {
+// cpuid(leaf, subleaf) -> eax, ebx, ecx, edx
+void cpuid(uint32_t leaf, uint32_t sub, uint32_t r[4]) {
+    __asm__ __volatile__("cpuid" : "=a"(r[0]), "=b"(r[1]), "=c"(r[2]), "=d"(r[3]) : "a"(leaf), "c"(sub));
+}
+// XCR0: the register state the OS saves on a context switch.
+uint64_t xcr0() {
+    uint32_t lo, hi;
+    __asm__ __volatile__("xgetbv" : "=a"(lo), "=d"(hi) : "c"(0));
+    return (uint64_t(hi) << 32) | lo;
+}
+
+// Which LEVELS this CPU and its OS can run. A level's file is compiled for a
+// whole -march level, and the compiler may use any instruction of it there,
+// so a level needs every feature of its x86-64 level, not only the ones the
+// kernels name.
+void detect_levels(bool (&ok)[NUM_LEVELS]) {
+    uint32_t r[4];
+    cpuid(0, 0, r);
+    const uint32_t max_leaf = r[0];
+    cpuid(0x80000000u, 0, r);
+    const uint32_t max_ext = r[0];
+    uint32_t l1[4] = {}, l7[4] = {}, l71[4] = {}, e1[4] = {};
+    if (max_leaf >= 1) cpuid(1, 0, l1);
+    if (max_leaf >= 7) {
+        cpuid(7, 0, l7);
+        if (l7[0] >= 1) cpuid(7, 1, l71);   // eax of subleaf 0: the last subleaf
+    }
+    if (max_ext >= 0x80000001u) cpuid(0x80000001u, 0, e1);
+    auto bit = [](uint32_t reg, int b) { return ((reg >> b) & 1u) != 0; };
+    // The YMM and ZMM registers work only where the OS saves them: XCR0 bits
+    // 1-2 (SSE, AVX) and 5-7 (opmask, ZMM_Hi256, Hi16_ZMM). xgetbv exists
+    // when OSXSAVE (leaf 1 ecx bit 27) says so.
+    const uint64_t xcr = bit(l1[2], 27) ? xcr0() : 0;
+    const bool ymm = (xcr & 0x6) == 0x6;
+    const bool zmm = ymm && (xcr & 0xE0) == 0xE0;
+    // x86-64-v2, -v3 and -v4 as the x86-64 psABI defines them.
+    const bool v2 = bit(l1[2], 0) && bit(l1[2], 9) && bit(l1[2], 13) && bit(l1[2], 19)   // SSE3 SSSE3 CX16 SSE4.1
+                 && bit(l1[2], 20) && bit(l1[2], 23) && bit(e1[2], 0);                 // SSE4.2 POPCNT LAHF
+    const bool v3 = v2 && ymm && bit(l1[2], 12) && bit(l1[2], 22) && bit(l1[2], 28)    // FMA MOVBE AVX
+                 && bit(l1[2], 29) && bit(l7[1], 3) && bit(l7[1], 5) && bit(l7[1], 8) // F16C BMI1 AVX2 BMI2
+                 && bit(e1[2], 5);                                                     // LZCNT
+    const bool v4 = v3 && zmm && bit(l7[1], 16) && bit(l7[1], 17) && bit(l7[1], 28)    // AVX512 F DQ CD
+                 && bit(l7[1], 30) && bit(l7[1], 31);                                  // AVX512 BW VL
+    ok[0] = v4 && bit(l7[2], 11);    // avx512vnni: + AVX512_VNNI (leaf 7 ecx bit 11)
+    ok[1] = v4;                      // avx512
+    ok[2] = v3 && bit(l71[0], 4);    // avxvnni: + AVX-VNNI (leaf 7 subleaf 1 eax bit 4)
+    ok[3] = v3;                      // avx2
+    ok[4] = true;                    // base: no more than the rest of the engine needs
+}
+} // namespace
+#endif
+
+// Which LEVELS the CPU supports (all of them in a build with one level).
+static const bool* levels_supported() {
+    static bool ok[NUM_LEVELS];
+    static bool known = false;
+    if (!known) {
+#if defined(LUMINEX_NNUE_DISPATCH)
+        detect_levels(ok);
+#else
+        for (bool& b : ok) b = true;
+#endif
+        known = true;
+    }
+    return ok;
+}
+
+// The best supported level at or below the requested one (-1: the best).
+static int best_level(int request) {
+    const bool* ok = levels_supported();
+    for (int i = request < 0 ? 0 : request; i < NUM_LEVELS; ++i)
+        if (ok[i]) return i;
+    return NUM_LEVELS - 1;
+}
+
+static void choose_kernels() {
+#if defined(LUMINEX_NNUE_DISPATCH)
+    if (!g_k_chosen) {
+        g_k = LEVELS[best_level(g_request)];
+        g_k_chosen = true;
+    }
+#endif
+}
+
+static void arrange_tails();
+
+bool simd_dispatch() {
+#if defined(LUMINEX_NNUE_DISPATCH)
+    return true;
+#else
+    return false;
+#endif
+}
+
+const char* simd_level() {
+    choose_kernels();
+    return g_k->name;
+}
+
+std::vector<std::string> simd_levels() {
+    std::vector<std::string> names;
+    for (const Kernels* k : LEVELS) names.push_back(k->name);
+    return names;
+}
+
+std::string set_simd_level(const std::string& request) {
+    int want = -1;
+    if (request != "auto") {
+        want = -2;
+        for (int i = 0; i < NUM_LEVELS; ++i)
+            if (request == LEVELS[i]->name) want = i;
+        if (want == -2) return "SimdLevel " + request + " is not a level of this build; SIMD level " + simd_level();
+    }
+    g_request = want;
+    const int got = best_level(want);
+#if defined(LUMINEX_NNUE_DISPATCH)
+    g_k = LEVELS[got];
+    g_k_chosen = true;
+#endif
+    if (g_loaded) arrange_tails();   // the network's dense layers, in the new kernels' layout
+    std::string msg = std::string("SIMD level ") + g_k->name;
+    if (want >= 0 && got != want) msg += " (this CPU cannot run " + request + ")";
+    return msg;
+}
+
+// Arrange every tail's L2 and L3 weights the way the kernels in use read them,
+// from the file's output-major order, and point the kernels' view at them.
+static void arrange_tails() {
+    const Kernels& k = *g_k;
+    const int L1 = g_L1, L2 = g_L2, L3 = g_L3;
+    const int total_in = 2 * L1;
+    for (DenseTail& t : g_tails) {
+        TailView v;
+        if (g_int8) {
+            const bool by_input = k.l2_layout == L2Layout::ByInput4 && L2 == 16;
+            const bool batched = k.l3_batched && L2 == 16 && L3 % 4 == 0;
+            if (batched) {
+                // Batched-L3 layout: dpbusd lane (o*4+j) accumulates h2-slice j against
+                // l3_w[o] slice j — one interleaved row per 4 outputs, 2 dpbusd for all 32.
+                t.l3_w_i8.assign(t.l3_w_file.size(), 0);
+                for (int o = 0; o < L3; ++o)
+                    for (int j = 0; j < 4; ++j)
+                        std::memcpy(&t.l3_w_i8[(static_cast<size_t>(o) * 4 + j) * 4], &t.l3_w_file[static_cast<size_t>(o) * L2 + j * 4], 4);
+            } else {
+                t.l3_w_i8.assign(t.l3_w_file.begin(), t.l3_w_file.end());
+            }
+            if (by_input) {
+                // Input-chunk L2 layout: block c (64 bytes) holds, for each of the 16
+                // outputs, its 4 weights for inputs 4c..4c+3, so one VPDPBUSD of a
+                // broadcast 4-byte input chunk updates all 16 output sums at once.
+                t.l2_w_i8.assign(t.l2_w_file.size(), 0);
+                for (int c = 0; c < total_in / 4; ++c)
+                    for (int o = 0; o < L2; ++o)
+                        std::memcpy(&t.l2_w_i8[(static_cast<size_t>(c) * L2 + o) * 4],
+                                    &t.l2_w_file[static_cast<size_t>(o) * total_in + c * 4], 4);
+            } else if (k.l2_layout == L2Layout::Chunk32) {
+                // AVX2 SF-style chunk access. Old: [output][chunk] → New: [chunk][output]
+                // (each chunk's L2 weight rows contiguous)
+                t.l2_w_i8.assign(t.l2_w_file.size(), 0);
+                for (int c = 0; c < total_in / 32; ++c)
+                    for (int o = 0; o < L2; ++o)
+                        std::memcpy(&t.l2_w_i8[(static_cast<size_t>(c) * L2 + o) * 32],
+                                    &t.l2_w_file[static_cast<size_t>(o) * total_in + c * 32], 32);
+            } else {
+                t.l2_w_i8.assign(t.l2_w_file.begin(), t.l2_w_file.end());
+            }
+            v.l2_w = t.l2_w_i8.data();
+            v.l3_w = t.l3_w_i8.data();
+            v.out_w = t.out_w_i8.data();
+            v.l2_by_input = by_input;
+            v.l3_batched = batched;
+        } else {
+            v.l2_wf = l2_w.data();
+            v.l3_wf = l3_w.data();
+            v.out_wf = out_w.data();
+        }
+        v.l2_b = t.l2_b.data();
+        v.l3_b = t.l3_b.data();
+        v.ics2 = t.ics2.data(); v.ics3 = t.ics3.data(); v.icso = t.icso;
+        v.out_b = t.out_b;
+        t.view = v;
+    }
+}
 
 static bool read_tensor(std::istream& f, std::vector<float>& v, int expected) {
     int32_t n = 0;
@@ -311,14 +443,16 @@ static bool load_stream(std::istream& f, const std::string& name) {
     f.read(magic, 4);
     std::string mg(magic, 4);
     // LNN1: float tail. LNI8: int8 tail. LNB8: int8 tails, one per output
-    // bucket; its header carries the bucket count after the four sizes.
-    if (mg != "LNN1" && mg != "LNI8" && mg != "LNB8") { std::fprintf(stderr, "nnue: bad magic\n"); return false; }
+    // bucket; its header carries the bucket count after the four sizes. LNR8:
+    // LNB8 with a scale per row of L2 and L3 instead of one per layer.
+    if (mg != "LNN1" && mg != "LNI8" && mg != "LNB8" && mg != "LNR8") { std::fprintf(stderr, "nnue: bad magic\n"); return false; }
+    const bool rows = (mg == "LNR8");
     int32_t hdr[4];
     f.read(reinterpret_cast<char*>(hdr), sizeof(hdr));
     if (!f) { std::fprintf(stderr, "nnue: truncated header\n"); return false; }
     int L1 = hdr[0], L2 = hdr[1], L3 = hdr[2], NI = hdr[3];
     int32_t NB = 1;
-    if (mg == "LNB8") {
+    if (mg == "LNB8" || mg == "LNR8") {
         f.read(reinterpret_cast<char*>(&NB), 4);
         if (!f || NB < 1 || NB > MAX_BUCKETS) { std::fprintf(stderr, "nnue: bucket count %d out of range\n", NB); return false; }
     }
@@ -339,8 +473,8 @@ static bool load_stream(std::istream& f, const std::string& name) {
     g_L1 = L1; g_L2 = L2; g_L3 = L3;
     std::vector<float> ft_w_raw;
     if (!read_tensor(f, ft_w_raw, L1 * NUM_INPUTS)) return false;
-    ft_w.resize(static_cast<size_t>(NUM_INPUTS) * L1);
-    // int16 at x8192 holds |w| < 4.0; clamp instead of letting the cast wrap.
+    ft_w.reset(static_cast<size_t>(NUM_INPUTS) * L1);
+    // int16 at x2048 holds |w| < 16.0; clamp instead of letting the cast wrap.
     long long clamped = 0;
     for (int i = 0; i < NUM_INPUTS; ++i)
         for (int l = 0; l < L1; ++l) {
@@ -353,62 +487,41 @@ static bool load_stream(std::istream& f, const std::string& name) {
     for (int l = 0; l < L1; ++l) ft_b_i32[l] = std::lround(ft_b[l] * FT_WSCALE);
     if (g_int8) {
         // LNI8 / LNB8: per tail, int8 weights + float bias + float scale per layer.
-        auto read_i8 = [&](std::vector<int8_t>& v, int expected) -> bool {
+        // LNR8: the L2 and L3 scales are float tensors, one per row.
+        auto read_i8 = [&](auto& v, int expected) -> bool {
             int32_t n = 0; f.read(reinterpret_cast<char*>(&n), 4);
             if (n != expected) { std::fprintf(stderr, "nnue: i8 size %d != %d\n", n, expected); return false; }
             v.resize(n); f.read(reinterpret_cast<char*>(v.data()), n); return f.good(); };
+        // L2 and L3 are kept as stored; arrange_tails lays them out for the kernels.
+        // The factor 1 / (s x 127) of each output, computed once here with the
+        // operations the evaluation used to repeat (the same floats, bit for bit).
+        auto read_scales = [&](std::vector<float>& ics, int rows_n, bool per_row) -> bool {
+            std::vector<float> sc;
+            if (per_row) { if (!read_tensor(f, sc, rows_n)) return false; }
+            else { float one = 1.0f; f.read(reinterpret_cast<char*>(&one), 4); sc.assign(rows_n, one); }
+            ics.resize(rows_n);
+            for (int o = 0; o < rows_n; ++o) {
+                const float cs = sc[o] * 127.0f;
+                ics[o] = 1.0f / cs;
+            }
+            return f.good(); };
         for (DenseTail& t : g_tails) {
-        if (!read_i8(t.l2_w_i8, L2 * 2 * L1)) return false;
+        if (!read_i8(t.l2_w_file, L2 * 2 * L1)) return false;
         if (!read_tensor(f, t.l2_b, L2)) return false;
-        f.read(reinterpret_cast<char*>(&t.s2), 4);
-        if (!read_i8(t.l3_w_i8, L3 * L2)) return false;
-#if defined(__AVX512VNNI__)
-        // Batched-L3 layout: dpbusd lane (o*4+j) accumulates h2-slice j against
-        // l3_w[o] slice j — one interleaved row per 4 outputs, 2 dpbusd for all 32.
-        if (L2 == 16 && (L3 % 4) == 0) {
-            std::vector<int8_t> tmp(static_cast<size_t>(L3) * L2);
-            for (int o = 0; o < L3; ++o)
-                for (int j = 0; j < 4; ++j)
-                    std::memcpy(&tmp[(static_cast<size_t>(o) * 4 + j) * 4], &t.l3_w_i8[static_cast<size_t>(o) * L2 + j * 4], 4);
-            t.l3_w_i8 = std::move(tmp);
-            t.l3_batched = true;
-        }
-        // Input-chunk L2 layout: block c (64 bytes) holds, for each of the 16
-        // outputs, its 4 weights for inputs 4c..4c+3, so one VPDPBUSD of a
-        // broadcast 4-byte input chunk updates all 16 output sums at once.
-        if (L2 == 16 && (2 * L1) % 4 == 0) {
-            const int total_in = 2 * L1;
-            std::vector<int8_t> tmp(static_cast<size_t>(L2) * total_in);
-            for (int c = 0; c < total_in / 4; ++c)
-                for (int o = 0; o < L2; ++o)
-                    std::memcpy(&tmp[(static_cast<size_t>(c) * L2 + o) * 4],
-                                &t.l2_w_i8[static_cast<size_t>(o) * total_in + c * 4], 4);
-            t.l2_w_i8 = std::move(tmp);
-            t.l2_by_input = true;
-        }
-#endif
+        if (!read_scales(t.ics2, L2, rows)) return false;
+        if (!read_i8(t.l3_w_file, L3 * L2)) return false;
         if (!read_tensor(f, t.l3_b, L3)) return false;
-        f.read(reinterpret_cast<char*>(&t.s3), 4);
+        if (!read_scales(t.ics3, L3, rows)) return false;
         if (!read_i8(t.out_w_i8, L3)) return false;
         std::vector<float> ob;
         if (!read_tensor(f, ob, 1)) return false;
         t.out_b = ob[0];
-        f.read(reinterpret_cast<char*>(&t.so), 4);
-        if (!f) { std::fprintf(stderr, "nnue: truncated dense tail\n"); return false; }
-        // Reorder L2 weights for AVX2 SF-style chunk access (not needed for AVX-512 VNNI).
-#if defined(__AVX2__) && !defined(__AVX512VNNI__)
-        // Old: [output][chunk]  →  New: [chunk][output]  (each chunk's 16 weight rows contiguous)
-        {
-            int total_in = 2 * L1;
-            int chunks = total_in / 32;
-            std::vector<int8_t> tmp(static_cast<size_t>(L2) * total_in);
-            for (int c = 0; c < chunks; ++c)
-                for (int o = 0; o < L2; ++o)
-                    std::memcpy(&tmp[(static_cast<size_t>(c) * L2 + o) * 32],
-                                &t.l2_w_i8[static_cast<size_t>(o) * total_in + c * 32], 32);
-            t.l2_w_i8 = std::move(tmp);
+        {   // the output layer has one row: its scale is a single float in every format
+            std::vector<float> ico;
+            if (!read_scales(ico, 1, false)) return false;
+            t.icso = ico[0];
         }
-#endif // !__AVX512VNNI__
+        if (!f) { std::fprintf(stderr, "nnue: truncated dense tail\n"); return false; }
         }
     } else {
         DenseTail& t = g_tails[0];
@@ -439,21 +552,18 @@ static bool load_stream(std::istream& f, const std::string& name) {
             f.seekg(save);   // not a LINH section — rewind (older net format)
         }
     }
+    choose_kernels();
+    arrange_tails();
     g_loaded = true;
     ++g_net_id;   // refresh-cache entries of the previous net are stale
-#if defined(__linux__) && defined(MADV_HUGEPAGE)
-    // THP for the big weight tables: the incremental update path is
-    // memory-latency bound (random row access into ft_w); huge pages cut
-    // TLB misses. Best effort — silently ignored where disallowed.
-    madvise(ft_w.data(), (ft_w.size() * sizeof(int16_t) + 0xFFFFF) & ~0xFFFFF, MADV_HUGEPAGE);
-#endif
-    // stdout carries UCI traffic, so the report is an info string.
+    // stdout carries UCI traffic, so the report is an info string. It ends
+    // with the kernels' instruction-set level (SimdLevel).
     if (NB > 1)
-        std::printf("info string NNUE evaluation using %s (int8 L1=%d L2=%d L3=%d, %d output buckets)\n",
-                    name.c_str(), L1, L2, L3, NB);
+        std::printf("info string NNUE evaluation using %s (int8 L1=%d L2=%d L3=%d, %d output buckets%s), SIMD level %s\n",
+                    name.c_str(), L1, L2, L3, NB, rows ? ", a scale per row" : "", g_k->name);
     else
-        std::printf("info string NNUE evaluation using %s (%s L1=%d L2=%d L3=%d)\n",
-                    name.c_str(), g_int8 ? "int8" : "float", L1, L2, L3);
+        std::printf("info string NNUE evaluation using %s (%s L1=%d L2=%d L3=%d), SIMD level %s\n",
+                    name.c_str(), g_int8 ? "int8" : "float", L1, L2, L3, g_k->name);
     if (clamped > 0)
         std::printf("info string NNUE warning: %lld feature weights exceed the int16 range and were clamped\n",
                     clamped);
@@ -497,127 +607,30 @@ bool load_embedded() {
     if (net.size == 0) return false;
     MemoryBuffer buf(net.data, net.size);
     std::istream f(&buf);
+#ifdef LUMINEX_EMBED_NAME
+    return load_stream(f, std::string("built-in ") + LUMINEX_EMBED_NAME);   // the built-in file's own name
+#else
     return load_stream(f, std::string("built-in ") + DEFAULT_NET);
+#endif
 }
-
-static inline float clip01(float x) { float c = x < 0.0f ? 0.0f : (x > 1.0f ? 1.0f : x); return c * c; }
-
-// ClippedReLU on a x8192-domain lane, requantized to the u8 dense input
-// (min(in>>6, 127) — 8192>>6 = 128 caps at 127).
-static inline uint8_t crelu_q8(int v) {
-    v = v < 0 ? 0 : (v > 8192 ? 8192 : v);
-    return uint8_t(std::min(v >> 6, 127));
-}
-
-// Saturating int16 on both rows; equivalent fused or sequential per sign.
-
 
 static inline const int16_t* feature_row(bool white_pov, int ksq, int sq, Piece piece) {
     return &ft_w[static_cast<size_t>(halfka_idx(white_pov, ksq, sq, piece)) * g_L1];
 }
 
-// Add / subtract one feature row to a perspective's lanes (saturating int16).
-static inline void add_row(int16_t* acc, const int16_t* w) {
-#if defined(__AVX512F__)
-    for (int l = 0; l < g_L1; l += 32)
-        _mm512_storeu_si512((__m512i*)(acc + l), _mm512_adds_epi16(
-            _mm512_loadu_si512((const __m512i*)(acc + l)),
-            _mm512_loadu_si512((const __m512i*)(w + l))));
-#elif defined(__AVX2__)
-    for (int l = 0; l < g_L1; l += 16)
-        _mm256_storeu_si256((__m256i*)(acc + l), _mm256_adds_epi16(
-            _mm256_loadu_si256((const __m256i*)(acc + l)),
-            _mm256_loadu_si256((const __m256i*)(w + l))));
-#else
-    for (int l = 0; l < g_L1; ++l) acc[l] = int16_t(std::max(-32768, std::min(32767, int(acc[l]) + int(w[l]))));
-#endif
-}
-static inline void sub_row(int16_t* acc, const int16_t* w) {
-#if defined(__AVX512F__)
-    for (int l = 0; l < g_L1; l += 32)
-        _mm512_storeu_si512((__m512i*)(acc + l), _mm512_subs_epi16(
-            _mm512_loadu_si512((const __m512i*)(acc + l)),
-            _mm512_loadu_si512((const __m512i*)(w + l))));
-#elif defined(__AVX2__)
-    for (int l = 0; l < g_L1; l += 16)
-        _mm256_storeu_si256((__m256i*)(acc + l), _mm256_subs_epi16(
-            _mm256_loadu_si256((const __m256i*)(acc + l)),
-            _mm256_loadu_si256((const __m256i*)(w + l))));
-#else
-    for (int l = 0; l < g_L1; ++l) acc[l] = int16_t(std::max(-32768, std::min(32767, int(acc[l]) - int(w[l]))));
-#endif
-}
-
-static inline void add_feature(Accumulator& a, int p, int ksq, int sq, Piece piece) {
-    add_row(a.v[p], feature_row(p == 0, ksq, sq, piece));
-}
-
-// One perspective of a child accumulator, written in a single pass from the
-// parent's lanes: +add0 -sub0, then -sub1 (S1), then +add1 (A1). The SIMD
-// builds saturate after every step, as add_row and sub_row do; the scalar build
-// clamps once over the first pair and then after each later step. These are the
-// steps, order and saturation of the copy-then-update-in-place sequence this
-// replaced, so the lanes are bit-identical to it. Saturating adds and subtracts
-// do not commute, so the order matters whenever a lane saturates.
-template <bool S1, bool A1>
-static inline void delta_rows(const int16_t* parent, int16_t* child, const int16_t* add0,
-                              const int16_t* sub0, const int16_t* sub1, const int16_t* add1) {
-#if defined(__AVX512F__)
-    for (int l = 0; l < g_L1; l += 32) {
-        __m512i v = _mm512_loadu_si512((const __m512i*)(parent + l));
-        v = _mm512_adds_epi16(v, _mm512_loadu_si512((const __m512i*)(add0 + l)));
-        v = _mm512_subs_epi16(v, _mm512_loadu_si512((const __m512i*)(sub0 + l)));
-        if constexpr (S1) v = _mm512_subs_epi16(v, _mm512_loadu_si512((const __m512i*)(sub1 + l)));
-        if constexpr (A1) v = _mm512_adds_epi16(v, _mm512_loadu_si512((const __m512i*)(add1 + l)));
-        _mm512_storeu_si512((__m512i*)(child + l), v);
-    }
-#elif defined(__AVX2__)
-    for (int l = 0; l < g_L1; l += 16) {
-        __m256i v = _mm256_loadu_si256((const __m256i*)(parent + l));
-        v = _mm256_adds_epi16(v, _mm256_loadu_si256((const __m256i*)(add0 + l)));
-        v = _mm256_subs_epi16(v, _mm256_loadu_si256((const __m256i*)(sub0 + l)));
-        if constexpr (S1) v = _mm256_subs_epi16(v, _mm256_loadu_si256((const __m256i*)(sub1 + l)));
-        if constexpr (A1) v = _mm256_adds_epi16(v, _mm256_loadu_si256((const __m256i*)(add1 + l)));
-        _mm256_storeu_si256((__m256i*)(child + l), v);
-    }
-#else
-    for (int l = 0; l < g_L1; ++l) {
-        int v = std::max(-32768, std::min(32767, int(parent[l]) + int(add0[l]) - int(sub0[l])));
-        if constexpr (S1) v = std::max(-32768, std::min(32767, v - int(sub1[l])));
-        if constexpr (A1) v = std::max(-32768, std::min(32767, v + int(add1[l])));
-        child[l] = int16_t(v);
-    }
-#endif
-}
-
-// Lanes of an empty board: the FT bias, clamped to int16.
-static void init_bias(int16_t* acc) {
-#if defined(__AVX512F__)
-    {   // vectorized clamped bias init (was 512 scalar stores per refresh);
-        // inputs pre-clamped to int16 range so signed saturation == exact
-        const __m512i lo32 = _mm512_set1_epi32(-32768), hi32 = _mm512_set1_epi32(32767);
-        for (int l = 0; l < g_L1; l += 32) {
-            __m512i b0 = _mm512_min_epi32(hi32, _mm512_max_epi32(lo32, _mm512_loadu_si512((const __m512i*)&ft_b_i32[l])));
-            __m512i b1 = _mm512_min_epi32(hi32, _mm512_max_epi32(lo32, _mm512_loadu_si512((const __m512i*)&ft_b_i32[l + 16])));
-            _mm256_storeu_si256((__m256i*)(acc + l),      _mm512_cvtsepi32_epi16(b0));
-            _mm256_storeu_si256((__m256i*)(acc + l + 16), _mm512_cvtsepi32_epi16(b1));
-        }
-    }
-#else
-    for (int l = 0; l < g_L1; ++l)
-        acc[l] = int16_t(std::max(-32768, std::min(32767, ft_b_i32[l])));
-#endif
-}
-
+// Rebuild side p's lanes from the board: the bias, then every piece's row in
+// square order, saturating after each (refresh_lanes).
 static void refresh_perspective(const Position& pos, Accumulator& a, int p) {
     bool white_pov = (p == 0);
     int ksq = static_cast<int>(pos.king_sq(white_pov ? WHITE : BLACK));
-    init_bias(a.v[p]);
+    const int16_t* rows[NUM_SQ];
+    int n = 0;
     for (int sq = 0; sq < NUM_SQ; ++sq) {
         Piece pc = pos.piece_on(Square(sq));
         if (pc == NO_PIECE) continue;
-        add_feature(a, p, ksq, Square(sq), pc);
+        rows[n++] = feature_row(white_pov, ksq, sq, pc);
     }
+    NNUE_K(refresh_lanes)(a.v[p], ft_b_i32.data(), rows, n, g_L1);
 }
 
 // Refresh cache: per perspective and own-king square, the lanes of the board
@@ -631,55 +644,6 @@ struct alignas(64) RefreshEntry {
     Bitboard pieces[2][6];   // [color][piece type] of the board acc describes
     uint32_t net_id = 0;
 };
-
-static inline void add_row_i32(int32_t* acc, const int16_t* w) {
-#if defined(__AVX512F__)
-    for (int l = 0; l < g_L1; l += 16)
-        _mm512_storeu_si512((__m512i*)(acc + l), _mm512_add_epi32(
-            _mm512_loadu_si512((const __m512i*)(acc + l)),
-            _mm512_cvtepi16_epi32(_mm256_loadu_si256((const __m256i*)(w + l)))));
-#elif defined(__AVX2__)
-    for (int l = 0; l < g_L1; l += 8)
-        _mm256_storeu_si256((__m256i*)(acc + l), _mm256_add_epi32(
-            _mm256_loadu_si256((const __m256i*)(acc + l)),
-            _mm256_cvtepi16_epi32(_mm_loadu_si128((const __m128i*)(w + l)))));
-#else
-    for (int l = 0; l < g_L1; ++l) acc[l] += w[l];
-#endif
-}
-static inline void sub_row_i32(int32_t* acc, const int16_t* w) {
-#if defined(__AVX512F__)
-    for (int l = 0; l < g_L1; l += 16)
-        _mm512_storeu_si512((__m512i*)(acc + l), _mm512_sub_epi32(
-            _mm512_loadu_si512((const __m512i*)(acc + l)),
-            _mm512_cvtepi16_epi32(_mm256_loadu_si256((const __m256i*)(w + l)))));
-#elif defined(__AVX2__)
-    for (int l = 0; l < g_L1; l += 8)
-        _mm256_storeu_si256((__m256i*)(acc + l), _mm256_sub_epi32(
-            _mm256_loadu_si256((const __m256i*)(acc + l)),
-            _mm256_cvtepi16_epi32(_mm_loadu_si128((const __m128i*)(w + l)))));
-#else
-    for (int l = 0; l < g_L1; ++l) acc[l] -= w[l];
-#endif
-}
-// int32 lanes -> int16 lanes with signed saturation.
-static inline void store_saturated(int16_t* dst, const int32_t* src) {
-#if defined(__AVX512F__)
-    for (int l = 0; l < g_L1; l += 16)
-        _mm256_storeu_si256((__m256i*)(dst + l),
-            _mm512_cvtsepi32_epi16(_mm512_loadu_si512((const __m512i*)(src + l))));
-#elif defined(__AVX2__)
-    for (int l = 0; l < g_L1; l += 16) {
-        __m256i lo = _mm256_loadu_si256((const __m256i*)(src + l));
-        __m256i hi = _mm256_loadu_si256((const __m256i*)(src + l + 8));
-        // packs works per 128-bit half: reorder the 64-bit quarters back
-        __m256i p = _mm256_permute4x64_epi64(_mm256_packs_epi32(lo, hi), 0xD8);
-        _mm256_storeu_si256((__m256i*)(dst + l), p);
-    }
-#else
-    for (int l = 0; l < g_L1; ++l) dst[l] = int16_t(std::max(-32768, std::min(32767, src[l])));
-#endif
-}
 
 static inline RefreshEntry* refresh_cache() {
     thread_local std::vector<RefreshEntry> store(2 * NUM_SQ);
@@ -699,6 +663,9 @@ static void refresh_from_board(const Bitboard (&pieces)[2][6], int ksq, Accumula
         std::memset(e.pieces, 0, sizeof(e.pieces));
         e.net_id = g_net_id;
     }
+    const int16_t* gone_rows[NUM_SQ];
+    const int16_t* added_rows[NUM_SQ];
+    int ngone = 0, nadded = 0;
     for (int c = 0; c < 2; ++c)
         for (int pt = PAWN; pt <= KING; ++pt) {
             Bitboard now = pieces[c][pt];
@@ -706,12 +673,12 @@ static void refresh_from_board(const Bitboard (&pieces)[2][6], int ksq, Accumula
             if (now == was) continue;
             Piece pc = make_piece(Color(c), PieceType(pt));
             for (Bitboard gone = was & ~now; gone; )
-                sub_row_i32(e.acc, feature_row(white_pov, ksq, pop_lsb(gone), pc));
+                gone_rows[ngone++] = feature_row(white_pov, ksq, pop_lsb(gone), pc);
             for (Bitboard added = now & ~was; added; )
-                add_row_i32(e.acc, feature_row(white_pov, ksq, pop_lsb(added), pc));
+                added_rows[nadded++] = feature_row(white_pov, ksq, pop_lsb(added), pc);
             e.pieces[c][pt] = now;
         }
-    store_saturated(a.v[p], e.acc);
+    NNUE_K(refresh_cached)(e.acc, gone_rows, ngone, added_rows, nadded, a.v[p], g_L1);
 }
 
 // Sides [p_begin, p_end) of `child` from those of `parent` and the move
@@ -745,20 +712,28 @@ static void apply_delta(const PlyDelta& d, const Accumulator& parent, Accumulato
         cap_pc = make_piece(them, d.captured);
     }
     const Piece rook = make_piece(us, ROOK);
+    // Per side: + the moved piece on its new square, - it on the old one, then
+    // - the captured piece, or for castling - and + the rook.
+    DeltaRows jobs[2];
+    int njobs = 0;
     for (int p = p_begin; p < p_end; ++p) {
         const bool white_pov = (p == 0);
         const int ksq = d.ksq[p];
-        const int16_t* to_row   = feature_row(white_pov, ksq, to, to_pc);
-        const int16_t* from_row = feature_row(white_pov, ksq, from, from_pc);
-        if (castling)
-            delta_rows<true, true>(parent.v[p], child.v[p], to_row, from_row,
-                                   feature_row(white_pov, ksq, rfrom, rook), feature_row(white_pov, ksq, rto, rook));
-        else if (cap_pc != NO_PIECE)
-            delta_rows<true, false>(parent.v[p], child.v[p], to_row, from_row,
-                                    feature_row(white_pov, ksq, cap_sq, cap_pc), nullptr);
-        else
-            delta_rows<false, false>(parent.v[p], child.v[p], to_row, from_row, nullptr, nullptr);
+        DeltaRows& r = jobs[njobs++];
+        r.parent = parent.v[p];
+        r.child = child.v[p];
+        r.add0 = feature_row(white_pov, ksq, to, to_pc);
+        r.sub0 = feature_row(white_pov, ksq, from, from_pc);
+        r.sub1 = nullptr;
+        r.add1 = nullptr;
+        if (castling) {
+            r.sub1 = feature_row(white_pov, ksq, rfrom, rook);
+            r.add1 = feature_row(white_pov, ksq, rto, rook);
+        } else if (cap_pc != NO_PIECE) {
+            r.sub1 = feature_row(white_pov, ksq, cap_sq, cap_pc);
+        }
     }
+    NNUE_K(update_lanes)(jobs, njobs, g_L1);
 }
 
 // Bring both sides of the accumulator at pos's ply up to date. Each side walks
@@ -907,13 +882,11 @@ Value evaluate(const Position& pos) {
                     // was the bias alone, so any real position aborted here
                     ref += ft_w[(size_t)idx * g_L1 + l];
                 }
-                // int16 saturating acc: saturated lanes differ from the exact
-                // reference in raw value but are IDENTICAL after the SCReLU clip
-                // (window [0,8192] sits 4x below saturation). Compare activations.
-                // g_sat_events tracks how often the exact value even reaches the
-                // int16 boundary — it should stay at zero under range-constrained
-                // training; if it grows, the fused/sequential divergence above
-                // becomes live and the training constraint has failed.
+                // Compare activations, which is what the dense layers read.
+                // g_sat_events counts exact sums that reach the int16 boundary:
+                // on the x2048 grid it stays at zero, and a lane past it would
+                // carry a clipped value into the moves after (the drift x8192
+                // had).
                 if (std::fabs(ref) >= 32768.0f) ++g_sat_events;
                 float ref_a = std::min(1.0f, std::max(0.0f, ref * FT_WINV));
                 float inc_a = std::min(1.0f, std::max(0.0f, inc.v[p][l] * FT_WINV));
@@ -927,386 +900,242 @@ Value evaluate(const Position& pos) {
     }
 #endif
     const Accumulator& a = acc_stack[pos.state_ply()];
-    int L1 = g_L1, L2 = g_L2, L3 = g_L3;
     bool stm_white = (pos.side_to_move() == WHITE);
     const int16_t* acc_stm  = stm_white ? a.v[0] : a.v[1];
     const int16_t* acc_nstm = stm_white ? a.v[1] : a.v[0];
     // This position's dense tail (the only one unless the net has output
-    // buckets), bound to the names the kernels below use.
-    const DenseTail& tail = g_tails[bucket_of(pos)];
-    const std::vector<int8_t>& l2_w_i8 = tail.l2_w_i8;
-    const std::vector<int8_t>& l3_w_i8 = tail.l3_w_i8;
-    const std::vector<int8_t>& out_w_i8 = tail.out_w_i8;
-    const std::vector<float>& l2_b = tail.l2_b;
-    const std::vector<float>& l3_b = tail.l3_b;
-    [[maybe_unused]] const float g_s2 = tail.s2, g_s3 = tail.s3, g_so = tail.so;
-    const float out_b = tail.out_b;
-    [[maybe_unused]] const bool g_l3_batched = tail.l3_batched, g_l2_by_input = tail.l2_by_input;
-
-
-#if defined(__AVX2__)
-    // ---- int8 path: FUSED SCReLU+quant8 (no intermediate h[] — saves 8KB L1 traffic/eval) ----
+    // buckets), as the kernels read it.
+    const TailView& tail = g_tails[bucket_of(pos)].view;
+    float ov;
     if (g_int8) {
-        uint8_t h_i8[2 * NNUE_L1_MAX];
-        const __m256 sc127 = _mm256_set1_ps(127.0f);  // shared for quant8 (L3/out)
-#if defined(__AVX512F__)
-        // AVX-512, 64 lanes per pass. Clamping to the SCReLU window [0, 8192]
-        // in int16 and then rounding fl(fl(a*a) * 127*2^-26) gives the same
-        // bytes as the float clamp-square-scale below: scaling by a power of
-        // two never rounds, so both round the same product (all 8193 window
-        // values checked). Packing 4 vectors at a time replaces two narrowing
-        // converts per 16 lanes.
-        if (L1 % 64 == 0) {
-            const __m512i lo16 = _mm512_setzero_si512(), hi16 = _mm512_set1_epi16(8192);
-            const __m512 k = _mm512_set1_ps(127.0f / 67108864.0f);   // 127 * 2^-26, exact
-            // packs/packus work inside 128-bit lanes; this dword permute (a 4x4
-            // transpose of 4-byte groups) restores input order
-            const __m512i order = _mm512_setr_epi32(0, 4, 8, 12, 1, 5, 9, 13, 2, 6, 10, 14, 3, 7, 11, 15);
-            auto act16 = [&](__m256i v) {   // 16 clamped int16 -> 16 int32 in [0, 127]
-                const __m512 f = _mm512_cvtepi32_ps(_mm512_cvtepi16_epi32(v));
-                return _mm512_cvtps_epi32(_mm512_mul_ps(_mm512_mul_ps(f, f), k));
-            };
-            for (int side = 0; side < 2; ++side) {
-                const int16_t* in = side == 0 ? acc_stm : acc_nstm;
-                uint8_t* out = h_i8 + side * L1;
-                for (int l = 0; l < L1; l += 64) {
-                    const __m512i x0 = _mm512_min_epi16(_mm512_max_epi16(_mm512_loadu_si512(in + l), lo16), hi16);
-                    const __m512i x1 = _mm512_min_epi16(_mm512_max_epi16(_mm512_loadu_si512(in + l + 32), lo16), hi16);
-                    const __m512i q0 = act16(_mm512_castsi512_si256(x0)), q1 = act16(_mm512_extracti64x4_epi64(x0, 1));
-                    const __m512i q2 = act16(_mm512_castsi512_si256(x1)), q3 = act16(_mm512_extracti64x4_epi64(x1, 1));
-                    const __m512i b = _mm512_packus_epi16(_mm512_packs_epi32(q0, q1), _mm512_packs_epi32(q2, q3));
-                    _mm512_storeu_si512(out + l, _mm512_permutexvar_epi32(order, b));
-                }
-            }
-        } else {
-        const __m512 z16 = _mm512_setzero_ps(), one16 = _mm512_set1_ps(1.0f), sc16 = _mm512_set1_ps(127.0f);
-        const __m512 winv16 = _mm512_set1_ps(FT_WINV);
-        for (int l = 0; l < L1; l += 16) {
-            __m512 s = _mm512_mul_ps(_mm512_cvtepi32_ps(_mm512_cvtepi16_epi32(_mm256_loadu_si256((const __m256i*)(acc_stm + l)))), winv16);
-            __m512 c = _mm512_min_ps(_mm512_max_ps(s, z16), one16);
-            __m512 sq = _mm512_mul_ps(c, c);
-            __m512i i32 = _mm512_cvtps_epi32(_mm512_mul_ps(sq, sc16));
-            // Pack 16 int32 → 16 uint8: int32→int16→uint8
-            __m256i i16 = _mm512_cvtepi32_epi16(i32);  // AVX512F: 16 int32 → 16 int16
-            __m128i i8 = _mm256_cvtepi16_epi8(i16);     // AVX512F: 16 int16 → 16 int8
-            // c=clip(s,0,1) -> c² in [0,1] -> ×127 -> [0,127] exactly: no clamp needed.
-            _mm_storeu_si128((__m128i*)(h_i8 + l), i8);
-            // nstm
-            s = _mm512_mul_ps(_mm512_cvtepi32_ps(_mm512_cvtepi16_epi32(_mm256_loadu_si256((const __m256i*)(acc_nstm + l)))), winv16);
-            c = _mm512_min_ps(_mm512_max_ps(s, z16), one16);
-            sq = _mm512_mul_ps(c, c);
-            i32 = _mm512_cvtps_epi32(_mm512_mul_ps(sq, sc16));
-            i16 = _mm512_cvtepi32_epi16(i32);
-            i8 = _mm256_cvtepi16_epi8(i16);
-            _mm_storeu_si128((__m128i*)(h_i8 + L1 + l), i8);
-        }
-        }
-#else
-        const __m256 z = _mm256_setzero_ps(), one = _mm256_set1_ps(1.0f), winv8 = _mm256_set1_ps(FT_WINV);
-        for (int l = 0; l < L1; l += 8) {
-            __m256 s = _mm256_mul_ps(_mm256_cvtepi32_ps(_mm256_cvtepi16_epi32(_mm_loadu_si128((const __m128i*)(acc_stm + l)))), winv8);
-            __m256 c = _mm256_min_ps(_mm256_max_ps(s, z), one);
-            __m256 sq = _mm256_mul_ps(c, c);
-            __m256i i32 = _mm256_cvtps_epi32(_mm256_mul_ps(sq, sc127));
-            __m128i lo = _mm256_castsi256_si128(i32), hi = _mm256_extracti128_si256(i32, 1);
-            _mm_storel_epi64((__m128i*)(h_i8 + l), _mm_packus_epi16(_mm_packs_epi32(lo, hi), _mm_setzero_si128()));
-            s = _mm256_mul_ps(_mm256_cvtepi32_ps(_mm256_cvtepi16_epi32(_mm_loadu_si128((const __m128i*)(acc_nstm + l)))), winv8);
-            c = _mm256_min_ps(_mm256_max_ps(s, z), one);
-            sq = _mm256_mul_ps(c, c);
-            i32 = _mm256_cvtps_epi32(_mm256_mul_ps(sq, sc127));
-            lo = _mm256_castsi256_si128(i32); hi = _mm256_extracti128_si256(i32, 1);
-            _mm_storel_epi64((__m128i*)(h_i8 + L1 + l), _mm_packus_epi16(_mm_packs_epi32(lo, hi), _mm_setzero_si128()));
-        }
-#endif
-        if (pr) { for (int i = 0; i < 2*L1; ++i) g_act_nz += (h_i8[i] != 0); g_act_tot += 2*L1; }
-        const float cs2 = g_s2 * 127.0f, cs3 = g_s3 * 127.0f, cso = g_so * 127.0f;
-        // 49 float divisions per eval -> 3 + 46 multiplies (sub-ULP diff, far below
-        // the 1/127 activation quantization step; fingerprint-verified).
-        const float ics2 = 1.0f / cs2, ics3 = 1.0f / cs3, icso = 1.0f / cso;
-        float h2[NNUE_L1_MAX];
-#if defined(__AVX512VNNI__)
-        if (g_l2_by_input) {
-            // One VPDPBUSD per 4 inputs adds their products to all 16 output sums
-            // (lane o = output o), so no per-output horizontal sum is needed.
-            // Integer adds associate: each sum equals the per-output dot exactly.
-            const int n4 = 2 * L1 / 4;
-            const int8_t* w = l2_w_i8.data();
-            auto chunk = [&](int c) {
-                int32_t v; std::memcpy(&v, h_i8 + 4 * c, 4);
-                return _mm512_set1_epi32(v);
-            };
-            __m512i s0 = _mm512_setzero_si512(), s1 = s0, s2 = s0, s3 = s0;
-            int c = 0;
-            for (; c + 4 <= n4; c += 4) {
-                s0 = _mm512_dpbusd_epi32(s0, chunk(c + 0), _mm512_loadu_si512(w + 64 * (c + 0)));
-                s1 = _mm512_dpbusd_epi32(s1, chunk(c + 1), _mm512_loadu_si512(w + 64 * (c + 1)));
-                s2 = _mm512_dpbusd_epi32(s2, chunk(c + 2), _mm512_loadu_si512(w + 64 * (c + 2)));
-                s3 = _mm512_dpbusd_epi32(s3, chunk(c + 3), _mm512_loadu_si512(w + 64 * (c + 3)));
-            }
-            for (; c < n4; ++c)
-                s0 = _mm512_dpbusd_epi32(s0, chunk(c), _mm512_loadu_si512(w + 64 * c));
-            alignas(64) int32_t d[16];
-            _mm512_store_si512(d, _mm512_add_epi32(_mm512_add_epi32(s0, s1), _mm512_add_epi32(s2, s3)));
-            for (int o = 0; o < 16; ++o) h2[o] = clip01(l2_b[o] + d[o] * ics2);
-        } else
-        // VPDPBUSD: 64 MACs/instruction. Per-output dot (output-major weights, no reorder).
-        for (int o = 0; o < L2; ++o)
-            h2[o] = clip01(l2_b[o] + dot_i8_vnni(&l2_w_i8[static_cast<size_t>(o) * 2 * L1], h_i8, 2 * L1) * ics2);
-#else
-        // AVX2 SF-style chunk L2 (chunk-major weights, reordered at load).
-        const __m256i ones = _mm256_set1_epi16(1);
-        const int total_in = 2 * L1;
-        const int num_chunks = total_in / 32;
-        for (int pass = 0; pass < (L2 + 7) / 8; ++pass) {
-            int base_o = pass * 8;
-            int n_out = std::min(8, L2 - base_o);
-            __m256i acc8[8];
-            for (int i = 0; i < 8; ++i) acc8[i] = _mm256_setzero_si256();
-            for (int c = 0; c < num_chunks; ++c) {
-                __m256i hv = _mm256_loadu_si256((const __m256i*)(h_i8 + c * 32));
-                const int8_t* wp = &l2_w_i8[(static_cast<size_t>(c) * L2 + base_o) * 32];
-                for (int o = 0; o < n_out; ++o) {
-                    __m256i wv = _mm256_loadu_si256((const __m256i*)(wp + o * 32));
-                    __m256i p16 = _mm256_maddubs_epi16(hv, wv);
-                    acc8[o] = _mm256_add_epi32(acc8[o], _mm256_madd_epi16(p16, ones));
-                }
-            }
-            for (int o = 0; o < n_out; ++o) {
-                __m128i lo = _mm256_castsi256_si128(acc8[o]);
-                __m128i hi = _mm256_extracti128_si256(acc8[o], 1);
-                __m128i sv = _mm_hadd_epi32(_mm_add_epi32(lo, hi), _mm_setzero_si128());
-                int32_t d = _mm_cvtsi128_si32(_mm_hadd_epi32(sv, sv));
-                h2[base_o + o] = clip01(l2_b[base_o + o] + d * ics2);
-            }
-        }
-#endif // AVX2 SF-L2 vs AVX512 VNNI L2
-        // L3/out (shared — uses VNNI when available, AVX2 otherwise)
-        uint8_t h2_i8[NNUE_L1_MAX];
-        for (int l = 0; l < L2; l += 8) quant8(h2 + l, h2_i8 + l, sc127);
-        float h3[NNUE_L1_MAX];
-#if defined(__AVX512VNNI__)
-        if (g_l3_batched) {
-            // All L3 dots via 8 dpbusd + lane-group reduction (bit-exact: integer
-            // adds associate). a512: every 4-lane group holds all 16 h2 bytes.
-            const __m128i h2_128 = _mm_loadu_si128((const __m128i*)h2_i8);
-            const __m512i av = _mm512_broadcast_i32x4(h2_128);   // replicate 16B into each lane group
-            const __m512i pairswap = _mm512_setr_epi32(1,0,3,2, 5,4,7,6, 9,8,11,10, 13,12,15,14);
-            const __m512i groupswap = _mm512_setr_epi32(2,3,0,1, 6,7,4,5, 10,11,8,9, 14,15,12,13);
-            // Butterfly leaves each group's sum in ALL its lanes; the four output
-            // dots sit at lanes {0,4,8,12} — gather them into 0..3 before extract.
-            const __m512i pick0408 = _mm512_setr_epi32(0,4,8,12, 0,4,8,12, 0,4,8,12, 0,4,8,12);
-            int o = 0;
-            for (int v = 0; v < L3 / 4; ++v, o += 4) {
-                __m512i acc = _mm512_dpbusd_epi32(_mm512_setzero_si512(), av,
-                                _mm512_loadu_si512((const __m512i*)&l3_w_i8[v * 64]));
-                __m512i t1 = _mm512_add_epi32(acc, _mm512_permutexvar_epi32(pairswap, acc));
-                __m512i t2 = _mm512_add_epi32(t1, _mm512_permutexvar_epi32(groupswap, t1));
-                // t2 lane 4k = dot for output (v*4 + k)
-                __m128i sums = _mm512_castsi512_si128(_mm512_permutexvar_epi32(pick0408, t2));
-                h3[o+0] = clip01(l3_b[o+0] + _mm_extract_epi32(sums, 0) * ics3);
-                h3[o+1] = clip01(l3_b[o+1] + _mm_extract_epi32(sums, 1) * ics3);
-                h3[o+2] = clip01(l3_b[o+2] + _mm_extract_epi32(sums, 2) * ics3);
-                h3[o+3] = clip01(l3_b[o+3] + _mm_extract_epi32(sums, 3) * ics3);
-            }
-        } else
-        for (int o = 0; o < L3; ++o)
-            h3[o] = clip01(l3_b[o] + dot_i8_vnni_small(&l3_w_i8[static_cast<size_t>(o) * L2], h2_i8, L2) * ics3);
-        uint8_t h3_i8[NNUE_L1_MAX];
-        for (int l = 0; l < L3; l += 8) quant8(h3 + l, h3_i8 + l, sc127);
-        float ov = out_b + dot_i8_vnni_small(out_w_i8.data(), h3_i8, L3) * icso;
-#else
-        for (int o = 0; o < L3; ++o)
-            h3[o] = clip01(l3_b[o] + dot_i8(&l3_w_i8[static_cast<size_t>(o) * L2], h2_i8, L2) * ics3);
-        uint8_t h3_i8[NNUE_L1_MAX];
-        for (int l = 0; l < L3; l += 8) quant8(h3 + l, h3_i8 + l, sc127);
-        float ov = out_b + dot_i8(out_w_i8.data(), h3_i8, L3) * icso;
-#endif
-        Value v = static_cast<Value>(std::llround(ov * OUT_SCALE));
-        if (pr) { st_eval.cyc += rdtsc() - t0; st_eval.n++; }
-        return v;
+        ov = NNUE_K(forward_int8)(acc_stm, acc_nstm, tail, g_L1, g_L2, g_L3, pr ? &g_act_nz : nullptr);
+        if (pr) g_act_tot += 2 * g_L1;
+    } else {
+        ov = NNUE_K(forward_float)(acc_stm, acc_nstm, tail, g_L1, g_L2, g_L3);
     }
-    // ---- float L2/L3/out path (LNN1 nets) ----
-    float h[2 * NNUE_L1_MAX];
-    const __m256 z = _mm256_setzero_ps(), one = _mm256_set1_ps(1.0f), winv8 = _mm256_set1_ps(FT_WINV);
-    for (int l = 0; l < L1; l += 8) {
-        _mm256_storeu_ps(h + l,      screlu8(_mm256_mul_ps(_mm256_cvtepi32_ps(_mm256_cvtepi16_epi32(_mm_loadu_si128((const __m128i*)(acc_stm + l)))), winv8), z, one));
-        _mm256_storeu_ps(h + L1 + l, screlu8(_mm256_mul_ps(_mm256_cvtepi32_ps(_mm256_cvtepi16_epi32(_mm_loadu_si128((const __m128i*)(acc_nstm + l)))), winv8), z, one));
-    }
-    float h2[NNUE_L1_MAX];
-    for (int o = 0; o < L2; ++o) {
-        const float* w = &l2_w[o * 2 * L1];
-        __m256 accv = _mm256_setzero_ps();
-        for (int i = 0; i < 2 * L1; i += 8)
-            accv = _mm256_fmadd_ps(_mm256_loadu_ps(w + i), _mm256_loadu_ps(h + i), accv);
-        h2[o] = clip01(hsum256(accv) + l2_b[o]);
-    }
-    // L3: SIMD dot products over L2 inputs.
-    float h3[NNUE_L1_MAX];
-    for (int o = 0; o < L3; ++o) {
-        const float* w = &l3_w[o * L2];
-        __m256 accv = _mm256_setzero_ps();
-        int i = 0;
-        for (; i + 8 <= L2; i += 8)
-            accv = _mm256_fmadd_ps(_mm256_loadu_ps(w + i), _mm256_loadu_ps(h2 + i), accv);
-        float s = hsum256(accv) + l3_b[o];
-        for (; i < L2; ++i) s += w[i] * h2[i];
-        h3[o] = clip01(s);
-    }
-#else
-    // ---- non-AVX2 path (ARM etc.) ----
-#if defined(__ARM_FEATURE_DOTPROD)
-    if (g_int8) {
-        uint8_t h_i8[2 * NNUE_L1_MAX];
-        // SCReLU + quantize: acc int16 → float → clip01 → square → ×127 → uint8
-        // 8 elements per iteration via NEON
-        for (int l = 0; l < L1; l += 8) {
-            // stm half
-            int16x8_t v = vld1q_s16(acc_stm + l);
-            int32x4_t lo = vmovl_s16(vget_low_s16(v));
-            int32x4_t hi = vmovl_s16(vget_high_s16(v));
-            float32x4_t flo = vcvtq_f32_s32(lo);
-            float32x4_t fhi = vcvtq_f32_s32(hi);
-            flo = vmulq_n_f32(flo, FT_WINV);
-            fhi = vmulq_n_f32(fhi, FT_WINV);
-            flo = vminq_f32(vmaxq_f32(flo, vdupq_n_f32(0.0f)), vdupq_n_f32(1.0f));
-            fhi = vminq_f32(vmaxq_f32(fhi, vdupq_n_f32(0.0f)), vdupq_n_f32(1.0f));
-            flo = vmulq_f32(flo, flo);
-            fhi = vmulq_f32(fhi, fhi);
-            flo = vmulq_n_f32(flo, 127.0f);
-            fhi = vmulq_n_f32(fhi, 127.0f);
-            // vcvtnq = round-to-nearest-even, matching _mm*_cvtps_epi32 on x86;
-            // vcvtq truncates and drifts up to one quantization step per lane.
-            int32x4_t ilo = vcvtnq_s32_f32(flo);
-            int32x4_t ihi = vcvtnq_s32_f32(fhi);
-            int16x8_t i16 = vcombine_s16(vqmovn_s32(ilo), vqmovn_s32(ihi));
-            uint8x8_t u8 = vqmovun_s16(i16);
-            vst1_u8(h_i8 + l, u8);
-            // nstm half
-            v = vld1q_s16(acc_nstm + l);
-            lo = vmovl_s16(vget_low_s16(v));
-            hi = vmovl_s16(vget_high_s16(v));
-            flo = vcvtq_f32_s32(lo);
-            fhi = vcvtq_f32_s32(hi);
-            flo = vmulq_n_f32(flo, FT_WINV);
-            fhi = vmulq_n_f32(fhi, FT_WINV);
-            flo = vminq_f32(vmaxq_f32(flo, vdupq_n_f32(0.0f)), vdupq_n_f32(1.0f));
-            fhi = vminq_f32(vmaxq_f32(fhi, vdupq_n_f32(0.0f)), vdupq_n_f32(1.0f));
-            flo = vmulq_f32(flo, flo);
-            fhi = vmulq_f32(fhi, fhi);
-            flo = vmulq_n_f32(flo, 127.0f);
-            fhi = vmulq_n_f32(fhi, 127.0f);
-            ilo = vcvtnq_s32_f32(flo);
-            ihi = vcvtnq_s32_f32(fhi);
-            i16 = vcombine_s16(vqmovn_s32(ilo), vqmovn_s32(ihi));
-            u8 = vqmovun_s16(i16);
-            vst1_u8(h_i8 + L1 + l, u8);
-        }
-        const float cs2 = g_s2 * 127.0f, cs3 = g_s3 * 127.0f, cso = g_so * 127.0f;
-        const float ics2 = 1.0f / cs2, ics3 = 1.0f / cs3, icso = 1.0f / cso;
-        const int total_in = 2 * L1;
-        float h2[NNUE_L1_MAX];
-        // L2: output-major dots via SDOT (int8 weights × uint8 activations)
-        for (int o = 0; o < L2; ++o) {
-            int32x4_t acc = vdupq_n_s32(0);
-            const int8_t* w = &l2_w_i8[static_cast<size_t>(o) * total_in];
-            for (int i = 0; i < total_in; i += 16) {
-                int8x16_t wv = vld1q_s8(w + i);
-                uint8x16_t hv = vld1q_u8(h_i8 + i);
-                acc = vdotq_s32(acc, wv, hv);
-            }
-            int32_t dot = vaddvq_s32(acc);
-            float s = l2_b[o] + dot * ics2;
-            float c = s < 0 ? 0 : (s > 1 ? 1 : s);
-            h2[o] = c * c;  // SCReLU: square after clamp, matching the x86 path
-        }
-        uint8_t h2_i8[NNUE_L1_MAX];
-        for (int o = 0; o < L2; ++o) h2_i8[o] = (uint8_t)std::lrintf(h2[o] * 127.0f);
-        float h3[NNUE_L1_MAX];
-        // L3: same SDOT pattern over L2 inputs
-        for (int o = 0; o < L3; ++o) {
-            int32x4_t acc = vdupq_n_s32(0);
-            const int8_t* w = &l3_w_i8[static_cast<size_t>(o) * L2];
-            for (int i = 0; i < L2; i += 16) {
-                int8x16_t wv = vld1q_s8(w + i);
-                uint8x16_t hv = vld1q_u8(h2_i8 + i);
-                acc = vdotq_s32(acc, wv, hv);
-            }
-            int32_t dot = vaddvq_s32(acc);
-            float s = l3_b[o] + dot * ics3;
-            float c = s < 0 ? 0 : (s > 1 ? 1 : s);
-            h3[o] = c * c;  // SCReLU: square after clamp, matching the x86 path
-        }
-        uint8_t h3_i8[NNUE_L1_MAX];
-        for (int o = 0; o < L3; ++o) h3_i8[o] = (uint8_t)std::lrintf(h3[o] * 127.0f);
-        // output layer: L3=32 is a multiple of 16, no tail handling needed
-        int32x4_t acc = vdupq_n_s32(0);
-        for (int i = 0; i < L3; i += 16)
-            acc = vdotq_s32(acc, vld1q_s8(out_w_i8.data() + i), vld1q_u8(h3_i8 + i));
-        int32_t dot = vaddvq_s32(acc);
-        float ov = out_b + dot * icso;
-        return static_cast<Value>(std::llround(ov * OUT_SCALE));
-    }
-#else
-    // Scalar fallback for ARM without dotprod (older ARMv8.0)
-    if (g_int8) {
-        uint8_t h_i8[2 * NNUE_L1_MAX];
-        for (int l = 0; l < L1; ++l) {
-            float s  = acc_stm[l]  * FT_WINV; float c  = s  < 0 ? 0 : (s  > 1 ? 1 : s);
-            h_i8[l]        = (uint8_t)std::lrintf(c * c * 127.0f);
-            float s2 = acc_nstm[l] * FT_WINV; float c2 = s2 < 0 ? 0 : (s2 > 1 ? 1 : s2);
-            h_i8[L1 + l]   = (uint8_t)std::lrintf(c2 * c2 * 127.0f);
-        }
-        const float cs2 = g_s2 * 127.0f, cs3 = g_s3 * 127.0f, cso = g_so * 127.0f;
-        const float ics2 = 1.0f / cs2, ics3 = 1.0f / cs3, icso = 1.0f / cso;
-        const int total_in = 2 * L1;
-        float h2[NNUE_L1_MAX];
-        for (int o = 0; o < L2; ++o) {
-            int32_t acc = 0;
-            const int8_t* w = &l2_w_i8[static_cast<size_t>(o) * total_in];
-            for (int i = 0; i < total_in; ++i) acc += w[i] * h_i8[i];
-            float s = l2_b[o] + acc * ics2;
-            float c = s < 0 ? 0 : (s > 1 ? 1 : s);
-            h2[o] = c * c;  // SCReLU: square after clamp, matching the x86 path
-        }
-        uint8_t h2_i8[NNUE_L1_MAX];
-        for (int o = 0; o < L2; ++o) h2_i8[o] = (uint8_t)std::lrintf(h2[o] * 127.0f);
-        float h3[NNUE_L1_MAX];
-        for (int o = 0; o < L3; ++o) {
-            int32_t acc = 0;
-            const int8_t* w = &l3_w_i8[static_cast<size_t>(o) * L2];
-            for (int i = 0; i < L2; ++i) acc += w[i] * h2_i8[i];
-            float s = l3_b[o] + acc * ics3;
-            float c = s < 0 ? 0 : (s > 1 ? 1 : s);
-            h3[o] = c * c;  // SCReLU: square after clamp, matching the x86 path
-        }
-        uint8_t h3_i8[NNUE_L1_MAX];
-        for (int o = 0; o < L3; ++o) h3_i8[o] = (uint8_t)std::lrintf(h3[o] * 127.0f);
-        int32_t acc = 0;
-        for (int i = 0; i < L3; ++i) acc += out_w_i8[i] * h3_i8[i];
-        float ov = out_b + acc * icso;
-        return static_cast<Value>(std::llround(ov * OUT_SCALE));
-    }
-#endif // __ARM_FEATURE_DOTPROD
-    float h[2 * NNUE_L1_MAX];
-    float h2[NNUE_L1_MAX];
-    for (int l = 0; l < L1; ++l) { h[l] = clip01(acc_stm[l] * FT_WINV); h[L1 + l] = clip01(acc_nstm[l] * FT_WINV); }
-    for (int o = 0; o < L2; ++o) {
-        float s = l2_b[o]; const float* w = &l2_w[o * 2 * L1];
-        for (int i = 0; i < 2 * L1; ++i) s += w[i] * h[i];
-        h2[o] = clip01(s);
-    }
-    float h3[NNUE_L1_MAX];
-    for (int o = 0; o < L3; ++o) {
-        float s = l3_b[o]; const float* w = &l3_w[o * L2];
-        for (int i = 0; i < L2; ++i) s += w[i] * h2[i];
-        h3[o] = clip01(s);
-    }
-#endif
-    float ov = out_b;
-    for (int i = 0; i < L3; ++i) ov += out_w[i] * h3[i];
     Value v = static_cast<Value>(std::llround(ov * OUT_SCALE));
     if (pr) { st_eval.cyc += rdtsc() - t0; st_eval.n++; }
     return v;
+}
+
+// ---- nnuecheck: the same evaluations at every kernel level ----
+//
+// A fixed set of games from a few positions, by moves a seeded generator
+// picks, evaluated along the way as a search evaluates: after most moves (the
+// plies left out make make_current catch up over several), after a sibling
+// move tried and taken back, after a null move. Every level the CPU supports
+// plays the same games, each in a fresh thread (its own accumulators and
+// refresh cache), and their evaluations must agree exactly. The digest of the
+// evaluations compares builds: x86-64 builds of the same network print the
+// same one.
+namespace {
+
+const char* const CHECK_FENS[] = {
+    "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1",
+    "r3k2r/p1ppqpb1/bn2pnp1/3PN3/1p2P3/2N2Q1p/PPPBBPPP/R3K2R w KQkq - 0 1",
+    "8/2p5/3p4/KP5r/1R3p1k/8/4P1P1/8 w - - 0 1",
+    "r3k2r/Pppp1ppp/1b3nbN/nP6/BBP1P3/q4N2/Pp1P2PP/R2Q1RK1 w kq - 0 1",
+    "rnbq1k1r/pp1Pbppp/2p5/8/2B5/8/PPP1NnPP/RNBQK2R w KQ - 1 8",
+    "r4rk1/1pp1qppp/p1np1n2/2b1p1B1/2B1P1b1/P1NP1N2/1PP1QPPP/R4RK1 w - - 0 10",
+    "8/PPP4k/8/8/8/8/4Kppp/8 w - - 0 1",
+    "6k1/5ppp/8/8/8/8/5PPP/3R2K1 w - - 0 1",
+};
+constexpr int CHECK_GAMES = 6;     // per position
+constexpr int CHECK_PLIES = 100;   // per game, at most
+
+uint64_t splitmix64(uint64_t& s) {
+    uint64_t z = (s += 0x9E3779B97F4A7C15ull);
+    z = (z ^ (z >> 30)) * 0xBF58476D1CE4E5B9ull;
+    z = (z ^ (z >> 27)) * 0x94D049BB133111EBull;
+    return z ^ (z >> 31);
+}
+
+struct CheckEval {
+    int32_t value;
+    uint8_t fen, game, kind;   // kind: 0 after a move, 1 after a sibling, 2 after a null move
+    uint16_t ply;
+};
+const char* const CHECK_KINDS[] = {"a move", "a sibling move", "a null move"};
+
+std::vector<CheckEval> check_games() {
+    std::vector<CheckEval> out;
+    auto pos = std::make_unique<Position>();
+    for (int f = 0; f < int(std::size(CHECK_FENS)); ++f)
+        for (int g = 0; g < CHECK_GAMES; ++g) {
+            uint64_t seed = 0x6C756D696E6578ull + uint64_t(f) * 1000 + uint64_t(g);
+            pos->set(CHECK_FENS[f]);
+            auto record = [&](int ply, int kind) {
+                out.push_back({int32_t(nnue::evaluate(*pos)), uint8_t(f), uint8_t(g), uint8_t(kind), uint16_t(ply)});
+            };
+            record(0, 0);
+            for (int ply = 1; ply <= CHECK_PLIES; ++ply) {
+                ExtMove moves[MAX_MOVES];
+                const int n = int(generate<GEN_LEGAL>(*pos, moves) - moves);
+                if (n == 0) break;
+                const uint64_t r = splitmix64(seed);
+                if (n > 1 && (r & 3) == 0) {
+                    const Move s = moves[(r >> 8) % uint64_t(n)].move;
+                    if (pos->do_move(s)) { record(ply, 1); pos->undo_move(s); }
+                }
+                if ((r >> 2) % 7 == 0 && !pos->is_check()) {
+                    pos->do_null_move();
+                    record(ply, 2);
+                    pos->undo_null_move();
+                }
+                const Move m = moves[(r >> 16) % uint64_t(n)].move;
+                if (!pos->do_move(m)) break;
+                if ((r >> 40) % 4 != 0) record(ply, 0);
+            }
+        }
+    return out;
+}
+
+// FNV-1a over the evaluations' little-endian bytes.
+uint64_t check_digest(const std::vector<CheckEval>& evals) {
+    uint64_t h = 0xCBF29CE484222325ull;
+    for (const CheckEval& e : evals) {
+        const uint32_t v = uint32_t(e.value);
+        for (int i = 0; i < 4; ++i) { h ^= (v >> (8 * i)) & 0xFF; h *= 0x100000001B3ull; }
+    }
+    return h;
+}
+
+#if defined(LUMINEX_NNUE_DISPATCH)
+// The base level's software bias add (no FMA) against a level's hardware FMA:
+// random operands, and operands whose sum in double lands exactly halfway
+// between two floats while the exact sum does not, where rounding the double
+// would go the wrong way about half the time (naive_wrong counts it).
+struct RoundingCheck {
+    long long cases = 0, halfway = 0, naive_wrong = 0;
+    std::string mismatch;
+};
+RoundingCheck check_bias_rounding(const Kernels& soft, const Kernels& hard) {
+    RoundingCheck res;
+    auto bits = [](float x) { uint32_t u; std::memcpy(&u, &x, 4); return u; };
+    auto test = [&](float b, int32_t d, float s) {
+        ++res.cases;
+        const float want = hard.bias_add(b, d, s), got = soft.bias_add(b, d, s);
+        if (bits(want) != bits(got) && res.mismatch.empty()) {
+            char buf[200];
+            std::snprintf(buf, sizeof buf, "bias_add(%a, %d, %a) is %a on %s, %a on %s",
+                          double(b), int(d), double(s), double(want), hard.name, double(got), soft.name);
+            res.mismatch = buf;
+        }
+    };
+    uint64_t seed = 0x5EED;
+    for (int i = 0; i < 1000000; ++i) {
+        const uint64_t r1 = splitmix64(seed), r2 = splitmix64(seed);
+        const float mb = float((r1 & 0x7FFFFF) | 0x800000), ms = float((r2 & 0x7FFFFF) | 0x800000);
+        const float b = std::ldexp((r1 >> 63) ? -mb : mb, int((r1 >> 24) % 34) - 53);   // |b| in [2^-30, 2^4)
+        const float s = std::ldexp(ms, -int((r2 >> 24) % 21) - 23);                      // s in [2^-20, 1)
+        const int32_t d = int32_t((r2 >> 32) & 0x3FFFFFF) - 0x2000000;                   // |d| <= 2^25
+        test(b, d, s);
+    }
+    // a * c = 2^47 +- m with 0 < m < 2^18 makes float(a) * c * 2^-71 = 2^-24
+    // +- less than 2^-53, so 1 + it (or 1 + 2^-23 + it) rounds in double to
+    // the midpoint of two floats; scaled and mirrored.
+    for (uint64_t k = 0; k < 40000; ++k) {
+        const uint64_t a = (1ull << 23) + (k * 2654435761ull) % (1ull << 23);
+        for (int up = 0; up < 2; ++up) {
+            const uint64_t c = up ? ((1ull << 47) + a - 1) / a : (1ull << 47) / a;
+            const uint64_t prod = a * c;
+            const uint64_t m = up ? prod - (1ull << 47) : (1ull << 47) - prod;
+            if (m == 0 || m >= (1ull << 18) || c > (1ull << 24)) continue;
+            for (float b0 : {1.0f, 1.0f + 0x1p-23f})
+                for (int e : {-12, 0, 9})
+                    for (int sign : {1, -1}) {
+                        const float b = std::ldexp(sign * b0, e);
+                        const int32_t d = sign * int32_t(a);
+                        const float s = std::ldexp(float(c), e - 71);
+                        const double r = double(float(d)) * double(s) + double(b);
+                        uint64_t u;
+                        std::memcpy(&u, &r, sizeof u);
+                        if ((u & 0x1FFFFFFFull) == 0x10000000ull) {
+                            ++res.halfway;
+                            if (bits(float(r)) != bits(hard.bias_add(b, d, s))) ++res.naive_wrong;
+                        }
+                        test(b, d, s);
+                    }
+        }
+    }
+    return res;
+}
+#endif
+
+} // namespace
+
+bool check_simd(std::string& report) {
+    if (!g_loaded) { report = "nnuecheck FAILED: no network loaded"; return false; }
+    if (!g_int8) {
+        report = "nnuecheck FAILED: a float (LNN1) network; its levels sum in different orders, only int8 networks evaluate alike";
+        return false;
+    }
+    choose_kernels();
+    [[maybe_unused]] const Kernels* const in_use = g_k;
+    const bool* ok = levels_supported();
+    std::vector<int> levels;
+    for (int i = 0; i < NUM_LEVELS; ++i)
+        if (ok[i]) levels.push_back(i);
+    std::vector<std::vector<CheckEval>> runs;
+    for ([[maybe_unused]] int i : levels) {
+#if defined(LUMINEX_NNUE_DISPATCH)
+        g_k = LEVELS[i];
+#endif
+        arrange_tails();
+        std::vector<CheckEval> evals;
+        std::thread worker([&evals] { evals = check_games(); });
+        worker.join();
+        runs.push_back(std::move(evals));
+    }
+#if defined(LUMINEX_NNUE_DISPATCH)
+    g_k = in_use;
+#endif
+    arrange_tails();
+
+    std::string names;
+    for (int i : levels) names += std::string(names.empty() ? "" : " ") + LEVELS[i]->name;
+    report = "nnuecheck: levels " + names + " (in use: " + g_k->name + ")\n";
+    char buf[320];
+    std::snprintf(buf, sizeof buf, "nnuecheck: %zu evaluations per level, digest %016llx\n",
+                  runs[0].size(), (unsigned long long)check_digest(runs[0]));
+    report += buf;
+    std::string failure;
+    for (size_t k = 1; k < runs.size() && failure.empty(); ++k) {
+        const std::vector<CheckEval>& want = runs[0];
+        const std::vector<CheckEval>& got = runs[k];
+        for (size_t j = 0; j < want.size() && failure.empty(); ++j)
+            if (j >= got.size() || got[j].value != want[j].value) {
+                const CheckEval& e = want[j];
+                std::snprintf(buf, sizeof buf,
+                              "%s differs from %s at evaluation %zu (position %d, game %d, ply %d, after %s): %d vs %d",
+                              LEVELS[levels[k]]->name, LEVELS[levels[0]]->name, j, int(e.fen) + 1, int(e.game) + 1,
+                              int(e.ply), CHECK_KINDS[e.kind], j < got.size() ? int(got[j].value) : 0, int(e.value));
+                failure = buf;
+            }
+        if (failure.empty() && got.size() != want.size())
+            failure = std::string(LEVELS[levels[k]]->name) + " made a different number of evaluations";
+    }
+#if defined(LUMINEX_NNUE_DISPATCH)
+    // The base level's bias add is software; test it against hardware FMA
+    // where the CPU has one (every level above base).
+    if (failure.empty() && levels.size() > 1) {
+        const Kernels& soft = *LEVELS[NUM_LEVELS - 1];
+        const Kernels& hard = *LEVELS[levels[levels.size() - 2]];
+        const RoundingCheck rc = check_bias_rounding(soft, hard);
+        std::snprintf(buf, sizeof buf,
+                      "nnuecheck: %s's bias rounding against %s's FMA: %lld operand sets, %lld halfway in double (%lld of them wrong if rounded twice)\n",
+                      soft.name, hard.name, rc.cases, rc.halfway, rc.naive_wrong);
+        report += buf;
+        if (!rc.mismatch.empty()) failure = rc.mismatch;
+        else if (rc.halfway == 0 || rc.naive_wrong == 0) failure = "the halfway rounding cases did not come out halfway";
+    }
+#endif
+    if (!failure.empty()) {
+        report += "nnuecheck FAILED: " + failure;
+        return false;
+    }
+    report += "nnuecheck ok";
+    return true;
 }
 
 } // namespace luminex::nnue

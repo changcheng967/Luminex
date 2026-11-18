@@ -2,7 +2,7 @@
 
 ## 1. General Metadata
 - **Network Name**: gen768q
-- **Target Engine / Application**: Luminex v6.4.0+ (planned)
+- **Target Engine / Application**: None: a design that was never trained or released
 - **Primary Use Case**: Chess Position Evaluation
 - **Weight Quantization Scheme**: Post-hoc (float training; FT stored float32 in file, int16 x8192 in engine RAM; tail int8 at weight scale 64)
 - **Internal Output Scale**: float centipawns (trainer), int32 centipawns (engine tail)

@@ -27,28 +27,14 @@ void TTEntry::save(uint64_t k, Value v, bool pv, Bound b, Depth d, Move m, Value
 }
 
 void TranspositionTable::resize(size_t mb) {
-    table.clear();
-
-    // Round size down to power of 2 for fast bitwise AND indexing
-    size_t new_size = mb > 0 ? (mb * 1024 * 1024) / sizeof(TTCluster) : 0;
-    if (new_size > 0) {
-        // Find largest power of 2 <= new_size
-        new_size--;
-        new_size |= new_size >> 1;
-        new_size |= new_size >> 2;
-        new_size |= new_size >> 4;
-        new_size |= new_size >> 8;
-        new_size |= new_size >> 16;
-        if constexpr (sizeof(size_t) > 4) new_size |= new_size >> 32;
-        new_size++;
-        // Minimum size of 1024 to avoid tiny tables
-        if (new_size < 1024) new_size = 1024;
-    }
-    entries = new_size * 3;
-
-    if (new_size > 0) {
-        table.resize(new_size);  // value-initialized: already zero
-    }
+    // Exactly the Hash given, 16,384 clusters of 64 bytes a MB: cluster_of()
+    // indexes any number of them. (The size used to be rounded UP to a power
+    // of two, so Hash 1100 took 2,048 MB and Hash 3000 took 4,096.)
+    const size_t clusters = mb * 1024 * 1024 / sizeof(TTCluster);
+    pow2_ = std::has_single_bit(clusters);
+    rot_ = clusters > 1 ? 64 - int(std::bit_width(clusters - 1)) : 0;
+    entries = clusters * 3;
+    table.reset(clusters);   // frees the old table first; zeroed
 }
 
 void TranspositionTable::clear() {
@@ -68,8 +54,7 @@ TTEntry* TranspositionTable::probe(uint64_t key, bool& found) {
         return &dummy;
     }
 
-    // Use bitwise AND instead of modulo - much faster (20-30% TT speedup)
-    size_t idx = (size_t)key & (table.size() - 1);
+    const size_t idx = cluster_of(key);
     TTEntry* entry = &table[idx].entry[0];
 
     // depth_ == 0 marks an empty slot (clear() zeroes the table); stored
@@ -130,7 +115,7 @@ void TranspositionTable::prefetch(uint64_t key) const {
     // do_move prefetches before the table exists too (perft, bench's perft):
     // an empty table has no entry to index.
     if (!table.empty())
-        __builtin_prefetch(&table[(size_t)key & (table.size() - 1)], 0, 3);
+        __builtin_prefetch(&table[cluster_of(key)], 0, 3);
 #endif
 }
 

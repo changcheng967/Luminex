@@ -20,7 +20,7 @@ generation to the V13/V14 architecture program. Dates are first-commit dates fro
 | gen768 p1–p5 | Sep 2026 | same arch, multi-pass training | p4: 4.21B · p5: 5.37B | p4 MAE 176.1 ≈ baseline (saturation signal) |
 | V13 | Sep 2026+ | FM interaction, factorized buckets, material bucketing | — | **Spec complete**; DCU search picking hyperparams |
 | V14 | future | Residual topology + mobility + policy head | — | **Spec complete** |
-| gen768r | Nov 2026 | gen768's feature layer, the revived tail through 8 output buckets; QAT (03q, 04q) | t91 binpacks Feb–Oct 2026 (3.7B) | **In main** as gen768r_03q (CEB7B240), [V3-GEN768R.md](V3-GEN768R.md) |
+| gen768r | Nov 2026 | gen768's feature layer, the revived tail through 8 output buckets; QAT (03q to 06q) | t91 binpacks Feb–Oct 2026 (3.7B); 05: Nov–Dec 2025 + Feb–May 2026 (6.6B); 06: Dec 2025 + Jan + Jun–Oct 2026 (6.0B) | **In main** as gen768r_06q (E3397B0F), the line's last net; [V3-GEN768R.md](V3-GEN768R.md) |
 | gen768s | Nov 2026 | gen768r + one error head per bucket on the accumulator, read by the pruning margins | gen768r's + error labels | **Design**, §19 and [V4-GEN768S.md](V4-GEN768S.md) |
 
 ---
@@ -1179,3 +1179,16 @@ for a knowledge hole the forensics name; none so far.
 first: test 82 (04q against CEB7B240), the margin tune, its values SPRT,
 the ladder, the tag. Gate 1 needs the box for minutes, so it fits any box
 session after that.
+
+## 22. The arm64 digest is expected to change (PR #81, Nov 15)
+
+nnuecheck's digest is the same at every x86-64 level and in OpenBench's
+build (768402b4a2534710 with gen768s_03q), and different on Apple silicon
+(b6c6458504d1b038). One known path explains it. ARM builds run the
+portable child update, which clamps parent + add0 - sub0 once, while every
+x86 level saturates after each row; the two agree except where a lane
+saturates. The ARM phase (NEON saturating adds and subtracts, one row at a
+time) will make arm64 saturate as x86 does, and its digest will then become
+x86's. That change is the fix landing, not a regression: its check is the
+arm64 digest equalling x86's. Expect arm64 evaluations to move only in the
+positions where a lane saturates. (Numbered after #77's sections 20 and 21.)

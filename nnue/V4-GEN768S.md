@@ -2,7 +2,7 @@
 
 ## 1. General Metadata
 - **Network Name**: gen768s
-- **Target Engine / Application**: Luminex 6.7+ (LNS1 net format: gen768r's LNB8 plus one error head per output bucket)
+- **Target Engine / Application**: None yet: a design, not trained or in any release (LNS1 net format: gen768r's LNB8 plus one error head per output bucket)
 - **Primary Use Case**: Chess position evaluation, and the evaluation's own expected error, read by the search's pruning margins
 - **Weight Quantization Scheme**: QAT, as gen768r_03q and 04q (feature layer on the engine's int16 grid x8192, dense layers int8 with one scale per layer per bucket). The error head trains after the value net, on its frozen accumulator, through the same int8 rounding
 - **Internal Output Scale**: float centipawns (trainer), int32 centipawns (engine), for both outputs

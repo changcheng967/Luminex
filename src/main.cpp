@@ -3,12 +3,16 @@
 #include <chrono>
 #include <iostream>
 #include <cstdio>
+#if defined(LUMINEX_STACKTRACE)
+#include <csignal>
+#include <stacktrace>
+#include <string>
+#endif
 
 namespace luminex {
 
 void init() {
     init_magic_bitboards();
-    init_line_tables();
     init_zobrist();
     init_evaluation();
     // SPSA overrides from the working directory; UCI options set later win
@@ -61,10 +65,28 @@ uint64_t perft_divide(Position& pos, Depth depth) {
     return total;
 }
 
+#if defined(LUMINEX_STACKTRACE)
+// A debugging aid, never in a release (cmake -DLUMINEX_STACKTRACE=ON): a crash
+// prints the crashing thread's stack to stderr, then the default action ends
+// the process as before. Formatting a trace is not async-signal-safe, which a
+// process that is already dying can afford; a stack overflow, whose handler
+// would need the very stack that ran out, is not traced.
+static void crash_trace(int sig) {
+    std::signal(sig, SIG_DFL);
+    const std::string trace = std::to_string(std::stacktrace::current());
+    std::fprintf(stderr, "luminex: signal %d, stack:\n%s\n", sig, trace.c_str());
+    std::fflush(stderr);
+    std::raise(sig);
+}
+#endif
+
 } // namespace luminex
 
 int main(int argc, char* argv[]) {
     using namespace luminex;
+#if defined(LUMINEX_STACKTRACE)
+    for (int sig : {SIGSEGV, SIGABRT, SIGFPE, SIGILL}) std::signal(sig, crash_trace);
+#endif
 
     // CRITICAL: Unbuffered stdout for immediate UCI response
     // Keep sync_with_stdio TRUE for proper getline/stdin interaction on Windows
@@ -157,6 +179,7 @@ int main(int argc, char* argv[]) {
             // speed that includes zeroing 256 MB, which OpenBench then scales
             // every time control by.
             TT.ensure_allocated();
+            stop = false;   // search() leaves the stop flags to its caller
             auto t0 = high_resolution_clock::now();
             search(probe, lim);
             auto sms = duration_cast<milliseconds>(high_resolution_clock::now() - t0).count();
@@ -167,6 +190,12 @@ int main(int argc, char* argv[]) {
         }
         return 0;
     }
+
+    // nnuecheck [NETFILE]: every SIMD kernel level must evaluate alike (CI
+    // runs it on each release binary, and under Intel SDE for the levels the
+    // runner's CPU lacks); the exit status says whether they did.
+    if (argc > 1 && std::string(argv[1]) == "nnuecheck")
+        return run_nnuecheck(argc > 2 ? argv[2] : "") ? 0 : 1;
 
     // Check for divide mode
     if (argc > 1 && std::string(argv[1]) == "divide") {
