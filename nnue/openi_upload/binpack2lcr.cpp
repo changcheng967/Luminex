@@ -18,7 +18,8 @@
 // to move + 1: 0 loss, 1 draw, 2 win) | u8 piece count | u32 position hash
 // (the validation split; the featurizer path stores a crc32 of the FEN there
 // instead). Readers mask the bits they use, so records written before the
-// result bits existed read as "result unknown" (bit 3 clear).
+// result bits existed read as "result unknown" (bit 3 clear). So do search-tree
+// samples (ply 9999, below): bits 3-5 stay clear.
 //
 // Build (against a checkout of official-stockfish/nnue-pytorch):
 //   g++ -O2 -std=c++20 -pthread -I <nnue-pytorch>/data_loader/cpp \
@@ -58,6 +59,12 @@ static_assert(sizeof(CompactRec) == 32, "LCR1 records are 32 bytes");
 // this way (5.6% of October 2026); taken as a score, the trainer's clip would
 // read it as a 15-pawn win for the side to move.
 static constexpr int VALUE_NONE = 32002;
+
+// A search-tree sample (xushawn/sf-searchtree-bt4: a position sampled inside
+// Stockfish's search, a standalone entry) has ply 9999 and result 0 by that
+// set's definition. It comes from no game, so its result is unknown: its record
+// leaves bits 3-5 clear, where result 0 would otherwise read as a known draw.
+static constexpr int TREE_PLY = 9999;
 
 static inline std::uint64_t mix64(std::uint64_t x) {
     x ^= x >> 33; x *= 0xff51afd7ed558ccdULL;
@@ -106,7 +113,7 @@ int main(int argc, char** argv) {
     }
     if (threads > static_cast<int>(chunks.size())) threads = static_cast<int>(chunks.size());
 
-    std::atomic<long long> total{0}, quiet{0}, capture{0}, check{0}, wins{0}, draws{0}, losses{0}, marked{0};
+    std::atomic<long long> total{0}, quiet{0}, capture{0}, check{0}, wins{0}, draws{0}, losses{0}, marked{0}, tree{0};
     std::atomic<int> failed{0};
     std::vector<std::thread> pool;
     for (int t = 0; t < threads; ++t) {
@@ -119,7 +126,7 @@ int main(int argc, char** argv) {
             std::vector<char> obuf(1 << 24);
             std::setvbuf(f, obuf.data(), _IOFBF, obuf.size());
             std::vector<unsigned char> chunk;
-            long long n = 0, nq = 0, nc = 0, ni = 0, nw = 0, nd = 0, nl = 0, nm = 0;
+            long long n = 0, nq = 0, nc = 0, ni = 0, nw = 0, nd = 0, nl = 0, nm = 0, nt = 0;
             for (std::size_t c = c0; c < c1; ++c) {
                 const unsigned char* p = base + chunks[c].first;
                 chunk.assign(p, p + chunks[c].second);
@@ -142,8 +149,9 @@ int main(int argc, char** argv) {
                     const bool white = e.pos.sideToMove() == chess::Color::White;
                     const int q = !e.pos.checkers().isEmpty() ? 2 : (e.isCapturingMove() ? 1 : 0);
                     const int res = e.result > 0 ? 2 : (e.result < 0 ? 0 : 1);   // side to move's game result + 1
+                    const bool from_tree = e.ply == TREE_PLY;   // no game: result unknown, bits 3-5 clear
                     r.target = e.score;                       // side-to-move relative already
-                    r.flags = static_cast<std::uint8_t>((white ? 1 : 0) | (q << 1) | (1 << 3) | (res << 4));
+                    r.flags = static_cast<std::uint8_t>((white ? 1 : 0) | (q << 1) | (from_tree ? 0 : (1 << 3) | (res << 4)));
                     r.npieces = static_cast<std::uint8_t>(k);
                     std::uint64_t lo, hi;
                     std::memcpy(&lo, r.pcs, 8);
@@ -152,12 +160,13 @@ int main(int argc, char** argv) {
                     std::fwrite(&r, sizeof r, 1, f);
                     ++n;
                     nq += q == 0; nc += q == 1; ni += q == 2;
-                    nl += res == 0; nd += res == 1; nw += res == 2;
+                    if (from_tree) ++nt;
+                    else { nl += res == 0; nd += res == 1; nw += res == 2; }
                 }
             }
             if (std::fclose(f) != 0) failed = 3;
             total += n; quiet += nq; capture += nc; check += ni;
-            wins += nw; draws += nd; losses += nl; marked += nm;
+            wins += nw; draws += nd; losses += nl; marked += nm; tree += nt;
         });
     }
     for (auto& t : pool) t.join();
@@ -170,9 +179,12 @@ int main(int argc, char** argv) {
     }
     std::fprintf(stderr, "DONE %lld positions (quiet %lld, capture %lld, check %lld; side to move "
                          "won %lld, drew %lld, lost %lld) from %zu chunks in %.1f s (%.1fM positions/s, %d threads); "
-                         "%lld marked skip (score VALUE_NONE) left out\n",
+                         "%lld marked skip (score VALUE_NONE) left out",
                  total.load(), quiet.load(), capture.load(), check.load(), wins.load(), draws.load(),
                  losses.load(), chunks.size(), sec, total.load() / 1e6 / (sec > 0 ? sec : 1), threads,
                  marked.load());
+    if (tree.load() > 0)   // only then, so a game file's DONE line reads as before
+        std::fprintf(stderr, "; %lld search-tree samples (ply 9999) with no game result", tree.load());
+    std::fprintf(stderr, "\n");
     return 0;
 }

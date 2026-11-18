@@ -8,6 +8,11 @@
 // with nnue-pytorch's binpack reader, as binpack2lcr.cpp does: the records are binpack2lcr's,
 // field for field (check_binfeed.py compares the two on a month's file).
 //
+// Search-tree samples (xushawn/sf-searchtree-bt4: positions sampled inside Stockfish's search,
+// stored as standalone entries with ply 9999 and result 0) come from no game. Their records
+// leave the result bits clear (bit 3 "result known" and bits 4-5), as binpack2lcr.cpp writes
+// them, so no reader takes them for draws.
+//
 // Three uses:
 //  * the index pass (bf_index): every chunk decoded once, to count its training positions and
 //    collect the held-out ones (poshash below the threshold: the trainer's validation split by
@@ -55,6 +60,7 @@ struct CompactRec {   // src/featurize.cpp CompactRec, as binpack2lcr.cpp writes
 static_assert(sizeof(CompactRec) == 32, "LCR1 records are 32 bytes");
 
 constexpr int VALUE_NONE = 32002;   // a producer's "skip this position" (binpack2lcr.cpp)
+constexpr int TREE_PLY = 9999;      // a search-tree sample's ply (binpack2lcr.cpp): no game, no result
 constexpr std::uint64_t PIECE = 64ull << 20;   // bytes per read and per hashed piece
 
 inline std::uint64_t mix64(std::uint64_t x) {
@@ -229,8 +235,9 @@ bool decode_chunk(const std::uint8_t* p, std::uint32_t size, std::uint64_t thr, 
         const bool white = e.pos.sideToMove() == chess::Color::White;
         const int q = !e.pos.checkers().isEmpty() ? 2 : (e.isCapturingMove() ? 1 : 0);
         const int res = e.result > 0 ? 2 : (e.result < 0 ? 0 : 1);
+        const bool tree = e.ply == TREE_PLY;   // result unknown: bits 3-5 stay clear
         r.target = e.score;
-        r.flags = static_cast<std::uint8_t>((white ? 1 : 0) | (q << 1) | (1 << 3) | (res << 4));
+        r.flags = static_cast<std::uint8_t>((white ? 1 : 0) | (q << 1) | (tree ? 0 : (1 << 3) | (res << 4)));
         r.npieces = static_cast<std::uint8_t>(k);
         std::uint64_t lo, hi;
         std::memcpy(&lo, r.pcs, 8);
@@ -245,7 +252,7 @@ bool decode_chunk(const std::uint8_t* p, std::uint32_t size, std::uint64_t thr, 
         }
         if (st) {
             st->quiet += q == 0; st->capture += q == 1; st->check += q == 2;
-            st->loss += res == 0; st->draw += res == 1; st->win += res == 2;
+            if (!tree) { st->loss += res == 0; st->draw += res == 1; st->win += res == 2; }
         }
     }
     return true;
@@ -270,7 +277,9 @@ struct CacheHeader {
     std::uint64_t file_size, file_hash, thr, nchunks, nval;
     Stats stats;
 };
-constexpr char CACHE_MAGIC[8] = {'L', 'U', 'X', 'B', 'F', 'X', '1', 0};
+// Version 2: search-tree samples lost their result bits, so a version-1 cache of such a file
+// would hold its held-out records' old flags and its old won/drew/lost; such caches are rebuilt.
+constexpr char CACHE_MAGIC[8] = {'L', 'U', 'X', 'B', 'F', 'X', '2', 0};
 
 std::string cache_path(const File& f) { return f.path + ".bfx"; }
 
@@ -373,6 +382,22 @@ void stop_stream(Feeder* F) {
     F->workers.clear();
 }
 
+// The length of a file's first whole chunks within max_bytes (at least one chunk), from their
+// headers alone, for a validation set's head. A header that doesn't parse ends the prefix; one at
+// byte 0 gives the whole file, so bf_open's own scan reports it.
+std::size_t chunk_prefix(int fd, std::size_t size, std::uint64_t max_bytes) {
+    std::size_t off = 0;
+    while (off + 8 <= size) {
+        std::uint8_t h[8];
+        if (pread(fd, h, 8, static_cast<off_t>(off)) != 8 || std::memcmp(h, "BINP", 4) != 0) break;
+        const std::uint32_t n = h[4] | (h[5] << 8) | (h[6] << 16) | (static_cast<std::uint32_t>(h[7]) << 24);
+        const std::size_t next = off + 8 + n;
+        if (next > size || (off > 0 && next > max_bytes)) break;
+        off = next;
+    }
+    return off > 0 ? off : size;
+}
+
 }   // namespace
 
 extern "C" {
@@ -386,8 +411,9 @@ const char* bf_last_error() {
 
 // Reads the binpacks (paths separated by '\n') into memory, `threads` pieces at a time, and
 // finds their chunks. thr: positions whose hash is below it are held out (2^32: all of them).
-// use_cache: read <file>.bfx where it matches, and write it after the index pass.
-void* bf_open(const char* paths, std::uint64_t thr, int threads, int use_cache) {
+// use_cache: read <file>.bfx where it matches, and write it after the index pass. max_bytes > 0:
+// only each file's first whole chunks within that many bytes are read (a validation set's head).
+void* bf_open(const char* paths, std::uint64_t thr, int threads, int use_cache, std::uint64_t max_bytes) {
     auto* F = new Feeder;
     F->thr = thr;
     F->use_cache = use_cache != 0;
@@ -413,6 +439,7 @@ void* bf_open(const char* paths, std::uint64_t thr, int threads, int use_cache) 
         }
         fds.push_back(fd);
         f.size = static_cast<std::size_t>(st.st_size);
+        if (max_bytes > 0 && f.size > max_bytes) f.size = chunk_prefix(fd, f.size, max_bytes);
         f.data = static_cast<std::uint8_t*>(std::malloc(f.size ? f.size : 1));
         if (!f.data) {
             set_error("out of memory for " + f.path);
@@ -563,7 +590,8 @@ std::int64_t bf_select(void* h, std::int64_t max_pos) {
     return n;
 }
 
-// The held-out records of the stream's chunks, in chunk order: the count, and a copy into out.
+// The held-out records of the stream's chunks, in chunk order: the count, and a copy of the
+// first max_n of them (all if max_n < 0) into out.
 std::int64_t bf_val_count(void* h) {
     auto* F = static_cast<Feeder*>(h);
     std::int64_t n = 0;
@@ -571,11 +599,14 @@ std::int64_t bf_val_count(void* h) {
     return n;
 }
 
-void bf_val_copy(void* h, std::uint8_t* out) {
+void bf_val_copy(void* h, std::uint8_t* out, std::int64_t max_n) {
     auto* F = static_cast<Feeder*>(h);
-    for (std::size_t c = 0; c < F->active; ++c) {
-        std::memcpy(out, F->val[c].data(), F->val[c].size() * sizeof(CompactRec));
-        out += F->val[c].size() * sizeof(CompactRec);
+    std::size_t left = max_n < 0 ? SIZE_MAX : static_cast<std::size_t>(max_n);
+    for (std::size_t c = 0; c < F->active && left > 0; ++c) {
+        const std::size_t k = std::min(left, F->val[c].size());
+        std::memcpy(out, F->val[c].data(), k * sizeof(CompactRec));
+        out += k * sizeof(CompactRec);
+        left -= k;
     }
 }
 
