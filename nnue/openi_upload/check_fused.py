@@ -23,10 +23,20 @@ usage: python check_fused.py --act DATA_DIR [CKPT.pt]
     atomics, the bias sums in another order); then fwd_loss end to end: the loss bit for bit
     and every gradient within 1e-5. The other modes run with NNUE_FT_ACT as set (default 1),
     except --qat's feature-layer check, which needs the sums (=0).
-usage: python check_fused.py --compare ARM2.log ARM3.log
-    Two paired short runs (same seed, data and schedule; FT_DENSE 2 vs 3). Passes when every
-    [HEALTH] and [DISJOINT] loss they share (after step 0) agrees within 1% and the fused run
-    finished.
+usage: python check_fused.py --compare DENSE.log[,DENSE2.log ...] FUSED.log[,FUSED2.log ...]
+    Paired short runs (same seed, data and schedule; FT_DENSE 2 against 3), one log a side or
+    several (comma-separated), compared reading by reading on the [HEALTH], [DISJOINT] and
+    [TREE] losses all of them share, on the mean of each side's runs:
+      - the float phase (after step 0) and a QAT phase's first reading (the rounded net,
+        before its first step) pass within 1%: runs of the same code agree within 0.1% and
+        0.4% there (PR #105, four runs a side);
+      - a QAT phase's later readings (NNUE_QAT_AFTER's, after its "== QAT PHASE" line) spread
+        up to 2.6% between runs of the same code 100 steps in (PR #105: the rounding knocks the
+        loss up ~8% and the float atomics decide which weights cross a step as it recovers),
+        so they are gated only with two or more runs a side, and pass when the means differ by
+        less than the larger side's own spread (max - min over its runs) or 1%; with one run a
+        side they are printed and not gated.
+    Passes when every gated reading does, at least two are gated, and every run finished.
 Every mode runs check_grid.py first: the trainer's FT_GRID against the engine's NNUE_FT_SCALE,
 and no rounding to a literal grid. GRID_FAIL ends the run with exit 1 before any GPU work.
 --engine-header PATH, anywhere on the line, names src/nnue_kernels.h where this file is not in
@@ -44,33 +54,68 @@ import check_grid  # noqa: E402
 ENGINE_HEADER = check_grid.HEADER
 
 
+SETS = (("HEALTH", "held-out"), ("DISJOINT", "January"), ("TREE", "tree"))
+
+
 def compare(a, b):
+    """--compare (module docstring): True if every gated reading passes, at least two are gated and every run
+    finished."""
     def parse(p):
-        h, d, done, sp = {}, {}, False, None
+        """{(phase, set, step): loss}, the QAT phase's first step (None without one), finished, last steps/s."""
+        r, phase, qat_start, done, sp = {}, "float", None, False, None
         for line in open(p, errors="replace"):
-            m = re.match(r"\[HEALTH step (\d+)\] val loss=([0-9.]+)", line)
+            if line.startswith("== QAT PHASE"):
+                phase = "qat"
+            m = re.match(r"\[(HEALTH|DISJOINT|TREE) step (\d+)\] (?:val )?loss=([0-9.]+)", line)
             if m:
-                h[int(m.group(1))] = float(m.group(2))
-            m = re.match(r"\[DISJOINT step (\d+)\] loss=([0-9.]+)", line)
-            if m:
-                d[int(m.group(1))] = float(m.group(2))
+                step = int(m.group(2))
+                if phase == "qat" and qat_start is None:
+                    qat_start = step
+                r[(phase, dict(SETS)[m.group(1)], step)] = float(m.group(3))   # a repeated reading: the last
             m = re.search(r"DONE .*\(([0-9.]+) steps/s\)", line)
             if m:
                 done, sp = True, float(m.group(1))
-        return h, d, done, sp
-    (h2, d2, _, s2), (h3, d3, ok3, s3) = parse(a), parse(b)
-    worst, n = 0.0, 0
-    for x2, x3, name in ((h2, h3, "held-out"), (d2, d3, "January")):
-        for s in sorted(set(x2) & set(x3)):
-            if s == 0:
-                continue
-            r = (x3[s] - x2[s]) / x2[s]
-            worst, n = max(worst, abs(r)), n + 1
-            print(f"  {name} step {s}: dense {x2[s]:.6f}, fused {x3[s]:.6f} ({r:+.2%})", flush=True)
-    print(f"  speed: dense {s2} steps/s, fused {s3} steps/s", flush=True)
-    ok = ok3 and n >= 2 and worst < 0.01
-    print(("FUSED_PASS" if ok else "FUSED_FAIL") + f": worst difference {worst:.2%} over {n} readings; "
-          f"fused run finished: {ok3}", flush=True)
+        return r, qat_start, done, sp
+
+    sides = [[parse(p) for p in side.split(",") if p] for side in (a, b)]
+    runs = [run for side in sides for run in side]
+    shared = set.intersection(*[set(run[0]) for run in runs])
+    names = [n for _, n in SETS]
+    gated = ungated = 0
+    ok, worst = True, (0.0, 0.01)
+    for key in sorted(shared, key=lambda k: (k[0] != "float", k[2], names.index(k[1]))):
+        phase, name, step = key
+        if phase == "float" and step == 0:
+            continue
+        va, vb = [run[0][key] for run in sides[0]], [run[0][key] for run in sides[1]]
+        ma, mb = sum(va) / len(va), sum(vb) / len(vb)
+        d = mb / ma - 1
+        start = phase == "qat" and all(run[1] == step for run in runs)
+        label = "float" if phase == "float" else "QAT start" if start else "QAT"
+        if phase == "float" or start:
+            bar = 0.01
+        elif len(va) >= 2 and len(vb) >= 2:
+            bar = max(0.01, (max(va) - min(va)) / ma, (max(vb) - min(vb)) / mb)
+        else:
+            bar = None
+        if bar is None:
+            ungated += 1
+            verdict = "not gated (one run a side)"
+        else:
+            gated += 1
+            ok = ok and abs(d) < bar
+            worst = max(worst, (abs(d), bar), key=lambda x: x[0] / x[1])
+            verdict = f"bar {bar:.2%}: {'ok' if abs(d) < bar else 'OVER'}"
+        print(f"  {label} {name} step {step}: dense {ma:.6f}, fused {mb:.6f} ({d:+.2%}), "
+              f"{len(va)} and {len(vb)} run(s), {verdict}", flush=True)
+    finished = all(run[2] for run in runs)
+    speed = [sum(run[3] or 0.0 for run in side) / len(side) for side in sides]
+    print(f"  speed: dense {speed[0]:.2f} steps/s, fused {speed[1]:.2f} steps/s (the last phase's, mean over runs)",
+          flush=True)
+    ok = ok and finished and gated >= 2
+    print(("FUSED_PASS" if ok else "FUSED_FAIL") + f": {gated} readings gated, worst {worst[0]:.2%} against a bar "
+          f"of {worst[1]:.2%}; {ungated} QAT readings not gated (one run a side); every run finished: {finished}",
+          flush=True)
     return ok
 
 
