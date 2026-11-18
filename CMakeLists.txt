@@ -124,6 +124,7 @@ set(SOURCES
     src/tuner_params.cpp
     src/book.cpp
     src/nnue.cpp
+    src/v5_rel.cpp
     src/embedded_net.cpp
 )
 
@@ -143,6 +144,12 @@ set(HEADERS
 )
 
 add_executable(luminex ${SOURCES} ${HEADERS})
+# V5 prototype: the row finder at another instruction-set level than the rest (the release build compiles
+# everything but the network kernels for x86-64-v2).
+set(V5_REL_MARCH "" CACHE STRING "-march for src/v5_rel.cpp alone")
+if(V5_REL_MARCH)
+    set_source_files_properties(src/v5_rel.cpp PROPERTIES COMPILE_OPTIONS "-march=${V5_REL_MARCH}")
+endif()
 
 target_include_directories(luminex PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
 

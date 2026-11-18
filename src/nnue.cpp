@@ -29,6 +29,7 @@
 #include <string>
 #include <vector>
 #include "large_pages.h"
+#include "v5_rel.h"
 #if defined(__x86_64__) || defined(__i386__) || defined(_M_X64) || defined(_M_IX86)
 #include <immintrin.h>   // _mm_prefetch needs xmmintrin even without AVX2 (Debug builds)
 #endif
@@ -134,6 +135,12 @@ static inline int32_t dot_i8(const int8_t* w, const uint8_t* a, int n) {
 namespace { struct Stat { long long n = 0, cyc = 0; }; }
 
 static Stat st_eval, st_update, st_refresh, st_king_refresh, st_incremental;
+// V5 prototype (gate G1), defined before make_current
+static void rel_init();
+static int g_rel_T = 0, g_rel_mode = 0, g_rel_ppm = 0;
+static bool g_rel_check = false;
+static Stat st_rel_find, st_rel_apply, st_rel_rebuild;
+static long long g_rel_rows = 0, g_rel_plies = 0, g_rel_checks = 0;
 static Stat st_catchup;   // make_current: bringing a ply up to date before an evaluation
 static long long g_act_nz = 0, g_act_tot = 0;   // activation sparsity (non-zero L1 outputs after SCReLU)
 static long long g_sat_events = 0;              // exact accumulator leaving int16 range (self-check only)
@@ -162,6 +169,12 @@ void print_stats() {
                  g_act_tot ? 100.0*g_act_nz/g_act_tot : 0.0,
                  g_sat_events,
                  st_catchup.n, st_catchup.cyc/1000000.0);
+    if (g_rel_T)
+        std::fprintf(stderr, "V5 prototype profile: T=%d mode=%d ppm=%d | rows found for %lld plies (%.0f cyc/ply) | applied in %lld walks (%.0f cyc/walk): %lld perspective-plies, %.2f rows each | rebuilds=%lld (%.0f cyc) | checks=%lld\n",
+                     g_rel_T, g_rel_mode, g_rel_ppm, st_rel_find.n, st_rel_find.n ? double(st_rel_find.cyc)/st_rel_find.n : 0.0,
+                     st_rel_apply.n, st_rel_apply.n ? double(st_rel_apply.cyc)/st_rel_apply.n : 0.0, g_rel_plies,
+                     g_rel_plies ? double(g_rel_rows)/g_rel_plies : 0.0, st_rel_rebuild.n,
+                     st_rel_rebuild.n ? double(st_rel_rebuild.cyc)/st_rel_rebuild.n : 0.0, g_rel_checks);
 }
 
 constexpr int NUM_SQ = 64;
@@ -278,6 +291,8 @@ struct PlyDelta {
     int8_t rebuild = -1;           // the side whose own king moved: rebuilt there, not updated
     bool null_move = false;
     bool current[2] = {false, false};
+    bool relc[2] = {false, false};      // V5 prototype: relation lanes computed
+    bool relflip[2] = {false, false};   // V5 prototype: this side's king crossed d/e here
 };
 // The board after a king move, which the deferred rebuild of the mover's side reads.
 struct KingBoard { Bitboard pieces[2][6]; };
@@ -467,6 +482,7 @@ static bool load_stream(std::istream& f, const std::string& name) {
     }
     g_loaded = true;
     ++g_net_id;   // refresh-cache entries of the previous net are stale
+    rel_init();
     // stdout carries UCI traffic, so the report is an info string.
     if (NB > 1)
         std::printf("info string NNUE evaluation using %s (int8 L1=%d L2=%d L3=%d, %d output buckets%s)\n",
@@ -790,6 +806,217 @@ static void apply_delta(const PlyDelta& d, const Accumulator& parent, Accumulato
 // moved there) and rebuilds that one from its board snapshot if needed; then
 // the later plies are replayed in order, both sides together where both need
 // them, and marked computed so siblings reuse them.
+// ---------------------------------------------------------------------------------------------------------
+// V5 prototype (gate G1): relation lanes over a weight table of zeros. LUMINEX_REL_T=<lanes> sets the lanes.
+// Gate G1b plays this build on OpenBench, which sets no environment, so with LUMINEX_REL_T unset it keeps the
+// design point's 256 lanes (full set, contact pawn pairs, rows found at replay); LUMINEX_REL_T=0 is PR #91.
+// The table is zero, so every evaluation and the whole search tree are the base build's; only time differs.
+//   LUMINEX_REL_MODE=1   find a move's rows when the move is made (default 0: when its ply is replayed)
+//   LUMINEX_REL_PPM=1    every pawn pair on the same or adjacent files (default 0: contact pairs)
+//   LUMINEX_REL_CHECK=1  a test, not a timing: the table holds noise, the lanes stay out of the evaluation,
+//                        and every evaluation compares them with a rebuild from the board
+// ---------------------------------------------------------------------------------------------------------
+constexpr int REL_T_MAX = 768, REL_RS = 6, REL_WALK = 16;
+static LargeArray<int8_t> g_rel_w;                    // [rows][T], zero
+struct alignas(64) RelAcc { int16_t r[2][REL_T_MAX]; };
+static inline RelAcc* rel_accs() { thread_local std::vector<RelAcc> store(NNUE_MAX_PLY); return store.data(); }
+static inline v5rel::Bd* rel_boards() { thread_local std::vector<v5rel::Bd> store(NNUE_MAX_PLY); return store.data(); }
+static inline v5rel::RowLists* rel_lists() { thread_local std::vector<v5rel::RowLists> store(NNUE_MAX_PLY); return store.data(); }
+static inline v5rel::RowLists* rel_buf() { thread_local std::vector<v5rel::RowLists> store(REL_WALK); return store.data(); }
+
+static void rel_init() {
+    const char* e = std::getenv("LUMINEX_REL_T");
+    g_rel_T = e ? std::atoi(e) : 256;
+    if (g_rel_T <= 0 || g_rel_T % 64 != 0 || g_rel_T > REL_T_MAX || g_rel_T > g_L1) {
+        if (g_rel_T) std::fprintf(stderr, "V5 prototype: LUMINEX_REL_T must be a multiple of 64, at most %d\n", std::min(REL_T_MAX, g_L1));
+        g_rel_T = 0;
+        return;
+    }
+    const char* m = std::getenv("LUMINEX_REL_MODE");
+    g_rel_mode = m ? std::atoi(m) : 0;
+    const char* q = std::getenv("LUMINEX_REL_PPM");
+    g_rel_ppm = q ? std::atoi(q) : 0;
+    g_rel_check = std::getenv("LUMINEX_REL_CHECK") != nullptr;
+    v5rel::init();
+    const size_t n = size_t(v5rel::n_rows()) * size_t(g_rel_T);
+    g_rel_w.reset(n);                                 // zeroed by writing, in 2 MiB pages where allowed (large_pages.h)
+    if (g_rel_check) {
+        uint64_t s = 0x9E3779B97F4A7C15ULL;
+        for (size_t i = 0; i < n; ++i) {
+            s ^= s << 13; s ^= s >> 7; s ^= s << 17;
+            g_rel_w[i] = int8_t(int(s % 255) - 127);
+        }
+    }
+    std::printf("info string V5 prototype: %d relation lanes, %d rows (%.1f MB), rows found %s, pawn pairs %s%s\n",
+                g_rel_T, v5rel::n_rows(), double(n) / 1048576.0, g_rel_mode ? "at the move" : "at replay",
+                g_rel_ppm ? "all" : "contact", g_rel_check ? ", CHECK mode" : "");
+}
+
+static inline void rel_snapshot(const Position& pos, v5rel::Bd& b) {
+    std::memcpy(b.pc, pos.mailbox(), 64);
+    for (int c = 0; c < 2; ++c)
+        for (int pt = PAWN; pt <= KING; ++pt) b.by[c * 6 + pt] = pos.pieces(Color(c), PieceType(pt));
+    b.by[12] = 0;
+    b.occ = pos.pieces();
+}
+
+// child = parent + the add rows - the sub rows over the T relation lanes. Plain int16: at most 248 rows of
+// |weight| <= 127 are ever active, so the sums cannot overflow and their order does not matter.
+static inline void rel_rows(const int16_t* parent, int16_t* child, const uint16_t* add, int na, const uint16_t* sub, int ns) {
+    const int T = g_rel_T;
+    const int8_t* const W = g_rel_w.data();
+    const int8_t* ra[v5rel::MAX_ROWS];
+    const int8_t* rs[v5rel::MAX_ROWS];
+    for (int i = 0; i < na; ++i) ra[i] = W + size_t(add[i]) * size_t(T);
+    for (int i = 0; i < ns; ++i) rs[i] = W + size_t(sub[i]) * size_t(T);
+#if defined(__AVX512BW__)
+    for (int l = 0; l < T; l += 32) {
+        __m512i v = _mm512_loadu_si512((const __m512i*)(parent + l));
+        for (int i = 0; i < na; ++i) v = _mm512_add_epi16(v, _mm512_cvtepi8_epi16(_mm256_loadu_si256((const __m256i*)(ra[i] + l))));
+        for (int i = 0; i < ns; ++i) v = _mm512_sub_epi16(v, _mm512_cvtepi8_epi16(_mm256_loadu_si256((const __m256i*)(rs[i] + l))));
+        _mm512_storeu_si512((__m512i*)(child + l), v);
+    }
+#elif defined(__AVX2__)
+    for (int l = 0; l < T; l += 16) {
+        __m256i v = _mm256_loadu_si256((const __m256i*)(parent + l));
+        for (int i = 0; i < na; ++i) v = _mm256_add_epi16(v, _mm256_cvtepi8_epi16(_mm_loadu_si128((const __m128i*)(ra[i] + l))));
+        for (int i = 0; i < ns; ++i) v = _mm256_sub_epi16(v, _mm256_cvtepi8_epi16(_mm_loadu_si128((const __m128i*)(rs[i] + l))));
+        _mm256_storeu_si256((__m256i*)(child + l), v);
+    }
+#else
+    for (int l = 0; l < T; ++l) {
+        int v = parent[l];
+        for (int i = 0; i < na; ++i) v += ra[i][l];
+        for (int i = 0; i < ns; ++i) v -= rs[i][l];
+        child[l] = int16_t(v);
+    }
+#endif
+}
+static inline void rel_prefetch(const uint16_t* rows, int n) {
+#if defined(__x86_64__) || defined(_M_X64)
+    const int T = g_rel_T;
+    const char* const W = (const char*)g_rel_w.data();
+    for (int i = 0; i < n; ++i)
+        for (int o = 0; o < T; o += 64) _mm_prefetch(W + size_t(rows[i]) * size_t(T) + o, _MM_HINT_T0);
+#endif
+}
+// One perspective's relation lanes from the board alone.
+static void rel_rebuild(const v5rel::Bd& b, int p, int16_t* lanes) {
+    alignas(64) static const int16_t zero[REL_T_MAX] = {};
+    uint16_t rows[v5rel::MAX_ACTIVE];
+    const int n = v5rel::enumerate(b, p, g_rel_ppm, rows);
+    const int16_t* from = zero;
+    int i = 0;
+    do {
+        const int k = std::min(n - i, int(v5rel::MAX_ROWS));
+        rel_rows(from, lanes, rows + i, k, nullptr, 0);
+        from = lanes;
+        i += k;
+    } while (i < n);
+}
+
+struct RelPlan {
+    bool todo[2], cold[2];
+    int start[2];
+    int lo;                          // the first ply whose rows are needed
+    bool buffered;                   // rows found at replay: those of plies lo..ply sit in rel_buf()
+};
+
+// Before the piece-square work: which plies each perspective's relation lanes need. With rows found at replay,
+// find them now and prefetch them, so that they arrive while the piece-square lanes are brought current.
+static void rel_plan(int ply, PlyDelta* ds, RelPlan& rp, bool pr) {
+    rp.lo = ply + 1;
+    rp.buffered = false;
+    for (int p = 0; p < 2; ++p) {
+        rp.todo[p] = !ds[ply].relc[p];
+        rp.cold[p] = false;
+        rp.start[p] = ply;
+        if (!rp.todo[p]) continue;
+        int j = ply;
+        while (j > 0 && !ds[j].relc[p] && !ds[j].relflip[p]) --j;
+        if (!ds[j].relc[p] && !ds[j].relflip[p]) { rp.cold[p] = true; continue; }   // nothing below was computed on this thread
+        rp.start[p] = j;
+        rp.lo = std::min(rp.lo, j + 1);
+    }
+    if (g_rel_mode != 0 || rp.lo > ply || ply - rp.lo + 1 > REL_WALK) return;
+    const long long t0 = pr ? rdtsc() : 0;
+    v5rel::RowLists* const buf = rel_buf();
+    const v5rel::Bd* const boards = rel_boards();
+    for (int i = rp.lo; i <= ply; ++i) {
+        if (ds[i].null_move) continue;
+        const bool need[2] = {rp.todo[0] && !rp.cold[0] && i > rp.start[0], rp.todo[1] && !rp.cold[1] && i > rp.start[1]};
+        v5rel::RowLists& L = buf[i - rp.lo];
+        v5rel::find(boards[i - 1], ds[i].move, g_rel_ppm, need, L);
+        for (int p = 0; p < 2; ++p)
+            if (need[p]) { rel_prefetch(L.add[p], L.na[p]); rel_prefetch(L.sub[p], L.ns[p]); }
+    }
+    rp.buffered = true;
+    if (pr) { st_rel_find.cyc += rdtsc() - t0; st_rel_find.n += ply - rp.lo + 1; }
+}
+
+// After the piece-square work: bring this ply's relation lanes up to date.
+static void rel_finish(const Position& pos, int ply, PlyDelta* ds, const RelPlan& rp, bool pr) {
+    RelAcc* const A = rel_accs();
+    v5rel::Bd* const boards = rel_boards();
+    const int T = g_rel_T;
+    for (int p = 0; p < 2; ++p) {
+        if (!rp.todo[p]) continue;
+        if (rp.cold[p]) {
+            const long long t0 = pr ? rdtsc() : 0;
+            rel_snapshot(pos, boards[ply]);
+            rel_rebuild(boards[ply], p, A[ply].r[p]);
+            ds[ply].relc[p] = true;
+            if (pr) { st_rel_rebuild.cyc += rdtsc() - t0; st_rel_rebuild.n++; }
+            continue;
+        }
+        const int j = rp.start[p];
+        if (!ds[j].relc[p]) {                       // this side's king crossed d/e at j: every row changed
+            const long long t0 = pr ? rdtsc() : 0;
+            rel_rebuild(boards[j], p, A[j].r[p]);
+            ds[j].relc[p] = true;
+            if (pr) { st_rel_rebuild.cyc += rdtsc() - t0; st_rel_rebuild.n++; }
+        }
+        const long long t0 = pr ? rdtsc() : 0;
+        for (int i = j + 1; i <= ply; ++i) {
+            if (ds[i].null_move) {
+                std::memcpy(A[i].r[p], A[i - 1].r[p], sizeof(int16_t) * size_t(T));
+            } else {
+                v5rel::RowLists local;
+                const v5rel::RowLists* L;
+                if (g_rel_mode != 0) L = &rel_lists()[i];
+                else if (rp.buffered) L = &rel_buf()[i - rp.lo];
+                else {                              // a walk longer than the buffer: find the rows here
+                    const bool need[2] = {p == 0, p == 1};
+                    v5rel::find(boards[i - 1], ds[i].move, g_rel_ppm, need, local);
+                    L = &local;
+                }
+                if (L->overflow[p]) rel_rebuild(boards[i], p, A[i].r[p]);
+                else rel_rows(A[i - 1].r[p], A[i].r[p], L->add[p], L->na[p], L->sub[p], L->ns[p]);
+                if (pr) { g_rel_rows += L->na[p] + L->ns[p]; ++g_rel_plies; }
+            }
+            ds[i].relc[p] = true;
+        }
+        if (pr) { st_rel_apply.cyc += rdtsc() - t0; st_rel_apply.n++; }
+    }
+}
+
+// LUMINEX_REL_CHECK: the lanes kept move by move against a rebuild from the board, and the snapshot against the board.
+static void rel_check(const Position& pos) {
+    v5rel::Bd b;
+    rel_snapshot(pos, b);
+    const int ply = pos.state_ply();
+    const RelAcc& a = rel_accs()[ply];
+    for (int p = 0; p < 2; ++p) {
+        alignas(64) int16_t want[REL_T_MAX];
+        rel_rebuild(b, p, want);
+        if (std::memcmp(want, a.r[p], sizeof(int16_t) * size_t(g_rel_T)) != 0) {
+            std::fprintf(stderr, "V5 prototype: RELATION LANES MISMATCH ply=%d side=%d\n", ply, p);
+            std::abort();
+        }
+    }
+    ++g_rel_checks;
+}
+
 static void make_current(const Position& pos) {
     const int ply = pos.state_ply();
     PlyDelta* const ds = nnue_deltas();
@@ -797,6 +1024,8 @@ static void make_current(const Position& pos) {
     const bool pr = profile_on();
     const long long t0 = pr ? rdtsc() : 0;
     Accumulator* const acc_stack = nnue_acc_stack();
+    RelPlan relp;
+    if (g_rel_T) rel_plan(ply, ds, relp, pr);
     int start[2];
     for (int p = 0; p < 2; ++p) {
         int j = ply;
@@ -825,6 +1054,7 @@ static void make_current(const Position& pos) {
         for (int p = p_begin; p < p_end; ++p) ds[i].current[p] = true;
         if (pr) { st_incremental.cyc += rdtsc() - inc_t0; st_incremental.n += p_end - p_begin; }
     }
+    if (g_rel_T) rel_finish(pos, ply, ds, relp, pr);
     if (pr) { st_catchup.cyc += rdtsc() - t0; st_catchup.n++; }
 }
 
@@ -840,6 +1070,15 @@ void refresh(Position& pos) {
     d.null_move = false;
     d.rebuild = -1;
     d.current[0] = d.current[1] = true;
+    if (g_rel_T) {
+        v5rel::Bd& b = rel_boards()[pos.state_ply()];
+        rel_snapshot(pos, b);
+        RelAcc& ra = rel_accs()[pos.state_ply()];
+        rel_rebuild(b, 0, ra.r[0]);
+        rel_rebuild(b, 1, ra.r[1]);
+        d.relc[0] = d.relc[1] = true;
+        d.relflip[0] = d.relflip[1] = false;
+    }
     if (pr) { st_refresh.cyc += rdtsc() - t0; st_refresh.n++; }
 }
 
@@ -851,6 +1090,12 @@ void copy_for_null(Position& pos) {
     d.null_move = true;
     d.rebuild = -1;
     d.current[0] = d.current[1] = false;
+    if (g_rel_T) {
+        v5rel::Bd* const boards = rel_boards();
+        boards[pos.state_ply()] = boards[pos.state_ply() - 1];
+        d.relc[0] = d.relc[1] = false;
+        d.relflip[0] = d.relflip[1] = false;
+    }
 }
 
 void update(Position& pos, Move m, Piece moved, PieceType captured) {
@@ -875,6 +1120,22 @@ void update(Position& pos, Move m, Piece moved, PieceType captured) {
     d.rebuild = moved_pt == KING ? int8_t(us == WHITE ? 0 : 1) : int8_t(-1);
     d.null_move = false;
     d.current[0] = d.current[1] = false;
+    if (g_rel_T) {
+        v5rel::Bd* const boards = rel_boards();
+        rel_snapshot(pos, boards[ply]);
+        d.relc[0] = d.relc[1] = false;
+        d.relflip[0] = d.relflip[1] = false;
+        if (moved_pt == KING && ((int(m.from()) & 7) < 4) != ((int(m.to()) & 7) < 4)) d.relflip[us == WHITE ? 0 : 1] = true;
+        if (g_rel_mode != 0) {
+            const long long f0 = pr ? rdtsc() : 0;
+            v5rel::RowLists& L = rel_lists()[ply];
+            const bool need[2] = {!d.relflip[0], !d.relflip[1]};
+            v5rel::find(boards[ply - 1], m, g_rel_ppm, need, L);
+            for (int p = 0; p < 2; ++p)
+                if (need[p]) { rel_prefetch(L.add[p], L.na[p]); rel_prefetch(L.sub[p], L.ns[p]); }
+            if (pr) { st_rel_find.cyc += rdtsc() - f0; st_rel_find.n++; }
+        }
+    }
     if (d.rebuild >= 0) {
         KingBoard& kb = nnue_king_boards()[ply];
         for (int c = 0; c < 2; ++c)
@@ -955,6 +1216,12 @@ Value evaluate(const Position& pos) {
     bool stm_white = (pos.side_to_move() == WHITE);
     const int16_t* acc_stm  = stm_white ? a.v[0] : a.v[1];
     const int16_t* acc_nstm = stm_white ? a.v[1] : a.v[0];
+    // V5 prototype: the relation lanes join the first T piece-square lanes (zero weights: the sum is unchanged)
+    [[maybe_unused]] const int relT = (g_rel_T && !g_rel_check) ? g_rel_T : 0;
+    const RelAcc* const rel_a = g_rel_T ? &rel_accs()[pos.state_ply()] : nullptr;
+    [[maybe_unused]] const int16_t* const rel_stm  = rel_a ? rel_a->r[stm_white ? 0 : 1] : nullptr;
+    [[maybe_unused]] const int16_t* const rel_nstm = rel_a ? rel_a->r[stm_white ? 1 : 0] : nullptr;
+    if (g_rel_check) rel_check(pos);
     // This position's dense tail (the only one unless the net has output
     // buckets), bound to the names the kernels below use.
     const DenseTail& tail = g_tails[bucket_of(pos)];
@@ -996,8 +1263,15 @@ Value evaluate(const Position& pos) {
                 const int16_t* in = side == 0 ? acc_stm : acc_nstm;
                 uint8_t* out = h_i8 + side * L1;
                 for (int l = 0; l < L1; l += 64) {
-                    const __m512i x0 = _mm512_min_epi16(_mm512_max_epi16(_mm512_loadu_si512(in + l), lo16), hi16);
-                    const __m512i x1 = _mm512_min_epi16(_mm512_max_epi16(_mm512_loadu_si512(in + l + 32), lo16), hi16);
+                    __m512i a0 = _mm512_loadu_si512(in + l), a1 = _mm512_loadu_si512(in + l + 32);
+                    if (l < relT) {   // lane = piece-squares + clamp(relations) << RS, a saturating int16 sum
+                        const int16_t* const rl = side == 0 ? rel_stm : rel_nstm;
+                        const __m512i rhi = _mm512_set1_epi16((1 << (15 - REL_RS)) - 1), rlo = _mm512_set1_epi16(-((1 << (15 - REL_RS)) - 1));
+                        a0 = _mm512_adds_epi16(a0, _mm512_slli_epi16(_mm512_min_epi16(_mm512_max_epi16(_mm512_loadu_si512(rl + l), rlo), rhi), REL_RS));
+                        a1 = _mm512_adds_epi16(a1, _mm512_slli_epi16(_mm512_min_epi16(_mm512_max_epi16(_mm512_loadu_si512(rl + l + 32), rlo), rhi), REL_RS));
+                    }
+                    const __m512i x0 = _mm512_min_epi16(_mm512_max_epi16(a0, lo16), hi16);
+                    const __m512i x1 = _mm512_min_epi16(_mm512_max_epi16(a1, lo16), hi16);
                     const __m512i q0 = act16(_mm512_castsi512_si256(x0)), q1 = act16(_mm512_extracti64x4_epi64(x0, 1));
                     const __m512i q2 = act16(_mm512_castsi512_si256(x1)), q3 = act16(_mm512_extracti64x4_epi64(x1, 1));
                     const __m512i b = _mm512_packus_epi16(_mm512_packs_epi32(q0, q1), _mm512_packs_epi32(q2, q3));

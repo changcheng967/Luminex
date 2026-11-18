@@ -16,6 +16,7 @@ EXE       ?= luminex
 CC        ?= gcc
 CXX       ?= g++
 BUILD_DIR ?= build-openbench
+V5_REL_MARCH ?=
 
 # Why not -march=native: OpenBench verifies that every worker produces the same
 # bench node count. Floating point in the HCE path and any vectorised reduction
@@ -77,6 +78,7 @@ all:
 		-DCMAKE_C_COMPILER=$(CC) \
 		-DCMAKE_CXX_COMPILER=$(CXX) \
 		-DLUMINEX_MARCH=$(MARCH) \
+		-DV5_REL_MARCH=$(V5_REL_MARCH) \
 		-DLUMINEX_NATIVE=OFF
 	@cmake --build $(BUILD_DIR) --target luminex -j
 	@cp -f $(BUILD_DIR)/luminex ./$(EXE)

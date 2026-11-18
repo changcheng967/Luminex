@@ -84,6 +84,7 @@ public:
 
     Square ep_square() const;
     Square king_sq(Color c) const;
+    const Piece* mailbox() const { return board; }   // V5 prototype: the 64 squares' pieces
     int state_ply() const { return st_ply; }   // current state-stack index (NNUE indexes its accumulator by this)
     bool castling_allowed(Color c, CastlingRight cr) const;
 
