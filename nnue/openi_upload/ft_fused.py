@@ -30,9 +30,15 @@ bits), split_bf16(). The forward then runs two bf16 dots into one fp32 accumulat
 fp32: every product and partial sum is a multiple of 2^-13 below 2^7, which fp32 holds exactly,
 so the output is the engine's integer sum whatever the order of the additions.
 """
+import os
+
 import torch
 import triton
 import triton.language as tl
+
+# Triton's CPU interpreter (TRITON_INTERPRET=1, check_lanes_cpu.py) computes bf16 dots wrong (3.8.0: a 0/1 x bf16
+# product off by 2e10 where the answer is 3.6); under it the kernels run their dots in fp32, the same values.
+INTERP = os.environ.get("TRITON_INTERPRET", "0") == "1"
 
 PSQ = 768   # piece-square features per king bucket
 NKB = 32    # king buckets
@@ -145,9 +151,18 @@ def plan(kb, block, nkb=NKB):
 
 
 @triton.jit
-def _ft_fwd(planes, ranges, w, bias, wscale, out, wlo, dst, h,
+def _lanes(lane, order, rows, rmask, cols, T: tl.constexpr):
+    """Each sorted side-row's extra lane sums on lanes 0..T-1 (lane [R, T] fp32 in side-row order, read through
+    the sort), 0 on the other lanes: the tile's [BM, BN] share, and the mask of the lanes it covers."""
+    orow = tl.load(order + rows, mask=rmask, other=0)
+    m = rmask[:, None] & (cols < T)[None, :]
+    return tl.load(lane + orow[:, None] * T + cols[None, :], mask=m, other=0.0), orow, m
+
+
+@triton.jit
+def _ft_fwd(planes, ranges, w, bias, wscale, out, wlo, dst, h, lane, order,
             L1: tl.constexpr, BM: tl.constexpr, BN: tl.constexpr, FP8: tl.constexpr, SPLIT: tl.constexpr,
-            ACT: tl.constexpr):
+            ACT: tl.constexpr, T: tl.constexpr, INTERP: tl.constexpr):
     t = tl.program_id(0)
     nb = tl.program_id(1)
     r0 = tl.load(ranges + 3 * t)
@@ -173,6 +188,10 @@ def _ft_fwd(planes, ranges, w, bias, wscale, out, wlo, dst, h,
         wt = tl.load(wrow + k[:, None] * L1 + cols[None, :])
         if FP8:
             acc = tl.dot(bit.to(tl.float8e4nv), wt, acc)
+        elif INTERP:   # Triton's CPU interpreter gets bf16 dots wrong (3.8.0); the same values in fp32 there
+            acc = tl.dot(bit, wt.to(tl.float32), acc)
+            if SPLIT:
+                acc = tl.dot(bit, tl.load(wrow_lo + k[:, None] * L1 + cols[None, :]).to(tl.float32), acc)
         else:
             acc = tl.dot(bit.to(tl.bfloat16), wt, acc)
             if SPLIT:   # the rest of each weight: hi + lo is exact (split_bf16)
@@ -186,6 +205,10 @@ def _ft_fwd(planes, ranges, w, bias, wscale, out, wlo, dst, h,
             s = acc.to(tl.bfloat16)
         tl.store(out + rows[:, None] * L1 + cols[None, :], s, mask=rmask[:, None])
         x = s.to(tl.float32) + tl.load(bias + cols)[None, :]
+        if T > 0:   # extra lane sums (the relation rows) on lanes 0..T-1, after the bias as forward() adds them
+            if nb * BN < T:
+                xl, orow, lm = _lanes(lane, order, rows, rmask, cols, T)
+                x = x + xl
         c = tl.minimum(tl.maximum(x, 0.0), 1.0)
         y = c * c
         hp = h + tl.load(dst + rows, mask=rmask, other=0)[:, None] + cols[None, :]
@@ -204,7 +227,7 @@ def _ft_fwd(planes, ranges, w, bias, wscale, out, wlo, dst, h,
 @triton.jit
 def _ft_bwd(planes, ranges, g, gscale, dw,
             L1: tl.constexpr, BMF: tl.constexpr, NW: tl.constexpr, BN: tl.constexpr, BK: tl.constexpr,
-            FP8: tl.constexpr):
+            FP8: tl.constexpr, INTERP: tl.constexpr):
     t = tl.program_id(0)
     fb = tl.program_id(1)
     nb = tl.program_id(2)
@@ -232,6 +255,8 @@ def _ft_bwd(planes, ranges, g, gscale, dw,
         if FP8:
             s = tl.load(gscale + rows, mask=rmask, other=0.0)
             acc = tl.dot((bit * s[None, :]).to(tl.float8e4nv), gt, acc)
+        elif INTERP:   # the interpreter's bf16 dot, as in _ft_fwd
+            acc = tl.dot(bit, gt.to(tl.float32), acc)
         else:
             acc = tl.dot(bit.to(tl.bfloat16), gt, acc)
     dst = dw + (kb * 768 + fb * BMF + fl)[:, None] * L1 + cols[None, :]
@@ -239,8 +264,8 @@ def _ft_bwd(planes, ranges, g, gscale, dw,
 
 
 @triton.jit
-def _act_bwd(g, g2, sums, dst, bias, gs, part, R,
-             L1: tl.constexpr, BR: tl.constexpr, BC: tl.constexpr, TWO: tl.constexpr):
+def _act_bwd(g, g2, sums, dst, bias, gs, part, lane, order, glane, R,
+             L1: tl.constexpr, BR: tl.constexpr, BC: tl.constexpr, TWO: tl.constexpr, T: tl.constexpr):
     pb = tl.program_id(0)
     cb = tl.program_id(1)
     rows = (pb * BR + tl.arange(0, BR)).to(tl.int64)
@@ -252,25 +277,48 @@ def _act_bwd(g, g2, sums, dst, bias, gs, part, R,
         gv = gv + tl.load(g2 + gp, mask=rmask[:, None], other=0.0).to(tl.float32)
     sp = rows[:, None] * L1 + cols[None, :]
     x = tl.load(sums + sp, mask=rmask[:, None], other=0.0).to(tl.float32) + tl.load(bias + cols)[None, :]
+    if T > 0:   # the forward's x: the extra lane sums on lanes 0..T-1 (0 elsewhere, masked off)
+        xl, orow, lm = _lanes(lane, order, rows, rmask, cols, T)
+        x = x + xl
     c = tl.minimum(tl.maximum(x, 0.0), 1.0)
     gx = tl.where((x >= 0.0) & (x <= 1.0) & rmask[:, None], gv * 2.0 * c, 0.0)   # clamp's mask is inclusive
     tl.store(gs + sp, gx.to(tl.bfloat16), mask=rmask[:, None])
+    if T > 0:   # the lane sums' gradient is the sums' gradient on their lanes, fp32, in side-row order
+        tl.store(glane + orow[:, None] * T + cols[None, :], gx, mask=lm)
     tl.store(part + pb * L1 + cols, tl.sum(gx, axis=0))
 
 
+def lane_args(lanes, R, L1):
+    """lanes = (sums [R, T] fp32 in side-row order, order from plan()) or None -> the kernels' (lane, order, T)."""
+    if lanes is None:
+        return None, None, 0
+    lane, order = lanes
+    if lane.dim() != 2 or lane.shape[0] != R or order.shape[0] != R or not 0 < lane.shape[1] <= L1:
+        raise ValueError(f"lanes: {tuple(lane.shape)} sums and {order.shape[0]} sort slots for {R} side-rows of {L1}")
+    if lane.dtype != torch.float32:
+        raise ValueError(f"lanes: the sums must be fp32, not {lane.dtype}")
+    return lane.contiguous(), order.contiguous(), lane.shape[1]
+
+
 def ft_fwd(planes_s, ranges, w, bias, BM, BN, fp8=False, wscale=None, num_warps=8, num_stages=3, out=None,
-           w_lo=None, act=None):
+           w_lo=None, act=None, lanes=None):
     """planes_s: side-rows in sorted order; ranges from plan(kb, BM). w: [32 * 768, L1]
     bf16 (or e4m3 with wscale [L1] fp32 = 1 / column scale). Returns [R, L1] bf16 in sorted order.
     With w_lo (bf16, split_bf16's second part), the table is w + w_lo and the output fp32: exact
     for weights on the int16 grid.
     With act = (dst, n) (act_dst()), the activation too: returns (sums, h), the sums as above but
     without the bias, and h [n, 2 * L1] = clamp(sums + bias, 0, 1)^2, each side-row's values at
-    offset dst[r] (bf16; fp32 with w_lo)."""
+    offset dst[r] (bf16; fp32 with w_lo).
+    With act, lanes = (sums [R, T] fp32 in side-row order, order from plan()) adds extra sums on lanes
+    0..T-1 after the bias (the relation inputs): h = clamp(sums + bias + lane sums, 0, 1)^2, the
+    returned sums still without either."""
     R, L1 = planes_s.shape[0], w.shape[1]
     split = w_lo is not None
     if split and fp8:
         raise ValueError("the exact (split) forward is bf16 only")
+    if lanes is not None and act is None:
+        raise ValueError("lanes: only with act (the sums are returned without them)")
+    lane, order, T = lane_args(lanes, R, L1)
     if out is None:
         out = torch.empty(R, L1, dtype=torch.float32 if split else torch.bfloat16, device=planes_s.device)
     h = out
@@ -282,7 +330,8 @@ def ft_fwd(planes_s, ranges, w, bias, BM, BN, fp8=False, wscale=None, num_warps=
     grid = (ranges.shape[0], L1 // BN)
     _ft_fwd[grid](planes_s, ranges, w, bias, wscale if fp8 else bias, out, w_lo if split else w,
                   act[0] if act is not None else ranges, h,
-                  L1=L1, BM=BM, BN=BN, FP8=fp8, SPLIT=split, ACT=act is not None,
+                  lane if T else bias, order if T else ranges,
+                  L1=L1, BM=BM, BN=BN, FP8=fp8, SPLIT=split, ACT=act is not None, T=T, INTERP=INTERP,
                   num_warps=num_warps, num_stages=num_stages)
     return out if act is None else (out, h)
 
@@ -298,20 +347,24 @@ def act_dst(order, stm, n, L1):
     return (p * (2 * L1) + half.long() * L1).contiguous()
 
 
-def act_bwd(g, g2, sums, dst, bias, BR=32, BC=256, num_warps=4):
+def act_bwd(g, g2, sums, dst, bias, BR=32, BC=256, num_warps=4, lanes=None):
     """Backward of ft_fwd(act=...). g [n, 2 * L1] = dL/dh (bf16 or fp32), g2 = a second
-    consumer's dL/dh or None, sums and bias as ft_fwd took them. Returns (gs, db): gs [R, L1] bf16
-    in sorted order for ft_bwd, the gradient of the sums, and db [L1] fp32, the bias's."""
+    consumer's dL/dh or None, sums, bias and lanes as ft_fwd took them. Returns (gs, db, gl): gs
+    [R, L1] bf16 in sorted order for ft_bwd, the gradient of the sums, db [L1] fp32, the bias's,
+    and gl [R, T] fp32 in side-row order, the lane sums' (None without lanes)."""
     R, L1 = sums.shape
     BC = min(BC, L1 & -L1)   # a power of two that divides L1
+    lane, order, T = lane_args(lanes, R, L1)
     g = g.contiguous()
     g2 = g2.contiguous() if g2 is not None else None
     gs = torch.empty(R, L1, dtype=torch.bfloat16, device=sums.device)
+    gl = torch.empty(R, T, dtype=torch.float32, device=sums.device) if T else None   # every row is written once
     nrb = triton.cdiv(R, BR)
     part = torch.empty(nrb, L1, dtype=torch.float32, device=sums.device)
-    _act_bwd[(nrb, L1 // BC)](g, g2 if g2 is not None else g, sums, dst, bias, gs, part, R,
-                              L1=L1, BR=BR, BC=BC, TWO=g2 is not None, num_warps=num_warps)
-    return gs, part.sum(0)
+    _act_bwd[(nrb, L1 // BC)](g, g2 if g2 is not None else g, sums, dst, bias, gs, part,
+                              lane if T else bias, order if T else dst, gl if T else part, R,
+                              L1=L1, BR=BR, BC=BC, TWO=g2 is not None, T=T, num_warps=num_warps)
+    return gs, part.sum(0), gl
 
 
 def split_bf16(w):
@@ -327,7 +380,8 @@ def ft_bwd(planes_s, ranges, g_s, dw, BMF, BN, BK, fp8=False, gscale=None, num_w
     L1 = g_s.shape[1]
     grid = (ranges.shape[0], 768 // BMF, L1 // BN)
     _ft_bwd[grid](planes_s, ranges, g_s, gscale if fp8 else g_s, dw,
-                  L1=L1, BMF=BMF, NW=BMF // 32, BN=BN, BK=BK, FP8=fp8, num_warps=num_warps, num_stages=num_stages)
+                  L1=L1, BMF=BMF, NW=BMF // 32, BN=BN, BK=BK, FP8=fp8, INTERP=INTERP,
+                  num_warps=num_warps, num_stages=num_stages)
 
 
 def fp8_cols(w):
