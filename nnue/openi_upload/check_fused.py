@@ -21,7 +21,9 @@ usage: python check_fused.py --act DATA_DIR [CKPT.pt]
     from two (the draw head's case), the gradient G that goes into the table's kernel. The
     table's and the bias's gradients within 1e-5 (relative norm: the table's kernel adds with
     atomics, the bias sums in another order); then fwd_loss end to end: the loss bit for bit
-    and every gradient within 1e-5. The other modes run with NNUE_FT_ACT as set (default 1),
+    and every gradient within 1e-5. Then the relation lanes (lanes_check: extra sums on lanes
+    0..T-1, T = 128 and 256 in float, 256 under QAT) against the unfused join's ops, bit for bit:
+    h, G and the lane sums' gradient. The other modes run with NNUE_FT_ACT as set (default 1),
     except --qat's feature-layer check, which needs the sums (=0).
 usage: python check_fused.py --compare ARM2.log ARM3.log
     Two paired short runs (same seed, data and schedule; FT_DENSE 2 vs 3). Passes when every
@@ -214,7 +216,7 @@ def act_check(data, ckpt, qat):
         W, B = leaves()[2:]
         ref = before(W, B)
         ref = ref if qat else ref.to(torch.bfloat16)   # what the next matmul reads (autocast's cast)
-        hv, h2 = RT.FusedAct.apply(wf, bf, W, B, stm)
+        hv, h2 = RT.FusedAct.apply(wf, bf, W, B, stm, None)
         same = torch.equal(hv, ref) and hv.dtype == ref.dtype and hv.data_ptr() == h2.data_ptr()
         x = torch.cat(RT.FusedFT.apply(wf, bf, W)).float() + B
         inside = float(((x > 0) & (x < 1)).float().mean())
@@ -233,7 +235,7 @@ def act_check(data, ckpt, qat):
         for new in (False, True):
             w, b, W, B = leaves()
             if new:
-                hv, h2 = RT.FusedAct.apply(wf, bf, W, B, stm)
+                hv, h2 = RT.FusedAct.apply(wf, bf, W, B, stm, None)
                 torch.autograd.backward([hv, h2] if two else [hv], [g1, g2] if two else [g1])
             else:
                 h = before(W, B)
@@ -272,6 +274,133 @@ def act_check(data, ckpt, qat):
     return ok
 
 
+def lanes_check(data, ckpt, qat, T, device="cuda"):
+    """--act's relation-lane case: FusedAct with extra lane sums on lanes 0..T-1 (the relation
+    inputs) against the unfused path's ops: FusedFT's sums plus the bias, the lane sums added to
+    lanes 0..T-1 by a cat (as the V5 gate's rel_gate.py joins them), then forward()'s ops. Bit for
+    bit: h, the G that goes into the table's kernel and the lane sums' gradient, from one consumer
+    and from two; the table's and the bias's gradients within 1e-5. data = None takes random
+    records' features from `device` (check_lanes_cpu.py's interpreter run)."""
+    import torch
+    tag = f"{'QAT' if qat else 'float'}, lanes 0..{T - 1}"
+    if data is not None:
+        batch = one_batch(data, qat)
+    os.environ["NNUE_QAT"] = "1" if qat else "0"
+    os.environ["NNUE_FT_DENSE"], os.environ["NNUE_FT_FP8"], os.environ["NNUE_FT_ACT"] = "3", "0", "1"
+    import resident_train
+    RT = importlib.reload(resident_train)
+    if data is None:
+        batch = RT_BATCH(RT)
+    torch.manual_seed(1)
+    model = RT.LNNUE(L1=768).to(device)
+    if ckpt:
+        model.load_state_dict(torch.load(ckpt, map_location=device, weights_only=False)["model"], strict=False)
+        with torch.no_grad():
+            model.ft.weight[RT.NUM_INPUTS].zero_()
+    wf, bf, stm = RT.expand(batch)[:3]
+    n, L1 = wf.shape[0], model.ft.weight.shape[1]
+    gen = torch.Generator(device=device).manual_seed(7)
+    lane0 = torch.randn(2 * n, T, device=device, generator=gen) * 0.25
+    if qat:   # sums of the relation table's int8 rows, steps of 1/128
+        lane0 = torch.round(lane0 * 128) / 128
+    seen = []
+    real = RT.ft_weight_grad
+
+    def spy(planes_s, rb, g, nrows):   # the G the table's kernel reads, rounded as the kernels round
+        gb = TO_BF16(g)
+        seen.append(gb.clone())
+        return real(planes_s, rb, gb, nrows)
+
+    RT.ft_weight_grad = spy
+
+    def leaves():
+        w = model.ft.weight.detach().clone().requires_grad_()
+        b = model.ft_bias.detach().clone().requires_grad_()
+        lane = lane0.clone().requires_grad_()
+        return w, b, lane, (RT.qat_ft(w) if qat else w), (RT.qat_bias(b) if qat else b)
+
+    class Up(torch.autograd.Function):
+        """aw.float(), whose backward rounds the gradient back to bf16 as the kernels round (autograd's cast
+        backward rounds to nearest even, as TO_BF16 does on a GPU)."""
+
+        @staticmethod
+        def forward(ctx, a):
+            return a.float()
+
+        @staticmethod
+        def backward(ctx, g):
+            return TO_BF16(g)
+
+    def before(W, B, lane):
+        aw, ab = RT.FusedFT.apply(wf, bf, W)
+        xw, xb = (aw + B, ab + B) if qat else (Up.apply(aw) + B, Up.apply(ab) + B)
+        xw = torch.cat((xw[:, :T] + lane[:n], xw[:, T:]), 1)
+        xb = torch.cat((xb[:, :T] + lane[n:], xb[:, T:]), 1)
+        s = stm.view(-1, 1) > 0.5
+        h = torch.cat([torch.where(s, xw, xb), torch.where(s, xb, xw)], 1)
+        return torch.clamp(h, 0.0, 1.0).square()
+
+    ok = True
+    with torch.no_grad():
+        W, B = leaves()[3:]
+        ref = before(W, B, lane0)
+        ref = ref if qat else TO_BF16(ref)
+        hv, h2 = RT.FusedAct.apply(wf, bf, W, B, stm, lane0)
+        same = torch.equal(hv, ref) and hv.dtype == ref.dtype
+        xl = torch.cat(RT.FusedFT.apply(wf, bf, W)).float()[:, :T] + B[:T] + lane0
+        inside = float(((xl > 0) & (xl < 1)).float().mean())   # where SCReLU passes a gradient: the check's reach
+        print(f"  {tag}: h == the unfused join's ops bit for bit: {same} (largest difference "
+              f"{float((hv.float() - ref.float()).abs().max()):.3e}; {inside:.1%} of the lane sums' x inside (0, 1))",
+              flush=True)
+        ok = ok and same and inside > 0.05
+        if inside <= 0.05:
+            print(f"  {tag}: FAIL, too few x inside (0, 1) for the gradients to be compared", flush=True)
+    gdt = torch.float32 if qat else torch.bfloat16
+    g1 = (torch.randn(n, 2 * L1, device=device, generator=gen) * 1e-3).to(gdt)
+    g2 = (torch.randn(n, 2 * L1, device=device, generator=gen) * 1e-4).to(gdt)
+    for two in (False, True):
+        seen.clear()
+        res = []
+        for new in (False, True):
+            w, b, lane, W, B = leaves()
+            if new:
+                hv, h2 = RT.FusedAct.apply(wf, bf, W, B, stm, lane)
+                torch.autograd.backward([hv, h2] if two else [hv], [g1, g2] if two else [g1])
+            else:
+                h = before(W, B, lane)
+                if qat:
+                    torch.autograd.backward([h], [g1 + g2 if two else g1])
+                else:
+                    outs = [h.to(torch.bfloat16)] + ([h.to(torch.bfloat16)] if two else [])
+                    torch.autograd.backward(outs, [g1, g2] if two else [g1])
+            res.append((w.grad, b.grad, lane.grad))
+        g_same = len(seen) == 2 and torch.equal(seen[0], seen[1])
+        l_same = res[0][2] is not None and res[1][2] is not None and torch.equal(res[0][2], res[1][2])
+        g_nz = int(seen[1].ne(0).sum()) if len(seen) == 2 else 0
+        l_nz = int(res[1][2].ne(0).sum()) if res[1][2] is not None else 0
+        ew, eb = rel(res[1][0], res[0][0]), rel(res[1][1], res[0][1])
+        what = "two consumers (g1 + g2)" if two else "one consumer"
+        print(f"  {tag}, {what}: G into the table's kernel bit for bit: {g_same} ({g_nz:,} nonzero); the lane sums' "
+              f"gradient bit for bit: {l_same} ({l_nz:,} of {2 * n * T:,} nonzero); "
+              f"table gradient {ew:.1e}, bias gradient {eb:.1e}", flush=True)
+        ok = ok and g_same and l_same and ew < 1e-5 and eb < 1e-5 and g_nz > 0 and l_nz > 0.05 * 2 * n * T
+    RT.ft_weight_grad = real
+    del model
+    if device == "cuda":
+        torch.cuda.empty_cache()
+    return ok
+
+
+RT_BATCH = None   # check_lanes_cpu.py sets it: RT -> uint8 [n, 32] LCR1 records on its device
+
+
+def TO_BF16(t):
+    """fp32 -> bf16 as the kernels round: to nearest even, as torch and the GPU do. check_lanes_cpu.py swaps in
+    truncation, which is what Triton's CPU interpreter does (3.8.0)."""
+    import torch
+    return t.to(torch.bfloat16)
+
+
 if __name__ == "__main__":
     if "--engine-header" in sys.argv:
         i = sys.argv.index("--engine-header")
@@ -284,7 +413,9 @@ if __name__ == "__main__":
     args, fp8, qat = sys.argv[1:], 0, False
     if args[0] == "--act":
         try:
-            ok = all([act_check(args[1], args[2] if len(args) > 2 else "", q) for q in (False, True)])
+            ck = args[2] if len(args) > 2 else ""
+            ok = all([act_check(args[1], ck, q) for q in (False, True)]
+                     + [lanes_check(args[1], ck, q, T) for q, T in ((False, 128), (False, 256), (True, 256))])
         except Exception as ex:
             import traceback
             traceback.print_exc()

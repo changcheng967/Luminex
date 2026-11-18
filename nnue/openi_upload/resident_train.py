@@ -1163,15 +1163,17 @@ def ft_sorted_rows(wf, bf):
     return planes[order].contiguous(), order, rf, rb
 
 
-def ft_sums(planes_s, rf, weight, bias, act=None):
-    """ft_fused.ft_fwd on the table as the run holds it (ft_fwd's act: the activation too)."""
+def ft_sums(planes_s, rf, weight, bias, act=None, lanes=None):
+    """ft_fused.ft_fwd on the table as the run holds it (ft_fwd's act: the activation too; lanes:
+    extra lane sums added before it)."""
     if QAT:   # exact: hi + lo is the rounded weight, the sums fp32
         hi, lo = FF.split_bf16(weight[:NUM_INPUTS].float())
-        return FF.ft_fwd(planes_s, rf, hi, bias, w_lo=lo, act=act, **FUSED_FWD)
+        return FF.ft_fwd(planes_s, rf, hi, bias, w_lo=lo, act=act, lanes=lanes, **FUSED_FWD)
     if FT_FP8 >= 2:   # the table in e4m3, scaled per column
         w8, wsc = FF.fp8_cols(weight[:NUM_INPUTS])
-        return FF.ft_fwd(planes_s, rf, w8, bias, fp8=True, wscale=wsc, act=act, **FUSED_FWD)
-    return FF.ft_fwd(planes_s, rf, weight[:NUM_INPUTS].to(torch.bfloat16), bias, act=act, **FUSED_FWD)
+        return FF.ft_fwd(planes_s, rf, w8, bias, fp8=True, wscale=wsc, act=act, lanes=lanes, **FUSED_FWD)
+    return FF.ft_fwd(planes_s, rf, weight[:NUM_INPUTS].to(torch.bfloat16), bias, act=act, lanes=lanes,
+                     **FUSED_FWD)
 
 
 def ft_weight_grad(planes_s, rb, g, nrows):
@@ -1191,28 +1193,33 @@ class FusedAct(torch.autograd.Function):
     [n, 2 * L1], side to move first, in bf16 as autocast rounds it for the next matmul (fp32
     under NNUE_QAT), twice over the same memory: one for the value's tail, one for any other
     consumer (the draw head reads forward()'s h), so the two gradients arrive apart and
-    backward adds them in fp32, as autograd added them into forward()'s fp32 h before."""
+    backward adds them in fp32, as autograd added them into forward()'s fp32 h before.
+
+    lane, when given, is [2n, T] fp32 in side-row order (White's views, then Black's): extra
+    sums the kernels add to lanes 0..T-1 after the bias and before SCReLU, as the unfused path
+    adds the relation inputs to forward()'s sums; backward returns their gradient, fp32."""
 
     @staticmethod
-    def forward(ctx, wf, bf, weight, bias, stm):
+    def forward(ctx, wf, bf, weight, bias, stm, lane):
         ctx.set_materialize_grads(False)
         n, L1 = wf.shape[0], weight.shape[1]
         planes_s, order, rf, rb = ft_sorted_rows(wf, bf)
         dst = FF.act_dst(order, stm, n, L1)
-        sums, h = ft_sums(planes_s, rf, weight, bias, act=(dst, n))
-        ctx.save_for_backward(planes_s, rb, dst, sums, bias)
+        lanes = None if lane is None else (lane, order)
+        sums, h = ft_sums(planes_s, rf, weight, bias, act=(dst, n), lanes=lanes)
+        ctx.save_for_backward(planes_s, rb, dst, sums, bias, order, lane)
         ctx.nrows = weight.shape[0]
         return h, h.detach()
 
     @staticmethod
     def backward(ctx, gh, gh2):
-        planes_s, rb, dst, sums, bias = ctx.saved_tensors
+        planes_s, rb, dst, sums, bias, order, lane = ctx.saved_tensors
         if gh is None:
             gh, gh2 = gh2, None
         if gh is None:
-            return None, None, None, None, None
-        gs, db = FF.act_bwd(gh, gh2, sums, dst, bias)
-        return None, None, ft_weight_grad(planes_s, rb, gs, ctx.nrows), db, None
+            return None, None, None, None, None, None
+        gs, db, gl = FF.act_bwd(gh, gh2, sums, dst, bias, lanes=None if lane is None else (lane, order))
+        return None, None, ft_weight_grad(planes_s, rb, gs, ctx.nrows), db, None, gl
 
 
 @torch.compiler.disable
@@ -1224,11 +1231,18 @@ def ft_fused(wf, bf, weight):
     return FusedFT.apply(wf, bf, qat_ft(weight) if QAT else weight)
 
 
+# Extra lane sums for the fused activation: None, or a function of no arguments that returns
+# the current batch's [2n, T] fp32 sums in side-row order with their autograd history (the
+# relation inputs set it: they know which records the batch holds).
+LANE_SUMS = None
+
+
 @torch.compiler.disable
 def ft_fused_act(wf, bf, stm, weight, bias):
+    lane = LANE_SUMS() if LANE_SUMS is not None else None
     if QAT:
-        return FusedAct.apply(wf, bf, qat_ft(weight), qat_bias(bias), stm)
-    return FusedAct.apply(wf, bf, weight, bias, stm)
+        return FusedAct.apply(wf, bf, qat_ft(weight), qat_bias(bias), stm, lane)
+    return FusedAct.apply(wf, bf, weight, bias, stm, lane)
 
 
 def qat_bias(b):
