@@ -82,14 +82,15 @@ Environment (default in brackets):
   NNUE_LIVE_CLAMP [0]  tail activations pass this gradient slope outside [0, 1];
                      the forward pass (and so the engine's net) is unchanged
   NNUE_QAT [0]       1: train the network the way the engine runs it. The first layer
-                     is rounded to the engine's int16 grid (x2048); each bucket's L2, L3
+                     is rounded to the engine's int16 grid (FT_GRID); each bucket's L2, L3
                      and output weights to int8 with quantize_i8.py's scale (127 / max|w|);
                      every activation into them to the engine's 1/127 steps. Gradients
                      pass straight through the rounding and the tail runs in fp32, so the
                      network trained is the network the engine loads after quantize_i8.py
   NNUE_QAT_FT8 [0]   with NNUE_QAT: SHIFT (1-8) rounds the first layer's weights instead to the
-                     int8 table of an LNF8 net, steps of 2^(SHIFT-13) clipped at +-127 steps
-                     (quantize_i8.py --ft8 SHIFT / --ft-grid SHIFT); the bias stays on x8192
+                     int8 table of an LNF8 net, q << SHIFT on the engine's grid: steps of
+                     2^SHIFT / FT_GRID, clipped at +-127 steps; the bias stays on FT_GRID. Neither
+                     the engine nor quantize_i8.py on main reads LNF8 nets
   NNUE_QAT_AFTER [0] steps of QAT in this run after the float phase (NNUE_QAT=0) ends: the float
                      net is saved as usual, then the same process carries on with QAT (as NNUE_QAT=1,
                      with NNUE_QAT_FT8) from that model and optimizer state on a new cosine of this many
@@ -197,9 +198,25 @@ if QAT_AFTER and QAT:
     raise SystemExit("FAIL: NNUE_QAT_AFTER continues a float phase into QAT: it needs NNUE_QAT=0")
 if QAT_FT8 and not ((QAT or QAT_AFTER) and 1 <= QAT_FT8 <= 8):
     raise SystemExit(f"FAIL: NNUE_QAT_FT8={QAT_FT8} needs NNUE_QAT=1 (or NNUE_QAT_AFTER) and a shift from 1 to 8")
-# The engine's first-layer int16 grid (src/nnue_kernels.h NNUE_FT_SCALE): QAT rounds the feature weights
-# and biases to it
+# The engine's first-layer int16 grid (src/nnue_kernels.h NNUE_FT_SCALE), and the trainer's one copy of it:
+# QAT rounds the feature weights and biases to FT_GRID (qat_ft, qat_bias) and nowhere else. check_grid.py
+# fails when it and the engine's differ, or when a rounding uses a literal grid instead (CI runs it on every
+# push, check_fused.py before every GPU check), and a QAT run from a checkout checks it at the start.
 FT_GRID = 2048.0
+if QAT or QAT_AFTER:
+    try:
+        import check_grid
+    except ImportError:   # a copy of the trainer without its checkout (a box's tools folder)
+        check_grid = None
+    _hdr = env("NNUE_ENGINE_HEADER", "") or (check_grid.HEADER if check_grid else "")
+    if check_grid and os.path.exists(_hdr):
+        if check_grid.engine_grid(_hdr) != FT_GRID:
+            raise SystemExit(f"FAIL: FT_GRID x{FT_GRID:g} is not the engine's NNUE_FT_SCALE "
+                             f"x{check_grid.engine_grid(_hdr):g} ({_hdr}): QAT would train another grid")
+        print(f"[grid] FT_GRID x{FT_GRID:g} = the engine's NNUE_FT_SCALE ({_hdr})", flush=True)
+    else:
+        print(f"[grid] FT_GRID x{FT_GRID:g}, not checked against the engine here (no check_grid.py or no "
+              f"{_hdr or 'src/nnue_kernels.h'}; NNUE_ENGINE_HEADER names the header)", flush=True)
 FT_DENSE = int(env("NNUE_FT_DENSE", "0"))
 FT_TILE = int(env("NNUE_FT_TILE", "1024"))
 FT_FP8 = int(env("NNUE_FT_FP8", "0"))
@@ -1051,7 +1068,7 @@ class DenseFT(torch.autograd.Function):
 
     The dense forward runs in bf16 on the GPU, except under NNUE_QAT (and on the
     CPU), where it runs in exact fp32 with autocast and TF32 off: QAT's weights sit
-    on the engine's int16 grid (k / 2048), and any sum of a position's 32 of them is
+    on the engine's int16 grid (k / FT_GRID), and any sum of a position's 32 of them is
     exact in fp32, so the layer equals the engine's integer sums. bf16 would round
     each weight to 8 significant bits and undo what QAT trains for."""
 
@@ -1215,18 +1232,18 @@ def ft_fused_act(wf, bf, stm, weight, bias):
 
 
 def qat_bias(b):
-    """The first layer's bias on the engine's grid, with a straight-through gradient."""
-    return b + (torch.round(b * 8192.0) / 8192.0 - b).detach()
+    """The first layer's bias on the engine's grid (FT_GRID), with a straight-through gradient."""
+    return b + (torch.round(b * FT_GRID) / FT_GRID - b).detach()
 
 
 def qat_ft(w):
     """The first layer's weights as QAT rounds them, with a straight-through gradient: the
-    engine's int16 grid (src/nnue.cpp FT_WSCALE = 8192), or with NNUE_QAT_FT8 an LNF8 net's
-    int8 table (q << SHIFT on the x8192 grid, |q| <= 127)."""
+    engine's int16 grid (FT_GRID), or with NNUE_QAT_FT8 an LNF8 net's int8 table (q << SHIFT
+    on that grid, |q| <= 127: steps of 2^SHIFT / FT_GRID)."""
     if QAT_FT8:
-        k = float(2 ** (13 - QAT_FT8))
+        k = FT_GRID / float(2 ** QAT_FT8)
         return w + (torch.clamp(torch.round(w * k), -127.0, 127.0) / k - w).detach()
-    return w + (torch.round(w * 8192.0) / 8192.0 - w).detach()
+    return w + (torch.round(w * FT_GRID) / FT_GRID - w).detach()
 
 
 def forward(model, wf, bf, stm, cnt, acc=None):

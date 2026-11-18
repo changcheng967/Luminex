@@ -26,12 +26,22 @@ usage: python check_fused.py --act DATA_DIR [CKPT.pt]
 usage: python check_fused.py --compare ARM2.log ARM3.log
     Two paired short runs (same seed, data and schedule; FT_DENSE 2 vs 3). Passes when every
     [HEALTH] and [DISJOINT] loss they share (after step 0) agrees within 1% and the fused run
-    finished."""
+    finished.
+Every mode runs check_grid.py first: the trainer's FT_GRID against the engine's NNUE_FT_SCALE,
+and no rounding to a literal grid. GRID_FAIL ends the run with exit 1 before any GPU work.
+--engine-header PATH, anywhere on the line, names src/nnue_kernels.h where this file is not in
+its checkout (a box's tools folder). --qat then also checks that QAT's rounded weights and bias
+are whole multiples of 1 / NNUE_FT_SCALE: the grid the fused kernels' QAT path really trains on."""
 import glob
 import importlib
 import os
 import re
 import sys
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import check_grid  # noqa: E402
+
+ENGINE_HEADER = check_grid.HEADER
 
 
 def compare(a, b):
@@ -106,14 +116,19 @@ def gradients(data, ckpt, fp8=0, qat=False):
         with torch.no_grad():
             wf, bf = RT.expand(batch)[:2]
             wq = RT.qat_ft(model.ft.weight)
+            grid = check_grid.engine_grid(ENGINE_HEADER)   # x2048: every rounded value is k / grid
+            bq = RT.qat_bias(model.ft_bias)
+            on_grid = (bool(torch.equal(torch.round(wq * grid), wq * grid))
+                       and bool(torch.equal(torch.round(bq * grid), bq * grid)))
             hi, lo = RT.FF.split_bf16(wq[:RT.NUM_INPUTS].float())
             split_ok = torch.equal(hi.float() + lo.float(), wq[:RT.NUM_INPUTS].float())
             fw, fb = RT.ft_fused(wf, bf, model.ft.weight)
             dw, db = RT.ft_dense(wf, wq), RT.ft_dense(bf, wq)
             same = torch.equal(fw, dw) and torch.equal(fb, db)
             worst = max(float((fw - dw).abs().max()), float((fb - db).abs().max()))
-        exact = split_ok and same and fw.dtype == torch.float32
-        print(f"  QAT feature layer: hi + lo == the rounded table: {split_ok}; fused == dense fp32 bit for bit: "
+        exact = on_grid and split_ok and same and fw.dtype == torch.float32
+        print(f"  QAT feature layer: weights and bias on the engine's grid x{grid:g}: {on_grid}; "
+              f"hi + lo == the rounded table: {split_ok}; fused == dense fp32 bit for bit: "
               f"{same} (largest difference {worst:.3e}, fused dtype {fw.dtype}; "
               f"|table| <= {float(wq.abs().max()):.4f})", flush=True)
         del model
@@ -258,6 +273,12 @@ def act_check(data, ckpt, qat):
 
 
 if __name__ == "__main__":
+    if "--engine-header" in sys.argv:
+        i = sys.argv.index("--engine-header")
+        ENGINE_HEADER = sys.argv[i + 1]
+        del sys.argv[i:i + 2]
+    if not check_grid.check(ENGINE_HEADER):
+        sys.exit(1)
     if sys.argv[1] == "--compare":
         sys.exit(0 if compare(sys.argv[2], sys.argv[3]) else 1)
     args, fp8, qat = sys.argv[1:], 0, False
