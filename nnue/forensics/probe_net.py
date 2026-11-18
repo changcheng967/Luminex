@@ -7,17 +7,28 @@ On N_POS positions from refereed games (stride-sampled), runs the float net's
 forward pass by hand and reports, per layer and per piece-count bucket:
   FT  (768 per perspective): share of lanes below 0 (SCReLU zero, no gradient),
       above 1 (saturated, no gradient), live in between; neurons that are dead
-      or saturated on >= 99% of positions; lanes beyond the int16 range at the
-      engine's x2048 scale (|a| >= 16.0);
+      or saturated on >= 99% of positions; lanes beyond the engine's int16 range
+      (|a| >= 32768 / NNUE_FT_SCALE, read from src/nnue_kernels.h through
+      check_grid.py: 16.0 at x2048; NNUE_ENGINE_HEADER names another header);
   L2 (16) / L3 (32): the same live / dead / saturated split per neuron;
   the effective dimension of the 1536-wide activation (components for 90/99%
   of variance) and of the 16-wide L2 activation.
 """
+import importlib.util
 import json
 import os
 import sys
 
 import numpy as np
+
+# The engine's feature grid, from the header by the trainer's own reader (loaded by path, so TRAINER_DIR's modules
+# keep their place on sys.path): a lane is beyond the int16 range at 32768 / NNUE_FT_SCALE.
+_spec = importlib.util.spec_from_file_location(
+    "check_grid", os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "openi_upload", "check_grid.py"))
+check_grid = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(check_grid)
+FT_SCALE = check_grid.engine_grid(os.environ.get("NNUE_ENGINE_HEADER") or check_grid.HEADER)
+INT16_EDGE = 32768.0 / FT_SCALE
 
 tdir, net, ref, n_pos = sys.argv[1], sys.argv[2], sys.argv[3], int(sys.argv[4])
 sys.path.insert(0, tdir)
@@ -128,8 +139,8 @@ def main():
 
     Aft = np.concatenate([A[:, :L1], A[:, L1:]])   # both perspectives pooled per FT neuron
     d, s, live = split(Aft)
-    print(f"FT lanes: zero {d:.1%}  saturated {s:.1%}  live {live:.1%};  |a|>=16 (int16 x2048 overflow) "
-          f"{(np.abs(Aft) >= 16.0).mean():.4%}, max |a| {np.abs(Aft).max():.2f}")
+    print(f"FT lanes: zero {d:.1%}  saturated {s:.1%}  live {live:.1%};  |a|>={INT16_EDGE:g} (int16 x{FT_SCALE:g} "
+          f"overflow) {(np.abs(Aft) >= INT16_EDGE).mean():.4%}, max |a| {np.abs(Aft).max():.2f}")
     live_n = ((Aft > 0) & (Aft < 1)).mean(0)
     dead_n = (Aft <= 0).mean(0)
     sat_n = (Aft >= 1).mean(0)
