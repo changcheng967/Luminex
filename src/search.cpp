@@ -880,9 +880,14 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
     // Null move pruning. R grows continuously with depth and with how far
     // eval sits above beta. Consecutive nulls are banned (a second null
     // proves nothing the first didn't) and nulls are banned inside a
-    // verification search's ply window.
+    // verification search's ply window. The side to move needs a piece of
+    // its own: with only king and pawns, passing is the move zugzwang
+    // forbids, whatever the opponent holds. piece_count (both sides'
+    // pieces) still sizes R and the verification.
     int piece_count = popcount(pos.pieces()) - popcount(pos.pieces(PAWN)) - 2;
-    bool null_move_ok = !pv_node && !pos.is_check() && depth >= 2 && piece_count >= 1 &&
+    const Color stm = pos.side_to_move();
+    int own_pieces = popcount(pos.pieces(stm)) - popcount(pos.pieces(stm, PAWN)) - 1;
+    bool null_move_ok = !pv_node && !pos.is_check() && depth >= 2 && own_pieces >= 1 &&
                           eval >= beta + (depth <= sp.nmp_shallow_depth ? sp.nmp_shallow_margin : 0) &&
                           ss->ply >= 1 && !ss->excluded_move &&
                           (ss - 1)->current_move != MOVE_NULL &&
