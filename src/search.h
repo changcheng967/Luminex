@@ -68,6 +68,12 @@ struct SearchParams {
     // the value-weighted horizon to the last move before the next control,
     // the default: +11.0 Elo against 0 at 40 moves in 10 s
     int time_moves_to_go = 1;
+    // UCI "TimeLag", sudden death without an increment: 1 = the schedule also
+    // pays for what the clock loses on each move beyond the engine's own
+    // thinking (the connection's lag, measured from the clock: lag_estimate()
+    // in search.cpp), the default; 0 = it does not. Without measurable lag the
+    // two give the same budgets.
+    int time_lag = 1;
 };
 
 // Search statistics for debugging
@@ -148,6 +154,9 @@ void clear_correction_history();
 
 // Search history - clear on new game
 void clear_search_history();
+
+// The clock's lag measurement - clear on new game
+void clear_clock_lag();
 
 // UCI info output
 void uci_info(const Position& pos, int depth, Value score, uint64_t nodes, int time,
