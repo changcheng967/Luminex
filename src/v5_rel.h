@@ -1,4 +1,4 @@
-// v5_rel.h -- gen768t's relation inputs: attack relations and pawn pairs (nnue/V5-GEN768T.md, section 2).
+// v5_rel.h -- gen768t's relation inputs: attack relations and pawn pairs (docs/nnue/V5-GEN768T.md, section 2).
 // Which rows a position has, and which rows a move adds and removes, for one perspective or both. The rules
 // and the index layout (LAYOUT = 1) are below; nnue.cpp sums the rows into the relation lanes.
 //

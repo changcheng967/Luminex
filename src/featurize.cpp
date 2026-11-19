@@ -1,6 +1,6 @@
 // featurize.cpp — Game-Pack (.xz) -> HalfKAv2_hm feature .npy cache for NNUE training.
 //
-// Replays the Game-Pack produced by nnue/openi_upload/colab_pack_pgn.py and emits the SAME
+// Replays the Game-Pack produced by colab_pack_pgn.py and emits the SAME
 // feat_{w,b,s,t}.npy layout that c500_featurize.py produces, so the output drops straight
 // into luminex_nnue_train.py's .npy path (NNUE_NPY_DIR).
 //

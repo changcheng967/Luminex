@@ -30,8 +30,9 @@ inline constexpr int NNUE_DENSE_MAX = 64;
 // on gen768s_03q), and the saturating updates drifted: 12.7% of a search's
 // evaluations were not the net's output. The updates now wrap instead of
 // saturating, so a lane is exact whenever its sum fits (DeltaRows). The
-// trainer's QAT rounds to the same grid (nnue/openi_upload/resident_train.py,
-// FT_GRID).
+// trainer's QAT rounds to the same grid (FT_GRID in Luminex-NNUE's
+// trainer/resident_train.py; that repository's CI checks the two agree on
+// every push there and daily against this file on main).
 inline constexpr float NNUE_FT_SCALE = 2048.0f;
 
 // How a kernel set wants L2's int8 weights (2*L1 inputs x L2 outputs)
@@ -78,7 +79,7 @@ struct DeltaRows {
     const int16_t* add1;   // or nullptr (only given with sub1)
 };
 
-// gen768t's relation lanes for the forward pass (nnue/V5-GEN768T.md, section 3): lane l < T of each
+// gen768t's relation lanes for the forward pass (docs/nnue/V5-GEN768T.md, section 3): lane l < T of each
 // side's piece-square lanes is read as the saturating int16 sum lane + clamp(rel[l], -NNUE_REL_L,
 // NNUE_REL_L) * 2^rs. SCReLU reads a lane only through clamp(a, 0, 1), so a sum that saturates activates
 // as the exact one would. rs is at most 6, so the shifted term itself fits int16.

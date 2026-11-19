@@ -10,7 +10,7 @@
 // StateInfo bloated state_stack[2048] to ~8MB and overflowed the stack (Position is
 // stack-local). thread_local also makes it safe across Luminex's helper threads.
 //
-// HalfKAv2_hm feature indexer mirrored EXACTLY from nnue/luminex_nnue_train.py.
+// HalfKAv2_hm feature indexer mirrored EXACTLY from Luminex-NNUE's trainer/luminex_nnue_train.py.
 //
 // The loops over lanes and the forward pass are the kernels of
 // nnue_kernels.inc. Built as usual they are compiled into this file for the
@@ -140,7 +140,7 @@ static std::vector<float> ft_b;   // (L1,)
 static std::vector<float> l2_w, l3_w, out_w;   // float dense weights (LNN1 nets)
 static bool g_int8 = false;
 static bool g_loaded = false;
-// gen768t (LNT8 nets, nnue/V5-GEN768T.md): attack-relation and pawn-pair rows, int8 in steps of
+// gen768t (LNT8 nets, docs/nnue/V5-GEN768T.md): attack-relation and pawn-pair rows, int8 in steps of
 // 2^g_rel_rs on the feature grid, summed into int16 relation lanes of their own and added into the first
 // g_rel_T lanes of the feature layer at evaluation (RelLanes). g_rel_T = 0 for every other format.
 static int g_rel_T = 0, g_rel_rs = 0, g_rel_ppm = 0;
@@ -488,7 +488,7 @@ static bool load_stream(std::istream& f, const std::string& name) {
     // LNN1: float tail. LNI8: int8 tail. LNB8: int8 tails, one per output
     // bucket; its header carries the bucket count after the four sizes. LNR8:
     // LNB8 with a scale per row of L2 and L3 instead of one per layer. LNT8
-    // (gen768t, nnue/V5-GEN768T.md), little-endian, every tensor after its
+    // (gen768t, docs/nnue/V5-GEN768T.md), little-endian, every tensor after its
     // int32 element count as in LNR8: "LNT8"; int32 L1, L2, L3, NI, NB; int32
     // T (relation lanes, a multiple of 64), NR (55,960 rows), FS (the feature
     // grid is x 2^FS), RS (a relation step is 2^RS units of it), PPM (pawn

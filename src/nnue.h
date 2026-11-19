@@ -2,7 +2,7 @@
 // Toggleable at runtime via the UCI option "UseNNUE". When disabled (default)
 // or when no net is loaded, the engine falls back to the pure HCE eval, so NNUE
 // is fully optional and non-destructive. Net file format written by
-// nnue/luminex_nnue_train.py (header LNN1 + float32 weights).
+// Luminex-NNUE's trainer/luminex_nnue_train.py (header LNN1 + float32 weights).
 #pragma once
 #include "luminex.h"
 #include <string>

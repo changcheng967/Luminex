@@ -214,7 +214,7 @@ target_include_directories(luminex PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
 #
 # The shipped network's name has one source: the file name of the asset
 # .github/scripts/fetch-net.sh pins (its url= line), the network's real name
-# (luminex_<architecture>_<NN>..., as in nnue/). CMake reads it here, so the
+# (luminex_<architecture>_<NN>..., as in docs/nnue/). CMake reads it here, so the
 # default NNUEFile, the file fetch-net.sh saves, the name a build reports and
 # the file a release attaches all follow a net swap with no other edit, and no
 # build can name a network it does not carry.
