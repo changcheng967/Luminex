@@ -3,7 +3,7 @@
 ARM_i8.nnue  the arm's LNR8 net (quantize_i8.py --rows): the float feature layer and the int8 tails
 ARM.rel      the arm's relation rows (the gate's g4_export.py): "LXR1", six uint32 (rows, T, set, pawn-pair mode,
              scale 8192, 0), then int16[rows][T], the trained rows on the x8192 grid
-OUT.nnue     the LNT8 file (nnue/V5-GEN768T.md, section 1)
+OUT.nnue     the LNT8 file (the layout: src/nnue.cpp's LNT8 reader)
 
 The piece-square table and its bias are rounded onto the engine's x2048 grid exactly as the engine rounds an
 LNR8 net at load (x 2048, then half away from zero), so the LNT8 net's piece-square lanes are the ones the engine

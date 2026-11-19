@@ -488,8 +488,13 @@ static bool load_stream(std::istream& f, const std::string& name) {
     // LNN1: float tail. LNI8: int8 tail. LNB8: int8 tails, one per output
     // bucket; its header carries the bucket count after the four sizes. LNR8:
     // LNB8 with a scale per row of L2 and L3 instead of one per layer. LNT8
-    // (gen768t): LNR8's tails, the feature layer already on the grid as int16,
-    // and a table of int8 relation rows (nnue/V5-GEN768T.md, section 1).
+    // (gen768t, nnue/V5-GEN768T.md), little-endian, every tensor after its
+    // int32 element count as in LNR8: "LNT8"; int32 L1, L2, L3, NI, NB; int32
+    // T (relation lanes, a multiple of 64), NR (55,960 rows), FS (the feature
+    // grid is x 2^FS), RS (a relation step is 2^RS units of it), PPM (pawn
+    // pairs: 0 in contact, 1 all), LAYOUT (1: v5_rel.h's index); int16
+    // psq[NI][L1] (feature-major, x 2^FS); int32 psq_bias[L1]; int8 rel[NR][T];
+    // then the NB tails and any tagged sections exactly as in LNR8.
     const bool lnt8 = (mg == "LNT8");
     if (mg != "LNN1" && mg != "LNI8" && mg != "LNB8" && mg != "LNR8" && !lnt8) { std::fprintf(stderr, "nnue: bad magic\n"); return false; }
     const bool rows = (mg == "LNR8" || lnt8);
@@ -503,7 +508,7 @@ static bool load_stream(std::istream& f, const std::string& name) {
         if (!f || NB < 1 || NB > MAX_BUCKETS) { std::fprintf(stderr, "nnue: bucket count %d out of range\n", NB); return false; }
     }
     // LNT8: T (relation lanes), NR (rows), FS (the feature grid is x 2^FS), RS (a relation step is 2^RS units of
-    // it), PPM (pawn pairs: 0 in contact, 1 all on the same or adjacent files), LAYOUT (1: the spec's index)
+    // it), PPM (pawn pairs: 0 in contact, 1 all on the same or adjacent files), LAYOUT (1: v5_rel.h's index)
     int32_t rh[6] = {0, 0, 0, 0, 0, 0};
     if (lnt8) {
         f.read(reinterpret_cast<char*>(rh), sizeof(rh));
