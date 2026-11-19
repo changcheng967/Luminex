@@ -145,7 +145,7 @@ endif()
 # are compiled without LTO, so the link keeps each one's code for its own
 # level, and without FMA contraction, so every level rounds alike (the bias
 # adds are FMAs, written out: see src/nnue_kernels.inc).
-set(LUMINEX_NNUE_SOURCES src/nnue.cpp)
+set(LUMINEX_NNUE_SOURCES src/nnue.cpp src/v5_rel.cpp)
 if(LUMINEX_DISPATCH)
     add_compile_definitions(LUMINEX_NNUE_DISPATCH)
     set(_lux_k_avx512vnni -march=x86-64-v4 -mavx512vnni)
@@ -198,6 +198,7 @@ set(HEADERS
     src/embedded_net.h
     src/nnue.h
     src/nnue_kernels.h
+    src/v5_rel.h
     src/nnue_kernels.inc
 )
 

@@ -54,6 +54,14 @@ int l1();
 // Print profiling counters (evals/updates/refreshes + time each) to stderr.
 void print_stats();
 
+// gen768t (LNT8) debugging, for the relrows and lanes UCI commands. relation_rows: the position's relation and
+// pawn-pair rows for White's and Black's perspective, sorted, one "relrows <side> <n> <rows...>" line each
+// (ppm: pawn pairs in contact 0, all 1; needs no network). lane_dump: the lanes the forward pass reads, per
+// perspective ("lanes <side> <L1 values>", the relation term included below T, then "rel <side> <T values>"),
+// brought current first.
+std::string relation_rows(const Position& pos, int ppm);
+std::string lane_dump(const Position& pos);
+
 // ---- incremental accumulator hooks (no-ops when !loaded(); cheap branch otherwise) ----
 // Full rebuild of the CURRENT state's accumulator from the board. Call from Position::set.
 void refresh(Position& pos);

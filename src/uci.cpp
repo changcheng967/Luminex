@@ -814,6 +814,15 @@ void uci_loop() {
             Value v = evaluate(pos, false);
             std::string out = "eval cp " + std::to_string(int(v));
             safe_output(out + "\n");
+        } else if (cmd == "relrows") {
+            // relrows [0|1]: gen768t's relation rows of the current position (debugging; 1 = all pawn pairs)
+            int ppm = 0;
+            ss >> ppm;
+            safe_output(nnue::relation_rows(pos, ppm));
+        } else if (cmd == "lanes") {
+            // the feature-layer lanes the forward pass reads for the current position (debugging)
+            ensure_net_loaded();
+            safe_output(nnue::lane_dump(pos));
         } else if (cmd.rfind("evalbench", 0) == 0) {
             // evalbench <N>: raw evaluate() throughput on the current position
             // (roofline probe — measures the eval kernel ceiling, no search).
