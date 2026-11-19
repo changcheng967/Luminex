@@ -21,7 +21,8 @@ for i in 1 2 3; do
     [ "$i" -lt 3 ] && sleep $((i * 20))
 done
 mkdir -p /c/LLVM23
-tar -xJf "$RUNNER_TEMP/$asset" -C /c/LLVM23 --strip-components=1
+# a POSIX path: GNU tar reads "D:\..." as a remote host D
+tar -xJf "$(cygpath -u "$RUNNER_TEMP")/$asset" -C /c/LLVM23 --strip-components=1
 /c/LLVM23/bin/clang-cl.exe --version | sed -n 1p | grep -E "clang version $V\."
 ls /c/LLVM23/bin/lld-link.exe
 ls -d "/c/LLVM23/lib/clang/$V"
