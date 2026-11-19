@@ -271,8 +271,26 @@ inline Value eval_cached(const Position& pos) {
 }
 
 
-// Search start time for time management
+// When the search began (go, or go ponder): thinking time on the move counts
+// from here, pondering included.
 static std::chrono::steady_clock::time_point search_start;
+// When the own clock began: the search's start, or the ponderhit. The hard
+// limit and movetime count from here.
+static std::chrono::steady_clock::time_point clock_start;
+// The iteration in progress started past the stop rule's limit on thinking
+// time, or the reply is forced: a search without pondering would not have
+// started it. Set at every iteration start, pondering or not, so that a
+// ponderhit can apply the rule. Main search thread only.
+static bool past_soft_limit = false;
+// A ponderhit was taken in this search: its move is the one played.
+static bool hit_taken = false;
+
+static int ms_between(std::chrono::steady_clock::time_point from, std::chrono::steady_clock::time_point to) {
+    return int(std::chrono::duration_cast<std::chrono::milliseconds>(to - from).count());
+}
+static int ms_since(std::chrono::steady_clock::time_point t) {
+    return ms_between(t, std::chrono::steady_clock::now());
+}
 
 // The side to move at the root: the side the engine plays. Contempt scores a
 // draw at -contempt/2 for it, wherever the draw is found; set by search()
@@ -344,39 +362,95 @@ static double moves_horizon(int m) {
 // the engine is given: the clock at the previous own move plus its increment,
 // less this move's clock, less the previous search's own time. A sample needs
 // two consecutive own moves of one game, both searched on the clock (book
-// moves, ponder and fixed-time searches give none). Each sample is held to
-// [0, LAG_SAMPLE_CAP_MS] and the estimate averages them with weight 1/8 on the
-// newest, so a single bad sample moves it by 50 ms at most.
+// moves and fixed-time searches give none). The own time of a ponder search is
+// what it thought after the ponderhit, and only a played move counts: a ponder
+// search whose prediction missed (stopped before any ponderhit) records
+// nothing, and the search that follows on the same ply samples the own move
+// before it. Each sample is held to [0, LAG_SAMPLE_CAP_MS] and the estimate
+// averages them with weight 1/8 on the newest, so a single bad sample moves it
+// by 50 ms at most.
 static constexpr int LAG_SAMPLE_CAP_MS = 400;
 static struct {
     int time_left = 0, inc = 0, ply = -1, think_ms = 0;
     bool timed = false;
 } prev_clock;
+// This search's clock, committed to prev_clock by finish_clock() if its move is
+// played; a ponder search keeps its sample here until the ponderhit
+static struct {
+    int time_left = 0, inc = 0, ply = -1, sample = 0;
+    bool timed = false, valid = false, has_sample = false;
+} pending_clock;
 static double lag_ms = 0.0;
 static int lag_samples = 0;
 
 static int lag_estimate() { return lag_samples > 0 ? int(lag_ms + 0.5) : 0; }
 
-static void reset_clock_lag() {
-    prev_clock = {};
-    lag_ms = 0.0;
-    lag_samples = 0;
+// What pondering saves the clock (TimePonder): the own time of the game's played
+// moves as a fraction of their schedule targets, own time and target averaged
+// apart with weight 1/8 on the newest (so the fraction is weighted by time, the
+// way the clock pays). On a missed prediction the move costs its full target;
+// on a hit only what it thinks after the ponderhit. The averages start equal
+// (no saving) at the game's first ponder search, so a game without go ponder
+// keeps the fraction at exactly 1 and its schedule unchanged.
+static double ponder_own_avg = 0.0, ponder_target_avg = 0.0;
+static bool ponder_seen = false;
+static int move_target_ms = 0;   // this search's schedule target; 0 = no solved schedule
+
+static double ponder_fraction() {
+    if (params.time_ponder <= 0 || !ponder_seen || ponder_target_avg <= 0.0)
+        return 1.0;
+    return std::clamp(ponder_own_avg / ponder_target_avg, 1e-3, 1.0);
 }
 
-// At the start of a search: the previous own move's sample when there is one,
-// then this search's clock for the next one (its own time is set at the end).
+static void reset_clock_lag() {
+    prev_clock = {};
+    pending_clock = {};
+    lag_ms = 0.0;
+    lag_samples = 0;
+    ponder_own_avg = ponder_target_avg = 0.0;
+    ponder_seen = false;
+}
+
+static void add_lag_sample(int sample) {
+    lag_ms += (std::clamp(sample, 0, LAG_SAMPLE_CAP_MS) - lag_ms) / 8.0;
+    ++lag_samples;
+}
+
+// At the start of a search: the previous own move's sample when there is one
+// (a ponder search takes it at the ponderhit), and this search's clock.
 static void note_clock(const Position& pos, const Limits& lim) {
-    const bool timed = lim.use_time_management() && !lim.ponder;
+    const bool timed = lim.use_time_management();
     const Color us = pos.side_to_move();
     const int time_left = std::max(0, lim.time[int(us)]);
     const int inc = std::max(0, lim.inc[int(us)]);
-    if (timed && prev_clock.timed && pos.game_ply() == prev_clock.ply + 2) {
-        int sample = prev_clock.time_left + prev_clock.inc - time_left - prev_clock.think_ms;
-        lag_ms += (std::clamp(sample, 0, LAG_SAMPLE_CAP_MS) - lag_ms) / 8.0;
-        ++lag_samples;
-    }
-    prev_clock = {time_left, inc, pos.game_ply(), 0, timed};
+    const bool has_sample = timed && prev_clock.timed && pos.game_ply() == prev_clock.ply + 2;
+    const int sample = has_sample ? prev_clock.time_left + prev_clock.inc - time_left - prev_clock.think_ms : 0;
+    pending_clock = {time_left, inc, pos.game_ply(), sample, timed, true, has_sample && lim.ponder};
+    move_target_ms = 0;   // set by a solved schedule below
+    if (has_sample && !lim.ponder)
+        add_lag_sample(sample);
+    if (lim.ponder && timed)
+        ponder_seen = true;
 }
+
+// The ponderhit: the opponent played the predicted move. The own clock starts
+// now, and the thinking done while pondering counts toward this move. Taken
+// once, on the search thread: by the main worker's check_time(), or by
+// hold_reply() when the search had already ended.
+static bool take_ponderhit() {
+    if (!ponderhit_received.exchange(false))
+        return false;
+    clock_start = std::chrono::steady_clock::now();
+    hit_taken = true;
+    if (pending_clock.has_sample) {
+        add_lag_sample(pending_clock.sample);
+        pending_clock.has_sample = false;
+    }
+    // Release: a helper that reads ponder_mode false also reads clock_start
+    ponder_mode.store(false, std::memory_order_release);
+    return true;
+}
+
 
 // Check time - returns true if time limit exceeded
 bool check_time() {
@@ -399,19 +473,25 @@ bool check_time() {
         return true;
     }
 
-    // No clock runs while pondering. On ponderhit the main thread restarts the
-    // clock at that moment; helpers stay in ponder mode until its release store.
+    // No clock runs and no limit stops the search while pondering. The
+    // ponderhit is taken by the main thread (helpers stay in ponder mode until
+    // its release store) and starts the own clock. From then on the search
+    // follows the stop rule as if it had thought on the clock from the start:
+    // its limit is on thinking time, pondering included. So an iteration the
+    // rule would not have started (it began past the limit, or the reply is
+    // forced) is dropped at the hit and the last finished iteration's move is
+    // played at once; an iteration it would have started is finished.
     if (ponder_mode.load(std::memory_order_acquire)) {
-        if (worker != main_search_worker || !ponderhit_received.exchange(false))
+        if (worker != main_search_worker || !take_ponderhit())
             return false;
-        search_start = std::chrono::steady_clock::now();
-        ponder_mode.store(false, std::memory_order_release);
+        if (limits.use_time_management() && depth1_done.load(std::memory_order_relaxed) && past_soft_limit) {
+            stop = true;
+            return true;
+        }
     }
 
     if (limits.movetime) {
-        auto now = std::chrono::steady_clock::now();
-        int elapsed = static_cast<int>(std::chrono::duration_cast<std::chrono::milliseconds>(
-            now - search_start).count());
+        int elapsed = ms_since(clock_start);
         if (elapsed >= limits.movetime && depth1_done.load(std::memory_order_relaxed)) {
             stop = true;
             return true;
@@ -419,10 +499,8 @@ bool check_time() {
     }
 
     if (limits.use_time_management()) {
-        auto now = std::chrono::steady_clock::now();
-        int elapsed = static_cast<int>(std::chrono::duration_cast<std::chrono::milliseconds>(
-            now - search_start).count());
-        // Hard limit: stop immediately when max_time is exceeded
+        int elapsed = ms_since(clock_start);
+        // Hard limit on the own clock: stop immediately when max_time is exceeded
         if (elapsed >= max_time && depth1_done.load(std::memory_order_relaxed)) {
             stop = true;
             return true;
@@ -1907,6 +1985,42 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
 
 } // namespace
 
+// A ponder or infinite search ends on the GUI's word only (UCI: "do not exit
+// the search in ponder mode, even if it's mate"). A reply ready early (the
+// depth limit, a forced mate, a book move) waits here for ponderhit or stop;
+// after a ponderhit an infinite search still waits for stop.
+void hold_reply(const Limits& lim) {
+    for (;;) {
+        if (g_stop_requested)
+            return;
+        if (ponder_mode.load(std::memory_order_acquire)) {
+            if (take_ponderhit() && !lim.infinite)
+                return;
+        } else if (!lim.infinite) {
+            return;
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+}
+
+// After the reply is released: a played move's clock becomes the record the
+// next own move samples its lag from. A search not on the clock records
+// untimed, so the next one takes no sample.
+void finish_clock(const Limits& lim) {
+    if (!pending_clock.valid)
+        return;
+    if (!lim.ponder || hit_taken) {
+        const int own = ms_since(clock_start);
+        prev_clock = {pending_clock.time_left, pending_clock.inc, pending_clock.ply, own, pending_clock.timed};
+        if (ponder_seen && move_target_ms > 0) {
+            ponder_own_avg += (own - ponder_own_avg) / 8.0;
+            ponder_target_avg += (move_target_ms - ponder_target_avg) / 8.0;
+        }
+    }
+    pending_clock.valid = false;
+    pending_clock.has_sample = false;
+}
+
 // Helper thread function for lazy SMP
 // Each helper runs its own iterative deepening, populating the shared TT
 // thread_id is used to offset start depth to reduce TT contention
@@ -2077,8 +2191,11 @@ Move search(Position& pos, Limits& lim) {
     last_reported_nodes = 0;
     g_stats = SearchStats{};  // Reset stats for each search
 
-    // Track search start time for time management
+    // Track search start time for time management. While pondering the own
+    // clock has not started; take_ponderhit() starts it.
     search_start = std::chrono::steady_clock::now();
+    clock_start = search_start;
+    hit_taken = false;
 
     Move best_move = MOVE_NONE;
     Value best_value = -VALUE_INFINITE;
@@ -2105,6 +2222,7 @@ Move search(Position& pos, Limits& lim) {
     }
     // A forced reply gains nothing from thought (1.3-1.4% of SPRT decisions)
     const bool single_reply = initial_end - initial_moves == 1;
+    past_soft_limit = false;
 
     // Initialize LMR reduction table (once)
     if (!reductions_initialized) init_reductions();
@@ -2144,6 +2262,11 @@ Move search(Position& pos, Limits& lim) {
 
         int overhead = std::max(0, params.move_overhead_ms);
         int move_no  = pos.game_ply() / 2 + 1;
+        // Pondering: the clock pays only a fraction of each future move's
+        // thinking (ponder_fraction(), measured in this game), so the solved
+        // schedules spread it over that fraction of their horizon. Exactly 1
+        // without pondering: the budgets below are then unchanged.
+        const double pc = ponder_fraction();
 
         if (limits.movestogo > 0 && params.time_moves_to_go > 0) {
             // Moves to go: the clock above a small reserve (it refills after
@@ -2153,7 +2276,8 @@ Move search(Position& pos, Limits& lim) {
             // at most 2/3 of the excess.
             int mtg     = std::max(1, limits.movestogo);
             int excess  = std::max(0, time_left - overhead - std::max(100, 3 * overhead));
-            int target  = int(excess / value_horizon(move_no, move_no + mtg - 1)) + time_inc * 9 / 10;
+            int target  = int(excess / (value_horizon(move_no, move_no + mtg - 1) * pc)) + time_inc * 9 / 10;
+            move_target_ms = target;
             int hard    = (mtg > 1 ? excess * 2 / 3 : excess) + time_inc * 9 / 10;
             ideal_time  = std::min(target * 116 / 100, hard);
             max_time    = std::min(hard, std::max(ideal_time * 2, time_inc + 50));
@@ -2176,7 +2300,8 @@ Move search(Position& pos, Limits& lim) {
             int lag     = params.time_lag > 0 ? lag_estimate() : 0;
             int tail    = std::max({1000, 30 * overhead, 1000 * (12 + lag) / 12});
             int excess  = std::max(0, time_left - overhead - tail - int(lag * moves_horizon(move_no)));
-            int target  = int(excess / value_horizon(move_no, 0));
+            int target  = int(excess / (value_horizon(move_no, 0) * pc));
+            move_target_ms = target;
             int hard    = excess / 2;
             ideal_time  = std::min(target * 116 / 100, hard);
             max_time    = std::min(hard, std::max(ideal_time * 2, 50));
@@ -2192,7 +2317,9 @@ Move search(Position& pos, Limits& lim) {
             int excess  = std::max(0, time_left - overhead - 10 * time_inc);
             int horizon = params.time_schedule == 1 ? std::max(800, 5200 - 72 * move_no)
                                                     : std::max(1000, 4200 - 120 * move_no);
-            int target  = int(int64_t(excess) * 100 / horizon) + time_inc * 9 / 10;
+            int target  = (pc < 1.0 ? int(excess * 100.0 / (horizon * pc)) : int(int64_t(excess) * 100 / horizon))
+                        + time_inc * 9 / 10;
+            move_target_ms = target;
             int hard    = excess / 2 + time_inc * 9 / 10;
             ideal_time  = std::min(target * 116 / 100, hard);
             max_time    = std::min(hard, std::max(ideal_time * 2, time_inc + 50));
@@ -2210,6 +2337,9 @@ Move search(Position& pos, Limits& lim) {
             ideal_time   = std::min(opt_time, usable / 3);
             max_time     = std::min(usable / 2, std::max(ideal_time * 2, time_inc + 50));
         }
+
+        if (ponder_seen && move_target_ms > 0 && ponder_target_avg <= 0.0)
+            ponder_own_avg = ponder_target_avg = move_target_ms;   // the prior: no saving yet
 
         ideal_time = std::max(10, ideal_time);
         max_time = std::max(ideal_time, max_time);
@@ -2281,26 +2411,24 @@ Move search(Position& pos, Limits& lim) {
         uint64_t nodes_at_depth_start = nodes.load(std::memory_order_relaxed);
         uint64_t nodes_spent_on_best = 0;
 
-        // Handle ponderhit: switch from ponder to normal mode
-        if (ponderhit_received.load(std::memory_order_relaxed)) {
-            ponderhit_received.store(false);
-            ponder_mode.store(false);
-            search_start = std::chrono::steady_clock::now();
-        }
-
         // Time management: stop before starting a new depth if we've used too much time
         // Always complete depth 1, then be aggressive about stopping
         // Best-move stability: if best move is stable, we can stop earlier
-        // Skip time management during ponder (search indefinitely until ponderhit/stop)
-        if (!ponder_mode.load(std::memory_order_relaxed) && limits.use_time_management() && root_depth > 1) {
-            auto now = std::chrono::steady_clock::now();
-            int elapsed = static_cast<int>(std::chrono::duration_cast<std::chrono::milliseconds>(
-                now - search_start).count());
+        // While pondering the rule's limit is computed (a ponderhit applies it,
+        // check_time() below) but nothing stops the search. The limit is on
+        // thinking time (elapsed, pondering included); the hard limit is on the
+        // own clock (own, from the ponderhit). Without pondering both are the
+        // same time.
+        if (limits.use_time_management() && root_depth > 1) {
+            const auto now = std::chrono::steady_clock::now();
+            const int elapsed = ms_between(search_start, now);
+            const int own = ms_between(clock_start, now);
+            const bool pondering = ponder_mode.load(std::memory_order_relaxed);
             // Solved schedules: a forced reply moves at once, and an iteration
             // that would end past the hard limit even if it took no longer
             // than the last one is not started (it would be cut off there and
             // its result thrown away)
-            if (params.time_schedule > 0 && (single_reply || elapsed + last_iteration_ms > max_time)) {
+            if (!pondering && params.time_schedule > 0 && (single_reply || own + last_iteration_ms > max_time)) {
                 break;
             }
             // Reduce ideal time when best move is very stable
@@ -2335,15 +2463,13 @@ Move search(Position& pos, Limits& lim) {
             if (last_aspiration_attempts >= 3) {
                 stability_reduction = std::min(stability_reduction * 3 / 2, max_time);
             }
-            if (elapsed > stability_reduction) {
+            past_soft_limit = (params.time_schedule > 0 && single_reply) || elapsed > stability_reduction;
+            if (!pondering && elapsed > stability_reduction) {
                 break;
             }
         }
         if (limits.movetime && !ponder_mode.load(std::memory_order_relaxed)) {
-            auto now = std::chrono::steady_clock::now();
-            int elapsed = static_cast<int>(std::chrono::duration_cast<std::chrono::milliseconds>(
-                now - search_start).count());
-            if (elapsed >= (limits.movetime * 7) / 10) {
+            if (ms_since(clock_start) >= (limits.movetime * 7) / 10) {
                 break;
             }
         }
@@ -2700,9 +2826,8 @@ Move search(Position& pos, Limits& lim) {
     helper_threads.clear();
     helpers_running = false;
 
-    // This search's own time, for the next own move's lag sample
-    prev_clock.think_ms = int(std::chrono::duration_cast<std::chrono::milliseconds>(
-        std::chrono::steady_clock::now() - search_start).count());
+    // This search's own time (for the next own move's lag sample) is taken
+    // when its reply is released: finish_clock(), after hold_reply()
 
     // Keep main worker alive — history persists for next search in same game
     worker = nullptr;

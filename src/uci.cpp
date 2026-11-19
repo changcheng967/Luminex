@@ -134,6 +134,17 @@ static void wait_for_search_thread() {
     if (search_thread.joinable()) search_thread.join();
 }
 
+// End the search, if one runs, and wait for it. Both stop flags are set: a
+// reply that waits for ponderhit or stop (hold_reply) is released too, for a
+// GUI that sends position without stop.
+static void end_search() {
+    g_stop_requested = true;
+    stop.store(true, std::memory_order_seq_cst);
+    wait_for_search_thread();
+    stop.store(false, std::memory_order_seq_cst);
+    g_stop_requested = false;
+}
+
 // Launch the search on its own thread with a large stack, on every platform: the
 // default for secondary threads (1 MiB on Windows, 512 KiB on macOS) is too small
 static void launch_search_thread(const Position& pos, const Limits& lim) {
@@ -189,6 +200,11 @@ static void search_worker(Position pos_copy, Limits lim) {
     if (best_move == MOVE_NONE) {
         best_move = search(pos_copy, lim);
     }
+
+    // A ponder or infinite search replies only on ponderhit or stop, however
+    // early its move was ready (a book move, a forced mate, the depth limit)
+    hold_reply(lim);
+    finish_clock(lim);
 
     if (dbglog) { fprintf(dbglog, "SEARCH_DONE: about to send bestmove\n"); fflush(dbglog); }
 
@@ -319,6 +335,7 @@ void handle_uci() {
     safe_output("option name TimeZeroInc type spin default 1 min 0 max 1\n");
     safe_output("option name TimeMovesToGo type spin default 1 min 0 max 1\n");
     safe_output("option name TimeLag type spin default 1 min 0 max 1\n");
+    safe_output("option name TimePonder type spin default 0 min 0 max 1\n");
     safe_output("option name SyzygyPath type string default <empty>\n");
     safe_output("option name Skill Level type spin default 20 min 0 max 20\n");
     safe_output("option name UCI_ShowWDL type check default false\n");
@@ -566,10 +583,10 @@ void handle_go(Position& pos, const std::string& cmd) {
         limits.infinite = true;
     }
 
-    // Set ponder mode if go ponder
-    if (limits.ponder) {
-        ponder_mode.store(true, std::memory_order_relaxed);
-    }
+    // Set ponder mode if go ponder. A ponderhit read while no search ran (one
+    // that crossed an early reply) must not count for this search.
+    ponderhit_received.store(false, std::memory_order_relaxed);
+    ponder_mode.store(limits.ponder, std::memory_order_relaxed);
 
     // Launch search thread with large stack to prevent stack overflow
     launch_search_thread(pos, limits);
@@ -655,6 +672,9 @@ void handle_setoption(const std::string& cmd) {
     else if (name == "TimeLag") {
         params.time_lag = std::clamp(v, 0, 1);
     }
+    else if (name == "TimePonder") {
+        params.time_ponder = std::clamp(v, 0, 1);
+    }
     else if (name == "UseNNUE") {
         g_use_nnue = (value == "true");
         nnue::set_enabled(g_use_nnue);
@@ -669,9 +689,7 @@ void handle_setoption(const std::string& cmd) {
     else if (name == "SimdLevel") {
         // The network's dense layers are rearranged for the new kernels, so
         // no search may be reading them.
-        stop.store(true, std::memory_order_seq_cst);
-        wait_for_search_thread();
-        stop.store(false, std::memory_order_seq_cst);
+        end_search();
         std::string level = value;
         std::transform(level.begin(), level.end(), level.begin(),
                        [](unsigned char ch) { return char(std::tolower(ch)); });
@@ -765,14 +783,10 @@ void uci_loop() {
             TT.ensure_allocated();
             safe_output("readyok\n");
         } else if (cmd == "ucinewgame") {
-            stop.store(true, std::memory_order_seq_cst);
-            wait_for_search_thread();
-            stop.store(false, std::memory_order_seq_cst);
+            end_search();
             handle_ucinewgame();
         } else if (cmd == "position") {
-            stop.store(true, std::memory_order_seq_cst);
-            wait_for_search_thread();
-            stop.store(false, std::memory_order_seq_cst);
+            end_search();
             handle_position(pos, line);
         } else if (cmd == "go") {
             handle_go(pos, line);
@@ -799,9 +813,7 @@ void uci_loop() {
         } else if (cmd == "nnuecheck") {
             // Every kernel level the CPU supports must evaluate a fixed set of
             // games alike (nnue::check_simd); not during a search.
-            stop.store(true, std::memory_order_seq_cst);
-            wait_for_search_thread();
-            stop.store(false, std::memory_order_seq_cst);
+            end_search();
             ensure_net_loaded();
             std::string report;
             nnue::check_simd(report);
