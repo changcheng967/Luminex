@@ -132,7 +132,7 @@ avxvnni`):
 Every level computes the same evaluation, bit for bit; CI checks it on each
 binary (`nnuecheck`, under Intel SDE for CPUs the runners lack). CI also
 reads what every binary needs from its headers and fails a build that needs
-more than its row (`.github/scripts/check-deps.py`). On Apple silicon the
+more than its row (`.github/scripts/ci.sh deps`). On Apple silicon the
 network runs on NEON dot-product kernels.
 
 Every release binary carries its network inside it (v6.6.0:
@@ -310,10 +310,14 @@ matching `.pt`; the quantized network the engine loads adds `_i8`
 
 ## Build
 
-Requires a C++23 compiler (GCC 13+, Clang 15+, MSVC 2022+) and CMake 3.20+.
+Requires a C++23 compiler and CMake 3.20+. Build with clang 23, as every
+release and OpenBench worker does: with lld and no PIE (CMakeLists.txt does
+both for clang on Linux) it is the fastest build measured, about 25% more
+speed in games than gcc 14. GCC 13+, older Clang (15+) and MSVC 2022 also
+compile it.
 
 ```bash
-cmake -B build -DCMAKE_BUILD_TYPE=Release
+cmake -B build -DCMAKE_BUILD_TYPE=Release -DCMAKE_CXX_COMPILER=clang++-23
 cmake --build build --config Release
 ```
 
