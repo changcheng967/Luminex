@@ -78,6 +78,18 @@ struct DeltaRows {
     const int16_t* add1;   // or nullptr (only given with sub1)
 };
 
+// gen768t's relation lanes for the forward pass (nnue/V5-GEN768T.md, section 3): lane l < T of each
+// side's piece-square lanes is read as the saturating int16 sum lane + clamp(rel[l], -NNUE_REL_L,
+// NNUE_REL_L) * 2^rs. SCReLU reads a lane only through clamp(a, 0, 1), so a sum that saturates activates
+// as the exact one would. rs is at most 6, so the shifted term itself fits int16.
+inline constexpr int NNUE_REL_L = 511;
+struct RelLanes {
+    const int16_t* stm;    // the side to move's relation lanes, T of them
+    const int16_t* nstm;   // the other side's
+    int T;                 // a multiple of 64, at most L1
+    int rs;                // a relation step is 2^rs units of the feature grid
+};
+
 // A kernel set. n is the lane count (L1, a multiple of 32).
 struct Kernels {
     const char* name;      // the level: avx512vnni, avx512, avxvnni, avx2, base, dotprod
@@ -92,10 +104,10 @@ struct Kernels {
     // saturated to int16
     void (*refresh_cached)(int32_t* entry, const int16_t* const* sub, int nsub,
                            const int16_t* const* add, int nadd, int16_t* lanes, int n);
-    // The forward pass of an int8 tail (LNI8/LNB8) or a float one (LNN1) from
-    // the side to move's and the other side's lanes: the output before the
-    // x300 and rounding. act_nonzero, if given, gains the number of nonzero
-    // L1 activations (NNUE_PROFILE).
+    // The forward pass of an int8 tail (LNI8/LNB8/LNR8) or a float one (LNN1)
+    // from the side to move's and the other side's lanes: the output before
+    // the x300 and rounding. act_nonzero, if given, gains the number of
+    // nonzero L1 activations (NNUE_PROFILE).
     float (*forward_int8)(const int16_t* stm, const int16_t* nstm, const TailView& t,
                           int L1, int L2, int L3, long long* act_nonzero);
     float (*forward_float)(const int16_t* stm, const int16_t* nstm, const TailView& t,
@@ -104,6 +116,16 @@ struct Kernels {
     // bias to its integer dot d scaled by s. Exposed so nnuecheck can test the
     // base level's software version against hardware FMA.
     float (*bias_add)(float b, int32_t d, float s);
+    // gen768t's relation lanes (T of them, a multiple of 64): child = parent + the
+    // int8 rows add[0..na) - the rows sub[0..ns), widened to int16 (the sums never
+    // overflow: at most 248 rows of |q| <= 127 are active in any position)
+    void (*rel_rows)(const int16_t* parent, int16_t* child, const int8_t* const* add, int na,
+                     const int8_t* const* sub, int ns, int T);
+    // forward_int8 for an LNT8 net: lanes 0..T-1 read with the relation term
+    // (RelLanes). A separate entry, so every other format runs the forward pass
+    // it always ran.
+    float (*forward_int8_rel)(const int16_t* stm, const int16_t* nstm, const RelLanes& rel, const TailView& t,
+                              int L1, int L2, int L3, long long* act_nonzero);
 };
 
 #if defined(LUMINEX_NNUE_DISPATCH)

@@ -38,6 +38,7 @@
 #include <thread>
 #include <vector>
 #include "large_pages.h"
+#include "v5_rel.h"
 #if defined(__x86_64__) || defined(__i386__) || defined(_M_X64) || defined(_M_IX86)
 #include <immintrin.h>   // _mm_prefetch needs xmmintrin even without AVX2 (Debug builds)
 #endif
@@ -52,6 +53,8 @@ namespace { struct Stat { long long n = 0, cyc = 0; }; }
 
 static Stat st_eval, st_update, st_refresh, st_king_refresh, st_incremental;
 static Stat st_catchup;   // make_current: bringing a ply up to date before an evaluation
+static Stat st_rel_find, st_rel_apply, st_rel_rebuild;   // gen768t: rows found, rows applied, lanes rebuilt
+static long long g_rel_rows = 0, g_rel_plies = 0, g_rel_checks = 0, g_psq_checked = 0, g_psq_mismatch = 0;
 static long long g_act_nz = 0, g_act_tot = 0;   // activation sparsity (non-zero L1 outputs after SCReLU)
 static long long g_sat_events = 0;              // exact accumulator leaving int16 range (self-check only)
 static bool g_profile = false;
@@ -79,6 +82,15 @@ void print_stats() {
                  g_act_tot ? 100.0*g_act_nz/g_act_tot : 0.0,
                  g_sat_events,
                  st_catchup.n, st_catchup.cyc/1000000.0);
+    if (g_rel_plies || st_rel_rebuild.n || g_rel_checks)
+        std::fprintf(stderr, "NNUE relation lanes: rows found for %lld plies (%.0f cyc/ply) | applied in %lld walks (%.0f cyc/walk): "
+                     "%lld perspective-plies, %.2f rows each | rebuilds=%lld (%.0f cyc) | checks=%lld | piece-square lanes checked=%lld, "
+                     "not exact=%lld\n",
+                     st_rel_find.n, st_rel_find.n ? double(st_rel_find.cyc)/st_rel_find.n : 0.0,
+                     st_rel_apply.n, st_rel_apply.n ? double(st_rel_apply.cyc)/st_rel_apply.n : 0.0, g_rel_plies,
+                     g_rel_plies ? double(g_rel_rows)/g_rel_plies : 0.0, st_rel_rebuild.n,
+                     st_rel_rebuild.n ? double(st_rel_rebuild.cyc)/st_rel_rebuild.n : 0.0, g_rel_checks,
+                     g_psq_checked, g_psq_mismatch);
 }
 
 constexpr int NUM_SQ = 64;
@@ -128,6 +140,16 @@ static std::vector<float> ft_b;   // (L1,)
 static std::vector<float> l2_w, l3_w, out_w;   // float dense weights (LNN1 nets)
 static bool g_int8 = false;
 static bool g_loaded = false;
+// gen768t (LNT8 nets, nnue/V5-GEN768T.md): attack-relation and pawn-pair rows, int8 in steps of
+// 2^g_rel_rs on the feature grid, summed into int16 relation lanes of their own and added into the first
+// g_rel_T lanes of the feature layer at evaluation (RelLanes). g_rel_T = 0 for every other format.
+static int g_rel_T = 0, g_rel_rs = 0, g_rel_ppm = 0;
+static LargeArray<int8_t> g_rel_w;   // [rows][T], one row per relation or pawn-pair feature
+// LUMINEX_REL_CHECK (read at load): 1 = every evaluation rebuilds the relation lanes from the board and
+// aborts on a difference; 2 = also compares every piece-square lane with its exact int32 sum and counts the
+// differences (print_stats); 3 = also evaluates through the spec's formula for the relation term in plain
+// integers and aborts unless the output equals the kernel's. A test, not a timing.
+static int g_rel_check = 0;
 
 // The dense tail after the feature transformer: L2/L3/out biases, and for int8
 // nets the int8 weights with their scales (the FT stays float on disk). LNN1
@@ -196,6 +218,8 @@ struct PlyDelta {
     int8_t rebuild = -1;           // the side whose own king moved: rebuilt there, not updated
     bool null_move = false;
     bool current[2] = {false, false};
+    bool relc[2] = {false, false};      // gen768t: this ply's relation lanes are computed, per side
+    bool relflip[2] = {false, false};   // gen768t: this side's own king crossed the d/e files here
 };
 // The board after a king move, which the deferred rebuild of the mover's side reads.
 struct KingBoard { Bitboard pieces[2][6]; };
@@ -206,6 +230,25 @@ static inline PlyDelta* nnue_deltas() {
 }
 static inline KingBoard* nnue_king_boards() {
     thread_local std::vector<KingBoard> store(NNUE_MAX_PLY);
+    return store.data();
+}
+
+// gen768t: per ply, both sides' relation lanes (T int16 each) and the board after the ply's move (a move's rows
+// are found from the board before it). Allocated on a thread's first use, for the loaded net's T.
+constexpr int REL_WALK = 16;   // plies whose rows one catch-up finds ahead of the piece-square work, and prefetches
+static inline int16_t* rel_lane_stack() {
+    thread_local std::vector<int16_t> store;
+    const size_t need = size_t(NNUE_MAX_PLY) * 2 * size_t(g_rel_T);
+    if (store.size() < need) store.assign(need, 0);
+    return store.data();
+}
+static inline int16_t* rel_side(int16_t* stack, int ply, int p) { return stack + (size_t(ply) * 2 + size_t(p)) * size_t(g_rel_T); }
+static inline v5rel::Bd* rel_boards() {
+    thread_local std::vector<v5rel::Bd> store(NNUE_MAX_PLY);
+    return store.data();
+}
+static inline v5rel::RowLists* rel_buf() {
+    thread_local std::vector<v5rel::RowLists> store(REL_WALK);
     return store.data();
 }
 
@@ -444,17 +487,40 @@ static bool load_stream(std::istream& f, const std::string& name) {
     std::string mg(magic, 4);
     // LNN1: float tail. LNI8: int8 tail. LNB8: int8 tails, one per output
     // bucket; its header carries the bucket count after the four sizes. LNR8:
-    // LNB8 with a scale per row of L2 and L3 instead of one per layer.
-    if (mg != "LNN1" && mg != "LNI8" && mg != "LNB8" && mg != "LNR8") { std::fprintf(stderr, "nnue: bad magic\n"); return false; }
-    const bool rows = (mg == "LNR8");
+    // LNB8 with a scale per row of L2 and L3 instead of one per layer. LNT8
+    // (gen768t): LNR8's tails, the feature layer already on the grid as int16,
+    // and a table of int8 relation rows (nnue/V5-GEN768T.md, section 1).
+    const bool lnt8 = (mg == "LNT8");
+    if (mg != "LNN1" && mg != "LNI8" && mg != "LNB8" && mg != "LNR8" && !lnt8) { std::fprintf(stderr, "nnue: bad magic\n"); return false; }
+    const bool rows = (mg == "LNR8" || lnt8);
     int32_t hdr[4];
     f.read(reinterpret_cast<char*>(hdr), sizeof(hdr));
     if (!f) { std::fprintf(stderr, "nnue: truncated header\n"); return false; }
     int L1 = hdr[0], L2 = hdr[1], L3 = hdr[2], NI = hdr[3];
     int32_t NB = 1;
-    if (mg == "LNB8" || mg == "LNR8") {
+    if (mg == "LNB8" || mg == "LNR8" || lnt8) {
         f.read(reinterpret_cast<char*>(&NB), 4);
         if (!f || NB < 1 || NB > MAX_BUCKETS) { std::fprintf(stderr, "nnue: bucket count %d out of range\n", NB); return false; }
+    }
+    // LNT8: T (relation lanes), NR (rows), FS (the feature grid is x 2^FS), RS (a relation step is 2^RS units of
+    // it), PPM (pawn pairs: 0 in contact, 1 all on the same or adjacent files), LAYOUT (1: the spec's index)
+    int32_t rh[6] = {0, 0, 0, 0, 0, 0};
+    if (lnt8) {
+        f.read(reinterpret_cast<char*>(rh), sizeof(rh));
+        if (!f) { std::fprintf(stderr, "nnue: truncated LNT8 header\n"); return false; }
+        v5rel::init();
+        if ((1 << std::clamp(rh[2], 0, 30)) != int(NNUE_FT_SCALE)) {
+            std::fprintf(stderr, "nnue: LNT8 feature grid x2^%d, this engine's is x%d\n", rh[2], int(NNUE_FT_SCALE));
+            return false;
+        }
+        if (rh[5] != 1 || rh[1] != v5rel::n_rows()) {
+            std::fprintf(stderr, "nnue: LNT8 layout %d with %d rows; this engine knows layout 1 with %d rows\n", rh[5], rh[1], v5rel::n_rows());
+            return false;
+        }
+        if (rh[3] < 0 || rh[3] > 6 || rh[4] < 0 || rh[4] > 1) {
+            std::fprintf(stderr, "nnue: LNT8 relation step 2^%d or pawn-pair mode %d out of range\n", rh[3], rh[4]);
+            return false;
+        }
     }
     if (NI != NUM_INPUTS) { std::fprintf(stderr, "nnue: NUM_INPUTS mismatch %d\n", NI); return false; }
     if (L1 <= 0 || L1 > NNUE_L1_MAX) { std::fprintf(stderr, "nnue: L1=%d out of range (max %d)\n", L1, NNUE_L1_MAX); return false; }
@@ -464,6 +530,10 @@ static bool load_stream(std::istream& f, const std::string& name) {
         std::fprintf(stderr, "nnue: unsupported layer sizes L1=%d L2=%d L3=%d\n", L1, L2, L3);
         return false;
     }
+    if (lnt8 && (rh[0] <= 0 || rh[0] % 64 != 0 || rh[0] > L1)) {
+        std::fprintf(stderr, "nnue: LNT8 relation lanes T=%d: a multiple of 64 up to L1=%d\n", rh[0], L1);
+        return false;
+    }
     // From here on the globals are overwritten; a failure part-way must not
     // leave a half-loaded net marked usable.
     g_loaded = false;
@@ -471,11 +541,35 @@ static bool load_stream(std::istream& f, const std::string& name) {
     g_tails.assign(NB, DenseTail{});
     g_buckets = NB;
     g_L1 = L1; g_L2 = L2; g_L3 = L3;
+    g_rel_T = 0;   // an LNT8 net sets it again once it has loaded whole
+    long long clamped = 0, beyond_rule = 0;
+    if (lnt8) {
+        // The feature layer as the engine holds it: int16 rows, feature-major, on the grid; the bias in int32.
+        auto read_count = [&](int32_t expected, const char* what) -> bool {
+            int32_t n = 0;
+            f.read(reinterpret_cast<char*>(&n), 4);
+            if (!f || n != expected) { std::fprintf(stderr, "nnue: LNT8 %s size %d != %d\n", what, n, expected); return false; }
+            return true; };
+        if (!read_count(NUM_INPUTS * L1, "piece-square table")) return false;
+        ft_w.reset(static_cast<size_t>(NUM_INPUTS) * L1);
+        f.read(reinterpret_cast<char*>(ft_w.data()), std::streamsize(sizeof(int16_t) * size_t(NUM_INPUTS) * size_t(L1)));
+        if (!read_count(L1, "bias")) return false;
+        ft_b_i32.resize(L1);
+        f.read(reinterpret_cast<char*>(ft_b_i32.data()), std::streamsize(sizeof(int32_t) * size_t(L1)));
+        ft_b.resize(L1);
+        for (int l = 0; l < L1; ++l) ft_b[l] = float(ft_b_i32[l]) / FT_WSCALE;
+        if (!read_count(rh[1] * rh[0], "relation table")) return false;
+        g_rel_w.reset(size_t(rh[1]) * size_t(rh[0]));
+        f.read(reinterpret_cast<char*>(g_rel_w.data()), std::streamsize(size_t(rh[1]) * size_t(rh[0])));
+        if (!f) { std::fprintf(stderr, "nnue: truncated LNT8 tables\n"); return false; }
+        // The spec clips a piece-square weight to |w| <= 3.99; count the ones beyond it for the load report.
+        const int rule = int(3.99f * FT_WSCALE);
+        for (size_t i = 0; i < size_t(NUM_INPUTS) * size_t(L1); ++i) beyond_rule += (ft_w[i] > rule || ft_w[i] < -rule);
+    } else {
     std::vector<float> ft_w_raw;
     if (!read_tensor(f, ft_w_raw, L1 * NUM_INPUTS)) return false;
     ft_w.reset(static_cast<size_t>(NUM_INPUTS) * L1);
     // int16 at x2048 holds |w| < 16.0; clamp instead of letting the cast wrap.
-    long long clamped = 0;
     for (int i = 0; i < NUM_INPUTS; ++i)
         for (int l = 0; l < L1; ++l) {
             long long q = std::llround(ft_w_raw[l * NUM_INPUTS + i] * FT_WSCALE);
@@ -485,6 +579,7 @@ static bool load_stream(std::istream& f, const std::string& name) {
     if (!read_tensor(f, ft_b, L1)) return false;
     ft_b_i32.resize(L1);
     for (int l = 0; l < L1; ++l) ft_b_i32[l] = std::lround(ft_b[l] * FT_WSCALE);
+    }
     if (g_int8) {
         // LNI8 / LNB8: per tail, int8 weights + float bias + float scale per layer.
         // LNR8: the L2 and L3 scales are float tensors, one per row.
@@ -554,11 +649,23 @@ static bool load_stream(std::istream& f, const std::string& name) {
     }
     choose_kernels();
     arrange_tails();
+    if (lnt8) {
+        g_rel_T = rh[0];
+        g_rel_rs = rh[3];
+        g_rel_ppm = rh[4];
+        const char* chk = std::getenv("LUMINEX_REL_CHECK");
+        g_rel_check = chk ? std::atoi(chk) : 0;
+    }
     g_loaded = true;
     ++g_net_id;   // refresh-cache entries of the previous net are stale
     // stdout carries UCI traffic, so the report is an info string. It ends
     // with the kernels' instruction-set level (SimdLevel).
-    if (NB > 1)
+    if (lnt8)
+        std::printf("info string NNUE evaluation using %s (gen768t: int8 L1=%d L2=%d L3=%d, %d output buckets, a scale per row; "
+                    "relation lanes T=%d, %d rows, step 2^%d, pawn pairs %s%s), SIMD level %s\n",
+                    name.c_str(), L1, L2, L3, NB, g_rel_T, rh[1], g_rel_rs, g_rel_ppm ? "all" : "in contact",
+                    g_rel_check ? ", LUMINEX_REL_CHECK on" : "", g_k->name);
+    else if (NB > 1)
         std::printf("info string NNUE evaluation using %s (int8 L1=%d L2=%d L3=%d, %d output buckets%s), SIMD level %s\n",
                     name.c_str(), L1, L2, L3, NB, rows ? ", a scale per row" : "", g_k->name);
     else
@@ -567,6 +674,8 @@ static bool load_stream(std::istream& f, const std::string& name) {
     if (clamped > 0)
         std::printf("info string NNUE warning: %lld feature weights exceed the int16 range and were clamped\n",
                     clamped);
+    if (beyond_rule > 0)
+        std::printf("info string NNUE warning: %lld piece-square weights are beyond the range rule's 3.99\n", beyond_rule);
     return true;
 }
 
@@ -742,13 +851,199 @@ static void apply_delta(const PlyDelta& d, const Accumulator& parent, Accumulato
 // moved there) and rebuilds that one from its board snapshot if needed; then
 // the later plies are replayed in order, both sides together where both need
 // them, and marked computed so siblings reuse them.
+// ---- gen768t: the relation lanes ----
+// A ply's relation lanes come from its parent's and the rows its move adds and removes, which the finder reads
+// off the board before the move (the board after each move is kept per ply). A side whose own king crossed the
+// d/e files at a ply has every index changed there, so that side is rebuilt from that ply's board. Like the
+// piece-square lanes they are brought current when an evaluation needs them, and the rows of the plies a
+// catch-up replays are found first and prefetched, so that they arrive while the piece-square lanes are worked.
+
+static_assert(sizeof(Piece) == 1 && NO_PIECE == 12, "the finder reads the mailbox as bytes, 12 for an empty square");
+static inline void rel_snapshot(const Position& pos, v5rel::Bd& b) {
+    std::memcpy(b.pc, pos.mailbox(), 64);
+    for (int c = 0; c < 2; ++c)
+        for (int pt = PAWN; pt <= KING; ++pt) b.by[c * 6 + pt] = pos.pieces(Color(c), PieceType(pt));
+    b.by[12] = 0;
+    b.occ = pos.pieces();
+}
+
+static inline void rel_apply(const int16_t* parent, int16_t* child, const uint16_t* add, int na, const uint16_t* sub, int ns) {
+    const int8_t* ra[v5rel::MAX_ACTIVE];
+    const int8_t* rs[v5rel::MAX_ROWS];
+    const int8_t* const W = g_rel_w.data();
+    const size_t T = size_t(g_rel_T);
+    for (int i = 0; i < na; ++i) ra[i] = W + size_t(add[i]) * T;
+    for (int i = 0; i < ns; ++i) rs[i] = W + size_t(sub[i]) * T;
+    NNUE_K(rel_rows)(parent, child, ra, na, rs, ns, g_rel_T);
+}
+
+static inline void rel_prefetch(const uint16_t* rows, int n) {
+#if defined(__x86_64__) || defined(__i386__) || defined(_M_X64) || defined(_M_IX86)
+    const char* const W = reinterpret_cast<const char*>(g_rel_w.data());
+    const size_t T = size_t(g_rel_T);
+    for (int i = 0; i < n; ++i)
+        for (size_t o = 0; o < T; o += 64) _mm_prefetch(W + size_t(rows[i]) * T + o, _MM_HINT_T0);
+#else
+    (void)rows; (void)n;
+#endif
+}
+
+// One side's relation lanes from the board alone.
+static void rel_rebuild(const v5rel::Bd& b, int p, int16_t* lanes) {
+    alignas(64) static const int16_t zero[NNUE_L1_MAX] = {};
+    uint16_t rows[v5rel::MAX_ACTIVE];
+    const int n = v5rel::enumerate(b, p, g_rel_ppm, rows);
+    rel_apply(zero, lanes, rows, n, nullptr, 0);
+}
+
+struct RelPlan {
+    bool todo[2], cold[2];
+    int start[2];
+    int lo;          // the first ply whose rows are needed
+    bool buffered;   // the rows of plies lo..ply sit in rel_buf()
+};
+
+// Before the piece-square work: which plies each side's relation lanes need; find their rows and prefetch them.
+static void rel_plan(int ply, const PlyDelta* ds, RelPlan& rp, bool pr) {
+    rp.lo = ply + 1;
+    rp.buffered = false;
+    for (int p = 0; p < 2; ++p) {
+        rp.todo[p] = !ds[ply].relc[p];
+        rp.cold[p] = false;
+        rp.start[p] = ply;
+        if (!rp.todo[p]) continue;
+        int j = ply;
+        while (j > 0 && !ds[j].relc[p] && !ds[j].relflip[p]) --j;
+        if (!ds[j].relc[p] && !ds[j].relflip[p]) { rp.cold[p] = true; continue; }   // nothing below computed on this thread
+        rp.start[p] = j;
+        rp.lo = std::min(rp.lo, j + 1);
+    }
+    if (rp.lo > ply || ply - rp.lo + 1 > REL_WALK) return;
+    const long long t0 = pr ? rdtsc() : 0;
+    v5rel::RowLists* const buf = rel_buf();
+    const v5rel::Bd* const boards = rel_boards();
+    for (int i = rp.lo; i <= ply; ++i) {
+        if (ds[i].null_move) continue;
+        const bool need[2] = {rp.todo[0] && !rp.cold[0] && i > rp.start[0], rp.todo[1] && !rp.cold[1] && i > rp.start[1]};
+        v5rel::RowLists& L = buf[i - rp.lo];
+        v5rel::find(boards[i - 1], ds[i].move, g_rel_ppm, need, L);
+        for (int p = 0; p < 2; ++p)
+            if (need[p]) { rel_prefetch(L.add[p], L.na[p]); rel_prefetch(L.sub[p], L.ns[p]); }
+    }
+    rp.buffered = true;
+    if (pr) { st_rel_find.cyc += rdtsc() - t0; st_rel_find.n += ply - rp.lo + 1; }
+}
+
+// After the piece-square work: bring this ply's relation lanes up to date.
+static void rel_finish(const Position& pos, int ply, PlyDelta* ds, const RelPlan& rp, bool pr) {
+    int16_t* const R = rel_lane_stack();
+    v5rel::Bd* const boards = rel_boards();
+    for (int p = 0; p < 2; ++p) {
+        if (!rp.todo[p]) continue;
+        if (rp.cold[p]) {
+            const long long t0 = pr ? rdtsc() : 0;
+            rel_snapshot(pos, boards[ply]);
+            rel_rebuild(boards[ply], p, rel_side(R, ply, p));
+            ds[ply].relc[p] = true;
+            if (pr) { st_rel_rebuild.cyc += rdtsc() - t0; st_rel_rebuild.n++; }
+            continue;
+        }
+        const int j = rp.start[p];
+        if (!ds[j].relc[p]) {   // this side's king crossed d/e at j: every row changed
+            const long long t0 = pr ? rdtsc() : 0;
+            rel_rebuild(boards[j], p, rel_side(R, j, p));
+            ds[j].relc[p] = true;
+            if (pr) { st_rel_rebuild.cyc += rdtsc() - t0; st_rel_rebuild.n++; }
+        }
+        const long long t0 = pr ? rdtsc() : 0;
+        for (int i = j + 1; i <= ply; ++i) {
+            if (ds[i].null_move) {
+                std::memcpy(rel_side(R, i, p), rel_side(R, i - 1, p), sizeof(int16_t) * size_t(g_rel_T));
+            } else {
+                v5rel::RowLists local;
+                const v5rel::RowLists* L;
+                if (rp.buffered) L = &rel_buf()[i - rp.lo];
+                else {   // a walk longer than the buffer: find the rows here
+                    const bool need[2] = {p == 0, p == 1};
+                    v5rel::find(boards[i - 1], ds[i].move, g_rel_ppm, need, local);
+                    L = &local;
+                }
+                if (L->overflow[p]) rel_rebuild(boards[i], p, rel_side(R, i, p));
+                else rel_apply(rel_side(R, i - 1, p), rel_side(R, i, p), L->add[p], L->na[p], L->sub[p], L->ns[p]);
+                if (pr) { g_rel_rows += L->na[p] + L->ns[p]; ++g_rel_plies; }
+            }
+            ds[i].relc[p] = true;
+        }
+        if (pr) { st_rel_apply.cyc += rdtsc() - t0; st_rel_apply.n++; }
+    }
+}
+
+// LUMINEX_REL_CHECK: the lanes kept move by move against a rebuild from the board (relation lanes, exact: abort on
+// a difference) and, at 2, every piece-square lane against its exact int32 sum (counted, for print_stats).
+// LUMINEX_REL_CHECK=3: the kernel's combination against the spec's formula, lane by lane in plain integers, both
+// through the same tail: the outputs must be the same float. Out of line, so evaluate() stays as it was.
+[[gnu::noinline]] static void rel_check_output(const Position& pos, const int16_t* acc_stm, const int16_t* acc_nstm,
+                                               const RelLanes& rel, const TailView& tail, float ov) {
+    alignas(64) int16_t cs[NNUE_L1_MAX], cn[NNUE_L1_MAX];
+    for (int l = 0; l < g_L1; ++l) {
+        cs[l] = acc_stm[l];
+        cn[l] = acc_nstm[l];
+        if (l < g_rel_T) {
+            cs[l] = int16_t(std::clamp(int(acc_stm[l]) + std::clamp<int>(rel.stm[l], -NNUE_REL_L, NNUE_REL_L) * (1 << g_rel_rs), -32768, 32767));
+            cn[l] = int16_t(std::clamp(int(acc_nstm[l]) + std::clamp<int>(rel.nstm[l], -NNUE_REL_L, NNUE_REL_L) * (1 << g_rel_rs), -32768, 32767));
+        }
+    }
+    const float ref = NNUE_K(forward_int8)(cs, cn, tail, g_L1, g_L2, g_L3, nullptr);
+    if (ref != ov) {
+        std::fprintf(stderr, "NNUE RELATION COMBINATION MISMATCH kernel=%.9g formula=%.9g fen=%s\n", ov, ref, pos.fen().c_str());
+        std::abort();
+    }
+}
+
+static void rel_check(const Position& pos) {
+    v5rel::Bd b;
+    rel_snapshot(pos, b);
+    const int ply = pos.state_ply();
+    int16_t* const R = rel_lane_stack();
+    for (int p = 0; p < 2; ++p) {
+        alignas(64) int16_t want[NNUE_L1_MAX];
+        rel_rebuild(b, p, want);
+        const int16_t* have = rel_side(R, ply, p);
+        if (std::memcmp(want, have, sizeof(int16_t) * size_t(g_rel_T)) != 0) {
+            int l = 0;
+            while (want[l] == have[l]) ++l;
+            std::fprintf(stderr, "NNUE RELATION LANES MISMATCH ply=%d side=%d lane=%d rebuilt=%d kept=%d fen=%s\n",
+                         ply, p, l, want[l], have[l], pos.fen().c_str());
+            std::abort();
+        }
+    }
+    ++g_rel_checks;
+    if (g_rel_check < 2) return;
+    const Accumulator& a = nnue_acc_stack()[ply];
+    for (int p = 0; p < 2; ++p) {
+        const bool white_pov = (p == 0);
+        const int ksq = static_cast<int>(pos.king_sq(white_pov ? WHITE : BLACK));
+        std::vector<int32_t> ref(ft_b_i32.begin(), ft_b_i32.end());
+        for (int sq = 0; sq < NUM_SQ; ++sq) {
+            const Piece pc = pos.piece_on(Square(sq));
+            if (pc == NO_PIECE) continue;
+            const int16_t* row = &ft_w[static_cast<size_t>(halfka_idx(white_pov, ksq, sq, pc)) * g_L1];
+            for (int l = 0; l < g_L1; ++l) ref[l] += row[l];
+        }
+        for (int l = 0; l < g_L1; ++l)
+            if (ref[l] >= -32768 && ref[l] <= 32767) { ++g_psq_checked; g_psq_mismatch += (ref[l] != a.v[p][l]); }
+    }
+}
+
 static void make_current(const Position& pos) {
     const int ply = pos.state_ply();
     PlyDelta* const ds = nnue_deltas();
-    if (ds[ply].current[0] && ds[ply].current[1]) return;
+    if (ds[ply].current[0] && ds[ply].current[1] && (!g_rel_T || (ds[ply].relc[0] && ds[ply].relc[1]))) return;
     const bool pr = profile_on();
     const long long t0 = pr ? rdtsc() : 0;
     Accumulator* const acc_stack = nnue_acc_stack();
+    RelPlan relp;
+    if (g_rel_T) rel_plan(ply, ds, relp, pr);
     int start[2];
     for (int p = 0; p < 2; ++p) {
         int j = ply;
@@ -777,6 +1072,7 @@ static void make_current(const Position& pos) {
         for (int p = p_begin; p < p_end; ++p) ds[i].current[p] = true;
         if (pr) { st_incremental.cyc += rdtsc() - inc_t0; st_incremental.n += p_end - p_begin; }
     }
+    if (g_rel_T) rel_finish(pos, ply, ds, relp, pr);
     if (pr) { st_catchup.cyc += rdtsc() - t0; st_catchup.n++; }
 }
 
@@ -792,6 +1088,15 @@ void refresh(Position& pos) {
     d.null_move = false;
     d.rebuild = -1;
     d.current[0] = d.current[1] = true;
+    if (g_rel_T) {
+        v5rel::Bd& b = rel_boards()[pos.state_ply()];
+        rel_snapshot(pos, b);
+        int16_t* const R = rel_lane_stack();
+        rel_rebuild(b, 0, rel_side(R, pos.state_ply(), 0));
+        rel_rebuild(b, 1, rel_side(R, pos.state_ply(), 1));
+        d.relc[0] = d.relc[1] = true;
+        d.relflip[0] = d.relflip[1] = false;
+    }
     if (pr) { st_refresh.cyc += rdtsc() - t0; st_refresh.n++; }
 }
 
@@ -803,6 +1108,12 @@ void copy_for_null(Position& pos) {
     d.null_move = true;
     d.rebuild = -1;
     d.current[0] = d.current[1] = false;
+    if (g_rel_T) {
+        v5rel::Bd* const boards = rel_boards();
+        boards[pos.state_ply()] = boards[pos.state_ply() - 1];
+        d.relc[0] = d.relc[1] = false;
+        d.relflip[0] = d.relflip[1] = false;
+    }
 }
 
 void update(Position& pos, Move m, Piece moved, PieceType captured) {
@@ -827,6 +1138,12 @@ void update(Position& pos, Move m, Piece moved, PieceType captured) {
     d.rebuild = moved_pt == KING ? int8_t(us == WHITE ? 0 : 1) : int8_t(-1);
     d.null_move = false;
     d.current[0] = d.current[1] = false;
+    if (g_rel_T) {
+        rel_snapshot(pos, rel_boards()[ply]);
+        d.relc[0] = d.relc[1] = false;
+        d.relflip[0] = d.relflip[1] = false;
+        if (moved_pt == KING && ((int(m.from()) & 7) < 4) != ((int(m.to()) & 7) < 4)) d.relflip[us == WHITE ? 0 : 1] = true;
+    }
     if (d.rebuild >= 0) {
         KingBoard& kb = nnue_king_boards()[ply];
         for (int c = 0; c < 2; ++c)
@@ -902,19 +1219,78 @@ Value evaluate(const Position& pos) {
     bool stm_white = (pos.side_to_move() == WHITE);
     const int16_t* acc_stm  = stm_white ? a.v[0] : a.v[1];
     const int16_t* acc_nstm = stm_white ? a.v[1] : a.v[0];
+    RelLanes rel{};
+    const RelLanes* relp = nullptr;
+    if (g_rel_T) {
+        int16_t* const R = rel_lane_stack();
+        rel.stm  = rel_side(R, pos.state_ply(), stm_white ? 0 : 1);
+        rel.nstm = rel_side(R, pos.state_ply(), stm_white ? 1 : 0);
+        rel.T = g_rel_T;
+        rel.rs = g_rel_rs;
+        relp = &rel;
+#if !defined(NDEBUG) || defined(NNUE_FORCE_SELFCHECK)
+        rel_check(pos);   // debug builds check every evaluation, as the piece-square self-check above does
+#else
+        if (g_rel_check) rel_check(pos);
+#endif
+    }
     // This position's dense tail (the only one unless the net has output
     // buckets), as the kernels read it.
     const TailView& tail = g_tails[bucket_of(pos)].view;
     float ov;
     if (g_int8) {
-        ov = NNUE_K(forward_int8)(acc_stm, acc_nstm, tail, g_L1, g_L2, g_L3, pr ? &g_act_nz : nullptr);
+        ov = relp ? NNUE_K(forward_int8_rel)(acc_stm, acc_nstm, *relp, tail, g_L1, g_L2, g_L3, pr ? &g_act_nz : nullptr)
+                  : NNUE_K(forward_int8)(acc_stm, acc_nstm, tail, g_L1, g_L2, g_L3, pr ? &g_act_nz : nullptr);
         if (pr) g_act_tot += 2 * g_L1;
+        if (relp && g_rel_check >= 3) rel_check_output(pos, acc_stm, acc_nstm, rel, tail, ov);
     } else {
         ov = NNUE_K(forward_float)(acc_stm, acc_nstm, tail, g_L1, g_L2, g_L3);
     }
     Value v = static_cast<Value>(std::llround(ov * OUT_SCALE));
     if (pr) { st_eval.cyc += rdtsc() - t0; st_eval.n++; }
     return v;
+}
+
+// ---- gen768t debugging: the relrows and lanes UCI commands ----
+
+std::string relation_rows(const Position& pos, int ppm) {
+    v5rel::init();
+    v5rel::Bd b;
+    rel_snapshot(pos, b);
+    std::string out;
+    for (int p = 0; p < 2; ++p) {
+        uint16_t rows[v5rel::MAX_ACTIVE];
+        const int n = v5rel::enumerate(b, p, ppm, rows);
+        std::sort(rows, rows + n);
+        out += "relrows " + std::to_string(p) + " " + std::to_string(n);
+        for (int i = 0; i < n; ++i) out += " " + std::to_string(rows[i]);
+        out += "\n";
+    }
+    return out;
+}
+
+std::string lane_dump(const Position& pos) {
+    if (!g_loaded) return "lanes: no network loaded\n";
+    make_current(pos);
+    const Accumulator& a = nnue_acc_stack()[pos.state_ply()];
+    int16_t* const R = g_rel_T ? rel_lane_stack() : nullptr;
+    std::string out;
+    for (int p = 0; p < 2; ++p) {
+        out += "lanes " + std::to_string(p);
+        for (int l = 0; l < g_L1; ++l) {
+            int v = a.v[p][l];
+            if (l < g_rel_T)
+                v = std::clamp(v + std::clamp<int>(rel_side(R, pos.state_ply(), p)[l], -NNUE_REL_L, NNUE_REL_L) * (1 << g_rel_rs), -32768, 32767);
+            out += " " + std::to_string(v);
+        }
+        out += "\n";
+        if (g_rel_T) {
+            out += "rel " + std::to_string(p);
+            for (int l = 0; l < g_rel_T; ++l) out += " " + std::to_string(rel_side(R, pos.state_ply(), p)[l]);
+            out += "\n";
+        }
+    }
+    return out;
 }
 
 // ---- nnuecheck: the same evaluations at every kernel level ----

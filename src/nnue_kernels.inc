@@ -46,6 +46,7 @@
 // across levels.
 
 #include "nnue_kernels.h"
+#include <algorithm>
 #include <cstdint>
 #include <cstring>
 #include <cmath>
@@ -457,8 +458,110 @@ void refresh_cached(int32_t* entry, const int16_t* const* sub, int nsub,
     store_saturated(lanes, entry, n);
 }
 
-float forward_int8(const int16_t* acc_stm, const int16_t* acc_nstm, const TailView& t,
-                   int L1, int L2, int L3, long long* act_nonzero) {
+// gen768t (LNT8 nets): child = parent + the add rows - the sub rows on the T relation lanes, the int8 rows
+// widened to int16. Plain int16 adds: at most 248 rows of |q| <= 127 are ever active, so no lane overflows and
+// the order of the rows does not matter.
+void rel_rows(const int16_t* parent, int16_t* child, const int8_t* const* add, int na,
+              const int8_t* const* sub, int ns, int T) {
+#if defined(LK_AVX512)
+    for (int l = 0; l < T; l += 32) {
+        __m512i v = _mm512_loadu_si512((const void*)(parent + l));
+        for (int i = 0; i < na; ++i) v = _mm512_add_epi16(v, _mm512_cvtepi8_epi16(_mm256_loadu_si256((const __m256i*)(add[i] + l))));
+        for (int i = 0; i < ns; ++i) v = _mm512_sub_epi16(v, _mm512_cvtepi8_epi16(_mm256_loadu_si256((const __m256i*)(sub[i] + l))));
+        _mm512_storeu_si512((void*)(child + l), v);
+    }
+#elif defined(LK_AVX2)
+    for (int l = 0; l < T; l += 16) {
+        __m256i v = _mm256_loadu_si256((const __m256i*)(parent + l));
+        for (int i = 0; i < na; ++i) v = _mm256_add_epi16(v, _mm256_cvtepi8_epi16(_mm_loadu_si128((const __m128i*)(add[i] + l))));
+        for (int i = 0; i < ns; ++i) v = _mm256_sub_epi16(v, _mm256_cvtepi8_epi16(_mm_loadu_si128((const __m128i*)(sub[i] + l))));
+        _mm256_storeu_si256((__m256i*)(child + l), v);
+    }
+#elif defined(LK_SSE2_LANES)
+    // SSE2 has no sign-extending byte load: each byte doubled into a word and shifted back down
+    for (int l = 0; l < T; l += 8) {
+        __m128i v = _mm_loadu_si128((const __m128i*)(parent + l));
+        for (int i = 0; i < na; ++i) {
+            const __m128i b = _mm_loadl_epi64((const __m128i*)(add[i] + l));
+            v = _mm_add_epi16(v, _mm_srai_epi16(_mm_unpacklo_epi8(b, b), 8));
+        }
+        for (int i = 0; i < ns; ++i) {
+            const __m128i b = _mm_loadl_epi64((const __m128i*)(sub[i] + l));
+            v = _mm_sub_epi16(v, _mm_srai_epi16(_mm_unpacklo_epi8(b, b), 8));
+        }
+        _mm_storeu_si128((__m128i*)(child + l), v);
+    }
+#elif defined(LK_DOTPROD)
+    for (int l = 0; l < T; l += 8) {
+        int16x8_t v = vld1q_s16(parent + l);
+        for (int i = 0; i < na; ++i) v = vaddq_s16(v, vmovl_s8(vld1_s8(add[i] + l)));
+        for (int i = 0; i < ns; ++i) v = vsubq_s16(v, vmovl_s8(vld1_s8(sub[i] + l)));
+        vst1q_s16(child + l, v);
+    }
+#else
+    for (int l = 0; l < T; ++l) {
+        int v = parent[l];
+        for (int i = 0; i < na; ++i) v += add[i][l];
+        for (int i = 0; i < ns; ++i) v -= sub[i][l];
+        child[l] = int16_t(v);
+    }
+#endif
+}
+
+// gen768t (LNT8 nets): out = the saturating int16 sum psq + clamp(rel, -L, L) * 2^rs, lane by lane, for
+// lanes 0..T-1 (RelLanes). Integer steps only, so every level computes the same lanes; rs <= 6 keeps the
+// shifted term inside int16.
+void combine_rel(int16_t* out, const int16_t* psq, const int16_t* rel, int T, int rs) {
+#if defined(LK_AVX2)
+    const __m256i lo = _mm256_set1_epi16(int16_t(-NNUE_REL_L)), hi = _mm256_set1_epi16(int16_t(NNUE_REL_L));
+    const __m128i sh = _mm_cvtsi32_si128(rs);
+    for (int l = 0; l < T; l += 16) {
+        const __m256i r = _mm256_sll_epi16(_mm256_min_epi16(_mm256_max_epi16(_mm256_loadu_si256((const __m256i*)(rel + l)), lo), hi), sh);
+        _mm256_storeu_si256((__m256i*)(out + l), _mm256_adds_epi16(_mm256_loadu_si256((const __m256i*)(psq + l)), r));
+    }
+#elif defined(LK_SSE2_LANES)
+    const __m128i lo = _mm_set1_epi16(int16_t(-NNUE_REL_L)), hi = _mm_set1_epi16(int16_t(NNUE_REL_L));
+    const __m128i sh = _mm_cvtsi32_si128(rs);
+    for (int l = 0; l < T; l += 8) {
+        const __m128i r = _mm_sll_epi16(_mm_min_epi16(_mm_max_epi16(_mm_loadu_si128((const __m128i*)(rel + l)), lo), hi), sh);
+        _mm_storeu_si128((__m128i*)(out + l), _mm_adds_epi16(_mm_loadu_si128((const __m128i*)(psq + l)), r));
+    }
+#elif defined(LK_DOTPROD)
+    const int16x8_t lo = vdupq_n_s16(int16_t(-NNUE_REL_L)), hi = vdupq_n_s16(int16_t(NNUE_REL_L));
+    const int16x8_t sh = vdupq_n_s16(int16_t(rs));
+    for (int l = 0; l < T; l += 8) {
+        const int16x8_t r = vshlq_s16(vminq_s16(vmaxq_s16(vld1q_s16(rel + l), lo), hi), sh);
+        vst1q_s16(out + l, vqaddq_s16(vld1q_s16(psq + l), r));
+    }
+#else
+    for (int l = 0; l < T; ++l) {
+        const int r = std::clamp<int>(rel[l], -NNUE_REL_L, NNUE_REL_L) * (1 << rs);
+        out[l] = int16_t(std::clamp(int(psq[l]) + r, -32768, 32767));
+    }
+#endif
+}
+
+// REL (an LNT8 net): lanes 0..T-1 with the relation term, read from rel_comb instead of the accumulator. T is
+// a multiple of 64, so every block of lanes each path below reads lies on one side of it. Without REL the
+// lanes are read where they are, so every other format runs the code it always ran.
+template <bool REL>
+float forward_int8_impl(const int16_t* acc_stm, const int16_t* acc_nstm, const RelLanes* rel, const TailView& t,
+                        int L1, int L2, int L3, long long* act_nonzero) {
+    [[maybe_unused]] alignas(64) int16_t rel_comb[REL ? 2 : 1][REL ? NNUE_L1_MAX : 1];
+    [[maybe_unused]] int relT = 0;
+    if constexpr (REL) {
+        relT = rel->T;
+        combine_rel(rel_comb[0], acc_stm, rel->stm, relT, rel->rs);
+        combine_rel(rel_comb[1], acc_nstm, rel->nstm, relT, rel->rs);
+    } else {
+        (void)rel;
+    }
+    auto src = [&](int side, int l) -> const int16_t* {
+        if constexpr (REL) {
+            if (l < relT) return rel_comb[side] + l;
+        }
+        return (side == 0 ? acc_stm : acc_nstm) + l;
+    };
 #if defined(LK_AVX2)
     // ---- FUSED SCReLU+quant8 (no intermediate h[] — saves 8KB L1 traffic/eval) ----
     uint8_t h_i8[2 * NNUE_L1_MAX];
@@ -481,11 +584,11 @@ float forward_int8(const int16_t* acc_stm, const int16_t* acc_nstm, const TailVi
             return _mm512_cvtps_epi32(_mm512_mul_ps(_mm512_mul_ps(f, f), k));
         };
         for (int side = 0; side < 2; ++side) {
-            const int16_t* in = side == 0 ? acc_stm : acc_nstm;
             uint8_t* out = h_i8 + side * L1;
             for (int l = 0; l < L1; l += 64) {
-                const __m512i x0 = _mm512_min_epi16(_mm512_max_epi16(_mm512_loadu_si512(in + l), lo16), hi16);
-                const __m512i x1 = _mm512_min_epi16(_mm512_max_epi16(_mm512_loadu_si512(in + l + 32), lo16), hi16);
+                const int16_t* in = src(side, l);
+                const __m512i x0 = _mm512_min_epi16(_mm512_max_epi16(_mm512_loadu_si512(in), lo16), hi16);
+                const __m512i x1 = _mm512_min_epi16(_mm512_max_epi16(_mm512_loadu_si512(in + 32), lo16), hi16);
                 const __m512i q0 = act16(_mm512_castsi512_si256(x0)), q1 = act16(_mm512_extracti64x4_epi64(x0, 1));
                 const __m512i q2 = act16(_mm512_castsi512_si256(x1)), q3 = act16(_mm512_extracti64x4_epi64(x1, 1));
                 const __m512i b = _mm512_packus_epi16(_mm512_packs_epi32(q0, q1), _mm512_packs_epi32(q2, q3));
@@ -496,7 +599,7 @@ float forward_int8(const int16_t* acc_stm, const int16_t* acc_nstm, const TailVi
     const __m512 z16 = _mm512_setzero_ps(), one16 = _mm512_set1_ps(1.0f), sc16 = _mm512_set1_ps(127.0f);
     const __m512 winv16 = _mm512_set1_ps(FT_WINV);
     for (int l = 0; l < L1; l += 16) {
-        __m512 s = _mm512_mul_ps(_mm512_cvtepi32_ps(_mm512_cvtepi16_epi32(_mm256_loadu_si256((const __m256i*)(acc_stm + l)))), winv16);
+        __m512 s = _mm512_mul_ps(_mm512_cvtepi32_ps(_mm512_cvtepi16_epi32(_mm256_loadu_si256((const __m256i*)src(0, l)))), winv16);
         __m512 c = _mm512_min_ps(_mm512_max_ps(s, z16), one16);
         __m512 sq = _mm512_mul_ps(c, c);
         __m512i i32 = _mm512_cvtps_epi32(_mm512_mul_ps(sq, sc16));
@@ -506,7 +609,7 @@ float forward_int8(const int16_t* acc_stm, const int16_t* acc_nstm, const TailVi
         // c=clip(s,0,1) -> c² in [0,1] -> ×127 -> [0,127] exactly: no clamp needed.
         _mm_storeu_si128((__m128i*)(h_i8 + l), i8);
         // nstm
-        s = _mm512_mul_ps(_mm512_cvtepi32_ps(_mm512_cvtepi16_epi32(_mm256_loadu_si256((const __m256i*)(acc_nstm + l)))), winv16);
+        s = _mm512_mul_ps(_mm512_cvtepi32_ps(_mm512_cvtepi16_epi32(_mm256_loadu_si256((const __m256i*)src(1, l)))), winv16);
         c = _mm512_min_ps(_mm512_max_ps(s, z16), one16);
         sq = _mm512_mul_ps(c, c);
         i32 = _mm512_cvtps_epi32(_mm512_mul_ps(sq, sc16));
@@ -518,13 +621,13 @@ float forward_int8(const int16_t* acc_stm, const int16_t* acc_nstm, const TailVi
 #else
     const __m256 z = _mm256_setzero_ps(), one = _mm256_set1_ps(1.0f), winv8 = _mm256_set1_ps(FT_WINV);
     for (int l = 0; l < L1; l += 8) {
-        __m256 s = _mm256_mul_ps(_mm256_cvtepi32_ps(_mm256_cvtepi16_epi32(_mm_loadu_si128((const __m128i*)(acc_stm + l)))), winv8);
+        __m256 s = _mm256_mul_ps(_mm256_cvtepi32_ps(_mm256_cvtepi16_epi32(_mm_loadu_si128((const __m128i*)src(0, l)))), winv8);
         __m256 c = _mm256_min_ps(_mm256_max_ps(s, z), one);
         __m256 sq = _mm256_mul_ps(c, c);
         __m256i i32 = _mm256_cvtps_epi32(_mm256_mul_ps(sq, sc127));
         __m128i lo = _mm256_castsi256_si128(i32), hi = _mm256_extracti128_si256(i32, 1);
         _mm_storel_epi64((__m128i*)(h_i8 + l), _mm_packus_epi16(_mm_packs_epi32(lo, hi), _mm_setzero_si128()));
-        s = _mm256_mul_ps(_mm256_cvtepi32_ps(_mm256_cvtepi16_epi32(_mm_loadu_si128((const __m128i*)(acc_nstm + l)))), winv8);
+        s = _mm256_mul_ps(_mm256_cvtepi32_ps(_mm256_cvtepi16_epi32(_mm_loadu_si128((const __m128i*)src(1, l)))), winv8);
         c = _mm256_min_ps(_mm256_max_ps(s, z), one);
         sq = _mm256_mul_ps(c, c);
         i32 = _mm256_cvtps_epi32(_mm256_mul_ps(sq, sc127));
@@ -637,10 +740,9 @@ float forward_int8(const int16_t* acc_stm, const int16_t* acc_nstm, const TailVi
         const __m128 z = _mm_setzero_ps(), one = _mm_set1_ps(1.0f), winv = _mm_set1_ps(FT_WINV);
         const __m128 sc = _mm_set1_ps(127.0f);
         for (int side = 0; side < 2; ++side) {
-            const int16_t* in = side == 0 ? acc_stm : acc_nstm;
             uint8_t* out = h_i8 + side * L1;
             for (int l = 0; l < L1; l += 8) {
-                const __m128i v = _mm_loadu_si128((const __m128i*)(in + l));
+                const __m128i v = _mm_loadu_si128((const __m128i*)src(side, l));
                 // int16 -> int32 sign-extended, -> float, x 2^-13 (exact), clamp to [0, 1],
                 // square, x 127, round to nearest even: the scalar path's steps per lane
                 __m128 flo = _mm_mul_ps(_mm_cvtepi32_ps(_mm_srai_epi32(_mm_unpacklo_epi16(v, v), 16)), winv);
@@ -687,7 +789,7 @@ float forward_int8(const int16_t* acc_stm, const int16_t* acc_nstm, const TailVi
     // 8 elements per iteration via NEON
     for (int l = 0; l < L1; l += 8) {
         // stm half
-        int16x8_t v = vld1q_s16(acc_stm + l);
+        int16x8_t v = vld1q_s16(src(0, l));
         int32x4_t lo = vmovl_s16(vget_low_s16(v));
         int32x4_t hi = vmovl_s16(vget_high_s16(v));
         float32x4_t flo = vcvtq_f32_s32(lo);
@@ -708,7 +810,7 @@ float forward_int8(const int16_t* acc_stm, const int16_t* acc_nstm, const TailVi
         uint8x8_t u8 = vqmovun_s16(i16);
         vst1_u8(h_i8 + l, u8);
         // nstm half
-        v = vld1q_s16(acc_nstm + l);
+        v = vld1q_s16(src(1, l));
         lo = vmovl_s16(vget_low_s16(v));
         hi = vmovl_s16(vget_high_s16(v));
         flo = vcvtq_f32_s32(lo);
@@ -774,9 +876,9 @@ float forward_int8(const int16_t* acc_stm, const int16_t* acc_nstm, const TailVi
     // the dot product, any other CPU.
     uint8_t h_i8[2 * NNUE_L1_MAX];
     for (int l = 0; l < L1; ++l) {
-        float s  = acc_stm[l]  * FT_WINV; float c  = s  < 0 ? 0 : (s  > 1 ? 1 : s);
+        float s  = *src(0, l)  * FT_WINV; float c  = s  < 0 ? 0 : (s  > 1 ? 1 : s);
         h_i8[l]        = round_u8(c * c * 127.0f);
-        float s2 = acc_nstm[l] * FT_WINV; float c2 = s2 < 0 ? 0 : (s2 > 1 ? 1 : s2);
+        float s2 = *src(1, l) * FT_WINV; float c2 = s2 < 0 ? 0 : (s2 > 1 ? 1 : s2);
         h_i8[L1 + l]   = round_u8(c2 * c2 * 127.0f);
     }
     if (act_nonzero) { long long nz = 0; for (int i = 0; i < 2 * L1; ++i) nz += (h_i8[i] != 0); *act_nonzero += nz; }
@@ -807,6 +909,16 @@ float forward_int8(const int16_t* acc_stm, const int16_t* acc_nstm, const TailVi
     for (int i = 0; i < L3; ++i) acc += t.out_w[i] * h3_i8[i];
     return bias_add(t.out_b, acc, t.icso);
 #endif
+}
+
+float forward_int8(const int16_t* acc_stm, const int16_t* acc_nstm, const TailView& t,
+                   int L1, int L2, int L3, long long* act_nonzero) {
+    return forward_int8_impl<false>(acc_stm, acc_nstm, nullptr, t, L1, L2, L3, act_nonzero);
+}
+
+float forward_int8_rel(const int16_t* acc_stm, const int16_t* acc_nstm, const RelLanes& rel, const TailView& t,
+                       int L1, int L2, int L3, long long* act_nonzero) {
+    return forward_int8_impl<true>(acc_stm, acc_nstm, &rel, t, L1, L2, L3, act_nonzero);
 }
 
 // ---- float L2/L3/out path (LNN1 nets) ----
@@ -878,6 +990,7 @@ constexpr Kernels kernels = {
     LK_NAME, LK_L2_LAYOUT, LK_L3_BATCHED,
     &refresh_lanes, &update_lanes, &refresh_cached,
     &forward_int8, &forward_float, &bias_add,
+    &rel_rows, &forward_int8_rel,
 };
 
 } // namespace luminex::nnue::LK_NAMESPACE
