@@ -383,7 +383,7 @@ for a in "${assets[@]}"; do
   files+=("$dir/$a")
 done
 chmod +x "$dir/luminex-linux-x86-64"
-bash "$here/ci.sh name" "$dir/luminex-linux-x86-64" "$BUILD_ID"
+bash "$here/ci.sh" name "$dir/luminex-linux-x86-64" "$BUILD_ID"
 
 # The notes cover everything since the latest stable release, since each push
 # to main replaces the previous development build. Commits are split into
