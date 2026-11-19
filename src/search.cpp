@@ -253,11 +253,14 @@ struct ShiftConfig { Shift shift = NONE; int arg = 0; };
 static const ShiftConfig& shift_cfg() {
     static const ShiftConfig c = [] {
         ShiftConfig k;
-        if (const char* v = std::getenv("LUMINEX_ALLOC_SHIFT")) {
+        // OpenBench measurement build: this class is shifted by default (OpenBench sets no environment)
+        const char* env_v = std::getenv("LUMINEX_ALLOC_SHIFT");
+        if (const char* v = env_v ? env_v : "prune_near_alpha_off") {
             const std::string n(v);
             k.shift = n == "hist_prune_off" ? HIST_PRUNE_OFF : n == "prune_near_alpha_off" ? PRUNE_NEAR_ALPHA_OFF
                     : n == "lmr_r1_deep_off" ? LMR_R1_DEEP_OFF : n == "lmr_second_less" ? LMR_SECOND_LESS
                     : n == "lmr_hist_top_less" ? LMR_HIST_TOP_LESS : n == "lmr_late_more" ? LMR_LATE_MORE : NONE;
+            k.arg = 1715;   // Part B's history threshold
             if (const char* a = std::getenv("LUMINEX_ALLOC_SHIFT_ARG")) k.arg = std::atoi(a);
         }
         return k;
