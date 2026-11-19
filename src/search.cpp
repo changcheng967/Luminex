@@ -132,6 +132,13 @@ static SearchWorker* main_search_worker = nullptr;
 // Lazy SMP helper thread management (inside anonymous namespace for internal linkage)
 static std::vector<SearchThread> helper_threads;   // large stacks: search_thread.h
 static std::atomic<bool> helpers_running{false};
+// Helper workers persist across searches like the main worker, indexed by
+// thread id (0 unused): a helper keeps its histories and corrections from one
+// move to the next instead of starting every search with empty tables.
+static std::vector<SearchWorker*> helper_workers;
+// The depth the main thread's iteration is searching. A helper never starts an
+// iteration below it: that work is in the hash table already.
+static std::atomic<int> main_depth{0};
 
 
 
@@ -1995,17 +2002,228 @@ void finish_clock(const Limits& lim) {
     pending_clock.has_sample = false;
 }
 
-// Helper thread function for lazy SMP
-// Each helper runs its own iterative deepening, populating the shared TT
-// thread_id is used to offset start depth to reduce TT contention
+// Root move order for one iteration: the previous iteration's best move first,
+// then captures by MVV-LVA, promotions, and quiet moves by history with the
+// root killers on top. The main thread and every helper order their roots this
+// way.
+static void order_root_moves(const Position& pos, ExtMove* moves, ExtMove* end, int depth,
+                             Move pv_move, const SearchWorker* w) {
+    for (ExtMove* it = moves; it != end; ++it) {
+        Move m = it->move;
+        int score = 0;
+
+        // CRITICAL: Prioritize previous iteration's best move (PV move)
+        if (depth > 1 && m == pv_move) {
+            score = 2000000;  // Highest priority - previous PV move
+        }
+        // Prioritize winning captures (MVV-LVA)
+        else if (m.is_capture()) {
+            PieceType captured = m.is_en_passant() ? PAWN : pos.piece_type_on(m.to());
+            PieceType attacker = pos.piece_type_on(m.from());
+            static constexpr int piece_value[] = {100, 320, 330, 500, 900, 20000, 0};
+            score = 1000000 + piece_value[captured] * 10 - piece_value[attacker];
+        }
+        // Promotions
+        else if (m.is_promotion()) {
+            score = 900000 + m.promotion_type() * 10000;
+        }
+        // Quiet moves: use history + killer ordering
+        else {
+            Piece pc = pos.piece_on(m.from());
+            if (pc != NO_PIECE) {
+                score = w->history[int(pc)][int(m.to())];
+                if (m == w->killers[0][0]) score += 500000;
+                else if (m == w->killers[0][1]) score += 400000;
+            }
+        }
+
+        it->value = score;
+    }
+
+    // Sort moves by score (only need to sort once per depth)
+    std::sort(moves, end, [](const ExtMove& a, const ExtMove& b) {
+        return a.value > b.value;
+    });
+}
+
+// The result of one root iteration (root_iteration below).
+struct RootIteration {
+    Value best_value = -VALUE_INFINITE;   // the last aspiration attempt's best
+    Move best_move = MOVE_NONE;
+    // A move this iteration has proven better than what it replaces: one that
+    // failed high in an earlier aspiration attempt, or one that beat the current
+    // attempt's alpha. A stop mid-iteration plays it rather than the previous
+    // iteration's move.
+    Move proven_move = MOVE_NONE;
+    Value proven_value = -VALUE_INFINITE;
+    int aspiration_attempts = 0;
+    uint64_t nodes_on_best = 0;           // node effort of the best move's subtree
+};
+
+// One root iteration at `depth` over the ordered moves: the aspiration loop
+// around a root PVS (the first move with the window, the rest with a null-window
+// scout and a re-search when the scout beats alpha), widening the window after a
+// fail low or high. The main thread and every helper run it, so a helper builds
+// the same tree the main thread builds and its hash entries are the ones the
+// main thread probes for.
+static RootIteration root_iteration(Position& pos, ExtMove* moves, ExtMove* end, int depth,
+                                    Value alpha, Value beta, int aspiration_delta) {
+    RootIteration r;
+    int fail_high_streak = 0;
+    while (true) {
+        r.aspiration_attempts++;
+        // Reset on each aspiration iteration to avoid stale values
+        r.best_value = -VALUE_INFINITE;
+        r.best_move = MOVE_NONE;
+        if (r.aspiration_attempts > 5) {
+            alpha = -VALUE_INFINITE;
+            beta = VALUE_INFINITE;
+        }
+        // Repeated fail-highs re-search one ply shallower per streak:
+        // the position is clearly winning, only the exact height of the
+        // bound is in question, and proving it at full depth is waste.
+        int asp_depth = depth - 1
+                      - (fail_high_streak >= 2 ? std::min(fail_high_streak - 1, 3) : 0);
+
+        // Search all root moves with current bounds
+        int root_moves_searched = 0;
+        Value running_alpha = alpha;  // PVS window only, NOT the aspiration bound
+
+        for (ExtMove* it = moves; it != end; ++it) {
+            if (g_stop_requested || stop.load(std::memory_order_relaxed)) break;
+            if (check_time()) break;
+
+            if (!pos.do_move(it->move)) continue;
+            uint64_t nodes_before_move = nodes.load(std::memory_order_relaxed);
+
+            // Check stop immediately after do_move
+            if (g_stop_requested || stop.load(std::memory_order_relaxed)) {
+                pos.undo_move(it->move);
+                break;
+            }
+
+            Value value;
+            // PVS: first move gets full window, rest get zero-window scout
+            if (root_moves_searched == 0) {
+                value = -search_worker(pos, worker->stack + 1, -beta, -running_alpha,
+                                       asp_depth, false);
+            } else {
+                // Zero-window scout search
+                value = -search_worker(pos, worker->stack + 1, -running_alpha - 1, -running_alpha,
+                                       asp_depth, true);
+                // CRITICAL: Check stop immediately after recursive call
+                if (g_stop_requested || stop.load(std::memory_order_relaxed)) {
+                    pos.undo_move(it->move);
+                    break;
+                }
+                // Re-search with full window only if scout found something better
+                if (value > running_alpha && value < beta) {
+                    value = -search_worker(pos, worker->stack + 1, -beta, -running_alpha,
+                                           asp_depth, false);
+                }
+            }
+
+            // CRITICAL: Check stop after recursive search
+            if (stop.load(std::memory_order_relaxed)) {
+                pos.undo_move(it->move);
+                break;
+            }
+
+            pos.undo_move(it->move);
+            root_moves_searched++;
+
+            // No clock check here: it threw away the move just finished. The
+            // check at the top of the loop stops before the next one.
+
+            // Track node effort per root move
+            uint64_t nodes_spent_on_move = nodes.load(std::memory_order_relaxed) - nodes_before_move;
+
+            if (value > r.best_value) {
+                r.best_value = value;
+                r.best_move = it->move;
+                r.nodes_on_best = nodes_spent_on_move;
+            }
+            if (value > running_alpha) {
+                running_alpha = value;
+            }
+            if (value >= beta) break;  // Beta cutoff
+        }
+
+        // Check if time ran out during search: a move that beat this attempt's
+        // alpha in a finished search is proven better than the previous best
+        if (stop.load(std::memory_order_relaxed)) {
+            if (r.best_move != MOVE_NONE && r.best_value > alpha) {
+                r.proven_move = r.best_move;
+                r.proven_value = r.best_value;
+            }
+            break;
+        }
+
+        // Aspiration window check uses ORIGINAL alpha (not running_alpha).
+        // A score equal to alpha is an upper bound (fail-hard returns land
+        // exactly on the bound), so it fails low as well.
+        if (r.best_value <= alpha && alpha > -VALUE_INFINITE) {
+            // Fail low - widen downward, and halve the top of the window:
+            // the old beta overshot and re-searching against it is waste
+            fail_high_streak = 0;
+            alpha = std::max(Value(-VALUE_INFINITE),
+                             Value(r.best_value - aspiration_delta));
+            beta = Value((int(alpha) + int(beta)) / 2);
+            aspiration_delta += aspiration_delta / 2;
+        } else if (r.best_value >= beta) {
+            // Fail high - widen upward (raise beta only, keep alpha)
+            r.proven_move = r.best_move;
+            r.proven_value = r.best_value;
+            fail_high_streak++;
+            beta = std::min(Value(VALUE_INFINITE),
+                            Value(r.best_value + aspiration_delta));
+            aspiration_delta += aspiration_delta / 2;
+        } else {
+            // Score inside window - accept result
+            break;
+        }
+
+        // Safety: if delta is huge, use full window
+        if (aspiration_delta > 1200) {
+            alpha = -VALUE_INFINITE;
+            beta = VALUE_INFINITE;
+        }
+    }
+    return r;
+}
+
+// Clear the per-search state of a worker that persists across searches: the
+// killers, and half of the history and capture history (the gravity formula
+// decays them within a search; across searches they only age gently).
+static void begin_worker_search(SearchWorker* w) {
+    for (int i = 0; i < MAX_PLY; ++i) {
+        w->killers[i][0] = MOVE_NONE;
+        w->killers[i][1] = MOVE_NONE;
+    }
+    for (int i = 0; i < 12; ++i)
+        for (int j = 0; j < 64; ++j)
+            w->history[i][j] /= 2;
+    for (int p = 0; p < 12; ++p)
+        for (int s = 0; s < 64; ++s)
+            for (int c = 0; c < 7; ++c)
+                w->capture_history[p][s][c] /= 2;
+}
+
+// Helper thread for lazy SMP: the main thread's iterative deepening without its
+// clock decisions or output. Each iteration is root_iteration with the main
+// thread's window and move order, so the helper's hash entries are entries the
+// main thread's tree probes for, at the depths it searches. A helper never
+// starts an iteration below the depth the main thread is searching (that tree
+// is in the hash table already); the odd-numbered helpers run one ply ahead of
+// it, the even ones at its depth.
 static void helper_thread_func(Position pos_copy, int thread_id) {
     // Seed this thread's NNUE accumulator (each thread has its own, empty at start).
     if (nnue::loaded()) nnue::refresh(pos_copy);
-    // Create per-thread search worker
-    SearchWorker* w = new SearchWorker();
+    SearchWorker* w = helper_workers[thread_id];   // persistent; search() made it
     worker = w;
     local_nodes = 0;
     last_reported_nodes = 0;
+    begin_worker_search(w);
 
     // Initialize stack
     for (int i = 0; i < MAX_PLY_PLUS_6; ++i) {
@@ -2016,140 +2234,44 @@ static void helper_thread_func(Position pos_copy, int thread_id) {
         w->stack[i].pv[0] = MOVE_NONE;
     }
 
-    // Simple iterative deepening - no UCI output, no complex time management
-    // Offset start depth by thread_id to reduce TT contention between threads
     Move prev_best = MOVE_NONE;
-    Value prev_score = -VALUE_INFINITE;
-    int effective_depth = (limits.depth == 0) ? MAX_PLY : limits.depth;
-    int start_depth = 1 + thread_id;
+    Value prev_value = -VALUE_INFINITE;
+    const int effective_depth = (limits.depth == 0) ? MAX_PLY : limits.depth;
 
-    for (int d = start_depth; d <= effective_depth; ++d) {
+    for (int d = 1; d <= effective_depth; ) {
         if (stop.load(std::memory_order_relaxed) || g_stop_requested) break;
 
-        // Check time periodically
-        if ((local_nodes & 1023) == 0) {
-            nodes.fetch_add(local_nodes - last_reported_nodes, std::memory_order_relaxed);
-            last_reported_nodes = local_nodes;
-            if (check_time()) break;
-        }
-
-        // Aspiration window (same as main thread)
+        // The main thread's aspiration window around this helper's last score
         Value alpha = -VALUE_INFINITE;
         Value beta = VALUE_INFINITE;
-        if (d >= 4 && prev_score > -VALUE_KNOWN_WIN && prev_score < VALUE_KNOWN_WIN) {
-            alpha = prev_score - 50;
-            beta = prev_score + 50;
+        const int aspiration_delta = SPSAParams::get().aspiration_delta;
+        if (d >= 4 && prev_value > -VALUE_KNOWN_WIN && prev_value < VALUE_KNOWN_WIN) {
+            alpha = std::max(Value(-VALUE_INFINITE), Value(prev_value - aspiration_delta));
+            beta = std::min(Value(VALUE_INFINITE), Value(prev_value + aspiration_delta));
         }
-        // The move loop raises alpha; the fail test needs the original window.
-        const Value window_alpha = alpha, window_beta = beta;
 
-        // Generate moves
         ExtMove moves[MAX_MOVES];
         ExtMove* end = generate<GEN_LEGAL>(pos_copy, moves);
-
-        // Simple move ordering
-        for (ExtMove* it = moves; it != end; ++it) {
-            Move m = it->move;
-            int score = 0;
-            if (m == prev_best) score = 2000000;
-            else if (m.is_capture()) {
-                PieceType captured = pos_copy.piece_type_on(m.to());
-                PieceType attacker = pos_copy.piece_type_on(m.from());
-                static constexpr int pv[] = {100, 320, 330, 500, 900, 20000, 0};
-                score = 1000000 + (captured != PT_NONE ? pv[captured] : 0) * 10 - pv[attacker];
-            } else if (m.is_promotion()) {
-                score = 900000 + m.promotion_type() * 10000;
-            } else {
-                Piece pc = pos_copy.piece_on(m.from());
-                if (pc != NO_PIECE) score = w->history[int(pc)][int(m.to())];
-            }
-            it->value = score;
-        }
-
-        std::sort(moves, end, [](const ExtMove& a, const ExtMove& b) {
-            return a.value > b.value;
-        });
-
-        Value depth_best_value = -VALUE_INFINITE;
-        Move depth_best_move = MOVE_NONE;
-
-        for (ExtMove* it = moves; it != end; ++it) {
-            if (stop.load(std::memory_order_relaxed) || g_stop_requested) break;
-            if ((local_nodes & 1023) == 0) {
-                nodes.fetch_add(local_nodes - last_reported_nodes, std::memory_order_relaxed);
-            last_reported_nodes = local_nodes;
-                if (check_time()) break;
-            }
-
-            if (!pos_copy.do_move(it->move)) continue;
-
-            Value value = -search_worker(pos_copy, w->stack + 1, -beta, -alpha, d - 1, false);
-
-            pos_copy.undo_move(it->move);
-
-            if (stop.load(std::memory_order_relaxed)) break;
-
-            if (value > depth_best_value) {
-                depth_best_value = value;
-                depth_best_move = it->move;
-            }
-            if (value > alpha) {
-                alpha = value;
-            }
-            if (value >= beta) break;
-        }
-
+        order_root_moves(pos_copy, moves, end, d, prev_best, w);
+        const RootIteration r = root_iteration(pos_copy, moves, end, d, alpha, beta, aspiration_delta);
         if (stop.load(std::memory_order_relaxed)) break;
 
-        // Handle aspiration fail
-        if (depth_best_move != MOVE_NONE) {
-            if ((depth_best_value <= window_alpha && window_alpha > -VALUE_INFINITE)
-                || depth_best_value >= window_beta) {
-                // Fail - re-search with full window
-                alpha = -VALUE_INFINITE;
-                beta = VALUE_INFINITE;
-                depth_best_value = -VALUE_INFINITE;
-                depth_best_move = MOVE_NONE;
-
-                for (ExtMove* it = moves; it != end; ++it) {
-                    if (stop.load(std::memory_order_relaxed) || g_stop_requested) break;
-
-                    if (!pos_copy.do_move(it->move)) continue;
-                    Value value = -search_worker(pos_copy, w->stack + 1, -beta, -alpha, d - 1, false);
-                    pos_copy.undo_move(it->move);
-
-                    if (stop.load(std::memory_order_relaxed)) break;
-
-                    if (value > depth_best_value) {
-                        depth_best_value = value;
-                        depth_best_move = it->move;
-                    }
-                    if (value > alpha) alpha = value;
-                    if (value >= beta) break;
-                }
-
-                if (stop.load(std::memory_order_relaxed)) break;
-            }
-
-            // Update prev for next depth
-            prev_best = depth_best_move;
-            prev_score = depth_best_value;
-
+        if (r.best_move != MOVE_NONE) {
+            prev_best = r.best_move;
+            prev_value = r.best_value;
             // Save to TT (shared with main thread)
-            if (!stop.load(std::memory_order_relaxed)) {
-                bool found;
-                TTEntry* tte = TT.probe(pos_copy.key(), found);
-                if (TT.should_store(tte, found, d))
-                    tte->save(pos_copy.key(), depth_best_value, true, BOUND_EXACT, d, depth_best_move, VALUE_INFINITE, TT.generation());
-            }
+            bool found;
+            TTEntry* tte = TT.probe(pos_copy.key(), found);
+            if (TT.should_store(tte, found, d))
+                tte->save(pos_copy.key(), r.best_value, true, BOUND_EXACT, d, r.best_move, VALUE_INFINITE, TT.generation());
         }
+
+        d = std::max(d + 1, main_depth.load(std::memory_order_relaxed) + (thread_id & 1));
     }
 
     // Flush final node count
     nodes.fetch_add(local_nodes - last_reported_nodes, std::memory_order_relaxed);
     last_reported_nodes = local_nodes;
-
-    delete w;
     worker = nullptr;
 }
 
@@ -2313,34 +2435,23 @@ Move search(Position& pos, Limits& lim) {
         max_time = 0;
     }
 
-    // Launch helper threads for lazy SMP (after the time budget is published)
+    // Launch helper threads for lazy SMP (after the time budget is published).
+    // Their workers persist across searches like the main worker (each helper
+    // clears its own per-search state as it starts); main_depth starts at 0 so
+    // no helper jumps to the previous search's depth.
+    main_depth.store(0, std::memory_order_relaxed);
+    if (int(helper_workers.size()) < num_threads) helper_workers.resize(num_threads, nullptr);
+    for (int i = 1; i < num_threads; ++i)
+        if (!helper_workers[i]) helper_workers[i] = new SearchWorker();
     helpers_running = true;
     for (int i = 1; i < num_threads; ++i) {
         helper_threads.emplace_back([pos, i] { helper_thread_func(pos, i); });
     }
 
-    // Initialize killers (clear for new search)
-    for (int i = 0; i < MAX_PLY; ++i) {
-        worker->killers[i][0] = MOVE_NONE;
-        worker->killers[i][1] = MOVE_NONE;
-    }
-
-    // Age history tables (gravity formula handles intra-search decay,
-    // so we only need gentle inter-search aging)
-    for (int i = 0; i < 12; ++i) {
-        for (int j = 0; j < 64; ++j) {
-            worker->history[i][j] /= 2;
-        }
-    }
-
-    // Age capture history
-    for (int p = 0; p < 12; ++p) {
-        for (int s = 0; s < 64; ++s) {
-            for (int c = 0; c < 7; ++c) {
-                worker->capture_history[p][s][c] /= 2;
-            }
-        }
-    }
+    // Initialize killers (clear for new search) and age the history and
+    // capture history (gravity formula handles intra-search decay, so we only
+    // need gentle inter-search aging)
+    begin_worker_search(worker);
 
     // Counter-move and continuation history: don't age at all.
     // The gravity formula (bonus - h * abs(bonus) / 16384) already handles
@@ -2453,47 +2564,13 @@ Move search(Position& pos, Limits& lim) {
             beta = std::min(Value(VALUE_INFINITE), Value(best_value + aspiration_delta));
         }
 
-        // Generate moves
+        // The depth the helpers keep up with (helper_thread_func)
+        main_depth.store(root_depth, std::memory_order_relaxed);
+
+        // Generate moves and order them for the root
         ExtMove moves[MAX_MOVES];
         ExtMove* end = generate<GEN_LEGAL>(pos, moves);
-
-        // Order moves at root for better efficiency
-        for (ExtMove* it = moves; it != end; ++it) {
-            Move m = it->move;
-            int score = 0;
-
-            // CRITICAL: Prioritize previous iteration's best move (PV move)
-            if (root_depth > 1 && m == best_move) {
-                score = 2000000;  // Highest priority - previous PV move
-            }
-            // Prioritize winning captures (MVV-LVA)
-            else if (m.is_capture()) {
-                PieceType captured = m.is_en_passant() ? PAWN : pos.piece_type_on(m.to());
-                PieceType attacker = pos.piece_type_on(m.from());
-                static constexpr int piece_value[] = {100, 320, 330, 500, 900, 20000, 0};
-                score = 1000000 + piece_value[captured] * 10 - piece_value[attacker];
-            }
-            // Promotions
-            else if (m.is_promotion()) {
-                score = 900000 + m.promotion_type() * 10000;
-            }
-            // Quiet moves: use history + killer ordering
-            else {
-                Piece pc = pos.piece_on(m.from());
-                if (pc != NO_PIECE) {
-                    score = worker->history[int(pc)][int(m.to())];
-                    if (m == worker->killers[0][0]) score += 500000;
-                    else if (m == worker->killers[0][1]) score += 400000;
-                }
-            }
-
-            it->value = score;
-        }
-
-        // Sort moves by score (only need to sort once per depth)
-        std::sort(moves, end, [](const ExtMove& a, const ExtMove& b) {
-            return a.value > b.value;
-        });
+        order_root_moves(pos, moves, end, root_depth, best_move, worker);
 
         // MultiPV mode: every root move gets a full-window search and the
         // top-N results are reported per iteration. This bypasses the
@@ -2550,138 +2627,15 @@ Move search(Position& pos, Limits& lim) {
             continue;  // next depth iteration
         }
 
-        // Clean aspiration loop with root PVS
-        Value depth_best_value = -VALUE_INFINITE;
-        Move depth_best_move = MOVE_NONE;
-        // A move this iteration has proven better than what it replaces: one that
-        // failed high in an earlier aspiration attempt, or one that beat the
-        // current attempt's alpha. A stop mid-iteration plays it rather than the
-        // previous iteration's move.
-        Move proven_move = MOVE_NONE;
-        Value proven_value = -VALUE_INFINITE;
-
-        int aspiration_attempts = 0;
-        int fail_high_streak = 0;
-        while (true) {
-            aspiration_attempts++;
-            // Reset on each aspiration iteration to avoid stale values
-            depth_best_value = -VALUE_INFINITE;
-            depth_best_move = MOVE_NONE;
-            if (aspiration_attempts > 5) {
-                alpha = -VALUE_INFINITE;
-                beta = VALUE_INFINITE;
-            }
-            // Repeated fail-highs re-search one ply shallower per streak:
-            // the position is clearly winning, only the exact height of the
-            // bound is in question, and proving it at full depth is waste.
-            int asp_depth = root_depth - 1
-                          - (fail_high_streak >= 2 ? std::min(fail_high_streak - 1, 3) : 0);
-
-            // Search all root moves with current bounds
-            int root_moves_searched = 0;
-            Value running_alpha = alpha;  // PVS window only, NOT the aspiration bound
-
-            for (ExtMove* it = moves; it != end; ++it) {
-                if (g_stop_requested || stop.load(std::memory_order_relaxed)) break;
-                if (check_time()) break;
-
-                if (!pos.do_move(it->move)) continue;
-                uint64_t nodes_before_move = nodes.load(std::memory_order_relaxed);
-
-                // Check stop immediately after do_move
-                if (g_stop_requested || stop.load(std::memory_order_relaxed)) {
-                    pos.undo_move(it->move);
-                    break;
-                }
-
-                Value value;
-                // PVS: first move gets full window, rest get zero-window scout
-                if (root_moves_searched == 0) {
-                    value = -search_worker(pos, worker->stack + 1, -beta, -running_alpha,
-                                           asp_depth, false);
-                } else {
-                    // Zero-window scout search
-                    value = -search_worker(pos, worker->stack + 1, -running_alpha - 1, -running_alpha,
-                                           asp_depth, true);
-                    // CRITICAL: Check stop immediately after recursive call
-                    if (g_stop_requested || stop.load(std::memory_order_relaxed)) {
-                        pos.undo_move(it->move);
-                        break;
-                    }
-                    // Re-search with full window only if scout found something better
-                    if (value > running_alpha && value < beta) {
-                        value = -search_worker(pos, worker->stack + 1, -beta, -running_alpha,
-                                               asp_depth, false);
-                    }
-                }
-
-                // CRITICAL: Check stop after recursive search
-                if (stop.load(std::memory_order_relaxed)) {
-                    pos.undo_move(it->move);
-                    break;
-                }
-
-                pos.undo_move(it->move);
-                root_moves_searched++;
-
-                // No clock check here: it threw away the move just finished. The
-                // check at the top of the loop stops before the next one.
-
-                // Track node effort per root move
-                uint64_t nodes_spent_on_move = nodes.load(std::memory_order_relaxed) - nodes_before_move;
-
-                if (value > depth_best_value) {
-                    depth_best_value = value;
-                    depth_best_move = it->move;
-                    nodes_spent_on_best = nodes_spent_on_move;
-                }
-                if (value > running_alpha) {
-                    running_alpha = value;
-                }
-                if (value >= beta) break;  // Beta cutoff
-            }
-
-            // Check if time ran out during search: a move that beat this attempt's
-            // alpha in a finished search is proven better than the previous best
-            if (stop.load(std::memory_order_relaxed)) {
-                if (depth_best_move != MOVE_NONE && depth_best_value > alpha) {
-                    proven_move = depth_best_move;
-                    proven_value = depth_best_value;
-                }
-                break;
-            }
-
-            // Aspiration window check uses ORIGINAL alpha (not running_alpha).
-            // A score equal to alpha is an upper bound (fail-hard returns land
-            // exactly on the bound), so it fails low as well.
-            if (depth_best_value <= alpha && alpha > -VALUE_INFINITE) {
-                // Fail low - widen downward, and halve the top of the window:
-                // the old beta overshot and re-searching against it is waste
-                fail_high_streak = 0;
-                alpha = std::max(Value(-VALUE_INFINITE),
-                                 Value(depth_best_value - aspiration_delta));
-                beta = Value((int(alpha) + int(beta)) / 2);
-                aspiration_delta += aspiration_delta / 2;
-            } else if (depth_best_value >= beta) {
-                // Fail high - widen upward (raise beta only, keep alpha)
-                proven_move = depth_best_move;
-                proven_value = depth_best_value;
-                fail_high_streak++;
-                beta = std::min(Value(VALUE_INFINITE),
-                                Value(depth_best_value + aspiration_delta));
-                aspiration_delta += aspiration_delta / 2;
-            } else {
-                // Score inside window - accept result
-                // depth_best_value and depth_best_move already set
-                break;
-            }
-
-            // Safety: if delta is huge, use full window
-            if (aspiration_delta > 1200) {
-                alpha = -VALUE_INFINITE;
-                beta = VALUE_INFINITE;
-            }
-        }
+        // Clean aspiration loop with root PVS (root_iteration, which the
+        // helpers run too)
+        const RootIteration iter = root_iteration(pos, moves, end, root_depth, alpha, beta, aspiration_delta);
+        Value depth_best_value = iter.best_value;
+        Move depth_best_move = iter.best_move;
+        const Move proven_move = iter.proven_move;
+        const Value proven_value = iter.proven_value;
+        const int aspiration_attempts = iter.aspiration_attempts;
+        nodes_spent_on_best = iter.nodes_on_best;
 
         // Check time after all moves searched
         check_time();
@@ -3086,26 +3040,33 @@ void init_search_params() {
 }
 
 void clear_correction_history() {
-    // Tables live per-worker now; helper threads are fresh per search, so only
-    // the persistent main worker's tables need clearing between games.
-    if (!main_search_worker) return;
-    std::memset(&main_search_worker->corrhist_pawn, 0, sizeof(CorrHistTable));
-    std::memset(main_search_worker->corrhist_nonpawn, 0, sizeof(CorrHistTable) * 2);
-    std::memset(&main_search_worker->corrhist_minor, 0, sizeof(CorrHistTable));
-    std::memset(&main_search_worker->corrhist_major, 0, sizeof(CorrHistTable));
-    std::memset(&main_search_worker->corrhist_kingpawns, 0, sizeof(CorrHistTable));
+    // Tables live per-worker, and every worker persists across searches (the
+    // main one and the helpers'), so all of them are cleared between games.
+    auto clear = [](SearchWorker* w) {
+        std::memset(&w->corrhist_pawn, 0, sizeof(CorrHistTable));
+        std::memset(w->corrhist_nonpawn, 0, sizeof(CorrHistTable) * 2);
+        std::memset(&w->corrhist_minor, 0, sizeof(CorrHistTable));
+        std::memset(&w->corrhist_major, 0, sizeof(CorrHistTable));
+        std::memset(&w->corrhist_kingpawns, 0, sizeof(CorrHistTable));
+    };
+    if (main_search_worker) clear(main_search_worker);
+    for (SearchWorker* w : helper_workers)
+        if (w) clear(w);
 }
 
 void clear_search_history() {
-    if (main_search_worker) {
-        std::memset(main_search_worker->history, 0, sizeof(main_search_worker->history));
-        std::memset(main_search_worker->capture_history, 0, sizeof(main_search_worker->capture_history));
-        std::memset(main_search_worker->counter_move_table, 0, sizeof(main_search_worker->counter_move_table));
-        std::memset(main_search_worker->low_ply_history, 0, sizeof(main_search_worker->low_ply_history));
-        std::memset(main_search_worker->killers, 0, sizeof(main_search_worker->killers));
-        std::memset(main_search_worker->counter_moves, 0, sizeof(main_search_worker->counter_moves));
-        std::memset(main_search_worker->continuation_history, 0, sizeof(main_search_worker->continuation_history));
-    }
+    auto clear = [](SearchWorker* w) {
+        std::memset(w->history, 0, sizeof(w->history));
+        std::memset(w->capture_history, 0, sizeof(w->capture_history));
+        std::memset(w->counter_move_table, 0, sizeof(w->counter_move_table));
+        std::memset(w->low_ply_history, 0, sizeof(w->low_ply_history));
+        std::memset(w->killers, 0, sizeof(w->killers));
+        std::memset(w->counter_moves, 0, sizeof(w->counter_moves));
+        std::memset(w->continuation_history, 0, sizeof(w->continuation_history));
+    };
+    if (main_search_worker) clear(main_search_worker);
+    for (SearchWorker* w : helper_workers)
+        if (w) clear(w);
 }
 
 void clear_clock_lag() {
