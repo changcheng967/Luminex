@@ -1192,3 +1192,34 @@ time) will make arm64 saturate as x86 does, and its digest will then become
 x86's. That change is the fix landing, not a regression: its check is the
 arm64 digest equalling x86's. Expect arm64 evaluations to move only in the
 positions where a lane saturates. (Numbered after #77's sections 20 and 21.)
+
+## 23. Two lichess losses that became engine fixes (PRs #92 and #103, Nov 16-18)
+
+*7KjurpKn (#92).* luminexbot against PocketFriend at 3+3 reached K+R vs K
+at move 96, with Stockfish showing mate in 14 to 21 throughout, and
+shuffled into a 50-move draw. With a net loaded, `evaluate()` returned the
+network's score before any known-endgame rule ran, and the net scores a
+bare king flat at +12 to +15 pawns wherever the kings stand. #92 scores
+bare-king endings first: 50 of 102 play-outs mated before, 101 after.
+
+*szAF8TCT (#103).* luminexbot at 3+0 (main c69345d, 185 moves) lost on
+time while thinking 5 to 12 ms a move. In its game log the clock fell about
+125 ms a move more than the engine's own thinking: lichess's round trip,
+which the zero-increment schedule never counted. The reserve (1 s or 30
+move overheads, 6.2 s at the bot's Move Overhead 200) lasted 33 moves, and
+the flag fell 7 moves before the automatic 50-move draw in a
+rook-against-knight ending. #103 measures the lag from the clocks the
+engine is given (each sample clamped to [0, 400] ms, averaged at 1/8),
+pays it for the expected remaining moves, and scales the tail reserve to
+the true cost of a tail move; at no lag it is main's schedule.
+
+*Considered and deferred.* The increment and moves-to-go schedules still
+ignore lag. With an increment the lag comes out of each move's increment,
+so the exposure is smaller, but the bot plays increment controls on
+lichess too: if a game log there shows the same symptom, the same estimate
+extends to that schedule.
+
+*A caveat.* A GUI that reports clocks rounded more coarsely than the pipes'
+millisecond feeds part of its rounding into the estimate. The clamp and the
+1/8 weight bound the damage (a persistent spurious 50 ms costs about 2% of
+the budget), and `TimeLag=0` turns it off.

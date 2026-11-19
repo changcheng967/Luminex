@@ -324,6 +324,60 @@ static double value_horizon(int m, int last) {
     return std::max(1.0, h);
 }
 
+// The same survival model without the value weights: the expected number of own
+// moves still to be played from own move m, this one included (72.6 at move 1,
+// 31.25 from move 70 on).
+static double moves_horizon(int m) {
+    m = std::max(1, m);
+    double h = 0.0, survive = 1.0;
+    for (int j = m; j <= m + 400 && survive > 1e-4; ++j) {
+        h += survive;
+        survive *= 1.0 - 0.032 * std::clamp((j - 20) / 50.0, 0.0, 1.0);
+    }
+    return h;
+}
+
+// The clock's lag: what the clock loses on an own move beyond the engine's own
+// thinking, the round trip of the GUI or the server (on lichess 120-240 ms a
+// move in game szAF8TCT, which luminexbot lost on time at move 185 of a 3+0
+// game while thinking 5-12 ms a move). One sample per own move, from the clocks
+// the engine is given: the clock at the previous own move plus its increment,
+// less this move's clock, less the previous search's own time. A sample needs
+// two consecutive own moves of one game, both searched on the clock (book
+// moves, ponder and fixed-time searches give none). Each sample is held to
+// [0, LAG_SAMPLE_CAP_MS] and the estimate averages them with weight 1/8 on the
+// newest, so a single bad sample moves it by 50 ms at most.
+static constexpr int LAG_SAMPLE_CAP_MS = 400;
+static struct {
+    int time_left = 0, inc = 0, ply = -1, think_ms = 0;
+    bool timed = false;
+} prev_clock;
+static double lag_ms = 0.0;
+static int lag_samples = 0;
+
+static int lag_estimate() { return lag_samples > 0 ? int(lag_ms + 0.5) : 0; }
+
+static void reset_clock_lag() {
+    prev_clock = {};
+    lag_ms = 0.0;
+    lag_samples = 0;
+}
+
+// At the start of a search: the previous own move's sample when there is one,
+// then this search's clock for the next one (its own time is set at the end).
+static void note_clock(const Position& pos, const Limits& lim) {
+    const bool timed = lim.use_time_management() && !lim.ponder;
+    const Color us = pos.side_to_move();
+    const int time_left = std::max(0, lim.time[int(us)]);
+    const int inc = std::max(0, lim.inc[int(us)]);
+    if (timed && prev_clock.timed && pos.game_ply() == prev_clock.ply + 2) {
+        int sample = prev_clock.time_left + prev_clock.inc - time_left - prev_clock.think_ms;
+        lag_ms += (std::clamp(sample, 0, LAG_SAMPLE_CAP_MS) - lag_ms) / 8.0;
+        ++lag_samples;
+    }
+    prev_clock = {time_left, inc, pos.game_ply(), 0, timed};
+}
+
 // Check time - returns true if time limit exceeded
 bool check_time() {
     // Check volatile stop flag first for fastest response
@@ -2079,6 +2133,7 @@ Move search(Position& pos, Limits& lim) {
     // spawning first left the helpers reading the previous search's values for
     // the first instant of each search (same shape as the correction-history
     // bug: shared state written after the readers have already started).
+    note_clock(pos, limits);
     if (limits.use_time_management()) {
         Color us = pos.side_to_move();
         int time_left = limits.time[int(us)];
@@ -2112,7 +2167,15 @@ Move search(Position& pos, Limits& lim) {
             // for a long game's tail at minimum time (~12 ms a move): 1 s, or
             // 30 move overheads if more, kept 0.5 s at move 150 on the model
             // (a 169-move game flagged with 0.6 s).
-            int excess  = std::max(0, time_left - overhead - std::max(1000, 30 * overhead));
+            // With lag (lag_estimate(), TimeLag) every move costs the clock
+            // its lag on top of the thinking: the moves still expected pay it
+            // first (lag x moves_horizon()), and a move of the tail costs
+            // 12 ms + lag, so the 1 s that kept the tail at 12 ms a move becomes
+            // 1 s x (12 + lag) / 12 for the same number of moves. At no lag
+            // both terms are the reserve above exactly.
+            int lag     = params.time_lag > 0 ? lag_estimate() : 0;
+            int tail    = std::max({1000, 30 * overhead, 1000 * (12 + lag) / 12});
+            int excess  = std::max(0, time_left - overhead - tail - int(lag * moves_horizon(move_no)));
             int target  = int(excess / value_horizon(move_no, 0));
             int hard    = excess / 2;
             ideal_time  = std::min(target * 116 / 100, hard);
@@ -2637,6 +2700,10 @@ Move search(Position& pos, Limits& lim) {
     helper_threads.clear();
     helpers_running = false;
 
+    // This search's own time, for the next own move's lag sample
+    prev_clock.think_ms = int(std::chrono::duration_cast<std::chrono::milliseconds>(
+        std::chrono::steady_clock::now() - search_start).count());
+
     // Keep main worker alive — history persists for next search in same game
     worker = nullptr;
 
@@ -2952,6 +3019,10 @@ void clear_search_history() {
         std::memset(main_search_worker->counter_moves, 0, sizeof(main_search_worker->counter_moves));
         std::memset(main_search_worker->continuation_history, 0, sizeof(main_search_worker->continuation_history));
     }
+}
+
+void clear_clock_lag() {
+    reset_clock_lag();
 }
 
 } // namespace luminex
