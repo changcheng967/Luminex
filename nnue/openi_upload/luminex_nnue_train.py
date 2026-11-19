@@ -176,12 +176,16 @@ class LNNUE(nn.Module):
         # New layout: [stm(new_L1), nstm(new_L1)]  = [0..new-1, new..2*new-1]
         # Copy old stm at positions [0:old], old nstm at [new_L1:new_L1+old],
         # zeros everywhere else (the new dims contribute zero → function preserved).
-        old_l2w = sd['l2.weight']  # [L2, 2*old_L1]
-        L2_dim = old_l2w.shape[0]
-        new_l2w = torch.zeros(L2_dim, 2 * new_L1, device=old_l2w.device)
-        new_l2w[:, :old_L1] = old_l2w[:, :old_L1]              # old stm
-        new_l2w[:, new_L1:new_L1 + old_L1] = old_l2w[:, old_L1:]  # old nstm
-        sd['l2.weight'] = new_l2w
+        # The plain tail's l2 and, in a bucketed net, every output bucket's bl2.<b> read the
+        # same concat, so each one is widened the same way.
+        for key in [k for k in sd if k == 'l2.weight' or (k.startswith('bl2.') and k.endswith('.weight'))]:
+            old_l2w = sd[key]  # [L2, 2*old_L1]
+            if old_l2w.shape[1] != 2 * old_L1:
+                continue
+            new_l2w = torch.zeros(old_l2w.shape[0], 2 * new_L1, device=old_l2w.device, dtype=old_l2w.dtype)
+            new_l2w[:, :old_L1] = old_l2w[:, :old_L1]              # old stm
+            new_l2w[:, new_L1:new_L1 + old_L1] = old_l2w[:, old_L1:]  # old nstm
+            sd[key] = new_l2w
 
         # --- Everything else (l2.bias, l3, out, lin) unchanged ---
         missing = model.load_state_dict(sd, strict=False)

@@ -32,6 +32,10 @@ jobs:
     - uses: actions/checkout@v5
     - id: id
       run: echo "build_id=dev-$(TZ=UTC git show -s --format=%cd --date=format-local:%Y%m%d HEAD)-$(git rev-parse HEAD | cut -c1-8)" >> "$GITHUB_OUTPUT"
+    # The trainer's QAT grid (FT_GRID) must be the engine's NNUE_FT_SCALE: a change to either alone stops
+    # every build here, not in a net trained on the wrong grid weeks later.
+    - name: Check the trainer's feature grid against the engine's
+      run: python3 nnue/openi_upload/check_grid.py
 
   # Ubuntu 22.04 with libstdc++ and libgcc linked in, so the binary runs on
   # glibc 2.35 and newer. gcc-13 from the toolchain PPA, or from conda-forge

@@ -18,6 +18,31 @@ Environment (default in brackets):
                      (a background thread gathers the host-RAM rows a few batches
                      ahead), and each pass's order comes from a keyed permutation that
                      stores nothing, so the data can exceed the card and 2^32 positions
+  NNUE_FEED_THREADS [8]  threads that make each host-RAM batch in feeder.cpp (built
+                     with g++ on first use, next to this file): the permutation, the
+                     split between the pools and the gather, in one call without the GIL.
+                     The batches are the numpy path's, bit for bit. 0 = the numpy path
+  NNUE_BINPACKS      instead of NNUE_DATA: training binpacks (nnue-pytorch's format; a path, or a
+                     comma-separated list of paths and globs), held in host RAM at ~2.6 bytes a
+                     position, so all of t91's BT4 months (8.56B positions, 26.8 GB) fit where
+                     32-byte records capped a run at ~6.1B. binfeed.cpp (built on first use against
+                     NNUE_PYTORCH's binpack reader) decodes them on the CPU into LCR1 records,
+                     binpack2lcr's bit for bit, the chunks in a new pseudo-random order each pass;
+                     the batches come out of a shuffle reservoir in VRAM (BinpackFeeder). The
+                     validation split is the same (by hash): an index pass finds the held-out
+                     positions and each chunk's count once, cached next to each file (<file>.bfx).
+                     NNUE_MAX_POS keeps the first chunks in file order
+  NNUE_RESERVOIR [NNUE_VRAM_POS, else 1e9]  positions in the VRAM reservoir: the stream is cut into
+                     windows of this many positions, and each window is trained in a uniformly
+                     random order (32 bytes of VRAM a position)
+  NNUE_DECODE_THREADS [cores - 4]  binfeed.cpp threads decoding chunks (also the index pass's)
+  NNUE_READ_THREADS [8]  parallel reads of the binpacks into RAM
+  NNUE_BINPACK_CACHE [1]  0: neither read nor write the index caches (<file>.bfx)
+  NNUE_PYTORCH [<this dir>/nnue-pytorch]  checkout of official-stockfish/nnue-pytorch (binpack.h)
+  NNUE_STALL_SEC [300]  when no training step finishes, or no batch comes from the binpack feeder,
+                     for this long: print every thread's stack, the binpack stream's state and the
+                     GPU's load (again every NNUE_STALL_SEC); a feeder with no batch for 3x this
+                     raises instead of waiting forever
   NNUE_FENEVAL_FILE  fen<TAB>cp[<TAB>flag] lines (.xz, .zst or plain text)
   NNUE_DATA_VIA_FILE [0]  1: decompress to a temporary text file, then featurize
                      file to file (no pipe at all)
@@ -30,11 +55,16 @@ Environment (default in brackets):
   NNUE_BUDGET_SEC    [0 = none] wall-clock budget; the horizon shrinks to fit it
   NNUE_LOSS_POWER [2.6]  NNUE_QUIET_LOSS ["" = unweighted, e.g. 1,0.3,0]
   NNUE_VAL_FRAC [0.002]  share of positions held out by FEN hash (never trained on)
-  NNUE_VAL_DATA      LCR1 file(s) or globs from games the run never trains on (another
+  NNUE_VAL_DATA      LCR1 file(s), binpacks or globs from games the run never trains on (another
                      month): a [DISJOINT] line beside each [HEALTH] line. The hash split
                      shares games with the training data, so only these positions show
                      a net memorising games or fitting a biased corpus
-  NNUE_VAL_MAX [5e6] positions of NNUE_VAL_DATA to load
+  NNUE_VAL_TREE      LCR1 file(s), binpacks or globs of search-tree samples the run never trains
+                     on (xushawn/sf-searchtree-bt4: positions from inside Stockfish's search):
+                     a [TREE] line with [DISJOINT]'s fields beside it, the accuracy where the
+                     engine evaluates
+  NNUE_VAL_MAX [5e6] positions of NNUE_VAL_DATA (and of NNUE_VAL_TREE) to load: a binpack's
+                     first whole chunks, so a large file is never read whole
   NNUE_EVAL_EVERY [1000] steps between [HEALTH] validation lines
   NNUE_SAVE_EVERY [3000] steps between checkpoint saves
   NNUE_KEEP_EVERY [0 = off] steps between numbered copies of the float net
@@ -45,26 +75,60 @@ Environment (default in brackets):
   NNUE_CONTINUE [0] 1: a resumed .pt keeps its schedule. NNUE_T_MAX_STEPS then counts
                      from the run's first step, so the cosine and the stop carry on
                      where the checkpoint left off (a run cut short resumes as planned)
+  NNUE_SCHED_START [0]  with NNUE_CONTINUE=1: the step at which the checkpoint's schedule
+                     began, for a run that had itself resumed a .pt on a new cosine (run05
+                     started from gen768r_04 at 860000): the schedule then carries on from
+                     gstep - NNUE_SCHED_START, not from gstep
   NNUE_LIVE_CLAMP [0]  tail activations pass this gradient slope outside [0, 1];
                      the forward pass (and so the engine's net) is unchanged
   NNUE_QAT [0]       1: train the network the way the engine runs it. The first layer
-                     is rounded to the engine's int16 grid (x2048); each bucket's L2, L3
+                     is rounded to the engine's int16 grid (FT_GRID); each bucket's L2, L3
                      and output weights to int8 with quantize_i8.py's scale (127 / max|w|);
                      every activation into them to the engine's 1/127 steps. Gradients
                      pass straight through the rounding and the tail runs in fp32, so the
                      network trained is the network the engine loads after quantize_i8.py
+  NNUE_QAT_FT8 [0]   with NNUE_QAT: SHIFT (1-8) rounds the first layer's weights instead to the
+                     int8 table of an LNF8 net, q << SHIFT on the engine's grid: steps of
+                     2^SHIFT / FT_GRID, clipped at +-127 steps; the bias stays on FT_GRID. Neither
+                     the engine nor quantize_i8.py on main reads LNF8 nets
+  NNUE_QAT_AFTER [0] steps of QAT in this run after the float phase (NNUE_QAT=0) ends: the float
+                     net is saved as usual, then the same process carries on with QAT (as NNUE_QAT=1,
+                     with NNUE_QAT_FT8) from that model and optimizer state on a new cosine of this many
+                     steps, on the same resident data: no reload. Anything the run added to LNNUE (a
+                     head) is dropped at the switch, as the cells' strip step does, so QAT trains the
+                     value net alone. NNUE_QAT_LR [NNUE_LR] its peak learning rate (the tail at
+                     NNUE_TAIL_LR_MULT times it), NNUE_QAT_BUDGET_SEC [0 = none] its own wall-clock
+                     budget, NNUE_QAT_EVERY [NNUE_EVAL_EVERY] its validation, checkpoint and
+                     numbered-copy interval, NNUE_QAT_OUT_NAME [<NNUE_OUT_NAME>q.nnue] its net
   NNUE_FT_DENSE [0]  the feature layer as dense per-king-bucket matmuls on tensor cores
                      (positions sorted by bucket into tiles; X 0/1 times the bucket's
                      768 x L1 block) instead of EmbeddingBag: 1 = the weight gradient
                      only (the forward stays EmbeddingBag's, bit-identical), 2 = the
                      forward too (bf16 inputs, fp32 accumulation; with NNUE_QAT in
                      exact fp32, so it still equals the engine's int16 sums)
+                     3 = ft_fused.py's Triton kernels: X tiles built on chip from piece
+                     bitboards (no X in memory), both sides in one launch, bf16 forward and
+                     bf16 weight gradient with fp32 accumulation. With NNUE_QAT the forward is
+                     exact: each rounded weight split into two bf16 parts that sum to it, two
+                     dots into one fp32 accumulator, fp32 out (the engine's int16 sums, as =2)
+  NNUE_FT_FP8 [0]    with NNUE_FT_DENSE=3: 1 = the weight gradient in FP8 (G in e4m3, one
+                     global scale and a power-of-two boost per row), 2 = the forward too
+                     (the table in e4m3 with a scale per column); 0 = bf16 both ways
+  NNUE_FT_ACT [1]    with NNUE_FT_DENSE=3: the kernels also add the bias and apply SCReLU,
+                     writing each side's values straight into the next layer's input (side
+                     to move first; bf16, fp32 under QAT), and the backward of both is one
+                     kernel: no un-sort of the sums, no elementwise passes over them. The
+                     same values and gradients bit for bit (the bias gradient sums in another
+                     order); 0 = the separate elementwise pass of before
   NNUE_FT_TILE [1024]  rows per tile of the dense feature layer
   NNUE_FT_TF32 [1]   the dense gradient matmul in TF32 (0: exact fp32, slower)
   NNUE_TARGET_CLIP [1500]  |target| cap inside the loss (mates and big scores stay
                      in the data and train as "winning"; 1500 = 97.7% in the loss)
   NNUE_LOSS_WIDE ["" ]  "scale,weight": add weight * the same loss at a wider
                      sigmoid scale, which keeps a gradient in won positions
+  NNUE_PROFILE [0]   profile this many steps after NNUE_PROFILE_WARMUP [300] steps of the
+                     run (torch.profiler: GPU time by kernel and by kind, per step), write
+                     the trace next to the net, and stop
   NNUE_OUT_DIR [.]  NNUE_OUT_NAME [luminex_resident.nnue]
 """
 import math
@@ -106,26 +170,66 @@ POWER = float(env("NNUE_LOSS_POWER", "2.6"))
 QW = parse_quiet_loss(env("NNUE_QUIET_LOSS", ""))
 VAL_FRAC = float(env("NNUE_VAL_FRAC", "0.002"))
 VRAM_POS = int(float(env("NNUE_VRAM_POS", "0")))
+FEED_THREADS = int(env("NNUE_FEED_THREADS", "8"))
+BINPACKS = env("NNUE_BINPACKS", "")
+RESERVOIR = int(float(env("NNUE_RESERVOIR", "0")))
+DECODE_THREADS = max(1, int(env("NNUE_DECODE_THREADS", str(max(2, (os.cpu_count() or 8) - 4)))))
+READ_THREADS = max(1, int(env("NNUE_READ_THREADS", "8")))
+BINPACK_CACHE = env("NNUE_BINPACK_CACHE", "1") == "1"
+STALL_SEC = max(10.0, float(env("NNUE_STALL_SEC", "300")))
+PROGRESS = {"t": time.time(), "step": 0}   # the last finished training step (the stall watchdog's clock)
 VAL_DATA = env("NNUE_VAL_DATA", "")
+VAL_TREE = env("NNUE_VAL_TREE", "")
 VAL_MAX = int(float(env("NNUE_VAL_MAX", "5e6")))
 EVAL_EVERY = int(env("NNUE_EVAL_EVERY", "1000"))
 SAVE_EVERY = int(env("NNUE_SAVE_EVERY", "3000"))
 KEEP_EVERY = int(env("NNUE_KEEP_EVERY", "0"))
 CONTINUE = env("NNUE_CONTINUE", "0") == "1"
+SCHED_START = int(float(env("NNUE_SCHED_START", "0")))
 COMPILE = env("NNUE_COMPILE", "0") == "1"
 LIVE = float(env("NNUE_LIVE_CLAMP", "0"))
 QAT = env("NNUE_QAT", "0") == "1"
-# The engine's first-layer int16 grid (src/nnue_kernels.h NNUE_FT_SCALE): QAT rounds the feature weights
-# and biases to it
+QAT_FT8 = int(env("NNUE_QAT_FT8", "0"))
+QAT_AFTER = int(float(env("NNUE_QAT_AFTER", "0")))
+QAT_LR = float(env("NNUE_QAT_LR", str(LR)))
+QAT_BUDGET = float(env("NNUE_QAT_BUDGET_SEC", "0"))
+QAT_EVERY = int(env("NNUE_QAT_EVERY", "0")) or int(env("NNUE_EVAL_EVERY", "1000"))
+if QAT_AFTER and QAT:
+    raise SystemExit("FAIL: NNUE_QAT_AFTER continues a float phase into QAT: it needs NNUE_QAT=0")
+if QAT_FT8 and not ((QAT or QAT_AFTER) and 1 <= QAT_FT8 <= 8):
+    raise SystemExit(f"FAIL: NNUE_QAT_FT8={QAT_FT8} needs NNUE_QAT=1 (or NNUE_QAT_AFTER) and a shift from 1 to 8")
+# The engine's first-layer int16 grid (src/nnue_kernels.h NNUE_FT_SCALE), and the trainer's one copy of it:
+# QAT rounds the feature weights and biases to FT_GRID (qat_ft, qat_bias) and nowhere else. check_grid.py
+# fails when it and the engine's differ, or when a rounding uses a literal grid instead (CI runs it on every
+# push, check_fused.py before every GPU check), and a QAT run from a checkout checks it at the start.
 FT_GRID = 2048.0
+if QAT or QAT_AFTER:
+    try:
+        import check_grid
+    except ImportError:   # a copy of the trainer without its checkout (a box's tools folder)
+        check_grid = None
+    _hdr = env("NNUE_ENGINE_HEADER", "") or (check_grid.HEADER if check_grid else "")
+    if check_grid and os.path.exists(_hdr):
+        if check_grid.engine_grid(_hdr) != FT_GRID:
+            raise SystemExit(f"FAIL: FT_GRID x{FT_GRID:g} is not the engine's NNUE_FT_SCALE "
+                             f"x{check_grid.engine_grid(_hdr):g} ({_hdr}): QAT would train another grid")
+        print(f"[grid] FT_GRID x{FT_GRID:g} = the engine's NNUE_FT_SCALE ({_hdr})", flush=True)
+    else:
+        print(f"[grid] FT_GRID x{FT_GRID:g}, not checked against the engine here (no check_grid.py or no "
+              f"{_hdr or 'src/nnue_kernels.h'}; NNUE_ENGINE_HEADER names the header)", flush=True)
 FT_DENSE = int(env("NNUE_FT_DENSE", "0"))
 FT_TILE = int(env("NNUE_FT_TILE", "1024"))
+FT_FP8 = int(env("NNUE_FT_FP8", "0"))
+FT_ACT = FT_DENSE == 3 and env("NNUE_FT_ACT", "1") == "1"
+PROFILE = int(env("NNUE_PROFILE", "0"))
+PROFILE_WARMUP = int(env("NNUE_PROFILE_WARMUP", "300"))
 FT_TF32 = env("NNUE_FT_TF32", "1") == "1"
 WIDE = [float(x) for x in env("NNUE_LOSS_WIDE", "").split(",")] if env("NNUE_LOSS_WIDE", "") else None
 TARGET_CLIP = float(env("NNUE_TARGET_CLIP", "1500"))   # |target| cap in the loss; data keeps raw scores
 OUT_DIR = env("NNUE_OUT_DIR", ".")
 OUT = env("NNUE_OUT_NAME", "luminex_resident.nnue")
 OUT_BASE = OUT[:-5] if OUT.endswith(".nnue") else OUT
+QAT_OUT = env("NNUE_QAT_OUT_NAME", OUT_BASE + "q.nnue")
 dev = env("NNUE_DEVICE", "cuda")   # cpu: a slow dry run of every code path on a machine without a GPU
 
 
@@ -224,22 +328,51 @@ def load_data(paths):
     return train[:nt], (torch.from_numpy(host[:nh]) if host is not None and nh else None), val
 
 
-def load_records(paths, cap):
-    """LCR1 files -> one uint8 [n, 32] tensor on the GPU, at most cap positions
-    in file order (the game-disjoint validation set)."""
+def load_records(paths, cap, what="game-disjoint"):
+    """LCR1 files or binpacks -> one uint8 [n, 32] tensor on the GPU, at most cap
+    positions in file order (a held-out validation set). A binpack gives every
+    position binpack2lcr would write, in its order (binfeed.cpp), read only as far
+    as the cap needs: its first whole chunks within 4 bytes a position (game files
+    take ~3), then 4x as many bytes until the cap is met (search-tree files take 34
+    a position) or the file is read whole."""
     parts, n = [], 0
     for p in paths:
         if n >= cap:
             break
-        a = np.fromfile(p, dtype=np.uint8, count=(cap - n) * REC)
-        if a.size % REC:
-            raise SystemExit(f"FAIL: {p} is not a whole number of {REC}-byte records")
+        if p.endswith(".binpack"):
+            size, want = os.path.getsize(p), (cap - n) * 4 + (64 << 20)
+            while True:   # threshold 2^32: every position "held out"
+                bp = Binpacks([p], 2 ** 32, False, quiet=True, max_bytes=want)
+                a, whole = bp.val_records(cap - n), bp.info["bytes"] >= size
+                bp.close()
+                if len(a) >= cap - n or whole:
+                    break
+                want *= 4
+        else:
+            a = np.fromfile(p, dtype=np.uint8, count=(cap - n) * REC)
+            if a.size % REC:
+                raise SystemExit(f"FAIL: {p} is not a whole number of {REC}-byte records")
         parts.append(a.reshape(-1, REC))
         n += len(parts[-1])
     rec = (torch.from_numpy(np.concatenate(parts)).to(dev) if parts
            else torch.empty((0, REC), dtype=torch.uint8, device=dev))
-    print(f"[data] game-disjoint validation: {len(rec):,} positions from {len(paths)} file(s)", flush=True)
+    print(f"[data] {what} validation: {len(rec):,} positions from {len(parts)} of {len(paths)} file(s)", flush=True)
     return rec
+
+
+def held_out_set(spec, name, files, what):
+    """NNUE_VAL_DATA or NNUE_VAL_TREE: at most NNUE_VAL_MAX positions of files the run never
+    trains on (none of them may be a training file); None when unset."""
+    if not spec:
+        return None
+    vfiles = data_files(spec)
+    if not vfiles or not all(os.path.exists(p) for p in vfiles):
+        raise SystemExit(f"FAIL: {name} {spec} not found")
+    shared = set(map(os.path.realpath, vfiles)) & set(map(os.path.realpath, files))
+    if shared:
+        raise SystemExit(f"FAIL: {name} shares {len(shared)} file(s) with the training data, "
+                         f"e.g. {sorted(shared)[0]}: those positions are trained on")
+    return load_records(vfiles, VAL_MAX, what)
 
 
 class HostShuffle:
@@ -323,13 +456,42 @@ class KeyedShuffle:
         return y
 
 
+def feeder_lib():
+    """feeder.cpp's feed_batch through ctypes (a call releases the GIL), built next to
+    this file with g++ when the .so is missing or older than the source. None when
+    NNUE_FEED_THREADS=0 or it can't be built or loaded: PoolFeeder then feeds through numpy."""
+    if FEED_THREADS <= 0:
+        return None
+    import ctypes
+    src, so = os.path.join(HERE, "feeder.cpp"), os.path.join(HERE, "libfeeder.so")
+    try:
+        if os.path.exists(src) and (not os.path.exists(so) or os.path.getmtime(so) < os.path.getmtime(src)):
+            tmp = f"{so}.{os.getpid()}.tmp"
+            subprocess.run(["g++", "-O3", "-march=native", "-shared", "-fPIC", "-pthread", src, "-o", tmp],
+                           check=True, capture_output=True, text=True)
+            os.replace(tmp, so)
+        lib = ctypes.CDLL(so)
+    except (OSError, subprocess.CalledProcessError) as e:
+        why = e.stderr.strip().splitlines()[-1] if isinstance(e, subprocess.CalledProcessError) and e.stderr else e
+        print(f"[feed] feeder.cpp unavailable ({why}): host-RAM batches go through numpy", flush=True)
+        return None
+    lib.feed_batch.restype = ctypes.c_int64
+    lib.feed_batch.argtypes = [ctypes.c_void_p, ctypes.c_int64, ctypes.c_int64, ctypes.c_void_p, ctypes.c_uint,
+                               ctypes.c_uint64, ctypes.c_int64, ctypes.c_int64, ctypes.c_void_p, ctypes.c_void_p,
+                               ctypes.c_void_p, ctypes.c_int]
+    return lib
+
+
 class PoolFeeder:
     """Training batches drawn from a VRAM pool and a host-RAM pool together. A
     background thread takes each batch's positions from a KeyedShuffle over both
     pools, gathers the host-RAM rows into pinned memory and copies them and the VRAM
     indices to the GPU on a side stream, up to DEPTH batches ahead; next() waits on
     that copy and returns the [bs, 32] batch. A batch has bs positions; the share
-    from each pool follows the pools' sizes."""
+    from each pool follows the pools' sizes. With feeder.cpp (NNUE_FEED_THREADS > 0) one
+    call makes a batch, permutation and gather together, on several threads and without
+    the GIL; numpy took ~26 ms a batch for the permutation alone at 6.6B positions
+    (34 Feistel bits, 2.6 rounds of cycle walking), and the GPU waited for it."""
 
     DEPTH = 3
 
@@ -342,6 +504,14 @@ class PoolFeeder:
         self.stream = torch.cuda.Stream() if cuda else None
         nslot = self.DEPTH + 2
         self.pins = [torch.empty((bs, REC), dtype=torch.uint8, pin_memory=cuda) for _ in range(nslot)]
+        self.lib, self.threads = feeder_lib(), FEED_THREADS
+        if self.lib is not None:
+            assert host_pool.is_contiguous() and host_pool.shape[1] == REC
+            self.gpins = [torch.empty(bs, dtype=torch.int64, pin_memory=cuda) for _ in range(nslot)]
+            self.scratch = np.empty(bs, dtype=np.uint64)
+            self.kepoch, self.keys = -1, None
+        print(f"[feed] host-RAM batches: "
+              f"{f'feeder.cpp, {self.threads} threads' if self.lib is not None else 'numpy'}", flush=True)
         self.done_ev = [None] * nslot
         self.q = queue.Queue(maxsize=self.DEPTH)
         self.err = None
@@ -351,23 +521,34 @@ class PoolFeeder:
         try:
             epoch, k, slot = 0, 0, 0
             while True:
-                idx = self.shuffle.indices(epoch, k * self.bs, self.bs)
-                in_gpu = idx < np.uint64(self.ng)
-                gi = torch.from_numpy(idx[in_gpu].astype(np.int64))
-                hi = torch.from_numpy((idx[~in_gpu] - np.uint64(self.ng)).astype(np.int64))
-                if self.done_ev[slot] is not None:
-                    self.done_ev[slot].synchronize()        # this slot's last copy has landed
-                pin = self.pins[slot][:len(hi)]
-                torch.index_select(self.hp, 0, hi, out=pin)
+                if self.lib is not None:
+                    if self.kepoch != epoch:
+                        self.kepoch, self.keys = epoch, np.array(self.shuffle._keys(epoch), dtype=np.uint64)
+                    if self.done_ev[slot] is not None:
+                        self.done_ev[slot].synchronize()    # this slot's last copies have landed
+                    c = self.lib.feed_batch(self.hp.data_ptr(), self.ng, self.n, self.keys.ctypes.data,
+                                            int(self.shuffle.h), int(self.shuffle.mask), k * self.bs, self.bs,
+                                            self.gpins[slot].data_ptr(), self.pins[slot].data_ptr(),
+                                            self.scratch.ctypes.data, self.threads)
+                    gi, pin = self.gpins[slot][:c], self.pins[slot][:self.bs - c]
+                else:
+                    idx = self.shuffle.indices(epoch, k * self.bs, self.bs)
+                    in_gpu = idx < np.uint64(self.ng)
+                    gi = torch.from_numpy(idx[in_gpu].astype(np.int64))
+                    hi = torch.from_numpy((idx[~in_gpu] - np.uint64(self.ng)).astype(np.int64))
+                    if self.done_ev[slot] is not None:
+                        self.done_ev[slot].synchronize()    # this slot's last copy has landed
+                    pin = self.pins[slot][:len(hi)]
+                    torch.index_select(self.hp, 0, hi, out=pin)
                 if self.stream is not None:
                     with torch.cuda.stream(self.stream):
-                        g_idx = gi.pin_memory().to(dev, non_blocking=True)
+                        g_idx = (gi if self.lib is not None else gi.pin_memory()).to(dev, non_blocking=True)
                         h_rows = pin.to(dev, non_blocking=True)
                         ev = torch.cuda.Event()
                         ev.record(self.stream)
                     self.done_ev[slot] = ev
                 else:
-                    g_idx, h_rows, ev = gi, pin.clone(), None
+                    g_idx, h_rows, ev = gi.clone(), pin.clone(), None   # the slot's buffers are reused
                 self.q.put((g_idx, h_rows, ev, epoch))
                 slot = (slot + 1) % len(self.pins)
                 k += 1
@@ -387,6 +568,342 @@ class PoolFeeder:
             g_idx.record_stream(torch.cuda.current_stream())
             h_rows.record_stream(torch.cuda.current_stream())
         return torch.cat([self.g[g_idx], h_rows]), epoch
+
+
+def binfeed_lib():
+    """binfeed.cpp through ctypes (a call releases the GIL), built next to this file with g++
+    against nnue-pytorch's binpack reader (NNUE_PYTORCH) when the .so is missing or older than
+    the source, as binpack2lcr is built."""
+    import ctypes
+    src, so = os.path.join(HERE, "binfeed.cpp"), os.path.join(HERE, "libbinfeed.so")
+    if not os.path.exists(so) or os.path.getmtime(so) < os.path.getmtime(src):
+        inc = os.path.join(env("NNUE_PYTORCH", os.path.join(HERE, "nnue-pytorch")), "data_loader", "cpp")
+        if not os.path.exists(os.path.join(inc, "lib", "binpack.h")):
+            raise SystemExit(f"FAIL: binpacks need nnue-pytorch's reader: no {inc}/lib/binpack.h (set NNUE_PYTORCH)")
+        tmp = f"{so}.{os.getpid()}.tmp"
+        r = subprocess.run(["g++", "-O3", "-march=native", "-std=c++20", "-shared", "-fPIC", "-pthread",
+                            "-I", inc, src, "-o", tmp], capture_output=True, text=True)
+        if r.returncode:
+            raise SystemExit(f"FAIL: building binfeed.cpp: {r.stderr.strip()[-3000:]}")
+        os.replace(tmp, so)
+    lib = ctypes.CDLL(so)
+    vp, i32, i64, u64 = ctypes.c_void_p, ctypes.c_int, ctypes.c_int64, ctypes.c_uint64
+    p64 = ctypes.POINTER(ctypes.c_int64)
+    for name, res, args in (("bf_open", vp, [ctypes.c_char_p, u64, i32, i32, u64]), ("bf_index", i32, [vp, i32]),
+                            ("bf_info", None, [vp, p64]), ("bf_file_counts", None, [vp, p64]),
+                            ("bf_select", i64, [vp, i64]), ("bf_val_count", i64, [vp]),
+                            ("bf_val_copy", None, [vp, vp, i64]), ("bf_stream_start", i32, [vp, u64, i32, i32]),
+                            ("bf_next", i64, [vp, vp, i64, p64]), ("bf_stream_stop", None, [vp]),
+                            ("bf_state", None, [vp, p64]),
+                            ("bf_close", None, [vp]), ("bf_bench", ctypes.c_double, [vp, i32, i64, p64]),
+                            ("bf_sort", None, [vp, i64, i32]), ("bf_last_error", ctypes.c_char_p, [])):
+        fn = getattr(lib, name)
+        fn.restype, fn.argtypes = res, args
+    return lib
+
+
+class Binpacks:
+    """Binpack files read into host RAM by binfeed.cpp and indexed: each chunk's training
+    positions counted and its held-out ones (hash below thr; 2^32 holds out all) collected, in
+    one decode of every chunk, or from the files' caches (<file>.bfx) when they match.
+    max_bytes > 0 reads only each file's first whole chunks within that many bytes."""
+
+    INFO = ("files", "chunks", "bytes", "train", "held", "marked", "cached",
+            "quiet", "capture", "check", "won", "drew", "lost", "active")
+
+    def __init__(self, paths, thr, cache, quiet=False, max_bytes=0):
+        import ctypes
+        self.ct, self.lib, self.paths = ctypes, binfeed_lib(), list(paths)
+        t = time.time()
+        self.h = self.lib.bf_open("\n".join(self.paths).encode(), int(thr), READ_THREADS, int(cache), int(max_bytes))
+        if not self.h:
+            raise SystemExit(f"FAIL: binpacks: {self.lib.bf_last_error().decode()}")
+        t_read, t = time.time() - t, time.time()
+        threads = max(DECODE_THREADS, os.cpu_count() or 1)   # nothing else runs yet
+        rc = self.lib.bf_index(self.h, threads)
+        if rc == -1:
+            raise SystemExit(f"FAIL: binpacks: {self.lib.bf_last_error().decode()}")
+        t_index = time.time() - t
+        self.info = self._info()
+        i = self.info
+        if not quiet:
+            decoded = sum(tr + he + mk for tr, he, mk, c in self.file_counts() if not c)
+            print(f"[data] {i['files']} binpack(s), {i['bytes'] / 1e9:.2f} GB read into RAM in {t_read:.0f} s "
+                  f"({i['bytes'] / 1e6 / max(t_read, 1e-3):.0f} MB/s, {READ_THREADS} reads at a time): {i['chunks']:,} chunks",
+                  flush=True)
+            print(f"[data] index: {i['cached']} of {i['files']} file(s) from their caches; "
+                  + (f"{decoded:,} positions decoded in {t_index:.0f} s ({decoded / max(t_index, 1e-3) / 1e6:.1f}M/s, "
+                     f"{threads} threads)" if decoded else "nothing decoded")
+                  + {-2: "; a cache could not be written (read-only directory?)", 0: ""}.get(rc, f"; {rc} cache(s) written"),
+                  flush=True)
+            for p, (tr, he, mk, c) in zip(self.paths, self.file_counts()):
+                print(f"  {os.path.basename(p)}: {tr:,} training + {he:,} held out, {mk:,} marked skip left out"
+                      f"{' (cache)' if c else ''}", flush=True)
+
+    def _info(self):
+        out = (self.ct.c_int64 * len(self.INFO))()
+        self.lib.bf_info(self.h, out)
+        i = dict(zip(self.INFO, out))
+        i["no_result"] = i["train"] + i["held"] - i["won"] - i["drew"] - i["lost"]   # search-tree samples
+        return i
+
+    def file_counts(self):
+        """Per file: (training, held out, marked skip, 1 if read from its cache)."""
+        out = (self.ct.c_int64 * (4 * len(self.paths)))()
+        self.lib.bf_file_counts(self.h, out)
+        return [tuple(out[4 * k:4 * k + 4]) for k in range(len(self.paths))]
+
+    def select(self, max_pos):
+        """Keep the first chunks in file order up to max_pos training positions (0: all);
+        returns the training positions in a pass."""
+        n = int(self.lib.bf_select(self.h, int(max_pos)))
+        self.info = self._info()
+        return n
+
+    def val_records(self, limit=-1):
+        """The held-out records of the selected chunks, in file order (the first `limit` of
+        them if limit >= 0): uint8 [n, 32] numpy."""
+        n = int(self.lib.bf_val_count(self.h))
+        if 0 <= limit < n:
+            n = int(limit)
+        out = np.empty((n, REC), dtype=np.uint8)
+        if n:
+            self.lib.bf_val_copy(self.h, out.ctypes.data, n)
+        return out
+
+    def start(self, seed, threads, ring):
+        if self.lib.bf_stream_start(self.h, int(seed), int(threads), int(ring)) != 0:
+            raise SystemExit(f"FAIL: binpack stream: {self.lib.bf_last_error().decode()}")
+
+    def next_into(self, ptr, count):
+        """The stream's next `count` records into the buffer at ptr (blocking); their pass."""
+        p = self.ct.c_int64(0)
+        got = self.lib.bf_next(self.h, ptr, int(count), self.ct.byref(p))
+        if got != count:
+            raise RuntimeError(f"binpack stream: {self.lib.bf_last_error().decode()}")
+        return p.value
+
+    STATE = ("consumed", "next_ticket", "slots", "ready", "slot_ticket", "slot_ready", "late_prod", "late_cons",
+             "failed", "stopped", "threads", "active")
+
+    def state(self):
+        """The stream's state (bf_state): where the consumer and the decoders are, and how many
+        waits a wakeup failed to end (late_prod, late_cons)."""
+        out = (self.ct.c_int64 * len(self.STATE))()
+        self.lib.bf_state(self.h, out)
+        return dict(zip(self.STATE, out))
+
+    def close(self):
+        if self.h:
+            self.lib.bf_close(self.h)
+            self.h = None
+
+
+def material_check(all_rec, block=1 << 21):
+    """check_data.py's test (the run cells) on LCR1 records: of the quiet positions in which one
+    side is a piece, a rook or a queen up, the share labelled beyond +800 for that side.
+    Returns {name: (positions, share)}. Block by block: the piece codes take 256 bytes a record."""
+    tally = {name: [0, 0] for name in ("piece", "rook", "queen")}
+    for o in range(0, len(all_rec), block):
+        rec = all_rec[o:o + block]
+        edge = material_edge(rec)
+        white = (rec[:, 26] & 1).bool()
+        tgt = rec[:, 24:26].contiguous().view(torch.int16).view(-1).to(torch.int64)
+        wt = torch.where(white, tgt, -tgt)
+        quiet = ((rec[:, 26] >> 1) & 3) == 0
+        for e, name in ((3, "piece"), (5, "rook"), (9, "queen")):
+            m = (edge.abs() == e) & quiet
+            tally[name][0] += int(m.sum())
+            tally[name][1] += int(((wt[m] * torch.sign(edge[m])) >= 800).sum())
+    return {k: (c, w / c if c else float("nan")) for k, (c, w) in tally.items()}
+
+
+def stall_report(why, feeder=None):
+    """A stall's evidence, printed (never raised): every Python thread's stack, the feeder
+    thread's step and wait, the binpack stream's state (Binpacks.state) and the GPU's load."""
+    import traceback
+    print(f"[STALL] {why}; the last training step finished {time.time() - PROGRESS['t']:.0f} s ago "
+          f"(step {PROGRESS['step']})", flush=True)
+    if feeder is not None:
+        bp, q = getattr(feeder, "bp", None), getattr(feeder, "q", None)
+        print(f"[STALL] feeder thread at {getattr(feeder, 'where', '?')}; {q.qsize() if q is not None else '?'} "
+              f"batch(es) queued{'; stream ' + str(bp.state()) if bp is not None else ''}", flush=True)
+    try:
+        r = subprocess.run(["nvidia-smi", "--query-gpu=utilization.gpu,memory.used", "--format=csv,noheader"],
+                           capture_output=True, text=True, timeout=20)
+        print(f"[STALL] GPU: {(r.stdout or r.stderr).strip()}", flush=True)
+    except Exception as e:
+        print(f"[STALL] nvidia-smi: {e.__class__.__name__}", flush=True)
+    try:   # the native threads too (binfeed.cpp's decoders): how many run and how many sleep
+        states, running = {}, []
+        for tid in os.listdir("/proc/self/task"):
+            with open(f"/proc/self/task/{tid}/stat") as f:
+                st = f.read()
+            s = st[st.rindex(")") + 2]
+            states[s] = states.get(s, 0) + 1
+            if s == "R":
+                running.append(st[st.index("(") + 1:st.rindex(")")])
+        print(f"[STALL] threads by state {states}; running: {running[:24]}", flush=True)
+    except (OSError, ValueError, IndexError) as e:
+        print(f"[STALL] /proc/self/task: {e.__class__.__name__}", flush=True)
+    names = {t.ident: t.name for t in threading.enumerate()}
+    for ident, frame in sys._current_frames().items():
+        print(f"[STALL] thread {names.get(ident, ident)}:\n" + "".join(traceback.format_stack(frame)).rstrip(), flush=True)
+
+
+def stall_watchdog(feeder):
+    """stall_report() when no training step has finished for NNUE_STALL_SEC, again every
+    NNUE_STALL_SEC while it lasts; it never stops the run."""
+    def run():
+        last = None
+        while True:
+            time.sleep(min(30.0, STALL_SEC / 4))
+            idle = time.time() - PROGRESS["t"]
+            if idle < STALL_SEC:
+                last = None
+            elif last is None or time.time() - last >= STALL_SEC:
+                stall_report(f"no training step finished for {idle:.0f} s", feeder)
+                last = time.time()
+    threading.Thread(target=run, daemon=True, name="stall watchdog").start()
+
+
+class BinpackFeeder:
+    """Training batches from binpacks held in host RAM (NNUE_BINPACKS).
+
+    binfeed.cpp's threads decode the binpacks' chunks into LCR1 records, the chunks in a new
+    pseudo-random order each pass, into one stream of every training position once a pass. The
+    stream first fills a reservoir of S positions in VRAM (NNUE_RESERVOIR); then each batch is
+    the reservoir rows at the next bs places of a KeyedShuffle over the S places (a new key
+    every S / bs batches, a "cycle"), and those rows are refilled from the stream at once. Each
+    place is drawn and refilled once a cycle, so the batches of a cycle hold exactly the S
+    positions that came in during the cycle before, in a uniformly random order: the stream cut
+    into windows of S positions, each one shuffled whole, without a second copy of anything.
+    A background thread finds the places (feeder.cpp's feed_batch, the same permutation as
+    KeyedShuffle) and pulls the records (bf_next), both without the GIL, and copies them to the
+    GPU on a side stream, DEPTH batches ahead; next() takes the batch and refills its places."""
+
+    DEPTH = 3
+
+    def __init__(self, paths, seed, bs):
+        thr = min(int(VAL_FRAC * 2 ** 32), 2 ** 32 - 1)
+        self.bp = Binpacks(paths, thr, BINPACK_CACHE)
+        self.n = self.bp.select(int(float(env("NNUE_MAX_POS", "0"))))
+        i = self.bp.info
+        held = self.bp.val_records()
+        self.val = torch.from_numpy(held).to(dev)
+        if self.n < bs:
+            raise SystemExit(f"FAIL: the binpacks hold {self.n:,} training positions, fewer than a batch")
+        print(f"[data] training {self.n:,} positions a pass, {len(held):,} held out ({VAL_FRAC:.2%} by hash) "
+              f"| all files: {i['marked']:,} marked skip left out; quiet {i['quiet']:,}, capture {i['capture']:,}, "
+              f"check {i['check']:,}; side to move won {i['won']:,}, drew {i['drew']:,}, lost {i['lost']:,}"
+              + (f"; {i['no_result']:,} search-tree samples with no game result" if i["no_result"] else ""), flush=True)
+        mc = material_check(self.val)
+        print("  [DATA] material check (held-out quiet positions labelled beyond +800 for the side up): "
+              + ", ".join(f"{k} up {s:.0%} (of {c:,})" for k, (c, s) in mc.items()), flush=True)
+        if mc["queen"][0] >= 100 and not mc["queen"][1] >= 0.9:
+            raise SystemExit("FAIL: the binpacks' labels do not value material (a queen up must read as won)")
+        self.bs = bs
+        cap = RESERVOIR or VRAM_POS or 1_000_000_000
+        self.S = max(bs, min(cap, self.n) // bs * bs)
+        self.cycle = self.S // bs
+        cuda = str(dev).startswith("cuda")
+        self.bp.start(seed, DECODE_THREADS, 4 * DECODE_THREADS + 8)
+        t = time.time()
+        self.R = torch.empty((self.S, REC), dtype=torch.uint8, device=dev)
+        blk = min(self.S, 1 << 22)
+        stage = torch.empty((blk, REC), dtype=torch.uint8, pin_memory=cuda)
+        for o in range(0, self.S, blk):
+            k = min(blk, self.S - o)
+            self.bp.next_into(stage.data_ptr(), k)
+            self.R[o:o + k].copy_(stage[:k])   # synchronous: the next bf_next reuses the buffer
+        del stage
+        per_chunk = self.n / max(1, self.bp.info["active"])
+        print(f"[data] reservoir: {self.S:,} positions ({self.S * REC / 1e9:.1f} GB on {dev}) filled in "
+              f"{time.time() - t:.0f} s; each window of {self.S:,} positions ({self.S / self.n:.0%} of a pass, "
+              f"~{self.S / per_chunk:,.0f} chunks of ~{per_chunk:,.0f}) is trained in a uniformly random order",
+              flush=True)
+        self.shuffle = KeyedShuffle(self.S, seed)
+        self.flib = feeder_lib()
+        self.stream = torch.cuda.Stream() if cuda else None
+        nslot = self.DEPTH + 2
+        self.pins = [torch.empty((bs, REC), dtype=torch.uint8, pin_memory=cuda) for _ in range(nslot)]
+        self.gpins = [torch.empty(bs, dtype=torch.int64, pin_memory=cuda) for _ in range(nslot)]
+        self.scratch = np.empty(bs, dtype=np.uint64)
+        self.kcycle, self.keys = -1, None
+        print(f"[feed] binpack stream: {DECODE_THREADS} decode threads; reservoir places by "
+              f"{f'feeder.cpp, {FEED_THREADS} threads' if self.flib is not None else 'numpy'}", flush=True)
+        self.done_ev = [None] * nslot
+        self.q = queue.Queue(maxsize=self.DEPTH)
+        self.err = None
+        self.where = (0, "starting")   # the background thread's step and what it waits on (stall reports)
+        threading.Thread(target=self._run, daemon=True, name="BinpackFeeder").start()
+
+    def sample(self, k):
+        """k reservoir rows spread over it (for the start-up [DATA] line)."""
+        return self.R[torch.arange(k, device=self.R.device) * (self.S // k)]
+
+    def _places(self, step, slot):
+        c, i = divmod(step, self.cycle)
+        if self.flib is not None:
+            if self.kcycle != c:
+                self.kcycle, self.keys = c, np.array(self.shuffle._keys(c), dtype=np.uint64)
+            got = self.flib.feed_batch(None, self.S, self.S, self.keys.ctypes.data, int(self.shuffle.h),
+                                       int(self.shuffle.mask), i * self.bs, self.bs, self.gpins[slot].data_ptr(),
+                                       None, self.scratch.ctypes.data, FEED_THREADS)
+            assert got == self.bs
+        else:
+            self.gpins[slot].numpy()[:] = self.shuffle.indices(c, i * self.bs, self.bs).astype(np.int64)
+
+    def _run(self):
+        try:
+            step, slot = 0, 0
+            while True:
+                self.where = (step, "waiting for the slot's last copies")
+                if self.done_ev[slot] is not None:
+                    self.done_ev[slot].synchronize()    # this slot's last copies have landed
+                self.where = (step, "places (feed_batch)")
+                self._places(step, slot)
+                self.where = (step, "records (bf_next)")
+                self.bp.next_into(self.pins[slot].data_ptr(), self.bs)
+                self.where = (step, "copies to the GPU, then the queue")
+                if self.stream is not None:
+                    with torch.cuda.stream(self.stream):
+                        g_idx = self.gpins[slot].to(dev, non_blocking=True)
+                        fresh = self.pins[slot].to(dev, non_blocking=True)
+                        ev = torch.cuda.Event()
+                        ev.record(self.stream)
+                    self.done_ev[slot] = ev
+                else:
+                    g_idx, fresh, ev = self.gpins[slot].clone(), self.pins[slot].clone(), None
+                self.q.put((g_idx, fresh, ev, step * self.bs // self.n))
+                slot = (slot + 1) % len(self.pins)
+                step += 1
+        except Exception as e:   # surface in next(), never hang the trainer
+            self.err = e
+            self.q.put(None)
+
+    def next(self):
+        waited = 0.0
+        while True:
+            try:
+                item = self.q.get(timeout=STALL_SEC)
+                break
+            except queue.Empty:
+                waited += STALL_SEC
+                stall_report(f"no batch from the binpack feeder for {waited:.0f} s", self)
+                if waited >= 3 * STALL_SEC:
+                    raise RuntimeError(f"BinpackFeeder: no batch for {waited:.0f} s, its thread at {self.where} "
+                                       "(the stall report above has every thread's stack)")
+        if item is None:
+            raise RuntimeError(f"BinpackFeeder thread failed: {self.err!r}")
+        g_idx, fresh, ev, epoch = item
+        if ev is not None:
+            torch.cuda.current_stream().wait_event(ev)
+            g_idx.record_stream(torch.cuda.current_stream())
+            fresh.record_stream(torch.cuda.current_stream())
+        batch = self.R[g_idx]   # this step's positions
+        self.R[g_idx] = fresh   # and their places refilled from the stream
+        return batch, epoch
 
 
 KB = [-1, -1, -1, -1, 31, 30, 29, 28, -1, -1, -1, -1, 27, 26, 25, 24,
@@ -551,7 +1068,7 @@ class DenseFT(torch.autograd.Function):
 
     The dense forward runs in bf16 on the GPU, except under NNUE_QAT (and on the
     CPU), where it runs in exact fp32 with autocast and TF32 off: QAT's weights sit
-    on the engine's int16 grid (k / 2048), and any sum of a position's 32 of them is
+    on the engine's int16 grid (k / FT_GRID), and any sum of a position's 32 of them is
     exact in fp32, so the layer equals the engine's integer sums. bf16 would round
     each weight to 8 significant bits and undo what QAT trains for."""
 
@@ -601,41 +1118,179 @@ def ft_dense(idx, weight):
     return DenseFT.apply(idx, weight, FT_DENSE >= 2)
 
 
-def forward(model, wf, bf, stm, cnt):
+if FT_FP8 and FT_DENSE != 3:
+    raise SystemExit('NNUE_FT_FP8 needs NNUE_FT_DENSE=3')
+if FT_DENSE == 3:
+    import ft_fused as FF
+    if (QAT or QAT_AFTER) and FT_FP8:
+        raise SystemExit('NNUE_FT_FP8 has no QAT path: QAT needs the exact sums of the bf16 split forward')
+    FUSED_FWD = dict(BM=128, BN=128, num_warps=4, num_stages=2)    # best of the 2026-11-12 sweeps: 1.247 ms
+    FUSED_BWD = dict(BMF=128, BN=128, BK=32, num_warps=4, num_stages=4)
+    FUSED_CH = 8192
+
+
+class FusedFT(torch.autograd.Function):
+    """Both sides' feature-layer sums straight from the LCR1 records (ft_fused.py):
+    bitboards, a stable sort by king bucket, the forward kernel, and in backward the
+    weight-gradient kernel. Returns White's and Black's [n, L1] sums in bf16, bias not
+    added (the caller adds ft_bias, so autograd keeps its gradient). Under NNUE_QAT the
+    weight comes in rounded to the engine's grid (qat_ft) and the sums are exact, in fp32:
+    the table goes in as two bf16 parts that add up to it (ft_fused.split_bf16)."""
+
+    @staticmethod
+    def forward(ctx, wf, bf, weight):
+        n, L1 = wf.shape[0], weight.shape[1]
+        planes_s, order, rf, rb = ft_sorted_rows(wf, bf)
+        out_s = ft_sums(planes_s, rf, weight, torch.zeros(L1, dtype=torch.float32, device=wf.device))
+        out = torch.empty_like(out_s)
+        out[order] = out_s                     # back to side-row order: White 0..n-1, Black n..2n-1
+        ctx.save_for_backward(planes_s, rb, order)
+        ctx.nrows = weight.shape[0]
+        return out[:n], out[n:]
+
+    @staticmethod
+    def backward(ctx, gw, gb):
+        planes_s, rb, order = ctx.saved_tensors
+        return None, None, ft_weight_grad(planes_s, rb, torch.cat([gw, gb])[order], ctx.nrows)
+
+
+def ft_sorted_rows(wf, bf):
+    """The fused kernels' inputs: side-rows' bitboards sorted by king bucket (planes_s), the
+    sort (order: sorted slot -> side-row) and the forward's and backward's ranges."""
+    planes, kb = FF.side_rows(wf, bf, NUM_INPUTS)   # 0.9 ms; rec_bitboards is exact but 4.1 ms until fixed
+    order, rf = FF.plan(kb, FUSED_FWD['BM'])
+    rb = FF.plan(kb, FUSED_CH)[1]
+    return planes[order].contiguous(), order, rf, rb
+
+
+def ft_sums(planes_s, rf, weight, bias, act=None):
+    """ft_fused.ft_fwd on the table as the run holds it (ft_fwd's act: the activation too)."""
+    if QAT:   # exact: hi + lo is the rounded weight, the sums fp32
+        hi, lo = FF.split_bf16(weight[:NUM_INPUTS].float())
+        return FF.ft_fwd(planes_s, rf, hi, bias, w_lo=lo, act=act, **FUSED_FWD)
+    if FT_FP8 >= 2:   # the table in e4m3, scaled per column
+        w8, wsc = FF.fp8_cols(weight[:NUM_INPUTS])
+        return FF.ft_fwd(planes_s, rf, w8, bias, fp8=True, wscale=wsc, act=act, **FUSED_FWD)
+    return FF.ft_fwd(planes_s, rf, weight[:NUM_INPUTS].to(torch.bfloat16), bias, act=act, **FUSED_FWD)
+
+
+def ft_weight_grad(planes_s, rb, g, nrows):
+    """The table's gradient X^T G from G [R, L1] in sorted order (bf16, or FP8 with NNUE_FT_FP8)."""
+    dw = torch.zeros((nrows, g.shape[1]), dtype=torch.float32, device=g.device)
+    if FT_FP8 >= 1:   # X^T G = inv * X^T diag(s) G8 (ft_fused.fp8_rows)
+        g8, gs, ginv = FF.fp8_rows(g)
+        FF.ft_bwd(planes_s, rb, g8, dw[:NUM_INPUTS], fp8=True, gscale=gs, **FUSED_BWD)
+        dw[:NUM_INPUTS] *= ginv
+    else:
+        FF.ft_bwd(planes_s, rb, g.to(torch.bfloat16).contiguous(), dw[:NUM_INPUTS], **FUSED_BWD)
+    return dw   # the padding row keeps a zero gradient
+
+
+class FusedAct(torch.autograd.Function):
+    """FusedFT with forward()'s bias and SCReLU in its kernels (NNUE_FT_ACT): returns h
+    [n, 2 * L1], side to move first, in bf16 as autocast rounds it for the next matmul (fp32
+    under NNUE_QAT), twice over the same memory: one for the value's tail, one for any other
+    consumer (the draw head reads forward()'s h), so the two gradients arrive apart and
+    backward adds them in fp32, as autograd added them into forward()'s fp32 h before."""
+
+    @staticmethod
+    def forward(ctx, wf, bf, weight, bias, stm):
+        ctx.set_materialize_grads(False)
+        n, L1 = wf.shape[0], weight.shape[1]
+        planes_s, order, rf, rb = ft_sorted_rows(wf, bf)
+        dst = FF.act_dst(order, stm, n, L1)
+        sums, h = ft_sums(planes_s, rf, weight, bias, act=(dst, n))
+        ctx.save_for_backward(planes_s, rb, dst, sums, bias)
+        ctx.nrows = weight.shape[0]
+        return h, h.detach()
+
+    @staticmethod
+    def backward(ctx, gh, gh2):
+        planes_s, rb, dst, sums, bias = ctx.saved_tensors
+        if gh is None:
+            gh, gh2 = gh2, None
+        if gh is None:
+            return None, None, None, None, None
+        gs, db = FF.act_bwd(gh, gh2, sums, dst, bias)
+        return None, None, ft_weight_grad(planes_s, rb, gs, ctx.nrows), db, None
+
+
+@torch.compiler.disable
+def ft_fused(wf, bf, weight):
+    """Both sides' feature-layer sums (FusedFT), for fwd_loss. With NNUE_FT_ACT forward() runs
+    the kernels itself (ft_fused_act: it needs the bias and the side to move); this returns ()."""
+    if FT_ACT:
+        return ()
+    return FusedFT.apply(wf, bf, qat_ft(weight) if QAT else weight)
+
+
+@torch.compiler.disable
+def ft_fused_act(wf, bf, stm, weight, bias):
+    if QAT:
+        return FusedAct.apply(wf, bf, qat_ft(weight), qat_bias(bias), stm)
+    return FusedAct.apply(wf, bf, weight, bias, stm)
+
+
+def qat_bias(b):
+    """The first layer's bias on the engine's grid (FT_GRID), with a straight-through gradient."""
+    return b + (torch.round(b * FT_GRID) / FT_GRID - b).detach()
+
+
+def qat_ft(w):
+    """The first layer's weights as QAT rounds them, with a straight-through gradient: the
+    engine's int16 grid (FT_GRID), or with NNUE_QAT_FT8 an LNF8 net's int8 table (q << SHIFT
+    on that grid, |q| <= 127: steps of 2^SHIFT / FT_GRID)."""
+    if QAT_FT8:
+        k = FT_GRID / float(2 ** QAT_FT8)
+        return w + (torch.clamp(torch.round(w * k), -127.0, 127.0) / k - w).detach()
+    return w + (torch.round(w * FT_GRID) / FT_GRID - w).detach()
+
+
+def forward(model, wf, bf, stm, cnt, acc=None):
     """LNNUE.forward with the per-bucket loop replaced by one matmul per layer
     over all buckets and a gather of each position's own bucket: same values,
-    static shapes, no host synchronization."""
-    if QAT:   # the first layer on the engine's int16 grid (src/nnue_kernels.h NNUE_FT_SCALE)
-        w = model.ft.weight
-        wq = w + (torch.round(w * FT_GRID) / FT_GRID - w).detach()
-        bq = model.ft_bias + (torch.round(model.ft_bias * FT_GRID) / FT_GRID - model.ft_bias).detach()
-        if FT_DENSE:
+    static shapes, no host synchronization. hv is the value tail's input, h the same
+    activations for any other consumer (with NNUE_FT_ACT its own output, see FusedAct)."""
+    hv = None
+    if acc is not None and FT_ACT:   # NNUE_FT_DENSE=3, from fwd_loss: the kernels apply the bias and SCReLU too
+        hv, h = ft_fused_act(wf, bf, stm, model.ft.weight, model.ft_bias)
+    elif QAT:   # the first layer on the engine's grid
+        bq = qat_bias(model.ft_bias)
+        if acc is not None:   # NNUE_FT_DENSE=3: fwd_loss ran the fused kernels on qat_ft's weights (exact)
+            acc_w, acc_b = acc[0] + bq, acc[1] + bq
+        elif FT_DENSE:
+            wq = qat_ft(model.ft.weight)
             acc_w, acc_b = ft_dense(wf, wq) + bq, ft_dense(bf, wq) + bq
         else:
+            wq = qat_ft(model.ft.weight)
             acc_w = F.embedding_bag(wf, wq, mode="sum", padding_idx=NUM_INPUTS) + bq
             acc_b = F.embedding_bag(bf, wq, mode="sum", padding_idx=NUM_INPUTS) + bq
+    elif acc is not None:   # NNUE_FT_DENSE=3: fwd_loss ran the fused kernels on the records
+        acc_w = acc[0].float() + model.ft_bias
+        acc_b = acc[1].float() + model.ft_bias
     elif FT_DENSE:
         acc_w = ft_dense(wf, model.ft.weight) + model.ft_bias
         acc_b = ft_dense(bf, model.ft.weight) + model.ft_bias
     else:
         acc_w = model.ft(wf) + model.ft_bias
         acc_b = model.ft(bf) + model.ft_bias
-    s = stm.view(-1, 1) > 0.5
-    h = torch.cat([torch.where(s, acc_w, acc_b), torch.where(s, acc_b, acc_w)], 1)
-    h = torch.clamp(h, 0.0, 1.0).square()
+    if hv is None:
+        s = stm.view(-1, 1) > 0.5
+        h = torch.cat([torch.where(s, acc_w, acc_b), torch.where(s, acc_b, acc_w)], 1)
+        hv = h = torch.clamp(h, 0.0, 1.0).square()
     if QAT:
-        return forward_tail_qat(model, h, cnt)
+        return forward_tail_qat(model, hv, cnt)
     nbk = model.num_buckets
     if nbk == 1:
-        z = tail_act(model.l2(h))
+        z = tail_act(model.l2(hv))
         z = tail_act(model.l3(z))
         return model.out(z).view(-1).float() * 300.0
-    n, L2, L3 = h.shape[0], model.L2, model.L3
+    n, L2, L3 = hv.shape[0], model.L2, model.L3
     bucket = ((cnt - 1) * nbk // 32).clamp(0, nbk - 1).view(n, 1)
     W2 = torch.cat([m.weight for m in model.bl2]); b2 = torch.cat([m.bias for m in model.bl2])
     W3 = torch.cat([m.weight for m in model.bl3]); b3 = torch.cat([m.bias for m in model.bl3])
     Wo = torch.cat([m.weight for m in model.bout]); bo = torch.cat([m.bias for m in model.bout])
-    z = F.linear(h, W2, b2).view(n, nbk, L2).gather(1, bucket.view(n, 1, 1).expand(n, 1, L2)).view(n, L2)
+    z = F.linear(hv, W2, b2).view(n, nbk, L2).gather(1, bucket.view(n, 1, 1).expand(n, 1, L2)).view(n, L2)
     z = F.linear(tail_act(z), W3, b3).view(n, nbk, L3).gather(1, bucket.view(n, 1, 1).expand(n, 1, L3)).view(n, L3)
     return F.linear(tail_act(z), Wo, bo).gather(1, bucket).view(n).float() * 300.0
 
@@ -659,8 +1314,9 @@ def batch_loss(pred, tgt, flag):
 
 def fwd_loss(model, rec):
     wf, bf, stm, tgt, flag, cnt = expand(rec)
+    acc = ft_fused(wf, bf, model.ft.weight) if FT_DENSE == 3 else None
     with torch.autocast(device_type="cuda", dtype=torch.bfloat16):
-        pred = forward(model, wf, bf, stm, cnt)
+        pred = forward(model, wf, bf, stm, cnt, acc)
     return batch_loss(pred.float(), tgt.clamp(-TARGET_CLIP, TARGET_CLIP), flag)
 
 
@@ -743,11 +1399,12 @@ def evaluate(model, val, gstep):
 
 
 @torch.no_grad()
-def evaluate_disjoint(model, dval, gstep):
+def evaluate_disjoint(model, dval, gstep, tag="DISJOINT"):
     """The game-disjoint set (NNUE_VAL_DATA): the training loss and errors on
     games the run never sees, the correlation where labels still order
     positions (|target| < 800), and, for quiet positions a piece, rook or queen
-    up, the mean prediction against the mean label from the stronger side."""
+    up, the mean prediction against the mean label from the stronger side.
+    The same line for the search-tree set (NNUE_VAL_TREE) is tagged [TREE]."""
     if dval is None or len(dval) == 0:
         return
     P, T, FL, E = [], [], [], []
@@ -772,41 +1429,76 @@ def evaluate_disjoint(model, dval, gstep):
         if int(q.sum()) >= 100:
             s = torch.sign(e[q]).float()
             mat.append(f"{nm} {float((p[q] * s).mean()):+.0f}/{float((t[q] * s).mean()):+.0f}")
-    print(f"[DISJOINT step {gstep}] loss={loss:.6f} MAE={float(err.mean()):.1f}cp ({by_class}) "
+    print(f"[{tag} step {gstep}] loss={loss:.6f} MAE={float(err.mean()):.1f}cp ({by_class}) "
           f"corr(|t|<800)={corr:.3f} | quiet material up, pred/label: {' '.join(mat) or '-'} | "
           f"{len(dval):,} positions", flush=True)
 
 
 # ---------------------------------------------------------------------------
+def report_profile(prof, steps, seconds):
+    """NNUE_PROFILE: GPU time per step by kernel (top 40) and by kind, against the step's wall time."""
+    ev = prof.key_averages()
+    def dev_self(e):
+        return getattr(e, 'self_device_time_total', None) or getattr(e, 'self_cuda_time_total', 0) or 0
+    kernels = [e for e in ev if str(getattr(e, 'device_type', '')).endswith('CUDA') and dev_self(e) > 0]
+    kinds = (("fused FT kernels", ("_ft_fwd", "_ft_bwd", "_act_bwd")),
+             ("cuBLAS / cutlass GEMM", ("gemm", "cutlass", "nvjet", "xmma", "cublas", "sm80_", "sm90_", "sm100_", "sm120_")),
+             ("optimizer", ("adam", "Adam", "multi_tensor", "foreach")),
+             ("copies and fills", ("Memcpy", "memcpy", "Memset", "memset", "fill", "copy_")),
+             ("inductor (compiled glue)", ("triton_",)),
+             ("index / gather / scatter / sort", ("index", "gather", "scatter", "sort", "cumsum", "radix", "embedding")))
+    total = {k: 0.0 for k, _ in kinds}
+    total["other"] = 0.0
+    for e in kernels:
+        kind = next((k for k, pats in kinds if any(p in e.key for p in pats)), "other")
+        total[kind] += dev_self(e)
+    gpu = sum(total.values())
+    step_ms = seconds * 1e3 / steps
+    print(f"[profile] {steps} steps of {BS:,} positions: {step_ms:.2f} ms a step (wall), GPU kernels "
+          f"{gpu / 1e3 / steps:.2f} ms a step ({gpu / 1e3 / steps / step_ms:.0%} of the wall time)", flush=True)
+    for k, v in sorted(total.items(), key=lambda kv: -kv[1]):
+        print(f"[profile]   {k:34s} {v / 1e3 / steps:7.3f} ms a step  {v / max(gpu, 1e-9):6.1%}", flush=True)
+    print("[profile] top kernels (GPU ms a step, launches a step, name):", flush=True)
+    for e in sorted(kernels, key=lambda e: -dev_self(e))[:40]:
+        print(f"[profile]   {dev_self(e) / 1e3 / steps:7.3f}  {e.count / steps:5.1f}  {e.key[:150]}", flush=True)
+    path = os.path.join(OUT_DIR, OUT_BASE + "_profile.json")
+    try:
+        prof.export_chrome_trace(path)
+        print(f"[profile] trace: {path}", flush=True)
+    except Exception as e:
+        print(f"[profile] trace not written ({e.__class__.__name__}: {e})", flush=True)
+
+
 def main():
+    global QAT   # NNUE_QAT_AFTER turns it on between the phases
     t_start = time.time()
     torch.manual_seed(SEED)
-    data = env("NNUE_DATA", "")
-    src = env("NNUE_FENEVAL_FILE", "")
-    if not data:
-        if not src:
-            raise SystemExit("FAIL: set NNUE_DATA (LCR1 file) or NNUE_FENEVAL_FILE")
-        data = os.path.join(os.path.dirname(os.path.abspath(src)),
-                            os.path.basename(src).split(".tsv")[0] + ".lcr")
-    files = data_files(data)
-    if not files or not all(os.path.exists(p) for p in files):
-        if not src or len(files) > 1:
-            raise SystemExit(f"FAIL: NNUE_DATA {data} not found and no NNUE_FENEVAL_FILE to build it from")
-        build_data(src, data)
-        files = [data]
-    train, host, val = load_data(files)
-    dval = None
-    if VAL_DATA:
-        vfiles = data_files(VAL_DATA)
-        if not vfiles or not all(os.path.exists(p) for p in vfiles):
-            raise SystemExit(f"FAIL: NNUE_VAL_DATA {VAL_DATA} not found")
-        shared = set(map(os.path.realpath, vfiles)) & set(map(os.path.realpath, files))
-        if shared:
-            raise SystemExit(f"FAIL: NNUE_VAL_DATA shares {len(shared)} file(s) with NNUE_DATA, "
-                             f"e.g. {sorted(shared)[0]}: those positions are trained on")
-        dval = load_records(vfiles, VAL_MAX)
-    n = len(train) + (len(host) if host is not None else 0)
-    feeder = PoolFeeder(train, host, SEED, BS) if host is not None else None
+    if BINPACKS:   # binpacks in host RAM, decoded on the CPU into a VRAM reservoir
+        files = data_files(BINPACKS)
+        missing = [p for p in files if not os.path.exists(p)]
+        if not files or missing:
+            raise SystemExit(f"FAIL: NNUE_BINPACKS {BINPACKS}: {'not found: ' + missing[0] if missing else 'no files'}")
+        feeder = BinpackFeeder(files, SEED, BS)
+        train, val, n = None, feeder.val, feeder.n
+    else:
+        data = env("NNUE_DATA", "")
+        src = env("NNUE_FENEVAL_FILE", "")
+        if not data:
+            if not src:
+                raise SystemExit("FAIL: set NNUE_DATA (LCR1 file), NNUE_BINPACKS or NNUE_FENEVAL_FILE")
+            data = os.path.join(os.path.dirname(os.path.abspath(src)),
+                                os.path.basename(src).split(".tsv")[0] + ".lcr")
+        files = data_files(data)
+        if not files or not all(os.path.exists(p) for p in files):
+            if not src or len(files) > 1:
+                raise SystemExit(f"FAIL: NNUE_DATA {data} not found and no NNUE_FENEVAL_FILE to build it from")
+            build_data(src, data)
+            files = [data]
+        train, host, val = load_data(files)
+        n = len(train) + (len(host) if host is not None else 0)
+        feeder = PoolFeeder(train, host, SEED, BS) if host is not None else None
+    dval = held_out_set(VAL_DATA, "NNUE_VAL_DATA", files, "game-disjoint")
+    tval = held_out_set(VAL_TREE, "NNUE_VAL_TREE", files, "search-tree")
     shuffle = HostShuffle(n, SEED) if feeder is None else None
 
     model = LNNUE(L1=L1).to(dev)
@@ -854,7 +1546,9 @@ def main():
 
     steps_per_pass = n // BS
     t_max = T_MAX if T_MAX > 0 else steps_per_pass
-    off = gstep if CONTINUE else 0   # schedule steps already done by the run this checkpoint came from
+    off = gstep - SCHED_START if CONTINUE else 0   # schedule steps already done by the run this checkpoint came from
+    if off < 0:
+        raise SystemExit(f"FAIL: NNUE_SCHED_START {SCHED_START:,} is past the checkpoint's step {gstep:,}")
     state = {"t_live": t_max}
     sched = torch.optim.lr_scheduler.LambdaLR(
         opt, lambda s: 0.5 * (1.0 + math.cos(math.pi * min(1.0, (s + off) / max(1, state["t_live"])))))
@@ -865,7 +1559,7 @@ def main():
             # clipped as in the loss: raw mate scores (up to ~26,600) would swamp a correlation
             gate = stm_split_gate(model, wf, bf, stm, tgt.clamp(-TARGET_CLIP, TARGET_CLIP))
             print(f"  [DATA] stm-split correlation {gate} (gate passed)", flush=True)
-        wf, bf, stm, tgt, flag, cnt = expand(train[:BS])
+        wf, bf, stm, tgt, flag, cnt = expand(train[:BS] if train is not None else feeder.sample(BS))
         print(f"  [DATA] w {int(wf.min())}..{int(wf.max())} | b {int(bf.min())}..{int(bf.max())} | "
               f"pieces {int(cnt.min())}..{int(cnt.max())} | white to move {float(stm.mean()):.3f} | "
               f"target {float(tgt.min()):.0f}..{float(tgt.max()):.0f} std {float(tgt.std()):.0f} | "
@@ -880,9 +1574,12 @@ def main():
     if COMPILE:
         step_fn = torch.compile(fwd_loss, dynamic=False)
 
+    phase = {"off": off, "t_max": t_max, "budget": BUDGET, "t_begin": t_start, "eval": EVAL_EVERY,
+             "save": SAVE_EVERY, "keep": KEEP_EVERY, "out": OUT, "base": OUT_BASE}
+
     def save(reason):
         os.makedirs(OUT_DIR, exist_ok=True)
-        nn_path, pt_path = os.path.join(OUT_DIR, OUT), os.path.join(OUT_DIR, OUT_BASE + ".pt")
+        nn_path, pt_path = os.path.join(OUT_DIR, phase["out"]), os.path.join(OUT_DIR, phase["base"] + ".pt")
         save_nnue(model, nn_path + ".tmp")
         os.replace(nn_path + ".tmp", nn_path)
         torch.save({"model": model.state_dict(), "gstep": gstep, "opt": opt.state_dict(), "swa": None},
@@ -893,62 +1590,121 @@ def main():
     def keep():
         """A numbered copy of the float net, so checkpoints along the run can be gated."""
         os.makedirs(OUT_DIR, exist_ok=True)
-        path = os.path.join(OUT_DIR, f"{OUT_BASE}_s{gstep}.nnue")
+        path = os.path.join(OUT_DIR, f"{phase['base']}_s{gstep}.nnue")
         save_nnue(model, path + ".tmp")
         os.replace(path + ".tmp", path)
         print(f"  [keep] {path} at step {gstep}", flush=True)
 
+    def run_phase():
+        """Steps until the phase's horizon or budget; then the final readings and save."""
+        nonlocal gstep
+        off, t_max, budget, t_begin = phase["off"], phase["t_max"], phase["budget"], phase["t_begin"]
+        seg0, t0, last_t, last_s = gstep, time.time(), time.time(), gstep
+        epoch, done = 0, None
+        PROGRESS.update(t=time.time(), step=gstep)   # the stall watchdog's clock starts with the phase
+        while done is None:
+            perm = shuffle.next_pass() if feeder is None else None
+            for i in range(0, steps_per_pass * BS, BS):
+                batch = feeder.next()[0] if feeder is not None else train[HostShuffle.batch(perm, i, BS)]
+                loss = step_fn(model, batch)
+                opt.zero_grad(set_to_none=True)
+                loss.backward()
+                if GRAD_CLIP > 0:
+                    torch.nn.utils.clip_grad_norm_(params, GRAD_CLIP)
+                opt.step()
+                sched.step()
+                gstep += 1
+                PROGRESS.update(t=time.time(), step=gstep)
+                sess = gstep - seg0
+                if PROFILE and sess == PROFILE_WARMUP:
+                    gpu = str(dev).startswith("cuda")
+                    if gpu:
+                        torch.cuda.synchronize()
+                    prof = torch.profiler.profile(activities=[torch.profiler.ProfilerActivity.CPU]
+                                                  + ([torch.profiler.ProfilerActivity.CUDA] if gpu else []))
+                    prof.__enter__()
+                    p_t0 = time.time()
+                elif PROFILE and sess == PROFILE_WARMUP + PROFILE:
+                    if gpu:
+                        torch.cuda.synchronize()
+                    p_s = time.time() - p_t0
+                    prof.__exit__(None, None, None)
+                    report_profile(prof, PROFILE, p_s)
+                    done = "profile"
+                    break
+                if gstep % 50 == 0:
+                    now = time.time()
+                    l2max = max(float(m.weight.detach().abs().max()) for m in (model.bl2 if nbk > 1 else [model.l2]))
+                    print(f"  e{epoch} step {gstep} loss={float(loss):.5f} L2|max|={l2max:.2f} | "
+                          f"{sess * BS / 1e6:.0f}M | {(gstep - last_s) / (now - last_t):.1f} steps/s", flush=True)
+                    last_t, last_s = now, gstep
+                if sess % 200 == 0 and budget > 0:
+                    el = time.time() - t0
+                    fit = int(off + sess + sess / max(el, 1.0) * max(0.0, budget - (time.time() - t_begin) - 90))
+                    new = min(t_max, max(off + sess + 1, fit))
+                    if new != state["t_live"]:
+                        print(f"  [sched] budget guard: horizon {state['t_live']:,} -> {new:,} steps "
+                              f"({sess / max(el, 1.0):.2f} steps/s)", flush=True)
+                        state["t_live"] = new
+                if sess % phase["eval"] == 0:
+                    evaluate(model, val, gstep)
+                    evaluate_disjoint(model, dval, gstep)
+                    evaluate_disjoint(model, tval, gstep, "TREE")
+                if sess % phase["save"] == 0:
+                    save("checkpoint")
+                if phase["keep"] > 0 and gstep % phase["keep"] == 0:
+                    keep()
+                if off + sess >= state["t_live"]:
+                    done = "tmax"
+                    break
+                if budget > 0 and time.time() - t_begin >= budget:
+                    done = "budget"
+                    break
+            epoch += 1
+        evaluate(model, val, gstep)
+        evaluate_disjoint(model, dval, gstep)
+        evaluate_disjoint(model, tval, gstep, "TREE")
+        save("final")
+        print(f"DONE ({done}) - {phase['out']}: {gstep} steps, {(gstep - seg0) * BS:,} positions in "
+              f"{time.time() - t_begin:.0f} s ({(gstep - seg0) / (time.time() - t0):.2f} steps/s)", flush=True)
+        return done
+
     evaluate(model, val, gstep)   # the starting point, for the curve
     evaluate_disjoint(model, dval, gstep)
-    seg0, t0, last_t, last_s = gstep, time.time(), time.time(), gstep
-    epoch, done = 0, None
-    while done is None:
-        perm = shuffle.next_pass() if feeder is None else None
-        for i in range(0, steps_per_pass * BS, BS):
-            batch = feeder.next()[0] if feeder is not None else train[HostShuffle.batch(perm, i, BS)]
-            loss = step_fn(model, batch)
-            opt.zero_grad(set_to_none=True)
-            loss.backward()
-            if GRAD_CLIP > 0:
-                torch.nn.utils.clip_grad_norm_(params, GRAD_CLIP)
-            opt.step()
-            sched.step()
-            gstep += 1
-            sess = gstep - seg0
-            if gstep % 50 == 0:
-                now = time.time()
-                l2max = max(float(m.weight.detach().abs().max()) for m in (model.bl2 if nbk > 1 else [model.l2]))
-                print(f"  e{epoch} step {gstep} loss={float(loss):.5f} L2|max|={l2max:.2f} | "
-                      f"{sess * BS / 1e6:.0f}M | {(gstep - last_s) / (now - last_t):.1f} steps/s", flush=True)
-                last_t, last_s = now, gstep
-            if sess % 200 == 0 and BUDGET > 0:
-                el = time.time() - t0
-                fit = int(off + sess + sess / max(el, 1.0) * max(0.0, BUDGET - (time.time() - t_start) - 90))
-                new = min(t_max, max(off + sess + 1, fit))
-                if new != state["t_live"]:
-                    print(f"  [sched] budget guard: horizon {state['t_live']:,} -> {new:,} steps "
-                          f"({sess / max(el, 1.0):.2f} steps/s)", flush=True)
-                    state["t_live"] = new
-            if sess % EVAL_EVERY == 0:
-                evaluate(model, val, gstep)
-                evaluate_disjoint(model, dval, gstep)
-            if sess % SAVE_EVERY == 0:
-                save("checkpoint")
-            if KEEP_EVERY > 0 and gstep % KEEP_EVERY == 0:
-                keep()
-            if off + sess >= state["t_live"]:
-                done = "tmax"
-                break
-            if BUDGET > 0 and time.time() - t_start >= BUDGET:
-                done = "budget"
-                break
-        epoch += 1
-    evaluate(model, val, gstep)
-    evaluate_disjoint(model, dval, gstep)
-    save("final")
-    print(f"DONE ({done}) - {OUT}: {gstep} steps, {(gstep - seg0) * BS:,} positions in "
-          f"{time.time() - t_start:.0f} s ({(gstep - seg0) / (time.time() - t0):.2f} steps/s)", flush=True)
-
+    evaluate_disjoint(model, tval, gstep, "TREE")
+    stall_watchdog(feeder)
+    done = run_phase()
+    if QAT_AFTER > 0 and done != "profile":   # QAT on in this process: the data stays where it is
+        t_switch = time.time()
+        QAT = True
+        base_keys = set(LNNUE(L1=L1).state_dict())
+        extra = sorted({k.split(".")[0] for k in model.state_dict() if k not in base_keys})
+        for name in extra:   # a head the run added (the cells' draw head): QAT trains the value alone
+            delattr(model, name)
+        gone = [p for g in opt.param_groups[3:] for p in g["params"]]
+        del opt.param_groups[3:]
+        for p in gone:
+            opt.state.pop(p, None)
+        for g, mult in zip(opt.param_groups, (1.0, TAIL_LR_MULT, 1.0)):
+            g["lr"] = g["initial_lr"] = QAT_LR * mult
+        params = [p for g in opt.param_groups for p in g["params"]]
+        state["t_live"] = QAT_AFTER
+        sched = torch.optim.lr_scheduler.LambdaLR(
+            opt, lambda s: 0.5 * (1.0 + math.cos(math.pi * min(1.0, s / max(1, state["t_live"])))))
+        if COMPILE:
+            torch._dynamo.reset()
+            step_fn = torch.compile(fwd_loss, dynamic=False)
+        phase.update(off=0, t_max=QAT_AFTER, budget=QAT_BUDGET, t_begin=t_switch, eval=QAT_EVERY, save=QAT_EVERY,
+                     keep=QAT_EVERY, out=QAT_OUT, base=QAT_OUT[:-5] if QAT_OUT.endswith(".nnue") else QAT_OUT)
+        grid = f"int8 grid (shift {QAT_FT8})" if QAT_FT8 else "int16 grid"
+        print(f"== QAT PHASE in this run: {QAT_AFTER:,} steps from step {gstep:,} on a new cosine from lr {QAT_LR} "
+              f"(tail x{TAIL_LR_MULT}), the feature layer on the {grid}, NNUE_FT_DENSE={FT_DENSE}"
+              f"{', dropped ' + ', '.join(extra) if extra else ''}; the data stays resident | budget {QAT_BUDGET:.0f} s "
+              f"-> {QAT_OUT}", flush=True)
+        evaluate(model, val, gstep)   # the QAT net before its first step
+        evaluate_disjoint(model, dval, gstep)
+        evaluate_disjoint(model, tval, gstep, "TREE")
+        run_phase()
 
 if __name__ == "__main__":
     main()
