@@ -166,11 +166,11 @@ static uint32_t g_net_id = 0;   // incremented by every successful load(); keys 
 
 // Per-thread accumulator stack, indexed by Position::st_ply(). v[perspective][neuron].
 // Cache-line aligned for clean loads during the SCReLU/quant8 pass.
-// int16 accumulator: exact integer sums as long as every lane stays inside
+// int16 accumulator: exact integer sums as long as every lane's sum stays inside
 // int16, which on the x2048 grid (FT_WSCALE) is +-16.0 window units against the
-// 11.5 of the largest sum measured (gen768s_03q). The adds saturate instead of
-// wrapping, but a lane that saturated would carry its clipped value into later
-// updates, so the grid, not the SCReLU clip, is what keeps the lanes exact.
+// 11.5 of the largest sum measured on games (gen768s_03q; 12.9 on search leaves).
+// The updates wrap, so a partial sum that leaves int16 within one update cannot
+// change the result; the grid, not the SCReLU clip, is what keeps the lanes exact.
 // Halves copy/update/eval traffic vs the int32 accumulator.
 struct alignas(64) Accumulator { int16_t v[2][NNUE_L1_MAX]; int32_t lin[2]; };
 
@@ -619,7 +619,8 @@ static inline const int16_t* feature_row(bool white_pov, int ksq, int sq, Piece 
 }
 
 // Rebuild side p's lanes from the board: the bias, then every piece's row in
-// square order, saturating after each (refresh_lanes).
+// square order, in wrapping int16 arithmetic (refresh_lanes): the exact sum
+// whenever it fits int16.
 static void refresh_perspective(const Position& pos, Accumulator& a, int p) {
     bool white_pov = (p == 0);
     int ksq = static_cast<int>(pos.king_sq(white_pov ? WHITE : BLACK));
@@ -882,17 +883,15 @@ Value evaluate(const Position& pos) {
                     // was the bias alone, so any real position aborted here
                     ref += ft_w[(size_t)idx * g_L1 + l];
                 }
-                // Compare activations, which is what the dense layers read.
-                // g_sat_events counts exact sums that reach the int16 boundary:
-                // on the x2048 grid it stays at zero, and a lane past it would
-                // carry a clipped value into the moves after (the drift x8192
-                // had).
-                if (std::fabs(ref) >= 32768.0f) ++g_sat_events;
-                float ref_a = std::min(1.0f, std::max(0.0f, ref * FT_WINV));
-                float inc_a = std::min(1.0f, std::max(0.0f, inc.v[p][l] * FT_WINV));
-                if (std::fabs(ref_a - inc_a) > 1.0f/127.0f + 1e-6) {
-                    std::fprintf(stderr, "NNUE ACC MISMATCH ply=%d p=%d l=%d ref=%.4f inc=%.4f\n",
-                                 pos.state_ply(), p, l, ref, inc.v[p][l]);
+                // The lane must be the exact sum whenever that fits int16: the
+                // updates wrap, so a partial sum that left int16 on the way
+                // cannot have changed it. g_sat_events counts sums that do not
+                // fit (none on the x2048 grid so far); such a lane wraps until
+                // its sum is back in range, and is not compared.
+                if (ref < -32768 || ref > 32767) { ++g_sat_events; continue; }
+                if (inc.v[p][l] != ref) {
+                    std::fprintf(stderr, "NNUE ACC MISMATCH ply=%d p=%d l=%d ref=%d inc=%d\n",
+                                 pos.state_ply(), p, l, int(ref), int(inc.v[p][l]));
                     std::abort();
                 }
             }

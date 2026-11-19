@@ -1182,6 +1182,16 @@ session after that.
 
 ## 22. The arm64 digest is expected to change (PR #81, Nov 15)
 
+*Update, Nov 18.* The lanes now add and subtract rows with wrapping int16
+arithmetic at every level, ARM's portable loops included, so every build
+computes the same lanes bit for bit, and the arm64 digest must equal x86's.
+That replaces the plan below (NEON saturating each row as x86 did).
+Saturating after every row clipped a partial sum that left int16 even when
+the final sum fit, and the clipped lane stayed wrong down the line: 6 lanes
+in about 1.07M evaluations of own-search leaves with the first layer
+stretched x1.25, none with gen768s_03q as shipped. Wrapping is exact
+whenever the final sum fits.
+
 nnuecheck's digest is the same at every x86-64 level and in OpenBench's
 build (768402b4a2534710 with gen768s_03q), and different on Apple silicon
 (b6c6458504d1b038). One known path explains it. ARM builds run the
