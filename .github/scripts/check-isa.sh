@@ -11,10 +11,13 @@
 # dotprod the Apple silicon one. The markers come only from the network
 # kernels, each level's own instructions:
 #   avx512vnni  vpdpbusd on zmm registers (the dense layers)
-#   avx512      vpaddsw on zmm (the accumulator)
+#   avx512      vpaddw or vpsubw on zmm (the accumulator's wrapping adds)
 #   avxvnni     vpdpbusd in its VEX form, which objdump prints as {vex}
 #   avx2        vpmaddubsw on ymm (the dense layers)
-#   base        paddsw without the VEX v prefix (the SSE2 accumulator)
+#   base        paddw or psubw without the VEX v prefix (the SSE2 accumulator)
+# The accumulator wraps instead of saturating since PR #106; in the universal
+# build (gcc 16) every zmm vpaddw/vpsubw comes from the two AVX-512 kernel
+# files and every legacy paddw/psubw from nnue_k_base.
 #   dotprod     sdot (NEON)
 # Counting all ymm use would not work on Windows, where the C++ runtime links
 # in its own CPU-dispatched AVX2 string routines.
@@ -32,10 +35,10 @@ check() {   # what, marker, expected: present or absent
 case $want in
   universal)
     check 'AVX512-VNNI kernel instructions' 'vpdpbusd.*zmm' present
-    check 'AVX-512 kernel instructions' 'vpaddsw.*zmm' present
+    check 'AVX-512 kernel instructions' 'vp(add|sub)w.*zmm' present
     check 'AVX-VNNI kernel instructions' '\{vex\}[[:space:]]*vpdpbusd' present
     check 'AVX2 kernel instructions' 'vpmaddubsw.*ymm' present
-    check 'SSE2 kernel instructions' '[[:space:]]paddsw[[:space:]]' present ;;
+    check 'SSE2 kernel instructions' '[[:space:]]p(add|sub)w[[:space:]]' present ;;
   avx2) check 'AVX2 network instructions' 'vpmaddubsw.*ymm' present ;;
   baseline) check 'AVX2 network instructions' 'vpmaddubsw.*ymm' absent ;;
   dotprod) check 'NEON dot-product instructions' 'sdot' present ;;
