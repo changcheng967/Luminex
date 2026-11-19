@@ -1182,6 +1182,28 @@ session after that.
 
 ## 22. The arm64 digest is expected to change (PR #81, Nov 15)
 
+*Update, Nov 18.* The lanes now add and subtract rows with wrapping int16
+arithmetic at every level, ARM's portable loops included, so every build
+computes the same lanes bit for bit, and the arm64 digest must equal x86's.
+That replaces the plan below (NEON saturating each row as x86 did).
+Saturating after every row clipped a partial sum that left int16 even when
+the final sum fit, and the clipped lane stayed wrong down the line: 6 lanes
+in about 1.07M evaluations of own-search leaves with the first layer
+stretched x1.25, none with gen768s_03q as shipped. Wrapping is exact
+whenever the final sum fits.
+
+What wrapping gives up, for a net whose sums do not fit: under saturation
+a lane past +16.0 read as +16.0 and activated as 1, a soft clip; wrapped,
+it reads as a negative value and activates as 0, a silent inversion, and
+nothing at runtime clips that could be counted. So the guard moves from
+the search to shipping. The lane-range probe (the largest piece-square
+lane over held-out and own-search leaf positions; 12.9 of 16.0 for
+gen768s_03q and every V5 gate net) is a standing step in shipping any
+net, and a net at or past 16.0 does not ship. The debug self-check
+(NNUE_FORCE_SELFCHECK) carries the debug side: it demands the exact lane
+wherever the sum fits, and g_sat_events counts the sums that do not. #93's
+runtime saturation counter does not come back.
+
 nnuecheck's digest is the same at every x86-64 level and in OpenBench's
 build (768402b4a2534710 with gen768s_03q), and different on Apple silicon
 (b6c6458504d1b038). One known path explains it. ARM builds run the

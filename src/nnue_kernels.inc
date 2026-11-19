@@ -35,12 +35,13 @@
 //   build makes it explicit at every level, one rounding (bias_add below):
 //   hardware FMA from AVX2 up, an exact software version at the base level,
 //   which matches the contracted builds (OpenBench's included).
-// - The accumulator lanes saturate after every row at every SIMD level; the
-//   dispatch build's base level does too (SSE2 below). The portable scalar
-//   loops (ARM, and x86 builds without AVX2 when LUMINEX_DISPATCH is off)
-//   clamp a child's first add and subtract once, as they always have, which
-//   differs only where a lane saturates. (So ARM builds can differ from x86
-//   ones in a few evaluations: nnuecheck's digest shows it.)
+// - The accumulator lanes add and subtract rows with wrapping int16 arithmetic
+//   at every level, the SIMD ones and the portable scalar loops (ARM, and x86
+//   builds without AVX2 when LUMINEX_DISPATCH is off) alike, so the lanes are
+//   the same everywhere bit for bit, and exact whenever the sum fits int16
+//   ("accumulator lanes" below). They used to saturate after every row on
+//   x86 and clamp once on ARM, which differed wherever a lane saturated (the
+//   two digests nnuecheck showed).
 // Float (LNN1) nets sum in a different order per level and are not exact
 // across levels.
 
@@ -284,77 +285,80 @@ inline int32_t dot_i8_128(const int8_t* w, const uint8_t* a, int n) {
 #endif
 
 // ---- accumulator lanes ----
-// Add / subtract one feature row to a perspective's lanes (saturating int16).
+// The lanes are kept modulo 2^16: rows are added and subtracted with wrapping
+// int16 arithmetic at every level, so a lane equals the exact sum of the bias
+// and its rows whenever that sum fits int16 (+-16.0 on the x2048 grid), in
+// whatever order the rows came and however far a partial sum strayed on the
+// way. Saturating after every row, as the lanes did before, clipped a partial
+// sum that left int16 even when the final sum fit, and the clipped lane then
+// stayed wrong for the rest of the line. A sum that does not fit wraps, and the
+// lane is exact again as soon as the sum is back in range (none of the shipped
+// or gate nets has a lane past 12.9). The cached refresh's int32 entries are
+// exact and saturate only on their copy into the lanes (store_saturated).
+
+// Add one feature row to a perspective's lanes (wrapping int16).
 inline void add_row(int16_t* acc, const int16_t* w, int n) {
 #if defined(LK_AVX512)
     for (int l = 0; l < n; l += 32)
-        _mm512_storeu_si512((__m512i*)(acc + l), _mm512_adds_epi16(
+        _mm512_storeu_si512((__m512i*)(acc + l), _mm512_add_epi16(
             _mm512_loadu_si512((const __m512i*)(acc + l)),
             _mm512_loadu_si512((const __m512i*)(w + l))));
 #elif defined(LK_AVX2)
     for (int l = 0; l < n; l += 16)
-        _mm256_storeu_si256((__m256i*)(acc + l), _mm256_adds_epi16(
+        _mm256_storeu_si256((__m256i*)(acc + l), _mm256_add_epi16(
             _mm256_loadu_si256((const __m256i*)(acc + l)),
             _mm256_loadu_si256((const __m256i*)(w + l))));
 #elif defined(LK_SSE2_LANES)
     for (int l = 0; l < n; l += 8)
-        _mm_storeu_si128((__m128i*)(acc + l), _mm_adds_epi16(
+        _mm_storeu_si128((__m128i*)(acc + l), _mm_add_epi16(
             _mm_loadu_si128((const __m128i*)(acc + l)),
             _mm_loadu_si128((const __m128i*)(w + l))));
 #else
-    for (int l = 0; l < n; ++l) {
-        const int v = int(acc[l]) + int(w[l]);
-        acc[l] = int16_t(v < -32768 ? -32768 : (v > 32767 ? 32767 : v));
-    }
+    // int arithmetic, then the conversion to int16_t keeps it modulo 2^16 (C++20)
+    for (int l = 0; l < n; ++l) acc[l] = int16_t(int(acc[l]) + int(w[l]));
 #endif
 }
 
 // One perspective of a child accumulator, written in a single pass from the
-// parent's lanes: +add0 -sub0, then -sub1 (S1), then +add1 (A1). The SIMD
-// builds saturate after every step, as add_row does; the portable scalar build
-// clamps once over the first pair and then after each later step. These are
-// the steps, order and saturation of the copy-then-update-in-place sequence
-// this replaced, so the lanes are bit-identical to it. Saturating adds and
-// subtracts do not commute, so the order matters whenever a lane saturates.
+// parent's lanes: +add0 -sub0, then -sub1 (S1), then +add1 (A1), all wrapping
+// int16, so every level (and the portable scalar build) gives the same lanes
+// bit for bit, and the exact sum whenever it fits.
 template <bool S1, bool A1>
 inline void delta_rows(const int16_t* parent, int16_t* child, const int16_t* add0,
                        const int16_t* sub0, const int16_t* sub1, const int16_t* add1, int n) {
 #if defined(LK_AVX512)
     for (int l = 0; l < n; l += 32) {
         __m512i v = _mm512_loadu_si512((const __m512i*)(parent + l));
-        v = _mm512_adds_epi16(v, _mm512_loadu_si512((const __m512i*)(add0 + l)));
-        v = _mm512_subs_epi16(v, _mm512_loadu_si512((const __m512i*)(sub0 + l)));
-        if constexpr (S1) v = _mm512_subs_epi16(v, _mm512_loadu_si512((const __m512i*)(sub1 + l)));
-        if constexpr (A1) v = _mm512_adds_epi16(v, _mm512_loadu_si512((const __m512i*)(add1 + l)));
+        v = _mm512_add_epi16(v, _mm512_loadu_si512((const __m512i*)(add0 + l)));
+        v = _mm512_sub_epi16(v, _mm512_loadu_si512((const __m512i*)(sub0 + l)));
+        if constexpr (S1) v = _mm512_sub_epi16(v, _mm512_loadu_si512((const __m512i*)(sub1 + l)));
+        if constexpr (A1) v = _mm512_add_epi16(v, _mm512_loadu_si512((const __m512i*)(add1 + l)));
         _mm512_storeu_si512((__m512i*)(child + l), v);
     }
 #elif defined(LK_AVX2)
     for (int l = 0; l < n; l += 16) {
         __m256i v = _mm256_loadu_si256((const __m256i*)(parent + l));
-        v = _mm256_adds_epi16(v, _mm256_loadu_si256((const __m256i*)(add0 + l)));
-        v = _mm256_subs_epi16(v, _mm256_loadu_si256((const __m256i*)(sub0 + l)));
-        if constexpr (S1) v = _mm256_subs_epi16(v, _mm256_loadu_si256((const __m256i*)(sub1 + l)));
-        if constexpr (A1) v = _mm256_adds_epi16(v, _mm256_loadu_si256((const __m256i*)(add1 + l)));
+        v = _mm256_add_epi16(v, _mm256_loadu_si256((const __m256i*)(add0 + l)));
+        v = _mm256_sub_epi16(v, _mm256_loadu_si256((const __m256i*)(sub0 + l)));
+        if constexpr (S1) v = _mm256_sub_epi16(v, _mm256_loadu_si256((const __m256i*)(sub1 + l)));
+        if constexpr (A1) v = _mm256_add_epi16(v, _mm256_loadu_si256((const __m256i*)(add1 + l)));
         _mm256_storeu_si256((__m256i*)(child + l), v);
     }
 #elif defined(LK_SSE2_LANES)
-    // The universal build's base level saturates after every step too, so its
-    // lanes equal the AVX2 and AVX-512 levels' bit for bit.
     for (int l = 0; l < n; l += 8) {
         __m128i v = _mm_loadu_si128((const __m128i*)(parent + l));
-        v = _mm_adds_epi16(v, _mm_loadu_si128((const __m128i*)(add0 + l)));
-        v = _mm_subs_epi16(v, _mm_loadu_si128((const __m128i*)(sub0 + l)));
-        if constexpr (S1) v = _mm_subs_epi16(v, _mm_loadu_si128((const __m128i*)(sub1 + l)));
-        if constexpr (A1) v = _mm_adds_epi16(v, _mm_loadu_si128((const __m128i*)(add1 + l)));
+        v = _mm_add_epi16(v, _mm_loadu_si128((const __m128i*)(add0 + l)));
+        v = _mm_sub_epi16(v, _mm_loadu_si128((const __m128i*)(sub0 + l)));
+        if constexpr (S1) v = _mm_sub_epi16(v, _mm_loadu_si128((const __m128i*)(sub1 + l)));
+        if constexpr (A1) v = _mm_add_epi16(v, _mm_loadu_si128((const __m128i*)(add1 + l)));
         _mm_storeu_si128((__m128i*)(child + l), v);
     }
 #else
-    auto clamp16 = [](int v) { return v < -32768 ? -32768 : (v > 32767 ? 32767 : v); };
     for (int l = 0; l < n; ++l) {
-        int v = clamp16(int(parent[l]) + int(add0[l]) - int(sub0[l]));
-        if constexpr (S1) v = clamp16(v - int(sub1[l]));
-        if constexpr (A1) v = clamp16(v + int(add1[l]));
-        child[l] = int16_t(v);
+        int v = int(parent[l]) + int(add0[l]) - int(sub0[l]);
+        if constexpr (S1) v -= int(sub1[l]);
+        if constexpr (A1) v += int(add1[l]);
+        child[l] = int16_t(v);   // modulo 2^16, as the SIMD levels wrap
     }
 #endif
 }

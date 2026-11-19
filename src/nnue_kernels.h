@@ -28,8 +28,10 @@ inline constexpr int NNUE_DENSE_MAX = 64;
 // window [0, 1] is lanes [0, 2048], and int16 holds sums to +-16.0 window
 // units. At x8192 int16 ended at 4.0, below the sums real nets reach (11.5
 // on gen768s_03q), and the saturating updates drifted: 12.7% of a search's
-// evaluations were not the net's output. The trainer's QAT rounds to the same
-// grid (nnue/openi_upload/resident_train.py, FT_GRID).
+// evaluations were not the net's output. The updates now wrap instead of
+// saturating, so a lane is exact whenever its sum fits (DeltaRows). The
+// trainer's QAT rounds to the same grid (nnue/openi_upload/resident_train.py,
+// FT_GRID).
 inline constexpr float NNUE_FT_SCALE = 2048.0f;
 
 // How a kernel set wants L2's int8 weights (2*L1 inputs x L2 outputs)
@@ -65,7 +67,8 @@ struct TailView {
 
 // One side of a child accumulator, from its parent's lanes and the feature
 // rows its move changes: parent + add0 - sub0, then - sub1 and + add1 where
-// given (a capture has sub1, castling both), saturating int16 after every step.
+// given (a capture has sub1, castling both), in wrapping int16 arithmetic: the
+// exact sum whenever it fits int16, whatever a partial sum did on the way.
 struct DeltaRows {
     const int16_t* parent;
     int16_t* child;
@@ -80,8 +83,8 @@ struct Kernels {
     const char* name;      // the level: avx512vnni, avx512, avxvnni, avx2, base, dotprod
     L2Layout l2_layout;
     bool l3_batched;       // reads L3 interleaved for batched VNNI when L2 = 16 and L3 % 4 = 0
-    // lanes = the int16-clamped bias, then + rows[0], + rows[1], ... in order,
-    // saturating after every row
+    // lanes = the int16-clamped bias, then + rows[0], + rows[1], ... in
+    // wrapping int16 arithmetic (exact whenever the sum fits)
     void (*refresh_lanes)(int16_t* lanes, const int32_t* bias, const int16_t* const* rows, int nrows, int n);
     // jobs[0..njobs) as DeltaRows describes
     void (*update_lanes)(const DeltaRows* jobs, int njobs, int n);
