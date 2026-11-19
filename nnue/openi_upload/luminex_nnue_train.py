@@ -323,8 +323,8 @@ class LNNUE(nn.Module):
         """Count the dense tail's units that can no longer learn: dead (L2 or L3
         pre-activation <= 0 on every one of these positions) or stuck (>= 1 on
         every one). SCReLU passes no gradient to either kind, so a unit in such a
-        state never leaves it by itself (revive_tail.py redraws them without
-        changing the network). Bucket tails are probed on their own positions
+        state never leaves it by itself (PR #50's tail revival redrew them
+        without changing the network). Bucket tails are probed on their own positions
         and summed. Returns (dead2, stuck2, dead3, stuck3, units2, units3)."""
         with torch.no_grad():
             if self.ft_mode == 'gather':
@@ -428,7 +428,7 @@ class LNNUE(nn.Module):
 
 
 # ============================================================================
-# Training helpers shared by c500_train_stream.py and blackwell_train.py
+# Training helpers (resident_train.py)
 # ============================================================================
 LOSS_SCALE = 400.0     # cp per sigmoid unit in the loss
 TARGET_CLIP = 1500.0   # |target| cap (mate scores, parse glitches)

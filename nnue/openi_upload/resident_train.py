@@ -6,7 +6,7 @@ The whole dataset sits in VRAM as 32-byte LCR1 records, written by
 HalfKAv2_hm feature indices on the GPU, so there is no featurizing and no pipe
 traffic while the network trains, and no host synchronization inside a step.
 Network, loss, optimizer groups, learning-rate schedule and output files are
-those of c500_train_stream.py: a .pt from either trainer resumes in the other.
+those of the C500 trainer it replaced (c500_train_stream.py, now removed): its .pt files still resume here.
 
 Environment (default in brackets):
   NNUE_DATA          LCR1 file(s): a path, or a comma-separated list of paths and
@@ -1553,7 +1553,7 @@ def main():
     sched = torch.optim.lr_scheduler.LambdaLR(
         opt, lambda s: 0.5 * (1.0 + math.cos(math.pi * min(1.0, (s + off) / max(1, state["t_live"])))))
 
-    with torch.no_grad():   # the label-convention gate of c500_train_stream.py, on held-out positions
+    with torch.no_grad():   # the C500 trainer's label-convention gate, on held-out positions
         if res and len(val) >= 8192:
             wf, bf, stm, tgt, _, _ = expand(val[:8192])
             # clipped as in the loss: raw mate scores (up to ~26,600) would swamp a correlation
