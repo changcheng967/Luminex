@@ -23,19 +23,19 @@ on:
 jobs:
   # Ubuntu 22.04 with clang 23 and lld (no PIE, CMakeLists.txt), and LLVM's
   # libc++ and libc++abi linked in with libgcc, so the binary runs on glibc
-  # 2.35 and newer. All from apt.llvm.org (install-clang23.sh).
+  # 2.35 and newer. All from apt.llvm.org (clang23.sh).
   build-linux:
     runs-on: ubuntu-22.04
     steps:
     - uses: actions/checkout@v5
     - name: Install dependencies
-      run: bash .github/scripts/install-clang23.sh
+      run: bash .github/scripts/clang23.sh install
     - name: Fetch the network
       run: bash .github/scripts/fetch-net.sh
     - name: Configure
       run: cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DCI=ON -DCMAKE_CXX_COMPILER="$CXX" -DLUMINEX_DISPATCH=ON -DCMAKE_CXX_FLAGS="-stdlib=libc++" -DCMAKE_EXE_LINKER_FLAGS="-stdlib=libc++ -static-libstdc++ -static-libgcc -Wl,-Bstatic -lc++abi -Wl,-Bdynamic" -DLUMINEX_EMBED_PINNED=ON
     - name: Check the compiler is clang 23
-      run: bash .github/scripts/check-compiler.sh build
+      run: bash .github/scripts/clang23.sh check build
     - name: Build
       run: cmake --build build --config Release
     - name: Check instruction set
@@ -70,12 +70,12 @@ jobs:
     steps:
     - uses: actions/checkout@v5
     # Visual Studio's ClangCL toolset with LLVM 23 in place of the LLVM that
-    # Visual Studio bundles (install-clang23-windows.sh)
+    # Visual Studio bundles (clang23.sh)
     - name: Install clang 23
       shell: bash
       env:
         GH_TOKEN: ${{ github.token }}
-      run: bash .github/scripts/install-clang23-windows.sh
+      run: bash .github/scripts/clang23.sh install
     - name: Fetch the network
       shell: bash
       run: bash .github/scripts/fetch-net.sh
@@ -83,7 +83,7 @@ jobs:
       run: cmake -B build -G "Visual Studio 17 2022" -A x64 -T ClangCL -DLUMINEX_DISPATCH=ON -DLUMINEX_EMBED_PINNED=ON
     - name: Check the compiler is clang 23
       shell: bash
-      run: bash .github/scripts/check-compiler.sh build
+      run: bash .github/scripts/clang23.sh check build
     - name: Build
       run: cmake --build build --config Release
     - name: Check instruction set
@@ -112,15 +112,15 @@ jobs:
     runs-on: macos-latest
     steps:
     - uses: actions/checkout@v5
-    # Homebrew's LLVM 23 with the SDK's libc++ (install-clang23-macos.sh)
+    # Homebrew's LLVM 23 with the SDK's libc++ (clang23.sh)
     - name: Install dependencies
-      run: bash .github/scripts/install-clang23-macos.sh
+      run: bash .github/scripts/clang23.sh install
     - name: Fetch the network
       run: bash .github/scripts/fetch-net.sh
     - name: Configure
       run: cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_CXX_COMPILER="$CXX" -DCMAKE_CXX_FLAGS="-nostdinc++ -isystem $LUMINEX_SDK/usr/include/c++/v1" -DCMAKE_EXE_LINKER_FLAGS="-fuse-ld=lld" -DLUMINEX_EMBED_PINNED=ON
     - name: Check the compiler is clang 23
-      run: bash .github/scripts/check-compiler.sh build
+      run: bash .github/scripts/clang23.sh check build
     - name: Build
       run: cmake --build build --config Release
     - name: Check instruction set
