@@ -385,21 +385,28 @@ static int lag_samples = 0;
 
 static int lag_estimate() { return lag_samples > 0 ? int(lag_ms + 0.5) : 0; }
 
-// What pondering saves the clock (TimePonder): the own time of the game's played
-// moves as a fraction of their schedule targets, own time and target averaged
-// apart with weight 1/8 on the newest (so the fraction is weighted by time, the
-// way the clock pays). On a missed prediction the move costs its full target;
-// on a hit only what it thinks after the ponderhit. The averages start equal
-// (no saving) at the game's first ponder search, so a game without go ponder
-// keeps the fraction at exactly 1 and its schedule unchanged.
-static double ponder_own_avg = 0.0, ponder_target_avg = 0.0;
+// What pondering saves the clock (TimePonder): the own time a played move spends
+// for its schedule target, over all of the game's moves, as a fraction of the
+// same over the moves that were not ponder hits. A missed prediction costs what
+// a move without pondering costs; a hit only what it thinks after the
+// ponderhit. Measured against the game's own non-hit moves, the fraction is what
+// pondering saves and nothing else (the stop rule spends about 0.8 of a target
+// at 10+0.1 either way). Own time and target are averaged apart with weight 1/8
+// on the newest, so the fraction is weighted by time, the way the clock pays.
+// All averages start equal (no saving) at the game's first ponder search: a
+// game without a ponderhit keeps the fraction at exactly 1, its schedule
+// unchanged.
+static double ponder_own_avg = 0.0, ponder_target_avg = 0.0;   // every played move
+static double plain_own_avg = 0.0, plain_target_avg = 0.0;     // the moves that were not ponder hits
 static bool ponder_seen = false;
 static int move_target_ms = 0;   // this search's schedule target; 0 = no solved schedule
 
 static double ponder_fraction() {
-    if (params.time_ponder <= 0 || !ponder_seen || ponder_target_avg <= 0.0)
+    if (params.time_ponder <= 0 || !ponder_seen || ponder_target_avg <= 0.0 || plain_own_avg <= 0.0)
         return 1.0;
-    return std::clamp(ponder_own_avg / ponder_target_avg, 1e-3, 1.0);
+    const double all = ponder_own_avg / ponder_target_avg;
+    const double plain = plain_own_avg / plain_target_avg;
+    return std::clamp(all / plain, 1e-3, 1.0);
 }
 
 static void reset_clock_lag() {
@@ -407,7 +414,7 @@ static void reset_clock_lag() {
     pending_clock = {};
     lag_ms = 0.0;
     lag_samples = 0;
-    ponder_own_avg = ponder_target_avg = 0.0;
+    ponder_own_avg = ponder_target_avg = plain_own_avg = plain_target_avg = 0.0;
     ponder_seen = false;
 }
 
@@ -2015,6 +2022,10 @@ void finish_clock(const Limits& lim) {
         if (ponder_seen && move_target_ms > 0) {
             ponder_own_avg += (own - ponder_own_avg) / 8.0;
             ponder_target_avg += (move_target_ms - ponder_target_avg) / 8.0;
+            if (!hit_taken) {
+                plain_own_avg += (own - plain_own_avg) / 8.0;
+                plain_target_avg += (move_target_ms - plain_target_avg) / 8.0;
+            }
         }
     }
     pending_clock.valid = false;
@@ -2338,8 +2349,8 @@ Move search(Position& pos, Limits& lim) {
             max_time     = std::min(usable / 2, std::max(ideal_time * 2, time_inc + 50));
         }
 
-        if (ponder_seen && move_target_ms > 0 && ponder_target_avg <= 0.0)
-            ponder_own_avg = ponder_target_avg = move_target_ms;   // the prior: no saving yet
+        if (ponder_seen && move_target_ms > 0 && ponder_target_avg <= 0.0)   // the prior: no saving yet
+            ponder_own_avg = ponder_target_avg = plain_own_avg = plain_target_avg = move_target_ms;
 
         ideal_time = std::max(10, ideal_time);
         max_time = std::max(ideal_time, max_time);
