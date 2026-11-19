@@ -311,10 +311,14 @@ matching `.pt`; the quantized network the engine loads adds `_i8`
 
 ## Build
 
-Requires a C++23 compiler (GCC 13+, Clang 15+, MSVC 2022+) and CMake 3.20+.
+Requires a C++23 compiler and CMake 3.20+. Build with clang 23, as every
+release and OpenBench worker does: with lld and no PIE (CMakeLists.txt does
+both for clang on Linux) it is the fastest build measured, about 25% more
+speed in games than gcc 14. GCC 13+, older Clang (15+) and MSVC 2022 also
+compile it.
 
 ```bash
-cmake -B build -DCMAKE_BUILD_TYPE=Release
+cmake -B build -DCMAKE_BUILD_TYPE=Release -DCMAKE_CXX_COMPILER=clang++-23
 cmake --build build --config Release
 ```
 

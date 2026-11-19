@@ -15,10 +15,11 @@ import struct
 import sys
 
 # Linux: the newest symbol version each library may be asked for. The Linux
-# binary is built on Ubuntu 22.04 with libstdc++ and libgcc linked in, so it
-# needs glibc 2.35, Ubuntu 22.04's, and neither of those libraries.
+# binary is built on Ubuntu 22.04 by clang 23 with LLVM's libc++ and libc++abi
+# and libgcc linked in, so it needs glibc 2.35, Ubuntu 22.04's, and none of
+# the C++ runtime libraries (libstdc++ too, for a build that took it).
 LINUX = {"GLIBC": (2, 35)}
-LINUX_NO_LIBS = ("libstdc++.so.6", "libgcc_s.so.1")
+LINUX_NO_LIBS = ("libstdc++.so.6", "libgcc_s.so.1", "libc++.so.1", "libc++abi.so.1", "libunwind.so.1")
 # macOS 13.3, CMakeLists.txt's deployment target: the first with std::to_chars
 # for floating point, which std::format needs.
 MACOS_MIN = (13, 3, 0)
