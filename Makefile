@@ -13,9 +13,19 @@
 # rather than "native" (see the note below).
 
 EXE       ?= luminex
-CC        ?= gcc
-CXX       ?= g++
 BUILD_DIR ?= build-openbench
+
+# The compiler is clang 23: clang 23 + lld + no PIE is the fastest build
+# measured, +25% game speed and +16-22% bench over gcc 14 on the SPRT
+# workers (CMakeLists.txt adds lld and no PIE for clang on Linux). A CC= or
+# CXX= given to make or in the environment (OpenBench's build_compilers) is
+# kept; make's own defaults (cc, g++) are not.
+ifeq ($(origin CXX),default)
+  CXX := $(or $(shell command -v clang++-23 2>/dev/null),clang++)
+endif
+ifeq ($(origin CC),default)
+  CC := $(or $(shell command -v clang-23 2>/dev/null),clang)
+endif
 
 # Why not -march=native: OpenBench verifies that every worker produces the same
 # bench node count. Floating point in the HCE path and any vectorised reduction
@@ -52,14 +62,15 @@ else
   endif
 endif
 
-# The engine is C++23 (<format>): needs g++ 13+ or clang 18+ with libc++.
-# Fail with one clear line instead of a page of template errors on the
-# older g++ that many worker images ship by default (e.g. 9.4 on AI Studio).
+# The engine is C++23 (<format>). A compiler given as CXX= that is an old g++
+# (9.4 on AI Studio's worker images) fails with one clear line instead of a
+# page of template errors: install clang 23 (apt.llvm.org) and leave CXX unset,
+# or pass CXX=clang++-23.
 GCC_MAJOR := $(shell $(CXX) -dumpversion 2>/dev/null | cut -d. -f1)
 IS_CLANG  := $(shell $(CXX) --version 2>/dev/null | head -1 | grep -ci clang)
 ifneq ($(IS_CLANG),1)
 ifeq ($(shell test $(GCC_MAJOR) -ge 13 2>/dev/null && echo ok),)
-  $(error Luminex needs g++ 13+ (C++23 <format>). Found $(CXX) $(shell $(CXX) -dumpversion 2>/dev/null). Install g++-13 and rerun with CXX=g++-13)
+  $(error Luminex needs a C++23 compiler, best clang 23 (CXX=clang++-23). Found $(CXX) $(shell $(CXX) -dumpversion 2>/dev/null))
 endif
 endif
 
