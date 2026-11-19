@@ -9,16 +9,16 @@ on:
 
 # Every build carries the shipped network (fetch-net.sh pins the file) and
 # must evaluate with it when run by itself from an empty directory
-# (check-net.sh), as the release binaries are, and need no more from the
-# system than the release notes say (check-deps.py). Every build also names itself
+# (ci.sh net), as the release binaries are, and need no more from the
+# system than the release notes say (ci.sh deps). Every build also names itself
 # after the development build (meta) and keeps its binary as an artifact; on
 # main, dev-release publishes them as the rolling luminex-dev pre-release.
 #
 # The x86-64 binaries are universal (CMake LUMINEX_DISPATCH): one per OS,
 # carrying the network kernels of every instruction-set level and running the
-# best one the CPU supports. check-simd.sh runs their nnuecheck, which fails
+# best one the CPU supports. ci.sh simd runs their nnuecheck, which fails
 # unless every level evaluates a fixed set of games alike, on the runner's CPU
-# and, under Intel SDE (fetch-sde.sh), as the CPUs that have the levels the
+# and, under Intel SDE (ci.sh sde), as the CPUs that have the levels the
 # runner lacks; simd-digests then checks that both binaries and the build
 # OpenBench runs (the makefile job) evaluate those games alike too.
 jobs:
@@ -39,7 +39,7 @@ jobs:
 
   # Ubuntu 22.04 with clang 23 and lld (no PIE, CMakeLists.txt), and LLVM's
   # libc++ and libc++abi linked in with libgcc, so the binary runs on glibc
-  # 2.35 and newer. All from apt.llvm.org (clang23.sh).
+  # 2.35 and newer. All from apt.llvm.org (ci.sh clang).
   linux:
     needs: meta
     runs-on: ubuntu-22.04
@@ -48,26 +48,26 @@ jobs:
     steps:
     - uses: actions/checkout@v5
     - name: Install dependencies
-      run: bash .github/scripts/clang23.sh install
+      run: bash .github/scripts/ci.sh clang install
     - name: Fetch the network
       run: bash .github/scripts/fetch-net.sh
     - name: Configure
       run: cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DCI=ON -DCMAKE_CXX_COMPILER="$CXX" -DLUMINEX_DISPATCH=ON -DCMAKE_CXX_FLAGS="-stdlib=libc++" -DCMAKE_EXE_LINKER_FLAGS="-stdlib=libc++ -static-libstdc++ -static-libgcc -Wl,-Bstatic -lc++abi -Wl,-Bdynamic" -DLUMINEX_EMBED_PINNED=ON -DLUMINEX_BUILD_ID=${{ needs.meta.outputs.build_id }}
     - name: Check the compiler is clang 23
-      run: bash .github/scripts/clang23.sh check build
+      run: bash .github/scripts/ci.sh clang check build
     - name: Build
       run: cmake --build build --config Release
     - name: Check instruction set
-      run: bash .github/scripts/check-isa.sh build/luminex universal
+      run: bash .github/scripts/ci.sh isa build/luminex universal
     - name: Run Bench
       run: ./build/luminex bench
     - name: Check the built-in network
-      run: bash .github/scripts/check-net.sh build/luminex
+      run: bash .github/scripts/ci.sh net build/luminex
     - name: Check the engine name
-      run: bash .github/scripts/check-name.sh build/luminex ${{ needs.meta.outputs.build_id }}
+      run: bash .github/scripts/ci.sh name build/luminex ${{ needs.meta.outputs.build_id }}
     - name: Check the kernel levels agree
       id: simd
-      run: bash .github/scripts/check-simd.sh build/luminex
+      run: bash .github/scripts/ci.sh simd build/luminex
     # Each SDE chip is a CPU with a different set of levels: Sapphire Rapids
     # has them all, Ice Lake no AVX-VNNI, Skylake-SP no VNNI at all, Arrow
     # Lake (CCI's Core Ultra 7 265T) no AVX-512, Haswell AVX2 alone, Sandy
@@ -78,9 +78,9 @@ jobs:
       env:
         DIGEST: ${{ steps.simd.outputs.digest }}
       run: |
-        SDE=$(bash .github/scripts/fetch-sde.sh)
+        SDE=$(bash .github/scripts/ci.sh sde)
         export SDE
-        check() { bash .github/scripts/check-simd.sh build/luminex "$@"; }
+        check() { bash .github/scripts/ci.sh simd build/luminex "$@"; }
         check spr "avx512vnni avx512 avxvnni avx2 base"
         check icx "avx512vnni avx512 avx2 base"
         check skx "avx512 avx2 base"
@@ -95,8 +95,7 @@ jobs:
     - name: Check what it needs from the system
       shell: bash
       run: |
-        py=python3; [ "$RUNNER_OS" = Windows ] && py=python
-        "$py" .github/scripts/check-deps.py luminex-linux-x86-64 luminex-linux-x86-64
+        bash .github/scripts/ci.sh deps luminex-linux-x86-64 luminex-linux-x86-64
     - uses: actions/upload-artifact@v4
       with:
         name: luminex-linux-x86-64
@@ -115,12 +114,12 @@ jobs:
     - uses: actions/checkout@v5
     # Visual Studio's ClangCL toolset with LLVM 23 in place of the LLVM that
     # Visual Studio bundles: MSBuild reads LLVMInstallDir and LLVMToolsVersion
-    # from the environment (clang23.sh)
+    # from the environment (ci.sh clang)
     - name: Install clang 23
       shell: bash
       env:
         GH_TOKEN: ${{ github.token }}
-      run: bash .github/scripts/clang23.sh install
+      run: bash .github/scripts/ci.sh clang install
     - name: Fetch the network
       shell: bash
       run: bash .github/scripts/fetch-net.sh
@@ -128,32 +127,32 @@ jobs:
       run: cmake -B build -G "Visual Studio 17 2022" -A x64 -T ClangCL -DLUMINEX_DISPATCH=ON -DLUMINEX_EMBED_PINNED=ON -DLUMINEX_BUILD_ID=${{ needs.meta.outputs.build_id }}
     - name: Check the compiler is clang 23
       shell: bash
-      run: bash .github/scripts/clang23.sh check build
+      run: bash .github/scripts/ci.sh clang check build
     - name: Build
       run: cmake --build build --config Release
     - name: Check instruction set
       shell: bash
-      run: bash .github/scripts/check-isa.sh build/Release/luminex.exe universal
+      run: bash .github/scripts/ci.sh isa build/Release/luminex.exe universal
     - name: Run Bench
       run: build\Release\luminex.exe bench
     - name: Check the built-in network
       shell: bash
-      run: bash .github/scripts/check-net.sh build/Release/luminex.exe
+      run: bash .github/scripts/ci.sh net build/Release/luminex.exe
     - name: Check the engine name
       shell: bash
-      run: bash .github/scripts/check-name.sh build/Release/luminex.exe ${{ needs.meta.outputs.build_id }}
+      run: bash .github/scripts/ci.sh name build/Release/luminex.exe ${{ needs.meta.outputs.build_id }}
     - name: Check the kernel levels agree
       id: simd
       shell: bash
-      run: bash .github/scripts/check-simd.sh build/Release/luminex.exe
+      run: bash .github/scripts/ci.sh simd build/Release/luminex.exe
     - name: Check the kernel levels on other CPUs (Intel SDE)
       shell: bash
       env:
         DIGEST: ${{ steps.simd.outputs.digest }}
       run: |
-        SDE=$(bash .github/scripts/fetch-sde.sh)
+        SDE=$(bash .github/scripts/ci.sh sde)
         export SDE
-        check() { bash .github/scripts/check-simd.sh build/Release/luminex.exe "$@"; }
+        check() { bash .github/scripts/ci.sh simd build/Release/luminex.exe "$@"; }
         check spr "avx512vnni avx512 avxvnni avx2 base"
         check arl "avxvnni avx2 base"
         check nhm "base"
@@ -163,8 +162,7 @@ jobs:
     - name: Check what it needs from the system
       shell: bash
       run: |
-        py=python3; [ "$RUNNER_OS" = Windows ] && py=python
-        "$py" .github/scripts/check-deps.py luminex-windows-x86-64.exe luminex-windows-x86-64.exe
+        bash .github/scripts/ci.sh deps luminex-windows-x86-64.exe luminex-windows-x86-64.exe
     - uses: actions/upload-artifact@v4
       with:
         name: luminex-windows-x86-64
@@ -178,27 +176,27 @@ jobs:
     - uses: actions/checkout@v5
     # Homebrew's LLVM 23 (clang, and lld for its LTO) in place of Apple clang,
     # compiled against the SDK's own libc++, the one the system runs, so the
-    # deployment target (macOS 13.3) still holds (clang23.sh)
+    # deployment target (macOS 13.3) still holds (ci.sh clang)
     - name: Install dependencies
-      run: bash .github/scripts/clang23.sh install
+      run: bash .github/scripts/ci.sh clang install
     - name: Fetch the network
       run: bash .github/scripts/fetch-net.sh
     - name: Configure
       run: cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_CXX_COMPILER="$CXX" -DCMAKE_CXX_FLAGS="-nostdinc++ -isystem $LUMINEX_SDK/usr/include/c++/v1" -DCMAKE_EXE_LINKER_FLAGS="-fuse-ld=lld" -DLUMINEX_EMBED_PINNED=ON -DLUMINEX_BUILD_ID=${{ needs.meta.outputs.build_id }}
     - name: Check the compiler is clang 23
-      run: bash .github/scripts/clang23.sh check build
+      run: bash .github/scripts/ci.sh clang check build
     - name: Build
       run: cmake --build build --config Release
     - name: Check instruction set
-      run: bash .github/scripts/check-isa.sh build/luminex dotprod
+      run: bash .github/scripts/ci.sh isa build/luminex dotprod
     - name: Run Bench
       run: ./build/luminex bench
     - name: Check the built-in network
-      run: bash .github/scripts/check-net.sh build/luminex
+      run: bash .github/scripts/ci.sh net build/luminex
     - name: Check the engine name
-      run: bash .github/scripts/check-name.sh build/luminex ${{ needs.meta.outputs.build_id }}
+      run: bash .github/scripts/ci.sh name build/luminex ${{ needs.meta.outputs.build_id }}
     - name: Check the kernels run
-      run: bash .github/scripts/check-simd.sh build/luminex
+      run: bash .github/scripts/ci.sh simd build/luminex
     - name: Package
       run: |
         strip build/luminex
@@ -206,8 +204,7 @@ jobs:
     - name: Check what it needs from the system
       shell: bash
       run: |
-        py=python3; [ "$RUNNER_OS" = Windows ] && py=python
-        "$py" .github/scripts/check-deps.py luminex-macos-arm64 luminex-macos-arm64
+        bash .github/scripts/ci.sh deps luminex-macos-arm64 luminex-macos-arm64
     - uses: actions/upload-artifact@v4
       with:
         name: luminex-macos-arm64
@@ -227,21 +224,21 @@ jobs:
     steps:
     - uses: actions/checkout@v5
     - name: Install clang 23
-      run: bash .github/scripts/clang23.sh install
+      run: bash .github/scripts/ci.sh clang install
     - name: Build as OpenBench does
       run: make -j EXE=luminex
     - name: Check the compiler is clang 23
-      run: bash .github/scripts/clang23.sh check build-openbench
+      run: bash .github/scripts/ci.sh clang check build-openbench
     - name: Run Bench
       run: ./luminex bench
     - name: Check the default network name
-      run: bash .github/scripts/check-net.sh --no-embed ./luminex
+      run: bash .github/scripts/ci.sh net --no-embed ./luminex
     - name: Fetch the network
       run: bash .github/scripts/fetch-net.sh
     - name: Check the kernels' evaluations
       id: simd
       run: |
-        bash .github/scripts/check-simd.sh ./luminex --net "net/$(sed -n 's#^url=.*/##p' .github/scripts/fetch-net.sh)"
+        bash .github/scripts/ci.sh simd ./luminex --net "net/$(sed -n 's#^url=.*/##p' .github/scripts/fetch-net.sh)"
     # The negative control of the SDE checks in the linux and windows jobs: a
     # build whose own code needs an instruction set the emulated CPU lacks
     # must be stopped by SDE's chip check. An x86-64-v4 (AVX-512) build runs
@@ -253,7 +250,7 @@ jobs:
     - name: Check that SDE stops instructions the emulated CPU lacks
       run: |
         make -j EXE=luminex-v4 MARCH=x86-64-v4 BUILD_DIR=build-v4
-        SDE=$(bash .github/scripts/fetch-sde.sh)
+        SDE=$(bash .github/scripts/ci.sh sde)
         net="net/$(sed -n 's#^url=.*/##p' .github/scripts/fetch-net.sh)"
         if out=$("$SDE" -hsw -chip-check-exe-only -- ./luminex-v4 nnuecheck "$net" 2>&1); then
           printf '%s\n' "$out" | tail -5
@@ -282,7 +279,7 @@ jobs:
   # that passes every job above becomes the pre-release
   # luminex-dev-YYYYMMDD-<sha8>, with the binaries those jobs built and
   # tested, and the previous luminex-dev release and its tag are deleted
-  # (dev-release.sh). The v* releases and engine-archives (OpenBench's store
+  # (ci.sh dev-release). The v* releases and engine-archives (OpenBench's store
   # of old builds and networks) never match the pattern it deletes. Runs on
   # main queue one at a time; elsewhere (pull requests, other branches) the
   # script runs dry and only prints what it would do.
@@ -311,4 +308,4 @@ jobs:
         GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         BUILD_ID: ${{ needs.meta.outputs.build_id }}
         DRY_RUN: ${{ github.event_name != 'pull_request' && github.ref == 'refs/heads/main' && '0' || '1' }}
-      run: bash .github/scripts/dev-release.sh dist
+      run: bash .github/scripts/ci.sh dev-release dist

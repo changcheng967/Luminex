@@ -132,7 +132,7 @@ avxvnni`):
 Every level computes the same evaluation, bit for bit; CI checks it on each
 binary (`nnuecheck`, under Intel SDE for CPUs the runners lack). CI also
 reads what every binary needs from its headers and fails a build that needs
-more than its row (`.github/scripts/check-deps.py`). On Apple silicon the
+more than its row (`.github/scripts/ci.sh deps`). On Apple silicon the
 network runs on NEON dot-product kernels.
 
 Every release binary carries its network inside it (v6.6.0:

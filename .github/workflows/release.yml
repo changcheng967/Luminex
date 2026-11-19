@@ -10,40 +10,40 @@ on:
         required: true
 
 # Every binary carries the shipped network (fetch-net.sh pins the file) and is
-# checked to evaluate with it when run by itself (check-net.sh), and to need
+# checked to evaluate with it when run by itself (ci.sh net), and to need
 # no more from the system than the release notes' Needs column says
-# (check-deps.py). The network is also attached on its own, for builds
+# (ci.sh deps). The network is also attached on its own, for builds
 # without it and for NNUEFile.
 #
 # One binary per platform. The x86-64 ones are universal (CMake
 # LUMINEX_DISPATCH): they carry the network kernels of every instruction-set
-# level and run the best one the CPU supports, and nnuecheck (check-simd.sh)
+# level and run the best one the CPU supports, and nnuecheck (ci.sh simd)
 # fails the build unless every level the runner has evaluates alike. build.yml
 # runs the same check under Intel SDE for the levels the runners lack.
 jobs:
   # Ubuntu 22.04 with clang 23 and lld (no PIE, CMakeLists.txt), and LLVM's
   # libc++ and libc++abi linked in with libgcc, so the binary runs on glibc
-  # 2.35 and newer. All from apt.llvm.org (clang23.sh).
+  # 2.35 and newer. All from apt.llvm.org (ci.sh clang).
   build-linux:
     runs-on: ubuntu-22.04
     steps:
     - uses: actions/checkout@v5
     - name: Install dependencies
-      run: bash .github/scripts/clang23.sh install
+      run: bash .github/scripts/ci.sh clang install
     - name: Fetch the network
       run: bash .github/scripts/fetch-net.sh
     - name: Configure
       run: cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DCI=ON -DCMAKE_CXX_COMPILER="$CXX" -DLUMINEX_DISPATCH=ON -DCMAKE_CXX_FLAGS="-stdlib=libc++" -DCMAKE_EXE_LINKER_FLAGS="-stdlib=libc++ -static-libstdc++ -static-libgcc -Wl,-Bstatic -lc++abi -Wl,-Bdynamic" -DLUMINEX_EMBED_PINNED=ON
     - name: Check the compiler is clang 23
-      run: bash .github/scripts/clang23.sh check build
+      run: bash .github/scripts/ci.sh clang check build
     - name: Build
       run: cmake --build build --config Release
     - name: Check instruction set
-      run: bash .github/scripts/check-isa.sh build/luminex universal
+      run: bash .github/scripts/ci.sh isa build/luminex universal
     - name: Check the built-in network
-      run: bash .github/scripts/check-net.sh build/luminex
+      run: bash .github/scripts/ci.sh net build/luminex
     - name: Check the kernel levels agree
-      run: bash .github/scripts/check-simd.sh build/luminex
+      run: bash .github/scripts/ci.sh simd build/luminex
     - name: Package
       run: |
         strip build/luminex
@@ -52,8 +52,7 @@ jobs:
     - name: Check what it needs from the system
       shell: bash
       run: |
-        py=python3; [ "$RUNNER_OS" = Windows ] && py=python
-        "$py" .github/scripts/check-deps.py luminex-linux-x86-64 luminex-linux-x86-64
+        bash .github/scripts/ci.sh deps luminex-linux-x86-64 luminex-linux-x86-64
     - uses: actions/upload-artifact@v4
       with:
         name: luminex-linux-x86-64
@@ -70,12 +69,12 @@ jobs:
     steps:
     - uses: actions/checkout@v5
     # Visual Studio's ClangCL toolset with LLVM 23 in place of the LLVM that
-    # Visual Studio bundles (clang23.sh)
+    # Visual Studio bundles (ci.sh clang)
     - name: Install clang 23
       shell: bash
       env:
         GH_TOKEN: ${{ github.token }}
-      run: bash .github/scripts/clang23.sh install
+      run: bash .github/scripts/ci.sh clang install
     - name: Fetch the network
       shell: bash
       run: bash .github/scripts/fetch-net.sh
@@ -83,26 +82,25 @@ jobs:
       run: cmake -B build -G "Visual Studio 17 2022" -A x64 -T ClangCL -DLUMINEX_DISPATCH=ON -DLUMINEX_EMBED_PINNED=ON
     - name: Check the compiler is clang 23
       shell: bash
-      run: bash .github/scripts/clang23.sh check build
+      run: bash .github/scripts/ci.sh clang check build
     - name: Build
       run: cmake --build build --config Release
     - name: Check instruction set
       shell: bash
-      run: bash .github/scripts/check-isa.sh build/Release/luminex.exe universal
+      run: bash .github/scripts/ci.sh isa build/Release/luminex.exe universal
     - name: Check the built-in network
       shell: bash
-      run: bash .github/scripts/check-net.sh build/Release/luminex.exe
+      run: bash .github/scripts/ci.sh net build/Release/luminex.exe
     - name: Check the kernel levels agree
       shell: bash
-      run: bash .github/scripts/check-simd.sh build/Release/luminex.exe
+      run: bash .github/scripts/ci.sh simd build/Release/luminex.exe
     - name: Package
       shell: bash
       run: mv build/Release/luminex.exe luminex-windows-x86-64.exe
     - name: Check what it needs from the system
       shell: bash
       run: |
-        py=python3; [ "$RUNNER_OS" = Windows ] && py=python
-        "$py" .github/scripts/check-deps.py luminex-windows-x86-64.exe luminex-windows-x86-64.exe
+        bash .github/scripts/ci.sh deps luminex-windows-x86-64.exe luminex-windows-x86-64.exe
     - uses: actions/upload-artifact@v4
       with:
         name: luminex-windows-x86-64
@@ -112,21 +110,21 @@ jobs:
     runs-on: macos-latest
     steps:
     - uses: actions/checkout@v5
-    # Homebrew's LLVM 23 with the SDK's libc++ (clang23.sh)
+    # Homebrew's LLVM 23 with the SDK's libc++ (ci.sh clang)
     - name: Install dependencies
-      run: bash .github/scripts/clang23.sh install
+      run: bash .github/scripts/ci.sh clang install
     - name: Fetch the network
       run: bash .github/scripts/fetch-net.sh
     - name: Configure
       run: cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_CXX_COMPILER="$CXX" -DCMAKE_CXX_FLAGS="-nostdinc++ -isystem $LUMINEX_SDK/usr/include/c++/v1" -DCMAKE_EXE_LINKER_FLAGS="-fuse-ld=lld" -DLUMINEX_EMBED_PINNED=ON
     - name: Check the compiler is clang 23
-      run: bash .github/scripts/clang23.sh check build
+      run: bash .github/scripts/ci.sh clang check build
     - name: Build
       run: cmake --build build --config Release
     - name: Check instruction set
-      run: bash .github/scripts/check-isa.sh build/luminex dotprod
+      run: bash .github/scripts/ci.sh isa build/luminex dotprod
     - name: Check the built-in network
-      run: bash .github/scripts/check-net.sh build/luminex
+      run: bash .github/scripts/ci.sh net build/luminex
     - name: Package
       run: |
         strip build/luminex
@@ -135,8 +133,7 @@ jobs:
     - name: Check what it needs from the system
       shell: bash
       run: |
-        py=python3; [ "$RUNNER_OS" = Windows ] && py=python
-        "$py" .github/scripts/check-deps.py luminex-macos-arm64 luminex-macos-arm64
+        bash .github/scripts/ci.sh deps luminex-macos-arm64 luminex-macos-arm64
     - uses: actions/upload-artifact@v4
       with:
         name: luminex-macos-arm64

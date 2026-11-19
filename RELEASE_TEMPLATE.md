@@ -55,13 +55,13 @@ x86-64 assets are gone, since the README told users with fast CPUs to take
 > such as Arrow Lake.
 
 Needs is what the binary needs from the system: glibc and libstdc++ on Linux,
-any runtime to install on Windows, the oldest macOS. check-deps.py reads it
+any runtime to install on Windows, the oldest macOS. ci.sh deps reads it
 from every binary's headers in CI and fails a build that needs more than its
 row says, so a changed limit changes the row.
 
 Every asset carries its real name: the network is attached as
 `luminex_<architecture>_<NN>_i8.nnue`, the name the binaries report, never
-under a past network's name or a neutral one. check-net.sh fails a build that
+under a past network's name or a neutral one. ci.sh net fails a build that
 reports any other.
 
 ## Options

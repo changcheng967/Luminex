@@ -11,9 +11,9 @@
 # moving url, sha256 and about here. The url's file name is the network's real
 # name and its only source: the file is saved under it, CMake makes it the
 # engine's default network (DEFAULT_NET) and the name the built-in network
-# reports, and releases attach the file under it (check-net.sh fails a build
+# reports, and releases attach the file under it (ci.sh net fails a build
 # that names another network). about, the network's name and a line on how it
-# was made, goes into the development build's notes (dev-release.sh).
+# was made, goes into the development build's notes (ci.sh dev-release).
 set -euo pipefail
 url=https://github.com/changcheng967/Luminex/releases/download/engine-archives/luminex_gen768s_03q_i8.nnue
 sha256=001d5bcd3ff0cd8f566450a809c065d7ecdf0f751227a1f844bfd8c61e2d6a4b
