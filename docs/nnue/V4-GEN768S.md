@@ -37,7 +37,7 @@
 
 ## 5. Main Subnet Architecture
 
-Value tail (per bucket, every evaluation; unchanged from gen768r: the capacity test keeps L2 at 16, DEVLOG §19 S2):
+Value tail (per bucket, every evaluation; unchanged from gen768r: the capacity test keeps L2 at 16, Luminex-NNUE's DEVLOG §19 S2):
 
 | Layer Index | Layer Type | Input Shape | Output Shape | Activation / Operation | Fixed-Point Type |
 | :--- | :--- | :--- | :--- | :--- | :--- |
@@ -61,7 +61,7 @@ Error head (per bucket, computed only where the search reads it):
   $$
   \text{Value} = \text{round}(out \times 300) \qquad \text{Error} = \text{round}(e \times 300)
   $$
-  Error is non-negative: the predicted size of the gap between this static evaluation and a deep search's value of the position (the label and the quantile are set by DEVLOG §19, gate 1)
+  Error is non-negative: the predicted size of the gap between this static evaluation and a deep search's value of the position (the label and the quantile are set by Luminex-NNUE's DEVLOG §19, gate 1)
 - **Final Return Type**: Signed Integer (`int32`) / Centipawns, side-to-move relative (value); unsigned centipawns (error)
 
 ---

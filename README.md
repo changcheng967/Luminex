@@ -289,19 +289,18 @@ January to August and October 2026 (6.1B positions), gen768s_02 on December
 again. The loss (power 3.0 on the win-probability error) weights quiet
 positions, which are what the search consumes; the last 30K steps train
 through the engine's int8 rounding, one scale per row (QAT).
-[`nnue/DEVLOG.md`](nnue/DEVLOG.md) has the runs and the measurements behind
-them.
+The development log in Luminex-NNUE ([`docs/DEVLOG.md`](https://github.com/changcheng967/Luminex-NNUE/blob/main/docs/DEVLOG.md))
+has the runs and the measurements behind them.
 
-The training and data tooling lives in `nnue/` and `src/`:
-- the streaming trainer;
-- the Stockfish-relabel binpack dumper;
-- the featurizer;
-- quantizers;
-- validation-split tools;
-- the SPSA search tuner.
+The trainer and its data tools have their own repository,
+[Luminex-NNUE](https://github.com/changcheng967/Luminex-NNUE): the GPU trainer and its
+quantization-aware training, the quantizers, the binpack and Leela-shard
+converters, and network forensics. This repository keeps the network specs
+(`docs/nnue/`), the network reader, and the data tools that build against
+the engine (`src/featurize.cpp`, `src/lc0pack.cpp`).
 
 Networks are named `luminex_<architecture>_<NN>.nnue`. The architecture is
-the network name of its spec in `nnue/` (`gen768`, `gen768r`, ...), and `NN`
+the network name of its spec in `docs/nnue/` (`gen768`, `gen768r`, ...), and `NN`
 numbers that architecture's training runs in order, starting at `01`. The
 trainer writes the float network under that name and its checkpoint as the
 matching `.pt`; the quantized network the engine loads adds `_i8`
@@ -382,11 +381,9 @@ src/
   verify_frames.c       exhaustive frame-integrity verifier (BUILD_VERIFY)
   eval_trace.cpp        HCE evaluation tracing for tuning (BUILD_EVALTRACE)
 
-nnue/
-  DEVLOG.md, V1-GEN768.md, V2-GEN768Q.md   training log and network notes
-  openi_upload/         training scripts: the C500 streaming trainer, model,
-                        int8 quantizer, Stockfish-binpack dumper, validation
-                        split, SPSA tuner, lichess bot setup
+docs/nnue/
+  NNUE Template.md, V1-GEN768.md .. V5-GEN768T.md   the network specs
+                        (the trainer and its tools: Luminex-NNUE)
 ```
 
 ## License
