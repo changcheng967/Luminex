@@ -6,7 +6,7 @@
 #
 #   fetch-net.sh [DIR]   (default: net)
 #
-# The pin is gen768s_03q (luminex_gen768s_03q_i8.nnue on the engine-archives
+# The pin is gen768t_01q (luminex_gen768t_01q_i8.nnue on the engine-archives
 # pre-release). Shipping a new network means attaching it to a release and
 # moving url, sha256 and about here. The url's file name is the network's real
 # name and its only source: the file is saved under it, CMake makes it the
@@ -15,9 +15,9 @@
 # that names another network). about, the network's name and a line on how it
 # was made, goes into the development build's notes (ci.sh dev-release).
 set -euo pipefail
-url=https://github.com/changcheng967/Luminex/releases/download/engine-archives/luminex_gen768s_03q_i8.nnue
-sha256=001d5bcd3ff0cd8f566450a809c065d7ecdf0f751227a1f844bfd8c61e2d6a4b
-about="gen768s_03q: gen768s_01 trained on for two more 450K-step runs with fresh optimizers (lr 5e-5, loss power 3.0) on Leela BT4's relabel of t91 (gen768s_02: December 2025 and seven 2026 months; gen768s_03: November 2025 and the 2026 months), then 30K steps of QAT with one int8 scale per tail row (LNR8)"
+url=https://github.com/changcheng967/Luminex/releases/download/engine-archives/luminex_gen768t_01q_i8.nnue
+sha256=87e4a40fdc2e47dca427053a59014fdfa345501ec8f75c4a370eedc48df1721a
+about="gen768t_01q: V5 (gen768t, docs/nnue/V5-GEN768T.md), gen768s's feature layer with 55,960 int8 relation rows (attacks, and pawn pairs in contact) summed into 256 of its 768 lanes (the LNT8 format); from gen768s_03's float network, 450K steps on Leela BT4's relabel of every t91 month (January's tail held out) and the BT4 corpus, then 30K steps of QAT with int8 relation rows and one int8 scale per tail row"
 name=${url##*/}
 dir=${1:-net}
 out=$dir/$name
