@@ -60,14 +60,16 @@ CCRL-rated engines (800 games each, 10+0.1;
 CCRL Blitz**, 3402 ± 21 on CCRL 40/15. v6.6.0's gen768r_06q adds
 +3.09 ± 2.46 in self-play ([test 128](https://bench.luminexchess.com/test/128/)),
 below what a repeat gauntlet resolves (about ± 10), so the rating stands
-for v6.6.0. Main and the development builds now carry gen768t_01q.
+for v6.6.0. Main and the development builds now carry gen768t_02q.
 gen768s_01q was +77.57 ± 15.21 over gen768r_06q in self-play
 ([test 140](https://bench.luminexchess.com/test/140/)), and gen768s_03q is
 +17.80 ± 7.98 over gen768s_01q
-([test 148](https://bench.luminexchess.com/test/148/)), and gen768t_01q, the
+([test 148](https://bench.luminexchess.com/test/148/)), gen768t_01q, the
 first network with V5's relation inputs, is +73.37 ± 14.20 over gen768s_03q
-([test 174](https://bench.luminexchess.com/test/174/)); the rating above
-predates all three.
+([test 174](https://bench.luminexchess.com/test/174/)), and gen768t_02q, V5's
+full run, is +28.93 ± 9.30 over gen768t_01q
+([test 176](https://bench.luminexchess.com/test/176/)); the rating above
+predates all four.
 
 | Opponent (CCRL Blitz) | Elo |
 |---|---|
@@ -104,6 +106,7 @@ main of its day, at 10+0.1 unless noted:
 | gen768s_01q: gen768r_06 trained on Leela BT4's labels, over 06q | [+77.57 ± 15.21](https://bench.luminexchess.com/test/140/) |
 | gen768s_03q: two more BT4 runs, then QAT for one int8 scale per tail row (LNR8), over 01q | [+17.80 ± 7.98](https://bench.luminexchess.com/test/148/) |
 | gen768t_01q: V5's relation inputs (gen768t, LNT8), over gen768s_03q | [+73.37 ± 14.20](https://bench.luminexchess.com/test/174/) |
+| gen768t_02q: V5's full run, 1.14M more steps from gen768t_01, over 01q | [+28.93 ± 9.30](https://bench.luminexchess.com/test/176/) |
 
 Each figure is its OpenBench page's. The hash prefetch at make-move, the
 one-pass child accumulator and the lazy accumulator updates search the same
@@ -140,7 +143,7 @@ network runs on NEON dot-product kernels.
 
 Every release binary carries its network inside it (v6.6.0:
 `luminex_gen768r_06q_i8.nnue`; main and the development builds:
-`luminex_gen768t_01q_i8.nnue`), so the binary alone plays at full
+`luminex_gen768t_02q_i8.nnue`), so the binary alone plays at full
 strength, and reports it by that name. The network loads at
 the first `isready` or `go`. To play with another network, point `NNUEFile`
 at its file; it is looked for as given, then next to the binary. Left at its
@@ -173,7 +176,7 @@ go movetime 1000
 | `UCI_ShowWDL` | false | Append `wdl W D L` (per mille, approximate model) to info lines |
 | `Ponder` | false | Allow pondering (`go ponder` / `ponderhit`) |
 | `UseNNUE` | true | NNUE evaluation (falls back to the HCE when no network loads) |
-| `NNUEFile` | `luminex_gen768t_01q_i8.nnue` | Network file to load; the default, the shipped network's own name, selects the built-in network |
+| `NNUEFile` | `luminex_gen768t_02q_i8.nnue` | Network file to load; the default, the shipped network's own name, selects the built-in network |
 | `SimdLevel` | auto | x86-64 release binaries only: the network kernels' instruction-set level, `auto` for the best the CPU supports, or a lower one for testing (`avx512vnni`, `avx512`, `avxvnni`, `avx2`, `base`; one the CPU lacks gives the best below it). Every level evaluates alike |
 | `Contempt` | 0 | Draw avoidance (centipawns) |
 | `Move Overhead` | 30 | Time-management safety margin per move (ms) |
@@ -278,15 +281,18 @@ before it lands:
 
 ## NNUE training
 
-The current network, gen768t_01q, is V5 ([docs/nnue/V5-GEN768T.md](docs/nnue/V5-GEN768T.md)):
+The current network, gen768t_02q, is V5 ([docs/nnue/V5-GEN768T.md](docs/nnue/V5-GEN768T.md)):
 gen768s's feature layer plus 55,960 int8 relation rows (attacks, and pawn
-pairs in contact) summed into 256 of its 768 lanes, stored as LNT8. It
-started from gen768s_03's float network and trained 450K steps on Leela
-BT4's relabel of every t91 month and the BT4 corpus, then 30K steps of QAT;
-the same run without the relation rows (gen768s_05q) is 37.91 ± 10.32 weaker
+pairs in contact) summed into 256 of its 768 lanes, stored as LNT8. It is
+gen768t_01's float network (450K steps from gen768s_03's, on Leela BT4's
+relabel of every t91 month and the BT4 corpus) trained on for 1,142,724 more
+steps with a fresh optimizer on the same data, then 30K steps of QAT.
+gen768t_01q, the 450K-step network with its own QAT, is 28.93 ± 9.30 weaker
+([test 176](https://bench.luminexchess.com/test/176/)), and the 450K-step run
+without the relation rows (gen768s_05q) was 37.91 ± 10.32 below gen768t_01q
 ([test 173](https://bench.luminexchess.com/test/173/)).
 
-gen768s_03q, the network before it, keeps gen768r's architecture: gen768's
+gen768s_03q, the network before V5, keeps gen768r's architecture: gen768's
 768-wide HalfKAv2_hm feature layer with a revived dense tail split into eight
 output buckets, stored with one int8 scale per row of its dense layers (the
 LNR8 format). What changed is the labels. gen768r_06, the gen768r line's last
@@ -333,7 +339,7 @@ cmake --build build --config Release
 ```
 
 That binary has no network inside; it loads the shipped network,
-`luminex_gen768t_01q_i8.nnue`, from the working directory or its own
+`luminex_gen768t_02q_i8.nnue`, from the working directory or its own
 directory. The name comes from `.github/scripts/fetch-net.sh`, which pins the
 network: CMake reads it there, so a build always names the network it ships
 with. To build the network in, as the releases do, fetch the pinned file and
