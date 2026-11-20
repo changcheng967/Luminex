@@ -440,9 +440,12 @@ tool_only='^src/(tools\.cpp|eval_trace\.cpp|featurize\.cpp|frame_merge\.cpp|lc0p
 engine_lines=()
 other_lines=()
 while read -r h; do
-  line="* [\`${h:0:8}\`]($url/commit/$h) $(git show -s --format=%s "$h")"
+  subject=$(git show -s --format=%s "$h")
   pr=$(gh api "repos/$repo/commits/$h/pulls" --jq '[.[] | select(.merged_at != null)][0].number // empty' 2> /dev/null || true)
-  [ -z "$pr" ] || line+=" ([#$pr]($url/pull/$pr))"
+  # A squash merge's subject already ends in " (#N)", which GitHub links by
+  # itself: the pull request's link replaces it, so the number shows once
+  [ -z "$pr" ] || subject="${subject%" (#$pr)"} ([#$pr]($url/pull/$pr))"
+  line="* [\`${h:0:8}\`]($url/commit/$h) $subject"
   engine=$(git show --name-only --format= "$h" | grep -E '^src/' | grep -vE "$tool_only" || true)
   # A move of the network pin counts (pin_sha256 here, sha256 in fetch-net.sh
   # before the pin moved into this file), not the files' other edits
