@@ -1981,6 +1981,15 @@ struct SPSAParams {
     int lmr_eval_far      = 1024;  // + the eval more than 250 above alpha
     int lmr_eval_near     = 1024;  // - the eval within (-50, 100) of alpha
 
+    // Pruning depth for quiet moves at non-PV nodes: history pruning, late
+    // move pruning and futility test the node's depth less prune_red_share
+    // 1024ths of the move's LMR reduction (0: the node's depth). LMP keeps
+    // lmp_improving hundredths of a move more when improving, and scales its
+    // count by lmp_imp_scale percent there.
+    int prune_red_share = 0;
+    int lmp_improving   = 100;
+    int lmp_imp_scale   = 100;
+
     // Quiet move ordering: bonuses on top of the history score. ord_center
     // scales the centralization table, in percent.
     int ord_killer1     = 60000;
@@ -2070,6 +2079,9 @@ inline constexpr SPSAOption SPSA_OPTIONS[] = {
     {"LmrCapReply",     &SPSAParams::lmr_cap_reply,     -1024, 3072},
     {"LmrEvalFar",      &SPSAParams::lmr_eval_far,      -1024, 3072},
     {"LmrEvalNear",     &SPSAParams::lmr_eval_near,     -1024, 3072},
+    {"PruneRedShare",   &SPSAParams::prune_red_share,    -512, 1024},
+    {"LmpImproving",    &SPSAParams::lmp_improving,         0, 1000},
+    {"LmpImpScale",     &SPSAParams::lmp_imp_scale,        50,  300},
     {"OrdKiller1",      &SPSAParams::ord_killer1,           0, 120000},
     {"OrdKiller2",      &SPSAParams::ord_killer2,           0, 120000},
     {"OrdCounter",      &SPSAParams::ord_counter,           0, 120000},

@@ -1387,14 +1387,23 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
         if (!pos.legal(m, true)) return false;  // Skip pseudo_legal check for generated moves
         any_legal_move = true;  // Legal move exists (even if later pruned)
 
+        // The depth the pruning rules below test: the node's depth less
+        // prune_red_share/1024 of the reduction LMR would give this move, so
+        // a late move is pruned as at the depth it would be searched at.
+        // prune_red_share 0, the default, is the node's depth.
+        int prune_depth = depth;
+        if (sp.prune_red_share != 0 && is_quiet && !pv_node && depth >= 3 && moves_played >= 1
+            && !gives_check(m))
+            prune_depth = depth - (compute_reduction(m, moves_played, false) * sp.prune_red_share + 512) / 1024;
+
         // Continuation pruning: skip quiet moves with very poor history at low depth
         // Combined counter+continuation history
-        if (is_quiet && !pv_node && depth <= 4 && moves_played > 0) {
+        if (is_quiet && !pv_node && prune_depth <= 4 && moves_played > 0) {
             Piece pc = pos.piece_on(m.from());
             if (pc != NO_PIECE) {
                 int hist_score = combined_history(worker, ss, pc, m.to());
                 // Prune if history is very negative (move has historically been bad)
-                if (hist_score < sp.hist_prune_base - sp.hist_prune_coeff * (depth - 1)) {
+                if (hist_score < sp.hist_prune_base - sp.hist_prune_coeff * (prune_depth - 1)) {
                     g_stats.history_prunes++;
                     return false;
                 }
@@ -1403,20 +1412,23 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
 
         // Late move pruning: past a depth-dependent move count, quiet moves
         // other than the killers are not searched. Positions that are
-        // improving, or whose opponent is worsening, keep one more move.
-        // Quiets arrive ordered by history, so the skipped moves are the
-        // ones it rates lowest. The count is tunable in hundredths of a move.
-        int lmp_threshold = (sp.lmp_base + ((ss->improving || opponent_worsening) ? 100 : 0)
-                             + depth * depth * sp.lmp_coeff) / 100;
-        if (is_quiet && !pv_node && ss->ply > 0 && depth <= 8 && moves_played >= lmp_threshold
+        // improving, or whose opponent is worsening, keep lmp_improving
+        // hundredths of a move more, and their count is scaled by
+        // lmp_imp_scale percent. Quiets arrive ordered by history, so the
+        // skipped moves are the ones it rates lowest. The count is tunable in
+        // hundredths of a move.
+        bool lmp_imp = ss->improving || opponent_worsening;
+        int lmp_threshold = (sp.lmp_base + (lmp_imp ? sp.lmp_improving : 0)
+                             + prune_depth * prune_depth * sp.lmp_coeff) * (lmp_imp ? sp.lmp_imp_scale : 100) / 10000;
+        if (is_quiet && !pv_node && ss->ply > 0 && prune_depth <= 8 && moves_played >= lmp_threshold
             && m != worker->killers[ss->ply][0] && m != worker->killers[ss->ply][1]) {
             g_stats.lmp_prunes++;
             return false;
         }
 
         // Futility pruning: skip quiet moves that can't improve alpha
-        if (is_quiet && !pv_node && ss->ply > 0 && !pos.is_check() && depth <= 5) {
-            int margin = depth * sp.fut_coeff + (ss->improving ? sp.fut_improving : sp.fut_base);
+        if (is_quiet && !pv_node && ss->ply > 0 && !pos.is_check() && prune_depth <= 5) {
+            int margin = prune_depth * sp.fut_coeff + (ss->improving ? sp.fut_improving : sp.fut_base);
             margin += std::min(eval_uncertainty / 3, 50);  // Less pruning when eval uncertain
             if (eval + margin < alpha) {
                 g_stats.futility_prunes++;
