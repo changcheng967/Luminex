@@ -48,17 +48,25 @@ else
   # enables:
   #   x86-64-v4 + avx512_vnni -> cascadelake (Cascade Lake+, Zen 4+)
   #   x86-64-v4 (F CD BW DQ VL) -> x86-64-v4 (Skylake-SP/X: no VNNI)
-  #   otherwise               -> x86-64-v3 (AVX2)
+  #   AVX2 BMI1 BMI2 FMA MOVBE  -> x86-64-v3
+  #   otherwise               -> x86-64-v2, as a VM whose CPU model leaves
+  #                              AVX out (an x86-64-v3 build dies there on
+  #                              its first AVX2 instruction: OpenBench's
+  #                              "Failed to Execute Benchmark"); x86-64-v3
+  #                              when the flags cannot be read
   # Override: MARCH=...
   CPU_FLAGS := $(shell grep -m1 '^flags' /proc/cpuinfo 2>/dev/null)
   HAS_V4    := $(and $(filter avx512f,$(CPU_FLAGS)),$(filter avx512cd,$(CPU_FLAGS)),$(filter avx512bw,$(CPU_FLAGS)),$(filter avx512dq,$(CPU_FLAGS)),$(filter avx512vl,$(CPU_FLAGS)))
   HAS_VNNI  := $(filter avx512_vnni,$(CPU_FLAGS))
+  HAS_V3    := $(and $(filter avx2,$(CPU_FLAGS)),$(filter bmi1,$(CPU_FLAGS)),$(filter bmi2,$(CPU_FLAGS)),$(filter fma,$(CPU_FLAGS)),$(filter movbe,$(CPU_FLAGS)))
   ifneq ($(and $(HAS_V4),$(HAS_VNNI)),)
     MARCH   ?= cascadelake
   else ifneq ($(HAS_V4),)
     MARCH   ?= x86-64-v4
-  else
+  else ifneq ($(or $(HAS_V3),$(if $(CPU_FLAGS),,unknown)),)
     MARCH   ?= x86-64-v3
+  else
+    MARCH   ?= x86-64-v2
   endif
 endif
 
