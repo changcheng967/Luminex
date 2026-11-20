@@ -28,7 +28,7 @@ time management is solved from measured data.
 | Build | Measured | Result |
 |---|---|---|
 | `main` | against v6.6.0, 10,024 games ([test 178](https://bench.luminexchess.com/test/178/)) | **+212.07 ± 5.22** Elo |
-| `main` | against eleven CCRL-rated engines ([gauntlet 5](https://bench.luminexchess.com/gauntlet/5/)) | running |
+| `main` | against eleven CCRL-rated engines, 8,846 games ([gauntlet 5](https://bench.luminexchess.com/gauntlet/5/)) | **3590 ± 11** CCRL Blitz, 3490 ± 15 CCRL 40/15 |
 | v6.6.0 | against v6.5.1, 2,010 games ([test 131](https://bench.luminexchess.com/test/131/)) | **+246.55 ± 13.37** Elo |
 | v6.6.0 | against twelve CCRL-rated engines ([gauntlet 3](https://bench.luminexchess.com/gauntlet/3/)) | **3471 ± 16** CCRL Blitz, 3402 ± 21 CCRL 40/15 |
 | v6.6.0 | [CCI](https://github.com/computer-chess-index/cci/blob/main/engines/Luminex.md), E1 list (Core Ultra 7 265T E-cores), page of 2026-11-20 | 2863 ± 37 STC, 3220 ± 32 LTC, 3336 ± 39 VLTC |
