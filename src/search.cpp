@@ -1216,21 +1216,19 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
         int m_idx = std::max(mp, 1);
         if (d_idx >= 64) d_idx = 63;
         if (m_idx >= 64) m_idx = 63;
-        // The cut-node and ttPv (PV positions from TT get less reduction)
-        // adjustments are tunable in 1024ths of a ply, so they join the table
-        // product before the rounding division. The sum can go negative, so
-        // the division floors.
+        // Every term is in 1024ths of a ply and joins the table product
+        // before the rounding division, so a tuned value counts in fractions
+        // of a ply. A whole-ply term (the defaults) shifts the floored result
+        // by exactly one. The sum can go negative, so the division floors.
         int reduction_1024 = red_table[d_idx] * red_table[m_idx] + LMR_DENOM / 2;
         if (cut_node) reduction_1024 += sp.lmr_cut_node;
         if (ttPv) reduction_1024 -= sp.lmr_ttpv;
-        int reduction = reduction_1024 >= 0 ? reduction_1024 / LMR_DENOM
-                                            : -((-reduction_1024 + LMR_DENOM - 1) / LMR_DENOM);
-        if (!ss->improving && !opponent_worsening) reduction += 1;
+        if (!ss->improving && !opponent_worsening) reduction_1024 += sp.lmr_not_improving;
         // Deep worsening: position declining over 4 plies, search less aggressively
-        if (!ss->improving && !ss->improving_deep && !opponent_worsening) reduction += 1;
+        if (!ss->improving && !ss->improving_deep && !opponent_worsening) reduction_1024 += sp.lmr_deep_worse;
 
         // TT move gets less reduction
-        if (m == tt_move) reduction -= 1;
+        if (m == tt_move) reduction_1024 -= LMR_DENOM;
 
         // History-based adjustment: combine plain + counter + continuation
         Piece pc = pos.piece_on(m.from());
@@ -1238,21 +1236,21 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
             int history_score = combined_history(worker, ss, pc, m.to());
 
             // History influence on reduction, clamped to prevent extreme adjustments
-            reduction -= std::max(-3, std::min(3, history_score / sp.lmr_hist_div));
+            reduction_1024 -= LMR_DENOM * std::max(-3, std::min(3, history_score / sp.lmr_hist_div));
         }
 
         // Reduce less for killer moves
-        if (m == worker->killers[ss->ply][0]) reduction -= 1;
+        if (m == worker->killers[ss->ply][0]) reduction_1024 -= sp.lmr_killer;
 
         // Counter-move LMR bonus removed: counter-moves already get +40000
         // in move ordering, ensuring they're searched early. The LMR -1
         // was making pruning less aggressive for counter-moves.
 
         // Check-giving moves: reduce less (use pre-computed value)
-        if (gives_chk) reduction -= 1;
+        if (gives_chk) reduction_1024 -= LMR_DENOM;
 
         // Promotion moves: reduce less
-        if (m.is_promotion()) reduction -= 1;
+        if (m.is_promotion()) reduction_1024 -= LMR_DENOM;
 
         // Pawn advancing to 7th rank: about to promote, extremely forcing
         // The opponent MUST respond to this (Capablanca)
@@ -1262,23 +1260,23 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
                 Color us = pos.side_to_move();
                 Rank to_rank = rank_of(m.to());
                 if (relative_rank(us, to_rank) >= RANK_7) {
-                    reduction -= 1;
+                    reduction_1024 -= sp.lmr_pawn7;
                 }
             }
         }
 
         // Castling: king safety is paramount, never reduce aggressively
-        if (m.is_castling()) reduction -= 1;
+        if (m.is_castling()) reduction_1024 -= sp.lmr_castle;
 
         // TT-move-noisy LMR: if TT found a tactical (capture) solution,
         // quiet moves are less likely to beat it — reduce more
-        if (!m.is_capture() && !m.is_promotion() && tt_move.is_capture()) reduction += 1;
+        if (!m.is_capture() && !m.is_promotion() && tt_move.is_capture()) reduction_1024 += sp.lmr_tt_capture;
 
         // Capture-response LMR: after opponent's capture, quiets are less
         // likely to be best — recapture is usually the critical response.
         if (!m.is_capture() && !m.is_promotion() && depth >= 4 && ss->ply >= 1
             && (ss - 1)->current_move.is_capture()) {
-            reduction += 1;
+            reduction_1024 += sp.lmr_cap_reply;
         }
 
         // Centralization removed from LMR: the move ordering centralization
@@ -1295,10 +1293,12 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
         // Near alpha = critical position, reduce less
         if (!pos.is_check()) {
             int eval_margin = int(eval) - int(alpha);
-            if (eval_margin > 250) reduction += 1;
-            else if (eval_margin > -50 && eval_margin < 100) reduction -= 1;
+            if (eval_margin > 250) reduction_1024 += sp.lmr_eval_far;
+            else if (eval_margin > -50 && eval_margin < 100) reduction_1024 -= sp.lmr_eval_near;
         }
 
+        int reduction = reduction_1024 >= 0 ? reduction_1024 / LMR_DENOM
+                                            : -((-reduction_1024 + LMR_DENOM - 1) / LMR_DENOM);
         return std::max(1, std::min(reduction, depth - 2));
     };
 
@@ -1829,13 +1829,13 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
                 }
 
                 // Killer moves bonus ON TOP of history
-                if (m == worker->killers[ss->ply][0]) score += 60000;
-                else if (m == worker->killers[ss->ply][1]) score += 50000;
+                if (m == worker->killers[ss->ply][0]) score += sp.ord_killer1;
+                else if (m == worker->killers[ss->ply][1]) score += sp.ord_killer2;
                 else if (ss->ply >= 1 && (ss - 1)->current_move != MOVE_NONE && (ss - 1)->moved_piece != NO_PIECE) {
                     Move prev_move = (ss - 1)->current_move;
                     Piece prev_pc = (ss - 1)->moved_piece;
                     if (m == worker->counter_move_table[int(prev_pc)][int(prev_move.to())]) {
-                        score += 40000;
+                        score += sp.ord_counter;
                     }
                 }
 
@@ -1847,7 +1847,7 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
                     if (pt != PAWN) {
                         // Escape-aware: pieces under pawn attack should move first
                         if (enemy_pawn_attacks & square_bb(m.from())) {
-                            score += 15000;
+                            score += sp.ord_escape;
                         }
 
                         // King-zone pressure ordering: pieces moving adjacent to
@@ -1855,7 +1855,7 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
                         // as king-zone LMR, applied to move ordering
                         int kdist = std::max(abs(int(m.to() % 8) - int(enemy_ksq % 8)),
                                              abs(int(m.to() / 8) - int(enemy_ksq / 8)));
-                        if (kdist <= 1) score += 3000;
+                        if (kdist <= 1) score += sp.ord_kingzone;
 
                         // Centralization bonus: pieces moving to central squares searched earlier
                         // Principle: centralized pieces are disproportionately strong (Nimzowitsch)
@@ -1878,20 +1878,20 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
                         if (pt == KNIGHT) cbo = cbo * 2;
                         else if (pt == BISHOP) cbo = cbo * 3 / 2;
                         else if (pt == QUEEN) cbo = cbo / 2;
-                        score += cbo;
+                        score += cbo * sp.ord_center / 100;
                     } else {
                         // Pawn threat ordering: pawn advances that threaten enemy pieces
                         // are forcing and should be searched earlier (Philidor)
                         Bitboard enemy_pieces = pos.pieces(Color(pos.side_to_move() ^ 1));
                         Bitboard pawn_att = pawn_attacks_bb(pos.side_to_move(), square_bb(m.to()));
-                        if (pawn_att & enemy_pieces) score += 8000;
+                        if (pawn_att & enemy_pieces) score += sp.ord_pawn_threat;
                         // Check-giving pawn: reuse pawn_att, nearly free
-                        if (pawn_att & square_bb(opp_ksq)) score += 5000;
+                        if (pawn_att & square_bb(opp_ksq)) score += sp.ord_check;
                     }
 
                     // Check-giving knight: cheap lookup, forcing move
                     if (pt == KNIGHT && (knight_attacks_bb(m.to()) & square_bb(opp_ksq)))
-                        score += 5000;
+                        score += sp.ord_check;
                 }
             }
             it->value = score;

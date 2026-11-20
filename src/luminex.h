@@ -1968,6 +1968,30 @@ struct SPSAParams {
     int nmp_shallow_margin = 57;
     int nmp_shallow_depth  = 5;
 
+    // LMR terms for quiet moves, in 1024ths of a ply, summed before the
+    // rounding division. Each default is the whole ply it was set to by hand.
+    // Positive reduces more, and each is applied with its sign.
+    int lmr_not_improving = 1024;  // + neither side's eval trend helps us
+    int lmr_deep_worse    = 1024;  // + and our 4-ply trend is down as well
+    int lmr_killer        = 1024;  // - the first killer
+    int lmr_pawn7         = 1024;  // - a pawn push to the 7th rank
+    int lmr_castle        = 1024;  // - castling
+    int lmr_tt_capture    = 1024;  // + the hash move is a capture
+    int lmr_cap_reply     = 1024;  // + a reply to a capture, at depth >= 4
+    int lmr_eval_far      = 1024;  // + the eval more than 250 above alpha
+    int lmr_eval_near     = 1024;  // - the eval within (-50, 100) of alpha
+
+    // Quiet move ordering: bonuses on top of the history score. ord_center
+    // scales the centralization table, in percent.
+    int ord_killer1     = 60000;
+    int ord_killer2     = 50000;
+    int ord_counter     = 40000;
+    int ord_escape      = 15000;   // a piece moving out of a pawn's attack
+    int ord_pawn_threat = 8000;    // a pawn push that attacks a piece
+    int ord_check       = 5000;    // a checking pawn or knight move
+    int ord_kingzone    = 3000;    // a piece moving next to the enemy king
+    int ord_center      = 100;
+
     // Load from file (COUNT ints, one per line, in field order). Returns true if loaded.
     bool load(const std::string& path) {
         FILE* f = std::fopen(path.c_str(), "r");
@@ -2037,6 +2061,23 @@ inline constexpr SPSAOption SPSA_OPTIONS[] = {
     {"CorrWeightMax",   &SPSAParams::corr_weight_max,     1,   128},
     {"NmpShallowMargin", &SPSAParams::nmp_shallow_margin, 0,  300},
     {"NmpShallowDepth", &SPSAParams::nmp_shallow_depth,   0,   12},
+    {"LmrNotImproving", &SPSAParams::lmr_not_improving, -1024, 3072},
+    {"LmrDeepWorse",    &SPSAParams::lmr_deep_worse,    -1024, 3072},
+    {"LmrKiller",       &SPSAParams::lmr_killer,        -1024, 3072},
+    {"LmrPawn7",        &SPSAParams::lmr_pawn7,         -1024, 3072},
+    {"LmrCastle",       &SPSAParams::lmr_castle,        -1024, 3072},
+    {"LmrTtCapture",    &SPSAParams::lmr_tt_capture,    -1024, 3072},
+    {"LmrCapReply",     &SPSAParams::lmr_cap_reply,     -1024, 3072},
+    {"LmrEvalFar",      &SPSAParams::lmr_eval_far,      -1024, 3072},
+    {"LmrEvalNear",     &SPSAParams::lmr_eval_near,     -1024, 3072},
+    {"OrdKiller1",      &SPSAParams::ord_killer1,           0, 120000},
+    {"OrdKiller2",      &SPSAParams::ord_killer2,           0, 120000},
+    {"OrdCounter",      &SPSAParams::ord_counter,           0, 120000},
+    {"OrdEscape",       &SPSAParams::ord_escape,            0,  40000},
+    {"OrdPawnThreat",   &SPSAParams::ord_pawn_threat,       0,  30000},
+    {"OrdCheck",        &SPSAParams::ord_check,             0,  30000},
+    {"OrdKingZone",     &SPSAParams::ord_kingzone,          0,  15000},
+    {"OrdCenter",       &SPSAParams::ord_center,            0,    400},
 };
 
 inline const SPSAOption* find_spsa_option(const std::string& name) {
