@@ -192,7 +192,7 @@ go movetime 1000
 Tuning options:
 - **Search constants** (`LmrScale`, `NmpBase`, `FutCoeff`, `SingularMargin`, …).
   These are the parameters SPSA tunes on OpenBench; the full list and their
-  ranges are in [`src/spsa_params.h`](src/spsa_params.h).
+  ranges are in `SPSAParams` in [`src/luminex.h`](src/luminex.h).
 - **24 HCE parameters** (`BishopPairMG`, `RookOpenMG`, `PawnShieldCenter`, …),
   for evaluation experiments; see [`src/uci.cpp`](src/uci.cpp).
 
@@ -314,7 +314,7 @@ The trainer and its data tools have their own repository,
 quantization-aware training, the quantizers, the binpack and Leela-shard
 converters, and network forensics. This repository keeps the network specs
 (`docs/nnue/`), the network reader, and the data tools that build against
-the engine (`src/featurize.cpp`, `src/lc0pack.cpp`).
+the engine (`src/tools.cpp`).
 
 Networks are named `luminex_<architecture>_<NN>.nnue`. The architecture is
 the network name of its spec in `docs/nnue/` (`gen768`, `gen768r`, ...), and `NN`
@@ -322,7 +322,7 @@ numbers that architecture's training runs in order, starting at `01`. The
 trainer writes the float network under that name and its checkpoint as the
 matching `.pt`; the quantized network the engine loads adds `_i8`
 (`luminex_gen768r_01_i8.nnue`). The built-in network is pinned by name in
-`src/nnue.h` (`DEFAULT_NET`) and by URL and sha256 in
+`src/luminex.h` (`DEFAULT_NET`) and by URL and sha256 in
 `.github/scripts/fetch-net.sh`.
 
 ## Build
@@ -351,7 +351,7 @@ cmake -B build -DCMAKE_BUILD_TYPE=Release -DLUMINEX_EMBED_PINNED=ON
 cmake --build build --config Release
 ```
 
-**Choosing the network kernels.** The kernels (`src/nnue_kernels.inc`) are
+**Choosing the network kernels.** The kernels (`src/nnue_kernels.h`) are
 written once for every level: AVX-512 VNNI, AVX-512, AVX-VNNI, AVX2, a
 baseline, and NEON dot-product on ARM.
 - **Default target.** A build has the one level its compiler targets, called
@@ -375,32 +375,25 @@ baseline, and NEON dot-product on ARM.
 
 ```
 src/
-  luminex.h             core types, constants, engine version
-  types.h               value types, enums, move-flag encoding
-  bitboard.h            bitboard operations
-  magic.cpp             magic bitboard tables (precomputed multipliers)
-  board.h / .cpp        position representation, make/unmake
-  movegen.h / .cpp      legal move generation
-  evaluation.h / .cpp   hand-crafted evaluation (HCE)
-  eval_feat.h, eval_fitted.h, kpk_bitbase.h   HCE features, fitted weights, KPK bitbase
-  tuner_params.h / .cpp HCE material and mobility tables (148 tunable values)
-  nnue.h / .cpp         NNUE evaluation, the lazy incremental accumulator, kernel levels
-  nnue_kernels.h / .inc the network's SIMD kernels, written once for every level
-  nnue_k_<level>.cpp    the kernels compiled per level (LUMINEX_DISPATCH builds)
-  embedded_net.h / .cpp the network built into release binaries
-  search.h / .cpp       search and time management
-  spsa_params.h         the SPSA-tunable search constants and their ranges
-  transposition.h / .cpp  transposition table
-  book.h / .cpp         Polyglot opening book
-  uci.h / .cpp          UCI protocol and options
-  main.cpp              entry point, bench
-
-  # NNUE data pipeline (optional CMake targets)
-  lc0pack.cpp, lc0_move_table.h   Leela v6 training chunks -> gamepack frames (BUILD_LC0PACK)
-  frame_merge.cpp       merges gamepack frames into denser ones
-  featurize.cpp         gamepack frames -> training tensors, on the fly (BUILD_FEATURIZER)
-  verify_frames.c       exhaustive frame-integrity verifier (BUILD_VERIFY)
-  eval_trace.cpp        HCE evaluation tracing for tuning (BUILD_EVALTRACE)
+  luminex.h        the one header: types, bitboards, the position, move generation,
+                   large pages, the transposition table, the evaluation and its
+                   tuning tables, the network's interface, search, the SPSA-tunable
+                   search constants, UCI, the engine version
+  board.cpp        the position (make/unmake), move generation, magic bitboards,
+                   the transposition table
+  evaluation.cpp   the hand-crafted evaluation (HCE), its tuner values, the KPK bitbase
+  nnue.cpp         NNUE evaluation, the lazy incremental accumulator, kernel levels,
+                   gen768t's relation inputs, the network built into release binaries
+  nnue_kernels.h   the network's SIMD kernels, written once for every level
+                   (compiled once per level in LUMINEX_DISPATCH builds)
+  search.cpp       search and time management, the search threads
+  uci.cpp          UCI protocol and options, the Polyglot opening book, main (bench)
+  tools.cpp        the NNUE data tools (optional CMake targets), one executable each:
+                   luminex-lc0pack: Leela v6 training chunks -> gamepack frames (BUILD_LC0PACK)
+                   frame_merge: merges gamepack frames into denser ones (BUILD_LC0PACK)
+                   luminex-featurize: gamepack frames -> training tensors (BUILD_FEATURIZER)
+                   verify_frames: exhaustive frame-integrity verifier (BUILD_VERIFY)
+                   luminex-evaltrace: HCE evaluation tracing for tuning (BUILD_EVALTRACE)
 
 docs/nnue/
   NNUE Template.md, V1-GEN768.md .. V5-GEN768T.md   the network specs

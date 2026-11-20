@@ -13,15 +13,12 @@
 // HalfKAv2_hm feature indexer mirrored EXACTLY from Luminex-NNUE's trainer/luminex_nnue_train.py.
 //
 // The loops over lanes and the forward pass are the kernels of
-// nnue_kernels.inc. Built as usual they are compiled into this file for the
+// nnue_kernels.h. Built as usual they are compiled into this file for the
 // instruction-set level the compiler targets and called directly; the
 // universal x86-64 build (CMake LUMINEX_DISPATCH) carries one set per level,
-// each in its own file, and this file calls the best set the CPU supports
+// each compiled on its own, and this file calls the best set the CPU supports
 // (see "Kernel levels" below).
-#include "nnue.h"
-#include "board.h"
-#include "movegen.h"
-#include "embedded_net.h"
+#include "luminex.h"
 #include "nnue_kernels.h"
 #include <algorithm>
 #include <cmath>
@@ -37,14 +34,182 @@
 #include <string>
 #include <thread>
 #include <vector>
-#include "large_pages.h"
-#include "v5_rel.h"
 #if defined(__x86_64__) || defined(__i386__) || defined(_M_X64) || defined(_M_IX86)
 #include <immintrin.h>   // _mm_prefetch needs xmmintrin even without AVX2 (Debug builds)
 #endif
-#if !defined(LUMINEX_NNUE_DISPATCH)
-#include "nnue_kernels.inc"   // the kernels of the level the compiler targets (k_native)
-#endif
+
+// =====================================================================================================================
+// The network built into the binary (CMake LUMINEX_EMBED_NET; the code is at the end of this file)
+// =====================================================================================================================
+
+#include <cstddef>
+
+namespace luminex {
+
+// The bytes of the network file built into this binary, or {nullptr, 0} when
+// the build carries none (the CMake default, and OpenBench's Makefile build).
+struct EmbeddedNet {
+    const unsigned char* data;
+    std::size_t size;
+};
+
+EmbeddedNet embedded_net();
+
+} // namespace luminex
+
+// =====================================================================================================================
+// gen768t's relation inputs (the code is after the network's)
+// =====================================================================================================================
+
+// Attack relations and pawn pairs (docs/nnue/V5-GEN768T.md, section 2). Which rows a position has, and which
+// rows a move adds and removes, for one perspective or both. The rules and the index layout (LAYOUT = 1) are
+// below; the network code sums the rows into the relation lanes.
+//
+// Frame. Squares are a1 = 0 ... h8 = 63. For perspective P with its own king on k:
+// - o(s) = s XOR (56 if P is Black) XOR (7 if k is on files a-d), group 1's orientation;
+// - a piece's side is own (colour P) or their;
+// - own pawns capture toward rank 8 of the oriented board, their pawns toward rank 1.
+//
+// Group 2: which attacks are features. A relation (a on x) -> (v on y) holds when a attacks square y and v stands
+// on it: a pawn attacks its two capture squares, a knight or king its jumps, a bishop, rook or queen each of its
+// lines up to and including the first occupied square. a and v may be of one colour. A relation is not a feature
+// when another input always carries it:
+// 1. v is a king.
+// 2. a is the perspective's own king (group 1's king bucket and v's piece-square carry it exactly).
+// 3. a and v are both pawns (group 3).
+// 4. Mutual attacks are told once:
+//    - a and v of one type among N, B, R, Q: on one side, one feature per unordered pair; across sides, the feature
+//      whose attacker is the own piece.
+//    - Q -> B along a diagonal (the feature is B -> Q); Q -> R along a rank or file (the feature is R -> Q).
+//    - B -> P or Q -> P when that pawn attacks the bishop's or queen's square (the feature is P -> B or P -> Q).
+//
+// Group 2: index. Attacker class a = (side, type), victim class v = (side, type), oriented squares x' = o(x), y' =
+// o(y). Before indexing, a pair of one type on one side is ordered x' < y', and a pair of one type with a their
+// attacker and an own victim swaps roles.
+//
+// E(a)[x'] is the set of squares class a attacks from x' on an empty board (pawns stand on ranks 2-7 only).
+// G(a->v)[x'] is E(a)[x'] restricted as follows:
+// - v a pawn: ranks 2-7 only;
+// - Q -> B: rank and file lines only; Q -> R: diagonals only;
+// - B -> P and Q -> P: without the squares from which that pawn attacks x' (an own pawn: the two squares diagonally
+//   below x'; their pawn: the two diagonally above);
+// - one type, one side: only y' > x'.
+//
+// index = base(a->v) + off(a->v)[x'] + popcount( G(a->v)[x'] & (bit(y') - 1) )
+// off(a->v)[x'] = sum of |G(a->v)[u]| over u < x'
+// base(a->v)    = sum of the sizes of all earlier blocks
+//
+// Block order: attacker side (own, their), attacker type (P, N, B, R, Q, K), victim side (own, their), victim type
+// (P, N, B, R, Q); a block with no feature is skipped. Block sizes (rows):
+//
+//   attacker \ victim  own P  own N  own B  own R  own Q  their P  their N  their B  their R  their Q    rows
+//   own P                  -     84     84     84     84        -       84       84       84       84     672
+//   own N                284    168    336    336    336      284      336      336      336      336   3,088
+//   own B                364    560    280    560    560      364      560      560      560      560   4,928
+//   own R                672    896    896    448    896      672      896      896      896      896   8,064
+//   own Q              1,036  1,456    896    560    728    1,036    1,456      896      560    1,456  10,080
+//   their P                -     84     84     84     84        -       84       84       84       84     672
+//   their N              284      -    336    336    336      284      168      336      336      336   2,752
+//   their B              364    560      -    560    560      364      560      280      560      560   4,368
+//   their R              672    896    896      -    896      672      896      896      448      896   7,168
+//   their Q            1,036  1,456    896    560      -    1,036    1,456      896      560      728   8,624
+//   their K              348    420    420    420    420      348      420      420      420      420   4,056
+//
+// Total 54,472; every row is reached by exactly one (class pair, x', y').
+//
+// Group 3: pawn pairs. A pawn's id is 48 * side + o(s) - 8 (0-95). A pair is two pawns on different squares whose
+// files differ by at most one: 480 same-file and 1,008 adjacent-file rows.
+//
+// index = 54472 + rank of (lower id, higher id) among all valid pairs in lexicographic order
+//
+// - PPM = 0: a pair is active only when one pawn attacks the other's square: an own pawn defending an own pawn (70
+//   rows), their pawn defending their pawn (70), an own and their pawn attacking each other (70).
+// - PPM = 1: every pair on the board is active.
+//
+// What a move changes. Three steps on single squares; each emits removals (-) and additions (+) of physical
+// features, and each perspective maps them to its own indices (a relation that is not a feature in that perspective
+// is skipped).
+//
+// remove(z):     - every relation the piece on z attacks in, - every relation it is the victim of,
+//                - its pawn pairs; empty z;
+//                + (s -> w) for every slider s whose line reaches z, w the first piece beyond z
+// add(z, p):     - (s -> w) for every slider s whose line reaches z, w the first piece beyond z;
+//                put p on z;
+//                + every relation p attacks in, + every relation it is the victim of, + its pawn pairs
+// replace(z, p): - the old piece's relations and pawn pairs; put p on z; + the new piece's
+//                (the occupancy is unchanged, so no line changes)
+//
+// A slider's line reaches z when z is on one of its lines with only empty squares between. Every + and - applies
+// the rules above (kings as victims, mutual attacks told once, pawn on pawn as a pair).
+//
+//   Move                            Steps, in order
+//   Quiet                           remove(from), add(to, piece)
+//   Capture                         remove(from), replace(to, piece)
+//   En passant                      remove(from), remove(captured pawn's square), add(to, pawn)
+//   Promotion                       remove(from), then add(to, promoted piece) or replace(to, promoted piece)
+//   Castling                        remove(king from), remove(rook from), add(king to, king), add(rook to, rook)
+//   Null move                       nothing
+//   Own king crosses the d/e files  the mover's perspective: every index changes, groups 2 and 3 are
+//                                   rebuilt from the board; the other perspective: the steps above
+//
+// A feature a move both adds and removes may be cancelled or applied twice: the sums are exact either way.
+//
+// Conformance. White's view, then Black's: active features of groups 2 and 3, and the sum of their indices.
+//
+//   active features / sum of indices: PPM = 0 White, Black; PPM = 1 White, Black
+//   start position:
+//       33 / 923,020, 33 / 923,020; 69 / 2,897,986, 69 / 2,897,986
+//   r3k2r/p1ppqpb1/bn2pnp1/3PN3/1p2P3/2N2Q1p/PPPBBPPP/R3K2R w KQkq -:
+//       47 / 1,268,017, 47 / 1,275,960; 77 / 2,913,373, 77 / 2,925,714
+//   2kr3r/ppp2ppp/2n1bn2/2b1p3/4P3/2NP1N2/PPPB1PPP/2KR1B1R b - - (both kings mirrored):
+//       34 / 762,273, 35 / 866,598; 63 / 2,353,560, 64 / 2,457,869
+//   8/5pk1/6p1/8/3R4/6P1/r4PK1/8 w - -:
+//       5 / 250,781, 5 / 229,138; 9 / 469,911, 9 / 448,268
+//
+// Single features, in the third position unless named:
+//
+//   Feature                                             View   Oriented    Block               base + off + rank
+//   Ne5 attacks pawn d7 (second position)               White  e5 -> d7    own N -> their P    2132 + 168 + 6 = 2306
+//   the same                                            Black  e4 -> d2    their N -> own P    27504 + 116 + 0 = 27620
+//   Bc5 attacks pawn f2                                 White  f5 -> c2    their B -> own P    30256 + 228 + 0 = 30484
+//   the same                                            Black  f4 -> c7    own B -> their P    6084 + 152 + 6 = 6242
+//   Rd1 defends Bd2                                     White  e1 -> e2    own R -> own B      10256 + 56 + 7 = 10319
+//   rooks d8 and h8 see each other                      Black  a1, e1      own R -> own R      11152 + 0 + 3 = 11155
+//   the same                                            White  a8, e8      their R -> their R  40448 + 420 + 3 = 40871
+//   pawns e4 and d5 attack each other (after 1. e4 d5)  White  ids 20, 75  pawn pair           54472 + 577 = 55049
+//   the same                                            Black  ids 19, 76  pawn pair           54472 + 552 = 55024
+#include <cstdint>
+
+namespace luminex::v5rel {
+
+// A board as the finder reads it: the mailbox (a Piece per square: 0-5 White P N B R Q K, 6-11 Black, 12 empty)
+// and a bitboard per piece, with the occupancy.
+struct Bd {
+    uint8_t pc[64];
+    uint64_t by[13];
+    uint64_t occ;
+};
+
+constexpr int MAX_ROWS = 96;     // rows one move may add or remove for one perspective; more, and that side is rebuilt
+constexpr int MAX_ACTIVE = 256;  // rows a position can have (the spec's bound is 248)
+
+struct RowLists {
+    int na[2], ns[2];
+    bool overflow[2];
+    uint16_t add[2][MAX_ROWS], sub[2][MAX_ROWS];
+};
+
+void init();     // builds the tables (once; later calls return at once)
+int n_rows();    // 55,960: the 54,472 relation rows, then the 1,488 pawn-pair rows
+
+// The rows the move m adds and removes for each perspective p with need[p], from the board before it.
+// ppm: 0 = pawn pairs in contact, 1 = every pawn pair on the same or adjacent files.
+void find(const Bd& before, Move m, int ppm, const bool need[2], RowLists& out);
+
+// Every active row of one perspective on a board, in the order they are found; returns their number.
+int enumerate(const Bd& b, int persp, int ppm, uint16_t* out);
+
+}  // namespace luminex::v5rel
 
 namespace luminex::nnue {
 
@@ -97,7 +262,7 @@ constexpr int NUM_SQ = 64;
 constexpr int NUM_PLANES = 768;              // 64 sq * 12 piece types
 constexpr int NUM_INPUTS = NUM_PLANES * 32;  // 24576 per half (32 king buckets)
 constexpr int OUT_SCALE = 300;               // matches trainer's output *300
-constexpr int NNUE_MAX_PLY = 2048;           // MUST match Position::MAX_STATES (board.h)
+constexpr int NNUE_MAX_PLY = 2048;           // MUST match Position::MAX_STATES (luminex.h)
 
 static const int KingBuckets[NUM_SQ] = {
     -1, -1, -1, -1, 31, 30, 29, 28,
@@ -128,7 +293,7 @@ static int g_L1 = 0, g_L2 = 0, g_L3 = 0;
 // feature delta). The accumulator stays full float32 (no SCReLU precision loss).
 static constexpr float FT_WSCALE = NNUE_FT_SCALE;
 [[maybe_unused]] static constexpr float FT_WINV = 1.0f / FT_WSCALE;   // the debug self-check's; the kernels have their own
-// In 2 MiB pages where the system allows (large_pages.h): the updates read its
+// In 2 MiB pages where the system allows (LargeArray): the updates read its
 // rows at random.
 static LargeArray<int16_t> ft_w;
 static std::vector<int32_t> ft_b_i32;   // integer-domain FT bias (b*FT_WSCALE)
@@ -156,7 +321,7 @@ static int g_rel_check = 0;
 // and LNI8 nets have one tail; LNB8 and LNR8 nets have one per output bucket,
 // chosen by the number of pieces on the board (bucket_of). LNI8 and LNB8 hold
 // one weight scale per layer, LNR8 one per row (output neuron) of L2 and L3.
-// The dense weights start on cache lines (large_pages.h): the kernels read them
+// The dense weights start on cache lines (LargeArray): the kernels read them
 // 32 or 64 bytes at a time.
 using WeightBytes = std::vector<int8_t, CacheAligned<int8_t>>;
 struct DenseTail {
@@ -492,7 +657,7 @@ static bool load_stream(std::istream& f, const std::string& name) {
     // int32 element count as in LNR8: "LNT8"; int32 L1, L2, L3, NI, NB; int32
     // T (relation lanes, a multiple of 64), NR (55,960 rows), FS (the feature
     // grid is x 2^FS), RS (a relation step is 2^RS units of it), PPM (pawn
-    // pairs: 0 in contact, 1 all), LAYOUT (1: v5_rel.h's index); int16
+    // pairs: 0 in contact, 1 all), LAYOUT (1: the v5rel index); int16
     // psq[NI][L1] (feature-major, x 2^FS); int32 psq_bias[L1]; int8 rel[NR][T];
     // then the NB tails and any tagged sections exactly as in LNR8.
     const bool lnt8 = (mg == "LNT8");
@@ -508,7 +673,7 @@ static bool load_stream(std::istream& f, const std::string& name) {
         if (!f || NB < 1 || NB > MAX_BUCKETS) { std::fprintf(stderr, "nnue: bucket count %d out of range\n", NB); return false; }
     }
     // LNT8: T (relation lanes), NR (rows), FS (the feature grid is x 2^FS), RS (a relation step is 2^RS units of
-    // it), PPM (pawn pairs: 0 in contact, 1 all on the same or adjacent files), LAYOUT (1: v5_rel.h's index)
+    // it), PPM (pawn pairs: 0 in contact, 1 all on the same or adjacent files), LAYOUT (1: the v5rel index)
     int32_t rh[6] = {0, 0, 0, 0, 0, 0};
     if (lnt8) {
         f.read(reinterpret_cast<char*>(rh), sizeof(rh));
@@ -1519,3 +1684,444 @@ bool check_simd(std::string& report) {
 }
 
 } // namespace luminex::nnue
+
+// =====================================================================================================================
+// gen768t's relation inputs
+// =====================================================================================================================
+
+// The rules are those of the reference script the V5 design work checked everything
+// against (v5-relations-ref.py, on python-chess). This is the code the V5 speed gate measured: a census checked
+// its change-finder against a brute force on 18.1M search moves, and its rows matched the trainer's on game and
+// search-tree positions.
+#include <algorithm>
+#include <bit>
+#include <cstdlib>
+#include <cstring>
+
+namespace luminex::v5rel {
+
+using u64 = uint64_t;
+namespace {
+constexpr int NOPC = 12;
+constexpr u64 RANKS27 = 0x00FFFFFFFFFFFF00ULL;
+
+inline int pop(u64& b) {
+    const int s = std::countr_zero(b);
+    b &= b - 1;
+    return s;
+}
+inline int popc(u64 b) { return std::popcount(b); }
+inline u64 bit(int s) { return 1ULL << s; }
+inline bool same_diag(int x, int y) { return std::abs((x & 7) - (y & 7)) == std::abs((x >> 3) - (y >> 3)); }
+
+// Tables, generated from the rules (no constant is typed in).
+struct Tables {
+    u64 below[64], beyond[64][64], files3[8];
+    u64 e_pup[64], e_pdn[64], e_n[64], e_k[64], e_d[64], e_o[64];   // empty-board attack sets; "up" = toward rank 8
+    u64 patt[2][64];                                                // squares a pawn of colour c on s attacks
+    int16_t blk[2][6][2][5];                                        // [attacker side][type][victim side][type] -> block
+    int n_blk = 0, n_rel = 0, n_pp = 0;
+    u64 mask[128][64];
+    int boff[128][64];                                              // the block's base + the square's offset
+    int16_t pp[96][96];
+    struct Cls { int16_t blk; uint8_t swap, unordered; } cls[2][12][12];   // [perspective][attacker piece][victim piece]
+
+    static int step(int s, int df, int dr) {
+        const int f = (s & 7) + df, r = (s >> 3) + dr;
+        return (f < 0 || f > 7 || r < 0 || r > 7) ? -1 : r * 8 + f;
+    }
+    static u64 pawn_facing(int x, int sv) {      // squares from which a pawn of side sv (0 = own, moving up) attacks x
+        u64 m = 0;
+        for (int df = -1; df <= 1; df += 2) {
+            const int t = step(x, df, sv == 0 ? -1 : 1);
+            if (t >= 0) m |= bit(t);
+        }
+        return m & RANKS27;
+    }
+    u64 block_mask(int sa, int ta, int sv, int tv, int x) const {
+        if (ta == 5 && sa == 0) return 0;        // the own king's attacks: the king-bucketed piece-squares carry them
+        if (ta == 0 && tv == 0) return 0;        // pawn on pawn: the pawn-pair group
+        u64 m;
+        switch (ta) {
+            case 0:  m = sa == 0 ? e_pup[x] : e_pdn[x]; break;
+            case 1:  m = e_n[x]; break;
+            case 2:  m = e_d[x]; break;
+            case 3:  m = e_o[x]; break;
+            case 4:  m = tv == 2 ? e_o[x] : tv == 3 ? e_d[x] : (e_d[x] | e_o[x]); break;
+            default: m = e_k[x]; break;
+        }
+        if (tv == 0) {
+            m &= RANKS27;
+            if (ta == 2 || ta == 4) m &= ~pawn_facing(x, sv);
+        }
+        if (ta == tv && ta >= 1 && ta <= 4) {
+            if (sa == sv) m &= ~(bit(x) | below[x]);
+            else if (sa == 1) return 0;
+        }
+        return m;
+    }
+    Tables() {
+        static const int KN[8][2] = {{1, 2}, {2, 1}, {2, -1}, {1, -2}, {-1, -2}, {-2, -1}, {-2, 1}, {-1, 2}};
+        static const int KD[8][2] = {{1, 1}, {-1, 1}, {-1, -1}, {1, -1}, {1, 0}, {0, 1}, {-1, 0}, {0, -1}};
+        std::memset(beyond, 0, sizeof beyond);
+        for (int s = 0; s < 64; ++s) {
+            below[s] = bit(s) - 1;
+            e_pup[s] = e_pdn[s] = e_n[s] = e_k[s] = e_d[s] = e_o[s] = 0;
+            patt[0][s] = patt[1][s] = 0;
+            for (int df = -1; df <= 1; df += 2) {
+                int t = step(s, df, 1);
+                if (t >= 0) { patt[0][s] |= bit(t); if (s >= 8 && s < 56) e_pup[s] |= bit(t); }
+                t = step(s, df, -1);
+                if (t >= 0) { patt[1][s] |= bit(t); if (s >= 8 && s < 56) e_pdn[s] |= bit(t); }
+            }
+            for (const auto& d : KN) {
+                const int t = step(s, d[0], d[1]);
+                if (t >= 0) e_n[s] |= bit(t);
+            }
+            for (int i = 0; i < 8; ++i) {
+                int ray[8], n = 0;
+                for (int t = step(s, KD[i][0], KD[i][1]); t >= 0; t = step(t, KD[i][0], KD[i][1])) ray[n++] = t;
+                if (n) e_k[s] |= bit(ray[0]);
+                for (int a = 0; a < n; ++a) {
+                    (i < 4 ? e_d[s] : e_o[s]) |= bit(ray[a]);
+                    for (int c = a + 1; c < n; ++c) beyond[s][ray[a]] |= bit(ray[c]);
+                }
+            }
+        }
+        for (int f = 0; f < 8; ++f) {
+            files3[f] = 0;
+            for (int g = std::max(0, f - 1); g <= std::min(7, f + 1); ++g) files3[f] |= 0x0101010101010101ULL << g;
+        }
+        for (int sa = 0; sa < 2; ++sa)
+            for (int ta = 0; ta < 6; ++ta)
+                for (int sv = 0; sv < 2; ++sv)
+                    for (int tv = 0; tv < 5; ++tv) {
+                        int size = 0;
+                        for (int x = 0; x < 64; ++x) size += popc(block_mask(sa, ta, sv, tv, x));
+                        if (!size) { blk[sa][ta][sv][tv] = -1; continue; }
+                        const int b = n_blk++;
+                        blk[sa][ta][sv][tv] = int16_t(b);
+                        int acc = 0;
+                        for (int x = 0; x < 64; ++x) {
+                            mask[b][x] = block_mask(sa, ta, sv, tv, x);
+                            boff[b][x] = n_rel + acc;
+                            acc += popc(mask[b][x]);
+                        }
+                        n_rel += size;
+                    }
+        for (int i = 0; i < 96; ++i)
+            for (int j = 0; j < 96; ++j) {
+                pp[i][j] = -1;
+                if (j <= i) continue;
+                const int qi = i % 48, qj = j % 48;
+                if (qi == qj || std::abs(((qi + 8) & 7) - ((qj + 8) & 7)) > 1) continue;
+                pp[i][j] = int16_t(n_pp++);
+            }
+        for (int persp = 0; persp < 2; ++persp)
+            for (int pa = 0; pa < 12; ++pa)
+                for (int pv = 0; pv < 12; ++pv) {
+                    Cls& c = cls[persp][pa][pv];
+                    const int ta = pa % 6, tv = pv % 6;
+                    int sa = (pa / 6) != persp, sv = (pv / 6) != persp;
+                    c.swap = c.unordered = 0;
+                    c.blk = -1;
+                    if (tv == 5) continue;
+                    if (ta == tv && ta >= 1 && ta <= 4) {
+                        if (sa == sv) c.unordered = 1;
+                        else if (sa == 1) { c.swap = 1; std::swap(sa, sv); }
+                    }
+                    c.blk = blk[sa][ta][sv][tv];
+                }
+    }
+};
+const Tables* g_t = nullptr;
+
+inline void put(Bd& b, int s, int p) {
+    b.pc[s] = uint8_t(p);
+    b.by[p] |= bit(s);
+    b.occ |= bit(s);
+}
+inline void take(Bd& b, int s) {
+    b.by[b.pc[s]] &= ~bit(s);
+    b.occ &= ~bit(s);
+    b.pc[s] = NOPC;
+}
+
+// Is the attack x -> y (known to hold on the board) a member of the canonical set?
+inline bool rel_ok(const Tables& t, int pa, int x, int pv, int y) {
+    const int ta = pa % 6, tv = pv % 6;
+    if (tv == 5) return false;
+    if (ta == 0 && tv == 0) return false;
+    if (ta == tv && ta >= 1 && ta <= 4) return x < y;
+    if (ta == 4 && tv == 2 && same_diag(x, y)) return false;
+    if (ta == 4 && tv == 3 && !same_diag(x, y)) return false;
+    if ((ta == 2 || ta == 4) && tv == 0 && (t.patt[pv >= 6][y] & bit(x))) return false;
+    return true;
+}
+
+inline int rel_row(const Tables& t, int p, int ox, int x, int y, int px, int py) {
+    const Tables::Cls& c = t.cls[p][px][py];
+    if (c.blk < 0) return -1;
+    int xo = x ^ ox, yo = y ^ ox;
+    if (c.swap || (c.unordered && xo > yo)) std::swap(xo, yo);
+    return t.boff[c.blk][xo] + popc(t.mask[c.blk][xo] & (bit(yo) - 1));
+}
+inline int pair_row(const Tables& t, int p, int ox, int s1, int s2, int p1, int p2) {
+    int i = ((p1 / 6) != p) * 48 + (s1 ^ ox) - 8, j = ((p2 / 6) != p) * 48 + (s2 ^ ox) - 8;
+    if (i > j) std::swap(i, j);
+    return t.n_rel + t.pp[i][j];
+}
+inline int orient_of(const Bd& b, int p) {       // XOR 56 for Black, XOR 7 when that side's king is on files a-d
+    return (p ? 56 : 0) ^ ((std::countr_zero(b.by[p ? 11 : 5]) & 7) < 4 ? 7 : 0);
+}
+
+struct Finder {
+    Bd& b;
+    const Tables& t;
+    const int ppm;
+    const int ox[2];
+    const bool need[2];
+    RowLists& o;
+
+    void emit(int sign, int p, int row) {
+        if (sign > 0) {
+            if (o.na[p] < MAX_ROWS) o.add[p][o.na[p]++] = uint16_t(row); else o.overflow[p] = true;
+        } else {
+            if (o.ns[p] < MAX_ROWS) o.sub[p][o.ns[p]++] = uint16_t(row); else o.overflow[p] = true;
+        }
+    }
+    void rel(int sign, int x, int y, int px, int py) {
+        for (int p = 0; p < 2; ++p) {
+            if (!need[p]) continue;
+            const int row = rel_row(t, p, ox[p], x, y, px, py);
+            if (row >= 0) emit(sign, p, row);
+        }
+    }
+    void pair(int sign, int s1, int s2) {
+        if (s1 > s2) std::swap(s1, s2);
+        for (int p = 0; p < 2; ++p)
+            if (need[p]) emit(sign, p, pair_row(t, p, ox[p], s1, s2, b.pc[s1], b.pc[s2]));
+    }
+    // Every feature the piece on z takes part in, as attacker, victim or pawn of a pair.
+    // dz, oz: the diagonal and line attack sets from z (they do not depend on what stands on z).
+    void piece(int z, int sign, u64 dz, u64 oz) {
+        const int pz = b.pc[z], tz = pz % 6;
+        const u64 pawns = b.by[0] | b.by[6], knights = b.by[1] | b.by[7], bishops = b.by[2] | b.by[8],
+                  rooks = b.by[3] | b.by[9], queens = b.by[4] | b.by[10], kings = b.by[5] | b.by[11];
+        const u64 pawn_att = (t.patt[1][z] & b.by[0]) | (t.patt[0][z] & b.by[6]);   // pawns attacking z
+        const u64 own_att = tz == 0 ? t.patt[pz >= 6][z] : 0;                        // what a pawn on z attacks
+        const u64 lo = t.below[z];
+        u64 v;
+        switch (tz) {                    // z as attacker: victims, with every rule of the canonical set as a mask
+            case 0:  v = own_att & b.occ & ~pawns; break;
+            case 1:  v = t.e_n[z] & b.occ & ~(knights & lo); break;
+            case 2:  v = dz & b.occ & ~(bishops & lo) & ~pawn_att; break;
+            case 3:  v = oz & b.occ & ~(rooks & lo); break;
+            case 4:  v = ((dz & ~bishops) | (oz & ~rooks)) & b.occ & ~(queens & lo) & ~pawn_att; break;
+            default: v = t.e_k[z] & b.occ; break;
+        }
+        v &= ~kings;
+        while (v) {
+            const int y = pop(v);
+            rel(sign, z, y, pz, b.pc[y]);
+        }
+        if (tz != 5) {                   // z as victim: attackers
+            const u64 nA = t.e_n[z] & knights, kA = t.e_k[z] & kings;
+            const u64 dB = dz & bishops, dQ = dz & queens, oR = oz & rooks, oQ = oz & queens;
+            u64 a;
+            switch (tz) {
+                case 0:  a = nA | kA | ((dB | dQ) & ~own_att) | oR | oQ; break;
+                case 1:  a = pawn_att | (nA & lo) | kA | dB | dQ | oR | oQ; break;
+                case 2:  a = pawn_att | nA | kA | (dB & lo) | oR | oQ; break;
+                case 3:  a = pawn_att | nA | kA | dB | dQ | (oR & lo); break;
+                default: a = pawn_att | nA | kA | dB | oR | ((dQ | oQ) & lo); break;
+            }
+            while (a) {
+                const int x = pop(a);
+                rel(sign, x, z, b.pc[x], pz);
+            }
+        }
+        if (tz == 0)
+            for (u64 c = ppm ? (pawns & t.files3[z & 7] & ~bit(z)) : ((own_att & pawns) | pawn_att); c;) pair(sign, z, pop(c));
+    }
+    // With z empty: (slider -> the first piece beyond z) for every slider whose line reaches z.
+    void through(int z, int sign, u64 dz, u64 oz) {
+        const u64 queens = b.by[4] | b.by[10];
+        const u64 ends = (dz | oz) & b.occ;
+        for (u64 s = (dz & (b.by[2] | b.by[8] | queens)) | (oz & (b.by[3] | b.by[9] | queens)); s;) {
+            const int x = pop(s);
+            const u64 w = ends & t.beyond[x][z];
+            if (!w) continue;
+            const int y = std::countr_zero(w);
+            if (rel_ok(t, b.pc[x], x, b.pc[y], y)) rel(sign, x, y, b.pc[x], b.pc[y]);
+        }
+    }
+    void remove(int z) {
+        const u64 dz = bishop_attacks_bb(Square(z), b.occ), oz = rook_attacks_bb(Square(z), b.occ);
+        piece(z, -1, dz, oz);
+        take(b, z);
+        through(z, +1, dz, oz);
+    }
+    void add(int z, int p) {
+        const u64 dz = bishop_attacks_bb(Square(z), b.occ), oz = rook_attacks_bb(Square(z), b.occ);
+        through(z, -1, dz, oz);
+        put(b, z, p);
+        piece(z, +1, dz, oz);
+    }
+    void replace(int z, int p) {
+        const u64 dz = bishop_attacks_bb(Square(z), b.occ), oz = rook_attacks_bb(Square(z), b.occ);
+        piece(z, -1, dz, oz);
+        take(b, z);
+        put(b, z, p);
+        piece(z, +1, dz, oz);
+    }
+    void move(Move m) {
+        const int from = int(m.from()), to = int(m.to()), pm = b.pc[from], us = pm / 6;
+        if (m.is_castling()) {
+            const bool kingside = (to & 7) == 6;
+            const int rank = from & 56, rf = rank + (kingside ? 7 : 0), rt = rank + (kingside ? 5 : 3);
+            remove(from);
+            remove(rf);
+            add(to, us * 6 + 5);
+            add(rt, us * 6 + 3);
+            return;
+        }
+        const int np = m.is_promotion() ? us * 6 + int(m.promotion_type()) : pm;
+        remove(from);
+        if (m.is_en_passant()) {
+            remove(to + (us == 0 ? -8 : 8));
+            add(to, np);
+        } else if (b.pc[to] != NOPC) replace(to, np);
+        else add(to, np);
+    }
+};
+}  // namespace
+
+void init() {
+    static const Tables t;
+    g_t = &t;
+}
+int n_rows() { return g_t->n_rel + g_t->n_pp; }
+
+void find(const Bd& before, Move m, int ppm, const bool need[2], RowLists& out) {
+    Bd b = before;
+    out.na[0] = out.na[1] = out.ns[0] = out.ns[1] = 0;
+    out.overflow[0] = out.overflow[1] = false;
+    Finder f{b, *g_t, ppm, {orient_of(before, 0), orient_of(before, 1)}, {need[0], need[1]}, out};
+    f.move(m);
+}
+
+int enumerate(const Bd& b, int persp, int ppm, uint16_t* out) {
+    const Tables& t = *g_t;
+    const int ox = orient_of(b, persp);
+    const u64 pawns = b.by[0] | b.by[6];
+    int n = 0;
+    for (u64 o = b.occ; o;) {
+        const int s = pop(o), p = b.pc[s];
+        u64 att;
+        switch (p % 6) {
+            case 0:  att = t.patt[p >= 6][s]; break;
+            case 1:  att = t.e_n[s]; break;
+            case 2:  att = bishop_attacks_bb(Square(s), b.occ); break;
+            case 3:  att = rook_attacks_bb(Square(s), b.occ); break;
+            case 4:  att = bishop_attacks_bb(Square(s), b.occ) | rook_attacks_bb(Square(s), b.occ); break;
+            default: att = t.e_k[s]; break;
+        }
+        for (u64 v = att & b.occ; v;) {
+            const int y = pop(v);
+            if (!rel_ok(t, p, s, b.pc[y], y)) continue;
+            const int row = rel_row(t, persp, ox, s, y, p, b.pc[y]);
+            if (row >= 0 && n < MAX_ACTIVE) out[n++] = uint16_t(row);
+        }
+        if (p % 6 == 0) {
+            const u64 partners = ppm ? (pawns & t.files3[s & 7]) : ((t.patt[p >= 6][s] & pawns) | (t.patt[1][s] & b.by[0]) | (t.patt[0][s] & b.by[6]));
+            for (u64 c = partners & ~(bit(s) | t.below[s]); c;) {
+                const int y = pop(c);
+                if (n < MAX_ACTIVE) out[n++] = uint16_t(pair_row(t, persp, ox, s, y, p, b.pc[y]));
+            }
+        }
+    }
+    return n;
+}
+
+}  // namespace luminex::v5rel
+
+// =====================================================================================================================
+// The network built into the binary (last: on Windows it includes windows.h)
+// =====================================================================================================================
+
+// The network file built into the binary.
+//
+// CMake's LUMINEX_EMBED_NET puts a network file inside the executable, so a
+// release plays with NNUE on its own instead of needing the .nnue beside it.
+// MSVC and clang-cl link the file as an RCDATA resource (luminex_net.rc,
+// written by CMake); GCC and Clang assemble it in with .incbin. Builds without
+// the option carry no network and embedded_net() reports none.
+
+#if defined(LUMINEX_EMBED_NET_RC)
+
+#define WIN32_LEAN_AND_MEAN
+#define NOMINMAX
+#include <windows.h>
+
+namespace luminex {
+
+EmbeddedNet embedded_net() {
+    // A resource stays mapped with the image: nothing to copy or free.
+    HRSRC res = FindResourceA(nullptr, "LUMINEX_NET", MAKEINTRESOURCEA(10));  // 10 = RT_RCDATA
+    HGLOBAL mem = res ? LoadResource(nullptr, res) : nullptr;
+    const void* data = mem ? LockResource(mem) : nullptr;
+    if (!data) return {nullptr, 0};
+    return {static_cast<const unsigned char*>(data), std::size_t(SizeofResource(nullptr, res))};
+}
+
+} // namespace luminex
+
+#elif defined(LUMINEX_EMBED_NET_FILE)
+
+#include <cstdint>
+
+// Assembler symbols carry the platform's C prefix (an underscore on macOS).
+#define LUMINEX_STR_(x) #x
+#define LUMINEX_STR(x) LUMINEX_STR_(x)
+#define LUMINEX_SYM(name) LUMINEX_STR(__USER_LABEL_PREFIX__) #name
+
+#if defined(__APPLE__)
+#define LUMINEX_NET_SECTION ".const_data\n"
+#elif defined(_WIN32)
+#define LUMINEX_NET_SECTION ".section .rdata,\"dr\"\n"
+#else
+#define LUMINEX_NET_SECTION ".section .rodata\n"
+#endif
+
+__asm__(LUMINEX_NET_SECTION
+        ".globl " LUMINEX_SYM(luminex_net_begin) "\n"
+        ".globl " LUMINEX_SYM(luminex_net_end) "\n"
+        ".p2align 6\n"
+        LUMINEX_SYM(luminex_net_begin) ":\n"
+        ".incbin \"" LUMINEX_EMBED_NET_FILE "\"\n"
+        LUMINEX_SYM(luminex_net_end) ":\n"
+        ".text\n");
+
+extern "C" const unsigned char luminex_net_begin[];
+extern "C" const unsigned char luminex_net_end[];
+
+namespace luminex {
+
+EmbeddedNet embedded_net() {
+    const auto begin = reinterpret_cast<std::uintptr_t>(luminex_net_begin);
+    const auto end = reinterpret_cast<std::uintptr_t>(luminex_net_end);
+    return {luminex_net_begin, std::size_t(end - begin)};
+}
+
+} // namespace luminex
+
+#else
+
+namespace luminex {
+
+EmbeddedNet embedded_net() { return {nullptr, 0}; }
+
+} // namespace luminex
+
+#endif

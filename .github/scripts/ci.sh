@@ -394,7 +394,8 @@ stable=$(gh release view --repo "$repo" --json tagName --jq .tagName)
 mapfile -t dev_tags < <(gh release list --repo "$repo" --limit 100 --json tagName --jq '.[].tagName' \
                         | grep -E "$pattern" | grep -vx "$tag" || true)
 base=$(git rev-parse "refs/tags/$stable^{commit}")
-tool_only='^src/(eval_trace\.cpp|featurize\.cpp|frame_merge\.cpp|lc0pack\.cpp|lc0_move_table\.h|verify_frames\.c)$'
+# The data tools' file; the other names are its parts before they shared it, for older commits.
+tool_only='^src/(tools\.cpp|eval_trace\.cpp|featurize\.cpp|frame_merge\.cpp|lc0pack\.cpp|lc0_move_table\.h|verify_frames\.c)$'
 engine_lines=()
 other_lines=()
 while read -r h; do

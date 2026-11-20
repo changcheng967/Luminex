@@ -1,8 +1,12 @@
 #define _CRT_SECURE_NO_WARNINGS
 #include "luminex.h"
-#include "nnue.h"
-#include "spsa_params.h"
-#include "search_thread.h"
+#ifdef _WIN32
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <windows.h>
+#include <process.h>
+#endif
 #include <algorithm>
 #include <chrono>
 #include <cmath>
@@ -15,6 +19,38 @@
 #include <vector>
 
 namespace luminex {
+
+// The search thread's start and join (luminex.h has the class).
+void SearchThread::join() {
+    if (fallback_.joinable()) fallback_.join();
+    if (!running_) return;
+#ifdef _WIN32
+    WaitForSingleObject(handle_, INFINITE);
+    CloseHandle(handle_);
+    handle_ = nullptr;
+#else
+    pthread_join(thread_, nullptr);
+#endif
+    running_ = false;
+}
+
+void SearchThread::start(Job job) {
+    Job* owned = new Job(std::move(job));
+#ifdef _WIN32
+    handle_ = reinterpret_cast<HANDLE>(_beginthreadex(
+        nullptr, unsigned(SEARCH_THREAD_STACK),
+        [](void* p) -> unsigned { run(p); return 0; },
+        owned, STACK_SIZE_PARAM_IS_A_RESERVATION, nullptr));
+    running_ = handle_ != nullptr;
+#else
+    pthread_attr_t attr;
+    pthread_attr_init(&attr);
+    pthread_attr_setstacksize(&attr, SEARCH_THREAD_STACK);
+    running_ = pthread_create(&thread_, &attr, [](void* p) -> void* { run(p); return nullptr; }, owned) == 0;
+    pthread_attr_destroy(&attr);
+#endif
+    if (!running_) fallback_ = std::thread([owned] { run(owned); });
+}
 
 // Forward declaration - defined in uci.cpp
 extern bool check_for_stop_command();
@@ -130,7 +166,7 @@ static SearchWorker* main_search_worker = nullptr;
 // (counter_moves / continuation_history moved into SearchWorker — see struct)
 
 // Lazy SMP helper thread management (inside anonymous namespace for internal linkage)
-static std::vector<SearchThread> helper_threads;   // large stacks: search_thread.h
+static std::vector<SearchThread> helper_threads;   // large stacks: SearchThread (luminex.h)
 static std::atomic<bool> helpers_running{false};
 // Helper workers persist across searches like the main worker, indexed by
 // thread id (0 unused): a helper keeps its histories and corrections from one
@@ -966,7 +1002,7 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
         g_stats.iir_reductions++;
     }
 
-    // Tunable search constants (spsa_params.h); the move lambdas below use them too
+    // Tunable search constants (SPSAParams, luminex.h); the move lambdas below use them too
     const SPSAParams& sp = SPSAParams::get();
 
     // Reverse futility pruning (static null move): if eval is far above beta, prune immediately

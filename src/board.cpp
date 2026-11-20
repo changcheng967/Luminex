@@ -1,7 +1,4 @@
 #include "luminex.h"
-#include "evaluation.h"
-#include "movegen.h"
-#include "nnue.h"
 #include <algorithm>
 #include <cctype>
 #include <cmath>
@@ -1528,6 +1525,620 @@ void init_zobrist() {
 
 Direction Position::pawn_push(Color c) const {
     return c == WHITE ? NORTH : SOUTH;
+}
+
+} // namespace luminex
+
+// =====================================================================================================================
+// Move generation
+// =====================================================================================================================
+
+namespace luminex {
+
+// Move generation implementation
+
+template<GenType T>
+ExtMove* generate_moves(const Position& pos, ExtMove* moveList) {
+    Color us = pos.side_to_move();
+    Color them = Color(us ^ 1);  // Switch color by XORing with 1
+    Square ksq = pos.king_sq(us);
+
+    [[maybe_unused]] const Bitboard pinned = pos.pinned();
+    const Bitboard checkers = pos.checkers();
+
+    // Generate moves for each piece type
+    // Pawns
+    Bitboard pawns = pos.pieces(us, PAWN);
+    Direction NORTH = us == WHITE ? 8 : -8;
+
+    while (pawns) {
+        Square from = pop_lsb(pawns);
+        Square to = Square(from + NORTH);
+
+        // Single pawn push
+        if (!(pos.pieces() & square_bb(to))) {
+            if (relative_rank(us, to) == RANK_8) {
+                // A queen promotion gains material like a capture, so it is
+                // generated with the captures (main-search noisy stage and
+                // qsearch); underpromotions stay with the quiet moves.
+                if constexpr (T != GEN_QUIET) {
+                    *moveList++ = Move(from, to, MF_PROMO_QUEEN);
+                }
+                if constexpr (T != GEN_CAPTURE) {
+                    *moveList++ = Move(from, to, MF_PROMO_ROOK);
+                    *moveList++ = Move(from, to, MF_PROMO_BISHOP);
+                    *moveList++ = Move(from, to, MF_PROMO_KNIGHT);
+                }
+            } else {
+                if constexpr (T == GEN_QUIET || T == GEN_ALL || T == GEN_LEGAL || T == GEN_EVASION || T == GEN_NON_EVASION) {
+                    *moveList++ = Move(from, to, MF_QUIET);
+                }
+
+                // Double pawn push
+                if (relative_rank(us, from) == RANK_2) {
+                    Square to2 = Square(from + NORTH * 2);
+                    if (!(pos.pieces() & square_bb(to2))) {
+                        if constexpr (T == GEN_QUIET || T == GEN_ALL || T == GEN_LEGAL || T == GEN_EVASION || T == GEN_NON_EVASION) {
+                            *moveList++ = Move(from, to2, MF_DOUBLE_PAWN);
+                        }
+                    }
+                }
+            }
+        }
+
+        // Pawn captures
+        // Exclude enemy king from captures
+        Bitboard their_pieces = pos.pieces(them) & ~pos.pieces(them, KING);
+        // Only include EP square if it's actually set (not SQUARE_NONE)
+        // square_bb(SQUARE_NONE) where SQUARE_NONE=64 causes UB: 1ULL << 64
+        Bitboard ep_bb = BB_EMPTY;
+        if (pos.ep_square() != SQUARE_NONE) {
+            ep_bb = square_bb(pos.ep_square());
+        }
+        Bitboard targets = their_pieces | ep_bb;
+        Bitboard attacks = pawn_attacks_bb(us, from) & targets;
+
+        while (attacks) {
+            Square cap_to = pop_lsb(attacks);
+
+            if (relative_rank(us, cap_to) == RANK_8) {
+                // Promotion capture
+                if constexpr (T == GEN_CAPTURE || T == GEN_ALL || T == GEN_LEGAL || T == GEN_EVASION || T == GEN_NON_EVASION) {
+                    *moveList++ = Move(from, cap_to, MF_CAPTURE_PROMO_QUEEN);
+                    *moveList++ = Move(from, cap_to, MF_CAPTURE_PROMO_ROOK);
+                    *moveList++ = Move(from, cap_to, MF_CAPTURE_PROMO_BISHOP);
+                    *moveList++ = Move(from, cap_to, MF_CAPTURE_PROMO_KNIGHT);
+                }
+            } else if (cap_to == pos.ep_square()) {
+                // En passant
+                if constexpr (T == GEN_CAPTURE || T == GEN_ALL || T == GEN_LEGAL || T == GEN_EVASION || T == GEN_NON_EVASION) {
+                    *moveList++ = Move(from, cap_to, MF_EN_PASSANT);
+                }
+            } else {
+                // Normal capture
+                if constexpr (T == GEN_CAPTURE || T == GEN_ALL || T == GEN_LEGAL || T == GEN_EVASION || T == GEN_NON_EVASION) {
+                    *moveList++ = Move(from, cap_to, MF_CAPTURE);
+                }
+            }
+        }
+    }
+
+    // Knights
+    Bitboard knights = pos.pieces(us, KNIGHT);
+    while (knights) {
+        Square from = pop_lsb(knights);
+        // Captures: enemy pieces except king
+        Bitboard their_pieces = pos.pieces(them) & ~pos.pieces(them, KING);
+        Bitboard attacks = knight_attacks_bb(from) & their_pieces;
+        // Quiets: empty squares only
+        Bitboard quiets = knight_attacks_bb(from) & ~pos.pieces();
+
+        // Captures
+        if constexpr (T == GEN_CAPTURE || T == GEN_ALL || T == GEN_LEGAL || T == GEN_EVASION || T == GEN_NON_EVASION) {
+            while (attacks) {
+                Square to = pop_lsb(attacks);
+                *moveList++ = Move(from, to, MF_CAPTURE);
+            }
+        }
+
+        // Quiets
+        if constexpr (T == GEN_QUIET || T == GEN_ALL || T == GEN_LEGAL || T == GEN_EVASION || T == GEN_NON_EVASION) {
+            quiets &= ~pos.pieces(us);
+            while (quiets) {
+                Square to = pop_lsb(quiets);
+                *moveList++ = Move(from, to, MF_QUIET);
+            }
+        }
+    }
+
+    // Bishops
+    Bitboard bishops = pos.pieces(us, BISHOP);
+    while (bishops) {
+        Square from = pop_lsb(bishops);
+        Bitboard all_attacks = bishop_attacks_bb(from, pos.pieces());
+        // Captures: enemy pieces except king
+        Bitboard their_pieces = pos.pieces(them) & ~pos.pieces(them, KING);
+        Bitboard attacks = all_attacks & their_pieces;
+        // Quiets: empty squares only
+        Bitboard quiets = all_attacks & ~pos.pieces();
+
+        // Captures
+        if constexpr (T == GEN_CAPTURE || T == GEN_ALL || T == GEN_LEGAL || T == GEN_EVASION || T == GEN_NON_EVASION) {
+            while (attacks) {
+                Square to = pop_lsb(attacks);
+                *moveList++ = Move(from, to, MF_CAPTURE);
+            }
+        }
+
+        // Quiets
+        if constexpr (T == GEN_QUIET || T == GEN_ALL || T == GEN_LEGAL || T == GEN_EVASION || T == GEN_NON_EVASION) {
+            quiets &= ~pos.pieces(us);
+            while (quiets) {
+                Square to = pop_lsb(quiets);
+                *moveList++ = Move(from, to, MF_QUIET);
+            }
+        }
+    }
+
+    // Rooks
+    Bitboard rooks = pos.pieces(us, ROOK);
+    while (rooks) {
+        Square from = pop_lsb(rooks);
+        Bitboard all_attacks = rook_attacks_bb(from, pos.pieces());
+        // Captures: enemy pieces except king (kings cannot be captured)
+        Bitboard their_pieces = pos.pieces(them) & ~pos.pieces(them, KING);
+        Bitboard attacks = all_attacks & their_pieces;
+        // Quiets: empty squares only (king squares are NOT valid destinations)
+        Bitboard quiets = all_attacks & ~pos.pieces();
+
+        // Captures
+        if constexpr (T == GEN_CAPTURE || T == GEN_ALL || T == GEN_LEGAL || T == GEN_EVASION || T == GEN_NON_EVASION) {
+            while (attacks) {
+                Square to = pop_lsb(attacks);
+                *moveList++ = Move(from, to, MF_CAPTURE);
+            }
+        }
+
+        // Quiets
+        if constexpr (T == GEN_QUIET || T == GEN_ALL || T == GEN_LEGAL || T == GEN_EVASION || T == GEN_NON_EVASION) {
+            quiets &= ~pos.pieces(us);
+            while (quiets) {
+                Square to = pop_lsb(quiets);
+                *moveList++ = Move(from, to, MF_QUIET);
+            }
+        }
+    }
+
+    // Queens
+    Bitboard queens = pos.pieces(us, QUEEN);
+    while (queens) {
+        Square from = pop_lsb(queens);
+        Bitboard all_attacks = queen_attacks_bb(from, pos.pieces());
+        // Captures: enemy pieces except king
+        Bitboard their_pieces = pos.pieces(them) & ~pos.pieces(them, KING);
+        Bitboard attacks = all_attacks & their_pieces;
+        // Quiets: empty squares only
+        Bitboard quiets = all_attacks & ~pos.pieces();
+
+        // Captures
+        if constexpr (T == GEN_CAPTURE || T == GEN_ALL || T == GEN_LEGAL || T == GEN_EVASION || T == GEN_NON_EVASION) {
+            while (attacks) {
+                Square to = pop_lsb(attacks);
+                *moveList++ = Move(from, to, MF_CAPTURE);
+            }
+        }
+
+        // Quiets
+        if constexpr (T == GEN_QUIET || T == GEN_ALL || T == GEN_LEGAL || T == GEN_EVASION || T == GEN_NON_EVASION) {
+            quiets &= ~pos.pieces(us);
+            while (quiets) {
+                Square to = pop_lsb(quiets);
+                *moveList++ = Move(from, to, MF_QUIET);
+            }
+        }
+    }
+
+    // King
+    // Exclude enemy king from captures (king cannot capture enemy king)
+    Bitboard their_pieces = pos.pieces(them) & ~pos.pieces(them, KING);
+    Bitboard king_attacks = king_attacks_bb(ksq) & their_pieces;
+    Bitboard king_quiets = king_attacks_bb(ksq) & ~pos.pieces();
+
+    // King captures
+    if constexpr (T == GEN_CAPTURE || T == GEN_ALL || T == GEN_LEGAL || T == GEN_EVASION || T == GEN_NON_EVASION) {
+        while (king_attacks) {
+            Square to = pop_lsb(king_attacks);
+            *moveList++ = Move(ksq, to, MF_CAPTURE);
+        }
+    }
+
+    // King quiets
+    if constexpr (T == GEN_QUIET || T == GEN_ALL || T == GEN_LEGAL || T == GEN_EVASION || T == GEN_NON_EVASION) {
+        king_quiets &= ~pos.pieces(us);
+        while (king_quiets) {
+            Square to = pop_lsb(king_quiets);
+            *moveList++ = Move(ksq, to, MF_QUIET);
+        }
+    }
+
+    // Castling (only when not in check and not generating evasions)
+    if constexpr (T == GEN_QUIET || T == GEN_ALL || T == GEN_LEGAL || T == GEN_NON_EVASION) {
+        if (!checkers) {
+            // CRITICAL: Only generate castling if king is on starting square
+            // White king must be on e1, black king must be on e8
+            bool king_on_start = (us == WHITE && ksq == E1) || (us == BLACK && ksq == E8);
+            if (!king_on_start) {
+                // King has moved - cannot castle, even if castling rights aren't revoked
+                // This prevents generating illegal castling moves like b1g1
+            } else {
+                // Kingside
+                CastlingRight king_side = us == WHITE ? WHITE_KINGSIDE : BLACK_KINGSIDE;
+                if (pos.castling_allowed(us, king_side)) {
+                    // CRITICAL: Verify rook is present before generating castling
+                    Square rook_sq = Square(us == WHITE ? H1 : H8);
+                    if (pos.piece_on(rook_sq) == make_piece(us, ROOK)) {
+                        Square to = Square(us == WHITE ? G1 : G8);
+                        *moveList++ = Move(ksq, to, MF_CASTLING_KING);
+                    }
+                }
+                // Queenside
+                CastlingRight queen_side = us == WHITE ? WHITE_QUEENSIDE : BLACK_QUEENSIDE;
+                if (pos.castling_allowed(us, queen_side)) {
+                    // CRITICAL: Verify rook is present before generating castling
+                    Square rook_sq = Square(us == WHITE ? A1 : A8);
+                    if (pos.piece_on(rook_sq) == make_piece(us, ROOK)) {
+                        Square to = Square(us == WHITE ? C1 : C8);
+                        *moveList++ = Move(ksq, to, MF_CASTLING_QUEEN);
+                    }
+                }
+            }
+        }
+    }
+
+    return moveList;
+}
+
+template<GenType T>
+ExtMove* generate(const Position& pos, ExtMove* moveList) {
+    if constexpr (T == GEN_LEGAL) {
+        ExtMove* start = moveList;
+        ExtMove* end;
+
+        // When in check, use evasion generation; otherwise use non-evasion
+        if (pos.is_check()) {
+            end = generate_moves<GEN_EVASION>(pos, moveList);
+        } else {
+            end = generate_moves<GEN_NON_EVASION>(pos, moveList);
+        }
+
+        // Filter for legal moves (evasion moves should already be legal, but verify anyway)
+        ExtMove* legal_end = start;
+        for (ExtMove* it = start; it != end; ++it) {
+            // skip_pseudo=true: generate_moves only emitted pseudo-legal moves,
+            // so re-validating pseudo-legality here did the work twice on the
+            // hottest path (every root node and perft node)
+            bool is_legal = pos.legal(it->move, true);
+            if (is_legal) {
+                *(legal_end++) = *it;
+            }
+        }
+        return legal_end;
+    } else {
+        return generate_moves<T>(pos, moveList);
+    }
+}
+
+// Explicit template instantiations
+template ExtMove* generate<GEN_LEGAL>(const Position& pos, ExtMove* moveList);
+template ExtMove* generate<GEN_CAPTURE>(const Position& pos, ExtMove* moveList);
+template ExtMove* generate<GEN_QUIET>(const Position& pos, ExtMove* moveList);
+template ExtMove* generate<GEN_EVASION>(const Position& pos, ExtMove* moveList);
+template ExtMove* generate<GEN_ALL>(const Position& pos, ExtMove* moveList);
+
+} // namespace luminex
+
+// =====================================================================================================================
+// Magic bitboards
+// =====================================================================================================================
+
+namespace luminex {
+
+// Magic bitboard tables
+Magic RookMagics[64];
+Magic BishopMagics[64];
+Bitboard RookTable[262144];   // Large enough for all rook entries
+Bitboard BishopTable[65536];  // Large enough for all bishop entries
+
+namespace {
+
+// Compute attack mask for a rook (edges excluded)
+Bitboard compute_rook_mask(Square s) {
+    Bitboard mask = 0;
+    int f = file_of(s), r = rank_of(s);
+    for (int ff = f + 1; ff < 7; ++ff) mask |= square_bb(make_square(File(ff), Rank(r)));
+    for (int ff = f - 1; ff > 0; --ff) mask |= square_bb(make_square(File(ff), Rank(r)));
+    for (int rr = r + 1; rr < 7; ++rr) mask |= square_bb(make_square(File(f), Rank(rr)));
+    for (int rr = r - 1; rr > 0; --rr) mask |= square_bb(make_square(File(f), Rank(rr)));
+    return mask;
+}
+
+// Compute attack mask for a bishop (edges excluded)
+Bitboard compute_bishop_mask(Square s) {
+    Bitboard mask = 0;
+    int f = file_of(s), r = rank_of(s);
+    for (int ff = f + 1, rr = r + 1; ff < 7 && rr < 7; ++ff, ++rr)
+        mask |= square_bb(make_square(File(ff), Rank(rr)));
+    for (int ff = f - 1, rr = r + 1; ff > 0 && rr < 7; --ff, ++rr)
+        mask |= square_bb(make_square(File(ff), Rank(rr)));
+    for (int ff = f + 1, rr = r - 1; ff < 7 && rr > 0; ++ff, --rr)
+        mask |= square_bb(make_square(File(ff), Rank(rr)));
+    for (int ff = f - 1, rr = r - 1; ff > 0 && rr > 0; --ff, --rr)
+        mask |= square_bb(make_square(File(ff), Rank(rr)));
+    return mask;
+}
+
+// Compute rook attacks for given occupancy (slow but correct)
+Bitboard slow_rook_attacks(Square s, Bitboard occupied) {
+    Bitboard attacks = 0;
+    int f = file_of(s), r = rank_of(s);
+    for (int ff = f + 1; ff <= 7; ++ff) {
+        Square sq = make_square(File(ff), Rank(r));
+        attacks |= square_bb(sq);
+        if (occupied & square_bb(sq)) break;
+    }
+    for (int ff = f - 1; ff >= 0; --ff) {
+        Square sq = make_square(File(ff), Rank(r));
+        attacks |= square_bb(sq);
+        if (occupied & square_bb(sq)) break;
+    }
+    for (int rr = r + 1; rr <= 7; ++rr) {
+        Square sq = make_square(File(f), Rank(rr));
+        attacks |= square_bb(sq);
+        if (occupied & square_bb(sq)) break;
+    }
+    for (int rr = r - 1; rr >= 0; --rr) {
+        Square sq = make_square(File(f), Rank(rr));
+        attacks |= square_bb(sq);
+        if (occupied & square_bb(sq)) break;
+    }
+    return attacks;
+}
+
+// Compute bishop attacks for given occupancy (slow but correct)
+Bitboard slow_bishop_attacks(Square s, Bitboard occupied) {
+    Bitboard attacks = 0;
+    int f = file_of(s), r = rank_of(s);
+    for (int ff = f + 1, rr = r + 1; ff <= 7 && rr <= 7; ++ff, ++rr) {
+        Square sq = make_square(File(ff), Rank(rr));
+        attacks |= square_bb(sq);
+        if (occupied & square_bb(sq)) break;
+    }
+    for (int ff = f - 1, rr = r + 1; ff >= 0 && rr <= 7; --ff, ++rr) {
+        Square sq = make_square(File(ff), Rank(rr));
+        attacks |= square_bb(sq);
+        if (occupied & square_bb(sq)) break;
+    }
+    for (int ff = f + 1, rr = r - 1; ff <= 7 && rr >= 0; ++ff, --rr) {
+        Square sq = make_square(File(ff), Rank(rr));
+        attacks |= square_bb(sq);
+        if (occupied & square_bb(sq)) break;
+    }
+    for (int ff = f - 1, rr = r - 1; ff >= 0 && rr >= 0; --ff, --rr) {
+        Square sq = make_square(File(ff), Rank(rr));
+        attacks |= square_bb(sq);
+        if (occupied & square_bb(sq)) break;
+    }
+    return attacks;
+}
+
+// Magic multipliers, one per square. They are the numbers the deterministic
+// per-square search (seeded xorshift, sparse candidates, verified over every
+// occupancy subset) used to find at every start, which took seconds; the
+// attack tables they build are identical.
+constexpr Bitboard RookMagicNumbers[64] = {
+    0x4080004000102080ULL, 0x8040004020001000ULL, 0x4A00084082001020ULL, 0x2900100005000920ULL,
+    0x0600200422003008ULL, 0xE200100802000481ULL, 0x0200082281140A00ULL, 0x4200042301408204ULL,
+    0x2020801020804000ULL, 0x0020802000904000ULL, 0x1000808020001000ULL, 0x01A0040081004200ULL,
+    0x1002800400080080ULL, 0x0402000804020010ULL, 0xC011002900140200ULL, 0x00010020810016C2ULL,
+    0x2010208010804002ULL, 0x4090004000402000ULL, 0x0020010010204101ULL, 0x0001010008100020ULL,
+    0x0000808004000800ULL, 0x0094818002000400ULL, 0x10000400C8010210ULL, 0x4000020021008044ULL,
+    0xB000800080204000ULL, 0x0040200040005000ULL, 0x060816C100200102ULL, 0x0880240900100100ULL,
+    0x0625000500080090ULL, 0x040C000480800200ULL, 0x0400304400110882ULL, 0xBB402A4200010194ULL,
+    0x8830400020800080ULL, 0x0060100040400020ULL, 0x0000200080801000ULL, 0x0290040811002100ULL,
+    0x0080040801001100ULL, 0x4802800400800200ULL, 0x0005080204000110ULL, 0x2120009042000419ULL,
+    0x0301008200460024ULL, 0x0090004020004000ULL, 0x08A0008010008020ULL, 0x20202201400A0010ULL,
+    0x0901000408010010ULL, 0x000A000804010100ULL, 0x0180021190040028ULL, 0x1034208041120014ULL,
+    0x4080004000200040ULL, 0x2000802100400100ULL, 0xC000600150008280ULL, 0x0080100008008280ULL,
+    0x1040080004008080ULL, 0x4004004100020040ULL, 0x0028800100020080ULL, 0x8000800063000180ULL,
+    0x8081002043120182ULL, 0x100B810140041021ULL, 0x0104102001010841ULL, 0x8B4200C038201016ULL,
+    0x400A000408102002ULL, 0x0C02000108100482ULL, 0x1011004082000421ULL, 0x0001000031408601ULL,
+};
+
+constexpr Bitboard BishopMagicNumbers[64] = {
+    0x8A10010801004208ULL, 0x01A00808A3104600ULL, 0xA290008200540400ULL, 0x0491040080402800ULL,
+    0x18C40504003014A0ULL, 0x008A0A0220002001ULL, 0x2002209220300182ULL, 0x1840250100904040ULL,
+    0x610040A212020200ULL, 0x4000488210840100ULL, 0x004010A08083000CULL, 0xA000044400804040ULL,
+    0x00010404220041C0ULL, 0x00200A0910080000ULL, 0x900A040409082A40ULL, 0xC040044042101000ULL,
+    0x1020003220011902ULL, 0x1009041002008401ULL, 0x0031020208070900ULL, 0x0042001040114000ULL,
+    0x7402001420211484ULL, 0x0001000080414002ULL, 0x0002200048020850ULL, 0x0028440A86189004ULL,
+    0x1244208090600104ULL, 0x2110242811110200ULL, 0x0004020010082442ULL, 0x1904002104020880ULL,
+    0x1001010000104000ULL, 0x00040020D100A000ULL, 0x2808408001140100ULL, 0x0004008400220124ULL,
+    0x0010307000260400ULL, 0x043A022208109040ULL, 0x4400211000010400ULL, 0x0882008021020200ULL,
+    0x0900920200040108ULL, 0x0308020420041000ULL, 0x8821122204208800ULL, 0x8420810041010400ULL,
+    0x0204020840000411ULL, 0x001100822010100AULL, 0x8140140024100800ULL, 0x1000002058000900ULL,
+    0x4000080104002044ULL, 0x0911860802001540ULL, 0x0020020210402210ULL, 0x0002280241020290ULL,
+    0x0841084202202000ULL, 0x002A044402090208ULL, 0x4800620042087020ULL, 0x0C00001042020580ULL,
+    0x0400204090444000ULL, 0x10004048C141030CULL, 0xA422440400841000ULL, 0x0002280104108000ULL,
+    0x2502410410022200ULL, 0x0400002484500840ULL, 0x0810000110880410ULL, 0x0819200008420210ULL,
+    0x0008000040050104ULL, 0x6008041002100105ULL, 0x08080A1810540040ULL, 0x8102100202004200ULL,
+};
+
+// Initialize magic tables for one piece type
+void init_magics(Magic magics[], Bitboard table[], bool is_rook) {
+    Bitboard* table_ptr = table;
+
+    for (int sq = 0; sq < 64; ++sq) {
+        magics[sq].mask = is_rook ? compute_rook_mask(Square(sq)) : compute_bishop_mask(Square(sq));
+        magics[sq].attacks = table_ptr;
+
+        int bits = popcount(magics[sq].mask);
+        magics[sq].shift = 64 - bits;
+        int size = 1 << bits;
+
+        Bitboard magic = is_rook ? RookMagicNumbers[sq] : BishopMagicNumbers[sq];
+        magics[sq].magic = magic;
+
+        // Now fill the table using the found magic
+        Bitboard occ = 0;
+        do {
+            Bitboard attacks = is_rook ? slow_rook_attacks(Square(sq), occ)
+                                       : slow_bishop_attacks(Square(sq), occ);
+
+            unsigned index = unsigned((occ * magic) >> magics[sq].shift);
+            table_ptr[index] = attacks;
+
+            occ = (occ - magics[sq].mask) & magics[sq].mask;
+        } while (occ);
+
+        table_ptr += size;
+    }
+}
+
+} // anonymous namespace
+
+void init_magic_bitboards() {
+    static bool initialized = false;
+    if (initialized) return;
+    initialized = true;
+
+    init_magics(RookMagics, RookTable, true);
+    init_magics(BishopMagics, BishopTable, false);
+}
+
+} // namespace luminex
+
+// =====================================================================================================================
+// The transposition table
+// =====================================================================================================================
+
+#include <cstring>
+#include <algorithm>
+
+namespace luminex {
+
+void TTEntry::save(uint64_t k, Value v, bool pv, Bound b, Depth d, Move m, Value ev, uint8_t g) {
+    // A store without a move (a fail-low node, a qsearch node with no capture
+    // worth recording) keeps the move already saved for this position: that
+    // move is still the best ordering hint the position has.
+    const bool same_position = depth_ != 0 && key32 == uint32_t(k >> 32);
+    if (m != MOVE_NONE || !same_position)
+        move16 = uint16_t(m.raw());
+    key32 = uint32_t(k >> 32);
+    value_ = int32_t(v);
+    eval_ = int32_t(ev);
+    // Stored as d + 127 for d in [0, 128]: qsearch entries keep depth 0, so a
+    // main-search node (depth >= 1) never takes a cutoff from a qsearch bound.
+    // depth_ == 0 is the empty slot left by clear(); 128 caps the uint8 range.
+    depth_ = uint8_t(std::clamp<Depth>(d, 0, 128) + 127);
+    // g arrives pre-shifted (generation8 advances in steps of 4, keeping the
+    // low 2 bits free for the bound); shifting again here would desynchronize
+    // save and probe encodings.
+    gen_bound = uint8_t(g | b);
+    pv_flag = pv ? 1 : 0;
+    search_id_ = TT.search_id();
+}
+
+void TranspositionTable::resize(size_t mb) {
+    // Exactly the Hash given, 16,384 clusters of 64 bytes a MB: cluster_of()
+    // indexes any number of them. (The size used to be rounded UP to a power
+    // of two, so Hash 1100 took 2,048 MB and Hash 3000 took 4,096.)
+    const size_t clusters = mb * 1024 * 1024 / sizeof(TTCluster);
+    pow2_ = std::has_single_bit(clusters);
+    rot_ = clusters > 1 ? 64 - int(std::bit_width(clusters - 1)) : 0;
+    entries = clusters * 3;
+    table.reset(clusters);   // frees the old table first; zeroed
+}
+
+void TranspositionTable::clear() {
+    if (entries == 0) return;
+
+    std::memset(table.data(), 0, table.size() * sizeof(TTCluster));
+}
+
+void TranspositionTable::new_search() {
+    generation8 += 4;
+}
+
+TTEntry* TranspositionTable::probe(uint64_t key, bool& found) {
+    if (table.empty()) {
+        static TTEntry dummy;
+        found = false;
+        return &dummy;
+    }
+
+    const size_t idx = cluster_of(key);
+    TTEntry* entry = &table[idx].entry[0];
+
+    // depth_ == 0 marks an empty slot (clear() zeroes the table); stored
+    // entries are depth + 127 >= 127.
+    for (int i = 0; i < 3; ++i, ++entry) {
+        if (entry->depth_ != 0 && entry->key32 == uint32_t(key >> 32)) {
+            if ((entry->gen_bound & 0xFC) != generation8) {
+                entry->gen_bound = uint8_t(generation8 | (entry->gen_bound & 0x3));
+            }
+            found = true;
+            // Self-cleaning cross-search aging: age the STORED depth byte so the
+            // entry drops out of both the cutoff check and the depth-preferred
+            // replacement ranking (a read-time-only discount leaves stale deep
+            // entries squatting in slots they can never be trusted for). Clamp at
+            // 127 (depth 0) so an aged entry never reads as an empty slot.
+            if (entry->search_id_ != search_id8) {
+                int age = int(uint8_t(search_id8 - entry->search_id_));
+                entry->depth_ = uint8_t(std::max(127, int(entry->depth_) - 2 * age));
+                entry->search_id_ = search_id8;
+            }
+            return entry;
+        }
+    }
+
+    // Find the least valuable entry to replace. Old-generation entries are
+    // discounted first (they lose authority to anything current); within the
+    // same generation the shallowest depth goes.
+    TTEntry* replace = &table[idx].entry[0];
+    for (int i = 1; i < 3; ++i) {
+        TTEntry* e = &table[idx].entry[i];
+        if (e->depth_ - ((e->gen_bound & 0xFC) == generation8 ? 0 : 127) <
+            replace->depth_ - ((replace->gen_bound & 0xFC) == generation8 ? 0 : 127)) {
+            replace = e;
+        }
+    }
+
+    found = false;
+    return replace;
+}
+
+size_t TranspositionTable::hashfull() const {
+    if (entries == 0) return 0;
+
+    int cnt = 0;
+    for (size_t i = 0; i < std::min<size_t>(1000, table.size()); ++i) {
+        for (int j = 0; j < 3; ++j) {
+            if ((table[i].entry[j].gen_bound & 0xFC) == generation8) {
+                ++cnt;
+            }
+        }
+    }
+
+    return cnt * 1000 / (std::min(size_t(1000), table.size()) * 3);
+}
+
+void TranspositionTable::prefetch(uint64_t key) const {
+#if defined(__GNUC__) || defined(__clang__)
+    // do_move prefetches before the table exists too (perft, bench's perft):
+    // an empty table has no entry to index.
+    if (!table.empty())
+        __builtin_prefetch(&table[cluster_of(key)], 0, 3);
+#endif
 }
 
 } // namespace luminex
