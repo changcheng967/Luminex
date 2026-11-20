@@ -1619,12 +1619,12 @@ namespace luminex::nnue {
 // nnue_kernels.h.
 
 // Network shipped with each release, by its real name: CMake reads it from the
-// file name of the asset .github/scripts/fetch-net.sh pins, so the default
+// file name of the network .github/scripts/ci.sh pins (pin_url), so the default
 // NNUEFile follows every net swap. Release binaries carry the network inside
 // them (CMake LUMINEX_EMBED_PINNED); a build without it loads the file of this
 // name from the working directory or next to the engine binary.
 #ifndef LUMINEX_DEFAULT_NET
-#error "LUMINEX_DEFAULT_NET comes from CMake: the pinned network's file name in .github/scripts/fetch-net.sh"
+#error "LUMINEX_DEFAULT_NET comes from CMake: the pinned network's file name in .github/scripts/ci.sh (pin_url)"
 #endif
 inline constexpr const char* DEFAULT_NET = LUMINEX_DEFAULT_NET;
 

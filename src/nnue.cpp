@@ -61,7 +61,7 @@ EmbeddedNet embedded_net();
 // gen768t's relation inputs (the code is after the network's)
 // =====================================================================================================================
 
-// Attack relations and pawn pairs (docs/nnue/V5-GEN768T.md, section 2). Which rows a position has, and which
+// Attack relations and pawn pairs (docs/NNUE.md, V5-GEN768T section 2). Which rows a position has, and which
 // rows a move adds and removes, for one perspective or both. The rules and the index layout (LAYOUT = 1) are
 // below; the network code sums the rows into the relation lanes.
 //
@@ -305,7 +305,7 @@ static std::vector<float> ft_b;   // (L1,)
 static std::vector<float> l2_w, l3_w, out_w;   // float dense weights (LNN1 nets)
 static bool g_int8 = false;
 static bool g_loaded = false;
-// gen768t (LNT8 nets, docs/nnue/V5-GEN768T.md): attack-relation and pawn-pair rows, int8 in steps of
+// gen768t (LNT8 nets, docs/NNUE.md, V5-GEN768T): attack-relation and pawn-pair rows, int8 in steps of
 // 2^g_rel_rs on the feature grid, summed into int16 relation lanes of their own and added into the first
 // g_rel_T lanes of the feature layer at evaluation (RelLanes). g_rel_T = 0 for every other format.
 static int g_rel_T = 0, g_rel_rs = 0, g_rel_ppm = 0;
@@ -653,7 +653,7 @@ static bool load_stream(std::istream& f, const std::string& name) {
     // LNN1: float tail. LNI8: int8 tail. LNB8: int8 tails, one per output
     // bucket; its header carries the bucket count after the four sizes. LNR8:
     // LNB8 with a scale per row of L2 and L3 instead of one per layer. LNT8
-    // (gen768t, docs/nnue/V5-GEN768T.md), little-endian, every tensor after its
+    // (gen768t, docs/NNUE.md, V5-GEN768T), little-endian, every tensor after its
     // int32 element count as in LNR8: "LNT8"; int32 L1, L2, L3, NI, NB; int32
     // T (relation lanes, a multiple of 64), NR (55,960 rows), FS (the feature
     // grid is x 2^FS), RS (a relation step is 2^RS units of it), PPM (pawn

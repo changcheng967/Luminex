@@ -3,16 +3,24 @@ name: Build and Test
 on:
   push:
     branches: [ main ]
+    tags: [ 'v*' ]
   pull_request:
     branches: [ main ]
   workflow_dispatch:
+    inputs:
+      version:
+        description: 'Release to build and publish (a tag, e.g. v6.7.0); empty: a development build'
+        required: false
+        default: ''
 
-# Every build carries the shipped network (fetch-net.sh pins the file) and
-# must evaluate with it when run by itself from an empty directory
-# (ci.sh net), as the release binaries are, and need no more from the
-# system than the release notes say (ci.sh deps). Every build also names itself
-# after the development build (meta) and keeps its binary as an artifact; on
-# main, dev-release publishes them as the rolling luminex-dev pre-release.
+# Every build carries the shipped network (ci.sh pins the file) and must
+# evaluate with it when run by itself from an empty directory (ci.sh net), as
+# the release binaries are, and need no more from the system than the release
+# notes say (ci.sh deps). Every build also names itself after its build (meta)
+# and keeps its binary as an artifact: on main, dev-release publishes them as
+# the rolling luminex-dev pre-release; for a v* tag, or a dispatch with a
+# version, the binaries name themselves after the version and release uploads
+# them to that release.
 #
 # The x86-64 binaries are universal (CMake LUMINEX_DISPATCH): one per OS,
 # carrying the network kernels of every instruction-set level and running the
@@ -22,16 +30,35 @@ on:
 # runner lacks; simd-digests then checks that both binaries and the build
 # OpenBench runs (the makefile job) evaluate those games alike too.
 jobs:
-  # The development build every job builds: dev-<commit date, UTC>-<the
-  # commit's first 8 hex digits>, as in dev-20261112-d4774f1a.
+  # The build every job builds. A development build is named
+  # dev-<commit date, UTC>-<the commit's first 8 hex digits>, as in
+  # dev-20261112-d4774f1a (build_id, name). A release (release: a v* tag, or a
+  # dispatch's version) has no build id: its binaries report the version in
+  # src/luminex.h, which the name check holds to the tag's (name: the tag
+  # without its v), so a release cannot ship under another version.
   meta:
     runs-on: ubuntu-latest
     outputs:
       build_id: ${{ steps.id.outputs.build_id }}
+      name: ${{ steps.id.outputs.name }}
+      release: ${{ steps.id.outputs.release }}
     steps:
     - uses: actions/checkout@v5
     - id: id
-      run: echo "build_id=dev-$(TZ=UTC git show -s --format=%cd --date=format-local:%Y%m%d HEAD)-$(git rev-parse HEAD | cut -c1-8)" >> "$GITHUB_OUTPUT"
+      env:
+        VERSION: ${{ github.event.inputs.version }}
+      run: |
+        release=${VERSION:-}
+        if [ -z "$release" ] && [ "$GITHUB_REF_TYPE" = tag ]; then release=$GITHUB_REF_NAME; fi
+        if [ -n "$release" ]; then
+          build_id=""
+          name=${release#v}
+        else
+          build_id="dev-$(TZ=UTC git show -s --format=%cd --date=format-local:%Y%m%d HEAD)-$(git rev-parse HEAD | cut -c1-8)"
+          name=$build_id
+        fi
+        { echo "release=$release"; echo "build_id=$build_id"; echo "name=$name"; } >> "$GITHUB_OUTPUT"
+        echo "release '$release', build id '$build_id', the binaries report 'Luminex $name'"
 
   # Ubuntu 22.04 with clang 23 and lld (no PIE, CMakeLists.txt), and LLVM's
   # libc++ and libc++abi linked in with libgcc, so the binary runs on glibc
@@ -46,7 +73,7 @@ jobs:
     - name: Install dependencies
       run: bash .github/scripts/ci.sh clang install
     - name: Fetch the network
-      run: bash .github/scripts/fetch-net.sh
+      run: bash .github/scripts/ci.sh fetch-net
     - name: Configure
       run: cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DCI=ON -DCMAKE_CXX_COMPILER="$CXX" -DLUMINEX_DISPATCH=ON -DCMAKE_CXX_FLAGS="-stdlib=libc++" -DCMAKE_EXE_LINKER_FLAGS="-stdlib=libc++ -static-libstdc++ -static-libgcc -Wl,-Bstatic -lc++abi -Wl,-Bdynamic" -DLUMINEX_EMBED_PINNED=ON -DLUMINEX_BUILD_ID=${{ needs.meta.outputs.build_id }}
     - name: Check the compiler is clang 23
@@ -60,7 +87,7 @@ jobs:
     - name: Check the built-in network
       run: bash .github/scripts/ci.sh net build/luminex
     - name: Check the engine name
-      run: bash .github/scripts/ci.sh name build/luminex ${{ needs.meta.outputs.build_id }}
+      run: bash .github/scripts/ci.sh name build/luminex ${{ needs.meta.outputs.name }}
     - name: Check the kernel levels agree
       id: simd
       run: bash .github/scripts/ci.sh simd build/luminex
@@ -103,6 +130,9 @@ jobs:
     runs-on: windows-2022  # pin: windows-latest image no longer exposes a VS instance to cmake
     outputs:
       digest: ${{ steps.simd.outputs.digest }}
+    # cmd, so CI runs these exact command lines: PowerShell, the default,
+    # splits an unquoted argument such as -DLUMINEX_EMBED_NET=net/<file>.nnue
+    # at the dot.
     defaults:
       run:
         shell: cmd
@@ -118,7 +148,7 @@ jobs:
       run: bash .github/scripts/ci.sh clang install
     - name: Fetch the network
       shell: bash
-      run: bash .github/scripts/fetch-net.sh
+      run: bash .github/scripts/ci.sh fetch-net
     - name: Configure
       run: cmake -B build -G "Visual Studio 17 2022" -A x64 -T ClangCL -DLUMINEX_DISPATCH=ON -DLUMINEX_EMBED_PINNED=ON -DLUMINEX_BUILD_ID=${{ needs.meta.outputs.build_id }}
     - name: Check the compiler is clang 23
@@ -136,7 +166,7 @@ jobs:
       run: bash .github/scripts/ci.sh net build/Release/luminex.exe
     - name: Check the engine name
       shell: bash
-      run: bash .github/scripts/ci.sh name build/Release/luminex.exe ${{ needs.meta.outputs.build_id }}
+      run: bash .github/scripts/ci.sh name build/Release/luminex.exe ${{ needs.meta.outputs.name }}
     - name: Check the kernel levels agree
       id: simd
       shell: bash
@@ -176,7 +206,7 @@ jobs:
     - name: Install dependencies
       run: bash .github/scripts/ci.sh clang install
     - name: Fetch the network
-      run: bash .github/scripts/fetch-net.sh
+      run: bash .github/scripts/ci.sh fetch-net
     - name: Configure
       run: cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_CXX_COMPILER="$CXX" -DCMAKE_CXX_FLAGS="-nostdinc++ -isystem $LUMINEX_SDK/usr/include/c++/v1" -DCMAKE_EXE_LINKER_FLAGS="-fuse-ld=lld" -DLUMINEX_EMBED_PINNED=ON -DLUMINEX_BUILD_ID=${{ needs.meta.outputs.build_id }}
     - name: Check the compiler is clang 23
@@ -190,7 +220,7 @@ jobs:
     - name: Check the built-in network
       run: bash .github/scripts/ci.sh net build/luminex
     - name: Check the engine name
-      run: bash .github/scripts/ci.sh name build/luminex ${{ needs.meta.outputs.build_id }}
+      run: bash .github/scripts/ci.sh name build/luminex ${{ needs.meta.outputs.name }}
     - name: Check the kernels run
       run: bash .github/scripts/ci.sh simd build/luminex
     - name: Package
@@ -230,11 +260,11 @@ jobs:
     - name: Check the default network name
       run: bash .github/scripts/ci.sh net --no-embed ./luminex
     - name: Fetch the network
-      run: bash .github/scripts/fetch-net.sh
+      run: bash .github/scripts/ci.sh fetch-net
     - name: Check the kernels' evaluations
       id: simd
       run: |
-        bash .github/scripts/ci.sh simd ./luminex --net "net/$(sed -n 's#^url=.*/##p' .github/scripts/fetch-net.sh)"
+        bash .github/scripts/ci.sh simd ./luminex --net "net/$(sed -n 's#^pin_url=.*/##p' .github/scripts/ci.sh)"
     # The negative control of the SDE checks in the linux and windows jobs: a
     # build whose own code needs an instruction set the emulated CPU lacks
     # must be stopped by SDE's chip check. An x86-64-v4 (AVX-512) build runs
@@ -247,7 +277,7 @@ jobs:
       run: |
         make -j EXE=luminex-v4 MARCH=x86-64-v4 BUILD_DIR=build-v4
         SDE=$(bash .github/scripts/ci.sh sde)
-        net="net/$(sed -n 's#^url=.*/##p' .github/scripts/fetch-net.sh)"
+        net="net/$(sed -n 's#^pin_url=.*/##p' .github/scripts/ci.sh)"
         if out=$("$SDE" -hsw -chip-check-exe-only -- ./luminex-v4 nnuecheck "$net" 2>&1); then
           printf '%s\n' "$out" | tail -5
           echo "SDE ran an x86-64-v4 build as Haswell and did not stop it" >&2
@@ -278,9 +308,11 @@ jobs:
   # (ci.sh dev-release). The v* releases and engine-archives (OpenBench's store
   # of old builds and networks) never match the pattern it deletes. Runs on
   # main queue one at a time; elsewhere (pull requests, other branches) the
-  # script runs dry and only prints what it would do.
+  # script runs dry and only prints what it would do. A release build has its
+  # own job, release, below.
   dev-release:
     needs: [meta, linux, windows, macos-arm64, makefile, simd-digests]
+    if: needs.meta.outputs.release == ''
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -298,10 +330,51 @@ jobs:
         pattern: luminex-*
         merge-multiple: true
     - name: Fetch the network
-      run: bash .github/scripts/fetch-net.sh dist
+      run: bash .github/scripts/ci.sh fetch-net dist
     - name: Publish the development build
       env:
         GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         BUILD_ID: ${{ needs.meta.outputs.build_id }}
         DRY_RUN: ${{ github.event_name != 'pull_request' && github.ref == 'refs/heads/main' && '0' || '1' }}
       run: bash .github/scripts/ci.sh dev-release dist
+
+  # A release: the binaries every job above built and checked, and the network
+  # under its real name (ci.sh fetch-net saves it under that name, never under
+  # another one), uploaded to the release of the tag; the release is created,
+  # with a heading for its notes (ci.sh has their format), if it does not exist
+  # yet. From a tag, or a dispatch on main; a dispatch from another branch runs
+  # dry and only prints what it would upload.
+  release:
+    needs: [meta, linux, windows, macos-arm64, makefile, simd-digests]
+    if: needs.meta.outputs.release != ''
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+    - uses: actions/checkout@v5
+    - uses: actions/download-artifact@v4
+      with:
+        path: dist
+        pattern: luminex-*
+        merge-multiple: true
+    - name: Fetch the network
+      run: bash .github/scripts/ci.sh fetch-net dist
+    - name: Upload the binaries and the network to the release
+      env:
+        GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        TAG: ${{ needs.meta.outputs.release }}
+        DRY_RUN: ${{ (github.ref_type == 'tag' || github.ref == 'refs/heads/main') && '0' || '1' }}
+      run: |
+        net_name=$(sed -n 's#^pin_url=.*/##p' .github/scripts/ci.sh)
+        assets=(dist/luminex-linux-x86-64 dist/luminex-windows-x86-64.exe dist/luminex-macos-arm64 "dist/$net_name")
+        for a in "${assets[@]}"; do [ -f "$a" ] || { echo "missing $a" >&2; exit 1; }; done
+        if [ "$DRY_RUN" != 0 ]; then
+          echo "DRY RUN: would upload to the release $TAG (commit $GITHUB_SHA):"
+          ls -l "${assets[@]}"
+          exit 0
+        fi
+        if ! gh release view "$TAG" > /dev/null 2>&1; then
+          echo "Creating release $TAG..."
+          gh release create "$TAG" --title "Luminex $TAG" --notes "## Luminex $TAG" --target "$GITHUB_SHA"
+        fi
+        gh release upload "$TAG" "${assets[@]}" --clobber

@@ -81,7 +81,7 @@ struct DeltaRows {
     const int16_t* add1;   // or nullptr (only given with sub1)
 };
 
-// gen768t's relation lanes for the forward pass (docs/nnue/V5-GEN768T.md, section 3): lane l < T of each
+// gen768t's relation lanes for the forward pass (docs/NNUE.md, V5-GEN768T section 3): lane l < T of each
 // side's piece-square lanes is read as the saturating int16 sum lane + clamp(rel[l], -NNUE_REL_L,
 // NNUE_REL_L) * 2^rs. SCReLU reads a lane only through clamp(a, 0, 1), so a sum that saturates activates
 // as the exact one would. rs is at most 6, so the shifted term itself fits int16.

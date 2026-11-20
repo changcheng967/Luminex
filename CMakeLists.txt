@@ -215,20 +215,20 @@ target_include_directories(luminex PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
 # a resource, GCC and Clang assemble it in (the end of src/nnue.cpp). Empty, the
 # default, builds without one, as OpenBench's Makefile build does.
 #
-# The shipped network's name has one source: the file name of the asset
-# .github/scripts/fetch-net.sh pins (its url= line), the network's real name
-# (luminex_<architecture>_<NN>..., as in docs/nnue/). CMake reads it here, so the
-# default NNUEFile, the file fetch-net.sh saves, the name a build reports and
+# The shipped network's name has one source: the file name of the network
+# .github/scripts/ci.sh pins (its pin_url= line), the network's real name
+# (luminex_<architecture>_<NN>..., as in docs/NNUE.md). CMake reads it here, so the
+# default NNUEFile, the file ci.sh fetch-net saves, the name a build reports and
 # the file a release attaches all follow a net swap with no other edit, and no
 # build can name a network it does not carry.
-file(STRINGS "${CMAKE_CURRENT_SOURCE_DIR}/.github/scripts/fetch-net.sh" _lux_url REGEX "^url=")
-string(REGEX REPLACE "^url=.*/" "" LUMINEX_NET_NAME "${_lux_url}")
+file(STRINGS "${CMAKE_CURRENT_SOURCE_DIR}/.github/scripts/ci.sh" _lux_url REGEX "^pin_url=")
+string(REGEX REPLACE "^pin_url=.*/" "" LUMINEX_NET_NAME "${_lux_url}")
 if(NOT LUMINEX_NET_NAME MATCHES "^luminex_[A-Za-z0-9_]+\\.nnue$")
-    message(FATAL_ERROR "fetch-net.sh's url= line names no luminex_*.nnue network: '${_lux_url}'")
+    message(FATAL_ERROR "ci.sh's pin_url= line names no luminex_*.nnue network: '${_lux_url}'")
 endif()
 add_compile_definitions("LUMINEX_DEFAULT_NET=\"${LUMINEX_NET_NAME}\"")
 set(LUMINEX_EMBED_NET "" CACHE FILEPATH "Network file to build into the binary (empty: none)")
-option(LUMINEX_EMBED_PINNED "Build in the pinned network, net/<its real name> as fetch-net.sh saves it" OFF)
+option(LUMINEX_EMBED_PINNED "Build in the pinned network, net/<its real name> as ci.sh fetch-net saves it" OFF)
 if(LUMINEX_EMBED_PINNED AND NOT LUMINEX_EMBED_NET)
     set(LUMINEX_EMBED_NET "net/${LUMINEX_NET_NAME}")
 endif()
