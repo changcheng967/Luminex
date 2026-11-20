@@ -385,37 +385,11 @@ static int lag_samples = 0;
 
 static int lag_estimate() { return lag_samples > 0 ? int(lag_ms + 0.5) : 0; }
 
-// What pondering saves the clock (TimePonder): the own time a played move spends
-// for its schedule target, over all of the game's moves, as a fraction of the
-// same over the moves that were not ponder hits. A missed prediction costs what
-// a move without pondering costs; a hit only what it thinks after the
-// ponderhit. Measured against the game's own non-hit moves, the fraction is what
-// pondering saves and nothing else (the stop rule spends about 0.8 of a target
-// at 10+0.1 either way). Own time and target are averaged apart with weight 1/8
-// on the newest, so the fraction is weighted by time, the way the clock pays.
-// All averages start equal (no saving) at the game's first ponder search: a
-// game without a ponderhit keeps the fraction at exactly 1, its schedule
-// unchanged.
-static double ponder_own_avg = 0.0, ponder_target_avg = 0.0;   // every played move
-static double plain_own_avg = 0.0, plain_target_avg = 0.0;     // the moves that were not ponder hits
-static bool ponder_seen = false;
-static int move_target_ms = 0;   // this search's schedule target; 0 = no solved schedule
-
-static double ponder_fraction() {
-    if (params.time_ponder <= 0 || !ponder_seen || ponder_target_avg <= 0.0 || plain_own_avg <= 0.0)
-        return 1.0;
-    const double all = ponder_own_avg / ponder_target_avg;
-    const double plain = plain_own_avg / plain_target_avg;
-    return std::clamp(all / plain, 1e-3, 1.0);
-}
-
 static void reset_clock_lag() {
     prev_clock = {};
     pending_clock = {};
     lag_ms = 0.0;
     lag_samples = 0;
-    ponder_own_avg = ponder_target_avg = plain_own_avg = plain_target_avg = 0.0;
-    ponder_seen = false;
 }
 
 static void add_lag_sample(int sample) {
@@ -433,11 +407,8 @@ static void note_clock(const Position& pos, const Limits& lim) {
     const bool has_sample = timed && prev_clock.timed && pos.game_ply() == prev_clock.ply + 2;
     const int sample = has_sample ? prev_clock.time_left + prev_clock.inc - time_left - prev_clock.think_ms : 0;
     pending_clock = {time_left, inc, pos.game_ply(), sample, timed, true, has_sample && lim.ponder};
-    move_target_ms = 0;   // set by a solved schedule below
     if (has_sample && !lim.ponder)
         add_lag_sample(sample);
-    if (lim.ponder && timed)
-        ponder_seen = true;
 }
 
 // The ponderhit: the opponent played the predicted move. The own clock starts
@@ -2019,14 +1990,6 @@ void finish_clock(const Limits& lim) {
     if (!lim.ponder || hit_taken) {
         const int own = ms_since(clock_start);
         prev_clock = {pending_clock.time_left, pending_clock.inc, pending_clock.ply, own, pending_clock.timed};
-        if (ponder_seen && move_target_ms > 0) {
-            ponder_own_avg += (own - ponder_own_avg) / 8.0;
-            ponder_target_avg += (move_target_ms - ponder_target_avg) / 8.0;
-            if (!hit_taken) {
-                plain_own_avg += (own - plain_own_avg) / 8.0;
-                plain_target_avg += (move_target_ms - plain_target_avg) / 8.0;
-            }
-        }
     }
     pending_clock.valid = false;
     pending_clock.has_sample = false;
@@ -2273,11 +2236,6 @@ Move search(Position& pos, Limits& lim) {
 
         int overhead = std::max(0, params.move_overhead_ms);
         int move_no  = pos.game_ply() / 2 + 1;
-        // Pondering: the clock pays only a fraction of each future move's
-        // thinking (ponder_fraction(), measured in this game), so the solved
-        // schedules spread it over that fraction of their horizon. Exactly 1
-        // without pondering: the budgets below are then unchanged.
-        const double pc = ponder_fraction();
 
         if (limits.movestogo > 0 && params.time_moves_to_go > 0) {
             // Moves to go: the clock above a small reserve (it refills after
@@ -2287,8 +2245,7 @@ Move search(Position& pos, Limits& lim) {
             // at most 2/3 of the excess.
             int mtg     = std::max(1, limits.movestogo);
             int excess  = std::max(0, time_left - overhead - std::max(100, 3 * overhead));
-            int target  = int(excess / (value_horizon(move_no, move_no + mtg - 1) * pc)) + time_inc * 9 / 10;
-            move_target_ms = target;
+            int target  = int(excess / value_horizon(move_no, move_no + mtg - 1)) + time_inc * 9 / 10;
             int hard    = (mtg > 1 ? excess * 2 / 3 : excess) + time_inc * 9 / 10;
             ideal_time  = std::min(target * 116 / 100, hard);
             max_time    = std::min(hard, std::max(ideal_time * 2, time_inc + 50));
@@ -2311,8 +2268,7 @@ Move search(Position& pos, Limits& lim) {
             int lag     = params.time_lag > 0 ? lag_estimate() : 0;
             int tail    = std::max({1000, 30 * overhead, 1000 * (12 + lag) / 12});
             int excess  = std::max(0, time_left - overhead - tail - int(lag * moves_horizon(move_no)));
-            int target  = int(excess / (value_horizon(move_no, 0) * pc));
-            move_target_ms = target;
+            int target  = int(excess / value_horizon(move_no, 0));
             int hard    = excess / 2;
             ideal_time  = std::min(target * 116 / 100, hard);
             max_time    = std::min(hard, std::max(ideal_time * 2, 50));
@@ -2328,9 +2284,7 @@ Move search(Position& pos, Limits& lim) {
             int excess  = std::max(0, time_left - overhead - 10 * time_inc);
             int horizon = params.time_schedule == 1 ? std::max(800, 5200 - 72 * move_no)
                                                     : std::max(1000, 4200 - 120 * move_no);
-            int target  = (pc < 1.0 ? int(excess * 100.0 / (horizon * pc)) : int(int64_t(excess) * 100 / horizon))
-                        + time_inc * 9 / 10;
-            move_target_ms = target;
+            int target  = int(int64_t(excess) * 100 / horizon) + time_inc * 9 / 10;
             int hard    = excess / 2 + time_inc * 9 / 10;
             ideal_time  = std::min(target * 116 / 100, hard);
             max_time    = std::min(hard, std::max(ideal_time * 2, time_inc + 50));
@@ -2348,9 +2302,6 @@ Move search(Position& pos, Limits& lim) {
             ideal_time   = std::min(opt_time, usable / 3);
             max_time     = std::min(usable / 2, std::max(ideal_time * 2, time_inc + 50));
         }
-
-        if (ponder_seen && move_target_ms > 0 && ponder_target_avg <= 0.0)   // the prior: no saving yet
-            ponder_own_avg = ponder_target_avg = plain_own_avg = plain_target_avg = move_target_ms;
 
         ideal_time = std::max(10, ideal_time);
         max_time = std::max(ideal_time, max_time);
