@@ -74,6 +74,11 @@ struct SearchParams {
     // in search.cpp), the default; 0 = it does not. Without measurable lag the
     // two give the same budgets.
     int time_lag = 1;
+    // UCI "TimePonder", games with go ponder: 1 = the solved schedules spread the
+    // clock over the fraction of each move's target it pays, measured in the
+    // game (ponder_fraction() in search.cpp); 0 = as without pondering. Without
+    // go ponder the two give the same budgets.
+    int time_ponder = 0;
 };
 
 // Search statistics for debugging
@@ -172,5 +177,11 @@ extern Value root_score;
 extern int num_threads; // Default 1, SMP only helps at longer TC
 extern std::atomic<bool> ponder_mode;
 extern std::atomic<bool> ponderhit_received;
+
+// Called by the search thread once the reply (bestmove) is ready, in this
+// order: a ponder or infinite search's reply waits for ponderhit or stop; then
+// a played move's clock is recorded for the next own move's lag sample.
+void hold_reply(const Limits& lim);
+void finish_clock(const Limits& lim);
 
 } // namespace luminex
