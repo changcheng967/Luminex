@@ -3,408 +3,271 @@
 <h1 align="center">Luminex</h1>
 
 <p align="center">
-A UCI chess engine in C++23: an NNUE evaluation, a hand-crafted fallback,
-and time management solved from measured data.
+A UCI chess engine in C++23. Its NNUE evaluation also reads which pieces
+attack which, every change to its search is tested on OpenBench, and its
+time management is solved from measured data.
 </p>
 
 <p align="center">
   <a href="https://luminexchess.com"><b>Homepage</b></a> ·
+  <a href="https://github.com/changcheng967/Luminex/releases"><b>Download</b></a> ·
   <a href="https://bench.luminexchess.com"><b>OpenBench</b></a> ·
-  <a href="https://github.com/changcheng967/Luminex/releases"><b>Releases</b></a> ·
-  <a href="https://deepwiki.com/changcheng967/Luminex"><b>Ask DeepWiki</b></a> ·
-  <a href="https://github.com/computer-chess-index/cci"><b>CCI rating list</b></a>
+  <a href="https://github.com/computer-chess-index/cci/blob/main/engines/Luminex.md"><b>CCI ratings</b></a> ·
+  <a href="https://github.com/changcheng967/Luminex-NNUE"><b>Trainer</b></a>
 </p>
 
 <p align="center">
   <a href="https://github.com/changcheng967/Luminex/releases/latest"><img src="https://img.shields.io/github/v/release/changcheng967/Luminex?label=release" alt="Latest release"></a>
-  <a href="https://github.com/changcheng967/Luminex/actions/workflows/build.yml"><img src="https://github.com/changcheng967/Luminex/actions/workflows/build.yml/badge.svg" alt="Build and Test"></a>
+  <a href="https://github.com/changcheng967/Luminex/actions/workflows/build.yml"><img src="https://github.com/changcheng967/Luminex/actions/workflows/build.yml/badge.svg" alt="Build"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-GPL--3.0-blue" alt="License: GPL-3.0"></a>
   <a href="https://deepwiki.com/changcheng967/Luminex"><img src="https://deepwiki.com/badge.svg" alt="Ask DeepWiki"></a>
 </p>
 
----
-
-## Contents
-
-- [Links](#links)
-- [Strength](#strength)
-- [Download](#download)
-- [Usage](#usage)
-- [How it works](#how-it-works): [evaluation](#evaluation), [search](#search), [time management](#time-management)
-- [Testing](#testing)
-- [NNUE training](#nnue-training)
-- [Build](#build)
-- [Source layout](#source-layout)
-- [License](#license)
-
-## Links
-
-| | |
-|---|---|
-| **Homepage** | [luminexchess.com](https://luminexchess.com) |
-| **OpenBench**, where every change is tested | [bench.luminexchess.com](https://bench.luminexchess.com) |
-| **Releases** (binaries with the network built in) | [github.com/changcheng967/Luminex/releases](https://github.com/changcheng967/Luminex/releases) |
-| **Ask DeepWiki** about the code | [deepwiki.com/changcheng967/Luminex](https://deepwiki.com/changcheng967/Luminex) |
-| **CCI**, the Computer Chess Index rating list | [github.com/computer-chess-index/cci](https://github.com/computer-chess-index/cci) |
-| **OpenBench fork** behind the test server (branch `luminex`) | [github.com/changcheng967/OpenBench](https://github.com/changcheng967/OpenBench) |
-
 ## Strength
 
-**v6.6.0 against v6.5.1** on OpenBench (one thread, 10+0.1, 2moves_v1):
-**+246.55 ± 13.37** over 2,010 games (W 1292, D 653, L 65;
-[test 131](https://bench.luminexchess.com/test/131/)).
-
-**Gauntlet 3**, the development build with gen768r_05q against twelve
-CCRL-rated engines (800 games each, 10+0.1;
-[gauntlet 3](https://bench.luminexchess.com/gauntlet/3/)): **3471 ± 16 on
-CCRL Blitz**, 3402 ± 21 on CCRL 40/15. v6.6.0's gen768r_06q adds
-+3.09 ± 2.46 in self-play ([test 128](https://bench.luminexchess.com/test/128/)),
-below what a repeat gauntlet resolves (about ± 10), so the rating stands
-for v6.6.0. Main and the development builds now carry gen768t_02q.
-gen768s_01q was +77.57 ± 15.21 over gen768r_06q in self-play
-([test 140](https://bench.luminexchess.com/test/140/)), and gen768s_03q is
-+17.80 ± 7.98 over gen768s_01q
-([test 148](https://bench.luminexchess.com/test/148/)), gen768t_01q, the
-first network with V5's relation inputs, is +73.37 ± 14.20 over gen768s_03q
-([test 174](https://bench.luminexchess.com/test/174/)), and gen768t_02q, V5's
-full run, is +28.93 ± 9.30 over gen768t_01q
-([test 176](https://bench.luminexchess.com/test/176/)); the rating above
-predates all four.
-
-| Opponent (CCRL Blitz) | Elo |
-|---|---|
-| Stash 37 (3417) | +94.3 |
-| Smallbrain 7.0.0 (3454) | −13.0 |
-| Rice 8.0.0 (3530) | −101.8 |
-| Patricia 5 (3539) | −59.2 |
-| Elixir v3.0 (3567) | −123.5 |
-| Altair v7.0.0 (3579) | −160.3 |
-| Renegade, Quanticade, Clover, Berserk, Obsidian, PlentyChess (3694–3773) | −350.3 to −444.4 |
-
-**CCI, v6.5.1** (E1 list: Intel Core Ultra 7 265T E-cores, 1 thread, November 2026),
-the last release CCI has rated:
-
-| STC 8+0.08 | LTC 60+0.6 | VLTC 2m24+1.12 |
+| Build | Measured | Result |
 |---|---|---|
-| 2619 | 3054 | 3173 |
+| `main` | against v6.6.0, 10,024 games ([test 178](https://bench.luminexchess.com/test/178/)) | **+212.07 ± 5.22** Elo |
+| `main` | against eleven CCRL-rated engines, 8,846 games ([gauntlet 5](https://bench.luminexchess.com/gauntlet/5/)) | **3590 ± 11** CCRL Blitz, 3490 ± 15 CCRL 40/15 |
+| v6.6.0 | against v6.5.1, 2,010 games ([test 131](https://bench.luminexchess.com/test/131/)) | **+246.55 ± 13.37** Elo |
+| v6.6.0 | against twelve CCRL-rated engines ([gauntlet 3](https://bench.luminexchess.com/gauntlet/3/)) | **3471 ± 16** CCRL Blitz, 3402 ± 21 CCRL 40/15 |
+| v6.6.0 | [CCI](https://github.com/computer-chess-index/cci/blob/main/engines/Luminex.md), E1 list (Core Ultra 7 265T E-cores), page of 2026-11-20 | 2863 ± 37 STC, 3220 ± 32 LTC, 3336 ± 39 VLTC |
 
-**What v6.6.0 adds over v6.5.1.** Each is an SPRT on OpenBench against the
-main of its day, at 10+0.1 unless noted:
-
-| Change | Elo |
-|---|---|
-| Correction history keyed by side to move | [+61.41 ± 15.85](https://bench.luminexchess.com/test/42/) |
-| Clock spent by a solved time schedule (#44) | [+72.22 ± 16.84](https://bench.luminexchess.com/test/51/) |
-| Search constants retuned by SPSA (tune 45, #40; tune 54) | [+26.49 ± 10.38](https://bench.luminexchess.com/test/46/); [+5.88 ± 4.15](https://bench.luminexchess.com/test/60/) |
-| Search stopped by measured best-move stability (#45) | [+8.32 ± 5.29](https://bench.luminexchess.com/test/52/) |
-| Late quiet moves pruned without a history escape | [+4.86 ± 3.74](https://bench.luminexchess.com/test/43/) |
-| Margin over beta for shallow null moves (#41) | [+4.00 ± 3.12](https://bench.luminexchess.com/test/47/) |
-| Zero-increment clocks spent by value of time, at 10+0 (#47) | [+5.60 ± 4.17](https://bench.luminexchess.com/test/56/) |
-| Moves-to-go clocks spent by value of time, at 40 moves in 10 s (#47) | [+11.01 ± 6.21](https://bench.luminexchess.com/test/57/) |
-| The gen768r network: gen768r_03 with tune 65's constants, over the old network | [+60.08 ± 15.55](https://bench.luminexchess.com/test/68/) |
-| then 03q (QAT), 04q, 05q, 06q, each over the one before | [+13.39](https://bench.luminexchess.com/test/73/), [+13.31](https://bench.luminexchess.com/test/82/), [+22.02](https://bench.luminexchess.com/test/112/), [+3.09](https://bench.luminexchess.com/test/128/) |
-| gen768s_01q: gen768r_06 trained on Leela BT4's labels, over 06q | [+77.57 ± 15.21](https://bench.luminexchess.com/test/140/) |
-| gen768s_03q: two more BT4 runs, then QAT for one int8 scale per tail row (LNR8), over 01q | [+17.80 ± 7.98](https://bench.luminexchess.com/test/148/) |
-| gen768t_01q: V5's relation inputs (gen768t, LNT8), over gen768s_03q | [+73.37 ± 14.20](https://bench.luminexchess.com/test/174/) |
-| gen768t_02q: V5's full run, 1.14M more steps from gen768t_01, over 01q | [+28.93 ± 9.30](https://bench.luminexchess.com/test/176/) |
-
-Each figure is its OpenBench page's. The hash prefetch at make-move, the
-one-pass child accumulator and the lazy accumulator updates search the same
-trees about 9.5% faster (+6.9% for the first two, +2.5% for the third).
+The OpenBench games are played on one thread with 16 MB of hash, at 10+0.1
+scaled to each worker's speed, from the 2moves_v1 openings. Gauntlet 3
+played v6.6.0's development build with the network before v6.6.0's own;
+gen768r_06q adds +3.09 ± 2.46 to it
+([test 128](https://bench.luminexchess.com/test/128/)), less than a gauntlet
+resolves.
 
 ## Download
 
-Latest release: [github.com/changcheng967/Luminex/releases](https://github.com/changcheng967/Luminex/releases)
+Both kinds of build are on [Releases](https://github.com/changcheng967/Luminex/releases):
+
+- **v6.6.0** is the latest release.
+- **The development build** is `main` as it stands: the pre-release named
+  `dev-<date>-<commit>`, rebuilt on every push to `main`. Only the newest is kept.
+
+Every binary has its network built in, so the binary alone plays at full
+strength. The network is also attached as a file, for builds without one
+inside. The development build has one binary per platform:
 
 | Platform | Binary | CPU | Needs |
 |---|---|---|---|
-| Linux | `luminex-linux-x86-64` | any x86-64 with SSE4.2 and POPCNT (x86-64-v2) | Ubuntu 22.04 or newer (glibc 2.35) |
-| Windows | `luminex-windows-x86-64.exe` | any x86-64 with POPCNT | nothing to install |
+| Linux | `luminex-linux-x86-64` | x86-64-v2 (SSE4.2, POPCNT) | glibc 2.35 or newer (Ubuntu 22.04) |
+| Windows | `luminex-windows-x86-64.exe` | x86-64 with POPCNT | nothing to install |
 | macOS | `luminex-macos-arm64` | Apple silicon | macOS 13.3 or newer |
 
-One binary per platform. The x86-64 binaries carry the network kernels of
-every instruction-set level and use the best one the CPU supports, found at
-startup; the `info string` that reports the network ends with it (`SIMD level
-avxvnni`):
-
-| Level | CPUs | Network kernels |
-|---|---|---|
-| `avx512vnni` | AVX-512 with VNNI: Intel Cascade Lake, Ice Lake, Sapphire Rapids and later Xeons, AMD Zen 4 and later | AVX-512 lanes, `VPDPBUSD` dense layers |
-| `avx512` | AVX-512 without VNNI: Skylake-SP and Skylake-X | AVX-512 lanes, AVX2 dense layers |
-| `avxvnni` | AVX2 with AVX-VNNI: Intel Alder Lake and later (Core Ultra included) | AVX2, dense layers on VEX `VPDPBUSD` |
-| `avx2` | AVX2 (x86-64-v3): Intel since Haswell (2013), AMD since Excavator (2015) | AVX2 |
-| `base` | every other x86-64 | SSE2; the dense layers on SSSE3's `pmaddubsw` on Linux (whose base is x86-64-v2) |
-
-Every level computes the same evaluation, bit for bit; CI checks it on each
-binary (`nnuecheck`, under Intel SDE for CPUs the runners lack). CI also
-reads what every binary needs from its headers and fails a build that needs
-more than its row (`.github/scripts/ci.sh deps`). On Apple silicon the
-network runs on NEON dot-product kernels.
-
-Every release binary carries its network inside it (v6.6.0:
-`luminex_gen768r_06q_i8.nnue`; main and the development builds:
-`luminex_gen768t_02q_i8.nnue`), so the binary alone plays at full
-strength, and reports it by that name. The network loads at
-the first `isready` or `go`. To play with another network, point `NNUEFile`
-at its file; it is looked for as given, then next to the binary. Left at its
-default name, the network's own, `NNUEFile` selects the built-in network.
-Each release also attaches the network under that name, for builds without
-one inside, which look for it in the working directory and next to the
-binary. Without a
-loadable network the engine says so with an `info string` and uses the
-hand-crafted evaluation.
+The x86-64 binaries carry the network kernels for every instruction-set
+level and use the best the CPU supports: AVX-512 VNNI, AVX-512, AVX-VNNI,
+AVX2 or a baseline. Every level evaluates alike, bit for bit. The `info
+string` that names the network ends with the level in use. v6.6.0 still has
+a build per CPU level and glibc version; its
+[release notes](https://github.com/changcheng967/Luminex/releases/tag/v6.6.0)
+say which to take.
 
 ## Usage
 
-Luminex speaks UCI; any UCI GUI, cutechess-cli, fastchess or a lichess bot
-bridge can drive it.
+Luminex speaks UCI. Any UCI GUI, cutechess-cli, fastchess or a lichess bot
+bridge can run it.
 
 ```
 uci
 isready
-position startpos
-go movetime 1000
+position startpos moves e2e4
+go wtime 60000 btime 60000 winc 600 binc 600
 ```
 
-### UCI options
+`luminex bench` searches a fixed set of positions and prints the nodes and
+the speed. It is the bench OpenBench runs.
 
 | Option | Default | Description |
-|--------|---------|-------------|
-| `Hash` | 256 | Transposition-table size in MB (allocated at the first `isready` or search) |
-| `Threads` | 1 | Search threads (lazy SMP; each thread owns its NNUE accumulator) |
-| `MultiPV` | 1 | Number of principal variations reported |
-| `UCI_ShowWDL` | false | Append `wdl W D L` (per mille, approximate model) to info lines |
-| `Ponder` | false | Allow pondering (`go ponder` / `ponderhit`) |
-| `UseNNUE` | true | NNUE evaluation (falls back to the HCE when no network loads) |
-| `NNUEFile` | `luminex_gen768t_02q_i8.nnue` | Network file to load; the default, the shipped network's own name, selects the built-in network |
-| `SimdLevel` | auto | x86-64 release binaries only: the network kernels' instruction-set level, `auto` for the best the CPU supports, or a lower one for testing (`avx512vnni`, `avx512`, `avxvnni`, `avx2`, `base`; one the CPU lacks gives the best below it). Every level evaluates alike |
-| `Contempt` | 0 | Draw avoidance (centipawns) |
-| `Move Overhead` | 30 | Time-management safety margin per move (ms) |
-| `TimeSchedule` | 2 | Clock schedule with an increment: 0 = the old formula, 1 and 2 = schedules solved by dynamic programming (2: early moves are worth more) |
-| `TimeStability` | 1 | When to stop searching: 0 = the old best-move-stability factors, 1 = factors measured on recorded searches |
-| `TimeZeroInc` | 1 | Clock schedule without an increment: 0 = the old formula, 1 = the value-weighted horizon |
-| `TimeMovesToGo` | 1 | Clock schedule with moves to go: 0 = the old formula, 1 = the value-weighted horizon to the next control |
-| `BookFile` | `<empty>` | Polyglot opening-book path |
-| `SearchDepth` | 0 | If > 0, fixed-depth search (overrides the time control) |
-| `NodesPerMove` | 0 | If > 0, fixed node budget per move |
-| `Clear Hash` | button | Clear the transposition table |
+|---|---|---|
+| `Hash` | 256 | Hash table in MB, allocated at the first `isready` or search |
+| `Threads` | 1 | Search threads, 1 to 64 |
+| `MultiPV` | 1 | Principal variations reported |
+| `Ponder` | false | Allow `go ponder` and `ponderhit` |
+| `UCI_ShowWDL` | false | Add `wdl` (win, draw and loss per mille) to the info lines |
+| `UseNNUE` | true | Evaluate with the network; false uses the hand-crafted evaluation |
+| `NNUEFile` | `luminex_gen768t_02q_i8.nnue` | The network. The default name selects the built-in network; any other file is looked for as given, then next to the binary |
+| `SimdLevel` | auto | x86-64 release binaries: the kernels' level (`avx512vnni`, `avx512`, `avxvnni`, `avx2`, `base`), for testing |
+| `Contempt` | 0 | Draw avoidance, in centipawns |
+| `Move Overhead` | 30 | Milliseconds kept back on each move for the GUI and the connection |
+| `TimeSchedule` | 2 | Schedule with an increment: 0 is the old formula, 1 and 2 are solved by dynamic programming (2 values early moves more) |
+| `TimeStability` | 1 | When to stop: 0 uses the old stability factors, 1 the measured ones |
+| `TimeZeroInc` | 1 | Schedule without an increment: 0 is the old formula, 1 the value-weighted horizon |
+| `TimeMovesToGo` | 1 | Schedule with moves to go: 0 is the old formula, 1 the value-weighted horizon to the next control |
+| `TimeLag` | 1 | Without an increment: 1 also pays for the lag the clock shows on each move, 0 does not |
+| `BookFile` | empty | Polyglot opening book |
+| `SearchDepth` | 0 | Above 0: a fixed depth (up to 30) instead of the clock |
+| `NodesPerMove` | 0 | Above 0: a fixed node budget per move |
+| `Clear Hash` | button | Empty the hash table |
 
-Tuning options:
-- **Search constants** (`LmrScale`, `NmpBase`, `FutCoeff`, `SingularMargin`, …).
-  These are the parameters SPSA tunes on OpenBench; the full list and their
-  ranges are in `SPSAParams` in [`src/luminex.h`](src/luminex.h).
-- **24 HCE parameters** (`BishopPairMG`, `RookOpenMG`, `PawnShieldCenter`, …),
-  for evaluation experiments; see [`src/uci.cpp`](src/uci.cpp).
-
-Options accepted for GUI and bot compatibility but **not implemented** (they
-are ignored): `Skill Level`, `UCI_LimitStrength`/`UCI_Elo` (no strength
-limiting) and `SyzygyPath` (no tablebase probing).
+For tuning, the search constants SPSA tunes (`SPSAParams` in
+[`src/luminex.h`](src/luminex.h)) and 24 weights of the hand-crafted
+evaluation are options too. `Skill Level`, `UCI_LimitStrength`, `UCI_Elo`
+and `SyzygyPath` are accepted for GUI compatibility and ignored: there is no
+strength limit and no tablebase probing.
 
 ## How it works
 
 ### Evaluation
 
-Two interchangeable evaluation functions, selected at runtime with `UseNNUE`:
+The network is V5, gen768t ([spec](docs/NNUE.md#v5-gen768t)):
 
-- **NNUE (default).**
-  - Inputs: a HalfKAv2_hm feature transformer with 32 king buckets and
-    horizontal mirroring.
-  - First layer: 768 int16 lanes per perspective, so 1,536 inputs, with
-    SCReLU activations.
-  - Dense tail: int8 16 → 32 → 1 layers, one per output bucket (eight, chosen
-    by the number of pieces on the board). On AVX-512 VNNI hardware it runs on
-    `VPDPBUSD` with a batched L3, on AVX-VNNI hardware on its VEX form.
-  - The accumulator is updated lazily. A move only records its change, and the
-    change is applied when a position is actually evaluated (many nodes are
-    answered by the hash table first). King moves rebuild from a per-square
-    refresh cache.
-- **HCE (fallback).** Material, piece-square tables, mobility, passed-pawn
-  path decomposition, king safety and a multi-table correction history. It
-  needs no network file.
+- **Feature layer.** HalfKAv2_hm (32 king buckets, mirrored horizontally,
+  times 768 piece-squares) feeds 768 int16 lanes for each side. Beside it,
+  55,960 relation features add int8 rows to 256 of those lanes: which piece
+  attacks which, and pawn pairs in contact.
+- **Tail.** SCReLU, then one of eight int8 tails, chosen by the number of
+  men on the board: 1,536 → 16 → 32 → 1, with one scale per row.
+- **Updates.** A move only records what it changes, and the accumulator
+  catches up when a position is evaluated, since many nodes end at the hash
+  table first. King moves rebuild from a per-square refresh cache.
+- **Kernels.** The kernels are written once for AVX-512 VNNI, AVX-512,
+  AVX-VNNI, AVX2, SSE and NEON. Every level gives the same evaluation.
+- **Bare kings.** Endings against a bare king are scored before the
+  network, which has hardly ever seen one.
+
+Without a network, or with `UseNNUE` off, the hand-crafted evaluation plays.
+It scores material, piece-square tables, mobility, pawn structure with
+passed-pawn paths, king safety and known endgames.
 
 ### Search
 
-- **Core:** principal-variation search with iterative deepening, aspiration
-  windows and a transposition table.
-- **Pruning:** reverse futility, razoring, null move (needing a margin over
-  beta at shallow depth), ProbCut, futility, late-move and history pruning, and
-  SEE pruning.
-- **Reductions and extensions:** late-move reductions driven by history and
-  node type, singular and double extensions, check extensions, and internal
-  iterative reductions.
-- **Move ordering:** hash move, captures by capture history, killers, counter
-  moves and continuation history, with correction history on the static
-  evaluation.
-- **Quiescence search** with SEE filtering. **Lazy SMP** for more than one
-  thread.
-- The search constants are tuned by SPSA on OpenBench.
+- **Core.** Principal-variation search with iterative deepening,
+  aspiration windows and a hash table. A move prefetches its child's hash
+  entry.
+- **Pruning.** Reverse futility, razoring, null move, ProbCut, futility,
+  late-move, history and SEE pruning. A null move needs a margin over beta at
+  shallow depth and a piece besides pawns.
+- **Reductions and extensions.** Late-move reductions driven by history and
+  node type. Singular extensions, with double and negative extensions and
+  multi-cut. Check extensions and internal iterative reductions.
+- **Move ordering.** Hash move, captures by capture history, killers,
+  counter moves and continuation history.
+- **Correction history.** The static evaluation is corrected by pawn,
+  non-pawn, minor-piece, major-piece and king-pawn tables, keyed by side to
+  move.
+- **Quiescence search** with SEE filtering.
+- **Threads.** Lazy SMP. Every helper runs the main thread's own root
+  iteration, so the helpers search its tree and fill its hash table.
+- **Constants.** SPSA tunes them on OpenBench.
 
 ### Time management
 
-Luminex's time management comes from measurement, not from hand-picked
-formulas:
+The time management is measured and then solved, not hand-picked:
 
-1. **Value of thinking time.** We recorded the anytime search on 6,000
-   positions from SPRT games (one log line per finished iteration, up to 2M
-   nodes), and Stockfish 19 scored every move the search proposed along the
-   way. That gives the gain of doubling the thinking time, by game phase and
-   by what the search sees, such as whether the best move just changed.
-2. **The clock schedule** (`TimeSchedule 2`). A dynamic program over move
-   number × clock, using the lengths of 16,732 SPRT games, spends the clock
-   where time is worth most, read back as a formula. It gained **+72 Elo** at
-   10+0.1.
-3. **The stop rule** (`TimeStability 1`). The soft time limit follows the
-   measured value of more time for each best-move stability: 2.4× the ideal
-   time right after the best move changes, 0.5× once it has held for six
-   iterations, and halved when the game is decided. It gained **+8.3 Elo**.
-4. **Long time control.** At 60+0.6 the two together score **+37.5 Elo**
-   against the old formulas.
-5. **Controls without an increment, and with moves to go** (`TimeZeroInc 1`,
-   `TimeMovesToGo 1`). The same dynamic program has a closed form for them:
-   divide the clock above a small reserve by the expected number of moves
-   left, each weighted by its value of thinking time. They gained **+5.6 Elo**
-   at 10+0 and **+11.0 Elo** at 40 moves in 10 s
-   ([#47](https://github.com/changcheng967/Luminex/pull/47)).
+1. **Value of time.** We recorded the searches of 6,000 positions from SPRT
+   games, and Stockfish 19 scored every move proposed along the way. That
+   gives the gain from doubling the thinking time, by game phase and by how
+   stable the best move is.
+2. **Schedule** (`TimeSchedule 2`). A dynamic program over move number and
+   clock, on the lengths of 16,732 games, spends the clock where time is
+   worth most:
+   [+72.22 ± 16.84](https://bench.luminexchess.com/test/51/) at 10+0.1.
+3. **Stop rule** (`TimeStability 1`). The soft limit follows the measured
+   value of more time at each stability. It is 2.4 times the ideal time just
+   after the best move changes and 0.5 times once it has held for six
+   iterations: [+8.32 ± 5.29](https://bench.luminexchess.com/test/52/).
+4. **No increment, and moves to go** (`TimeZeroInc 1`, `TimeMovesToGo 1`).
+   This is the same program in closed form: the clock above a small reserve,
+   divided by the value-weighted number of moves left.
+   It scored [+5.60 ± 4.17](https://bench.luminexchess.com/test/56/) at 10+0
+   and [+11.01 ± 6.21](https://bench.luminexchess.com/test/57/) at 40 moves
+   in 10 s.
+5. **Pondering.** Time spent pondering counts as thinking time on the move,
+   so a ponder hit continues the budget instead of starting a new one.
+
+## Networks
+
+The networks are trained with
+[Luminex-NNUE](https://github.com/changcheng967/Luminex-NNUE). It holds the
+GPU trainer, quantization-aware training, the data converters and network
+forensics, and its
+[development log](https://github.com/changcheng967/Luminex-NNUE/blob/main/docs/DEVLOG.md)
+records every run. The current network learned only from Leela Chess Zero
+data: its test91 games relabelled by BT4, and BT4's own games. [`docs/NNUE.md`](docs/NNUE.md)
+specifies every architecture, V1 to V5.
+
+A network's name gives its architecture and run. For example,
+`luminex_gen768t_02q_i8.nnue` is gen768t's second run, finished with
+quantization-aware training (`q`) and quantized to int8 (`_i8`). The built-in
+network is pinned in [`.github/scripts/ci.sh`](.github/scripts/ci.sh)
+(`pin_url`, `pin_sha256`), and CMake reads its name there.
 
 ## Testing
 
-Every change is measured on **[OpenBench](https://bench.luminexchess.com)**
-before it lands:
+Every change is measured on [OpenBench](https://bench.luminexchess.com)
+before it lands. The server runs a fork,
+[changcheng967/OpenBench](https://github.com/changcheng967/OpenBench)
+(branch `luminex`).
 
-- **SPRTs.** Bounds [0, 5] Elo at 10+0.1, Threads=1, Hash=16, with the
-  2moves_v1 book, run on Xeon 8562Y+ workers. The clock is scaled to a
-  reference speed, so results compare across machines.
-- **Tuning.** Parameter tuning runs there as SPSA, typically 80,000 games.
-- **Records.** Pull requests and commit messages carry the full SPRT result
-  (Elo, LLR, games, pentanomial counts). Failed tests stay on record, and the
-  pull request is closed with its numbers.
+- **SPRT.** Bounds [0, 5] Elo at 10+0.1, one thread, 16 MB hash, 2moves_v1
+  openings. The clock is scaled to each worker's measured speed, so machines
+  compare.
+- **SPSA** tunes the search constants.
+- **Gauntlets** against CCRL-rated engines give the rating.
 
-## NNUE training
-
-The current network, gen768t_02q, is V5 ([docs/NNUE.md](docs/NNUE.md#v5-gen768t)):
-gen768s's feature layer plus 55,960 int8 relation rows (attacks, and pawn
-pairs in contact) summed into 256 of its 768 lanes, stored as LNT8. It is
-gen768t_01's float network (450K steps from gen768s_03's, on Leela BT4's
-relabel of every t91 month and the BT4 corpus) trained on for 1,142,724 more
-steps with a fresh optimizer on the same data, then 30K steps of QAT.
-gen768t_01q, the 450K-step network with its own QAT, is 28.93 ± 9.30 weaker
-([test 176](https://bench.luminexchess.com/test/176/)), and the 450K-step run
-without the relation rows (gen768s_05q) was 37.91 ± 10.32 below gen768t_01q
-([test 173](https://bench.luminexchess.com/test/173/)).
-
-gen768s_03q, the network before V5, keeps gen768r's architecture: gen768's
-768-wide HalfKAv2_hm feature layer with a revived dense tail split into eight
-output buckets, stored with one int8 scale per row of its dense layers (the
-LNR8 format). What changed is the labels. gen768r_06, the gen768r line's last
-network (1.95M steps of 131,072 positions on Leela Chess Zero's test91
-self-play games), trained on for three more runs of 450K steps, each with a
-fresh optimizer, on Leela BT4's relabel of the same games (the binpacks of
-the t91 LGS store, with every position kept except those the binpacks mark to
-skip, and January's last chunks held out): gen768s_01 on November 2025 and
-January to August and October 2026 (6.1B positions), gen768s_02 on December
-2025 and seven 2026 months, gen768s_03 on November 2025 and the 2026 months
-again. The loss (power 3.0 on the win-probability error) weights quiet
-positions, which are what the search consumes; the last 30K steps train
-through the engine's int8 rounding, one scale per row (QAT).
-The development log in Luminex-NNUE ([`docs/DEVLOG.md`](https://github.com/changcheng967/Luminex-NNUE/blob/main/docs/DEVLOG.md))
-has the runs and the measurements behind them.
-
-The trainer and its data tools have their own repository,
-[Luminex-NNUE](https://github.com/changcheng967/Luminex-NNUE): the GPU trainer and its
-quantization-aware training, the quantizers, the binpack and Leela-shard
-converters, and network forensics. This repository keeps the network specs
-(`docs/NNUE.md`), the network reader, and the data tools that build against
-the engine (`src/tools.cpp`).
-
-Networks are named `luminex_<architecture>_<NN>.nnue`. The architecture is
-the network name of its spec in `docs/NNUE.md` (`gen768`, `gen768r`, ...), and `NN`
-numbers that architecture's training runs in order, starting at `01`. The
-trainer writes the float network under that name and its checkpoint as the
-matching `.pt`; the quantized network the engine loads adds `_i8`
-(`luminex_gen768r_01_i8.nnue`). The built-in network is pinned by name in
-`src/luminex.h` (`DEFAULT_NET`) and by URL and sha256 in
-`.github/scripts/ci.sh` (`pin_url`, `pin_sha256`).
+Every pull request and merge commit carries its test's numbers. A change
+that fails is closed with them.
 
 ## Build
 
-Requires a C++23 compiler and CMake 3.20+. Build with clang 23, as every
-release and OpenBench worker does: with lld and no PIE (CMakeLists.txt does
-both for clang on Linux) it is the fastest build measured, about 25% more
-speed in games than gcc 14. GCC 13+, older Clang (15+) and MSVC 2022 also
-compile it.
+You need C++23, CMake 3.20 or newer, and clang 23. Clang 23 is the compiler
+every release and OpenBench worker uses, and CI checks it. With lld and
+without PIE it is the fastest build measured; CMakeLists.txt sets both for
+clang on Linux.
 
 ```bash
 cmake -B build -DCMAKE_BUILD_TYPE=Release -DCMAKE_CXX_COMPILER=clang++-23
-cmake --build build --config Release
+cmake --build build --config Release -j
 ```
 
-That binary has no network inside; it loads the shipped network,
-`luminex_gen768t_02q_i8.nnue`, from the working directory or its own
-directory. The name comes from the network pin in `.github/scripts/ci.sh`
-(`pin_url`): CMake reads it there, so a build always names the network it ships
-with. To build the network in, as the releases do, fetch the pinned file and
-ask for it at configure time:
+That binary has no network inside. It loads `luminex_gen768t_02q_i8.nnue`
+from the working directory or its own. To build the network in, as the
+releases do:
 
 ```bash
 bash .github/scripts/ci.sh fetch-net
-cmake -B build -DCMAKE_BUILD_TYPE=Release -DLUMINEX_EMBED_PINNED=ON
-cmake --build build --config Release
+cmake -B build -DCMAKE_BUILD_TYPE=Release -DCMAKE_CXX_COMPILER=clang++-23 -DLUMINEX_EMBED_PINNED=ON
+cmake --build build --config Release -j
 ```
 
-**Choosing the network kernels.** The kernels (`src/nnue_kernels.h`) are
-written once for every level: AVX-512 VNNI, AVX-512, AVX-VNNI, AVX2, a
-baseline, and NEON dot-product on ARM.
-- **Default target.** A build has the one level its compiler targets, called
-  directly: the build machine's with GCC and Clang, AVX2 with MSVC.
-- **One binary for every x86-64 CPU** (the releases): `-DLUMINEX_DISPATCH=ON`
-  compiles the engine for x86-64-v2 (x86-64 with POPCNT under clang-cl) and
-  the kernels once per level, each file with its level's flags, and picks the
-  best level the CPU and its OS support at startup (`cpuid`, `xgetbv`). It
-  needs GCC, Clang or clang-cl (`-T ClangCL`).
-- **One level for other machines.** Set `LUMINEX_MARCH` (GCC/Clang, e.g.
-  `x86-64-v3`) or `LUMINEX_MSVC_ARCH` (MSVC and clang-cl: `AVX512`, `AVX2` or
-  `SSE2`).
-- **Makefile.** The `Makefile`, OpenBench's build, picks the AVX-512 VNNI build
-  by itself on CPUs that support it.
-- **Checking them.** `luminex nnuecheck [NETFILE]` (or `nnuecheck` at the UCI
-  prompt) evaluates a fixed set of games under every level the CPU supports,
-  fails on any difference, and prints a digest of the evaluations, the same
-  for every x86-64 build of a network.
+- **Instruction-set level.** By default a build targets its own machine.
+  `-DLUMINEX_DISPATCH=ON` makes the releases' one binary for every x86-64
+  CPU: the engine for x86-64-v2, the kernels once per level, and the best
+  chosen at startup. `-DLUMINEX_MARCH=x86-64-v3` builds one fixed level.
+- **Windows.** The releases build with Visual Studio's ClangCL toolset on
+  LLVM 23 (`-G "Visual Studio 17 2022" -A x64 -T ClangCL`).
+- **OpenBench.** The `Makefile` is OpenBench's build: `make -j EXE=luminex`.
+- **Checks.** `luminex nnuecheck [NETFILE]` evaluates a fixed set of games
+  at every level the CPU supports and fails on any difference.
 
 ## Source layout
 
 ```
 src/
   luminex.h        the one header: types, bitboards, the position, move generation,
-                   large pages, the transposition table, the evaluation and its
-                   tuning tables, the network's interface, search, the SPSA-tunable
-                   search constants, UCI, the engine version
-  board.cpp        the position (make/unmake), move generation, magic bitboards,
-                   the transposition table
-  evaluation.cpp   the hand-crafted evaluation (HCE), its tuner values, the KPK bitbase
-  nnue.cpp         NNUE evaluation, the lazy incremental accumulator, kernel levels,
-                   gen768t's relation inputs, the network built into release binaries
+                   the hash table, the evaluation, the network's interface, search,
+                   the SPSA-tunable constants, UCI, the version
+  board.cpp        the position (make and unmake), move generation, magic bitboards,
+                   the hash table
+  evaluation.cpp   the hand-crafted evaluation, its tuned values, the KPK bitbase
+  nnue.cpp         the network: loading, the lazy accumulator, the relation inputs,
+                   the kernel levels, the built-in network
   nnue_kernels.h   the network's SIMD kernels, written once for every level
-                   (compiled once per level in LUMINEX_DISPATCH builds)
-  search.cpp       search and time management, the search threads
-  uci.cpp          UCI protocol and options, the Polyglot opening book, main (bench)
-  tools.cpp        the NNUE data tools (optional CMake targets), one executable each:
-                   luminex-lc0pack: Leela v6 training chunks -> gamepack frames (BUILD_LC0PACK)
-                   frame_merge: merges gamepack frames into denser ones (BUILD_LC0PACK)
-                   luminex-featurize: gamepack frames -> training tensors (BUILD_FEATURIZER)
-                   verify_frames: exhaustive frame-integrity verifier (BUILD_VERIFY)
-                   luminex-evaltrace: HCE evaluation tracing for tuning (BUILD_EVALTRACE)
-
-docs/
-  NNUE.md          the network specs, V1 to V5, and their template
-                   (the trainer and its tools: Luminex-NNUE)
+  search.cpp       search, time management, the threads
+  uci.cpp          the UCI protocol and options, the opening book, bench, main
+  tools.cpp        data tools for training, one optional CMake target each
+docs/NNUE.md       the network specs, V1 to V5
+.github/           CI and releases: workflows/build.yml, scripts/ci.sh
+Makefile           OpenBench's build
 ```
 
 ## License
 
 Luminex is licensed under the [GNU General Public License v3.0](LICENSE).
-
-Some foundational code derives from [Stockfish](https://github.com/official-stockfish/Stockfish),
-which is also GPL-3.0. All original contributions to Luminex are released
-under the same license. Training data comes from
-[Leela Chess Zero](https://lczero.org/) self-play.
+Some of its foundations derive from
+[Stockfish](https://github.com/official-stockfish/Stockfish), also GPL-3.0.
+The training data comes from [Leela Chess Zero](https://lczero.org/).
