@@ -25,12 +25,12 @@ set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
 # One x86-64 binary for every CPU, as the releases ship: the engine compiled
 # for x86-64-v2 (x86-64 with POPCNT under clang-cl), and the network kernels
-# (src/nnue_kernels.inc) compiled once per instruction-set level, each
-# src/nnue_k_<level>.cpp with its level's flags; at run time nnue.cpp uses the
-# best level the CPU and its OS support (cpuid and xgetbv), or a lower one the
-# SimdLevel option asks for. LUMINEX_MARCH and LUMINEX_MSVC_ARCH do not apply.
-# Off, the default and OpenBench's build, the kernels are compiled into
-# nnue.cpp for LUMINEX_MARCH and called directly.
+# (src/nnue_kernels.h) compiled once per instruction-set level, each with its
+# level's flags; at run time nnue.cpp uses the best level the CPU and its OS
+# support (cpuid and xgetbv), or a lower one the SimdLevel option asks for.
+# LUMINEX_MARCH and LUMINEX_MSVC_ARCH do not apply. Off, the default and
+# OpenBench's build, the kernels are compiled into nnue.cpp for LUMINEX_MARCH
+# and called directly.
 option(LUMINEX_DISPATCH "One x86-64 binary that picks its network kernels for the CPU at run time" OFF)
 if(LUMINEX_DISPATCH)
     if(NOT CMAKE_SYSTEM_PROCESSOR MATCHES "^(x86_64|AMD64|amd64|x64)$")
@@ -154,12 +154,15 @@ else()
     endif()
 endif()
 
-# The network: nnue.cpp, and in the universal build one kernel file per
-# instruction-set level, best first, each with the flags of its level. They
-# are compiled without LTO, so the link keeps each one's code for its own
-# level, and without FMA contraction, so every level rounds alike (the bias
-# adds are FMAs, written out: see src/nnue_kernels.inc).
-set(LUMINEX_NNUE_SOURCES src/nnue.cpp src/v5_rel.cpp)
+# The network: nnue.cpp, and in the universal build the kernels once per
+# instruction-set level, best first, each with the flags of its level: the
+# file written here for a level compiles src/nnue_kernels.h in that level's
+# namespace (LK_NAMESPACE; LK_EXPECT is the level's index, which the kernels
+# check against the level the flags give). They are compiled without LTO, so
+# the link keeps each one's code for its own level, and without FMA
+# contraction, so every level rounds alike (the bias adds are FMAs, written
+# out: see src/nnue_kernels.h).
+set(LUMINEX_NNUE_SOURCES src/nnue.cpp)
 if(LUMINEX_DISPATCH)
     add_compile_definitions(LUMINEX_NNUE_DISPATCH)
     set(_lux_k_avx512vnni -march=x86-64-v4 -mavx512vnni)
@@ -172,48 +175,34 @@ if(LUMINEX_DISPATCH)
     else()
         set(_lux_k_common -ffp-contract=off -fno-lto)
     endif()
+    set(_lux_id 0)
     foreach(_lux_level IN ITEMS avx512vnni avx512 avxvnni avx2 base)
-        set(_lux_src src/nnue_k_${_lux_level}.cpp)
+        set(_lux_src "${CMAKE_CURRENT_BINARY_DIR}/nnue_k_${_lux_level}.cpp")
+        file(CONFIGURE OUTPUT "${_lux_src}" CONTENT
+             "#define LK_NAMESPACE k_${_lux_level}\n#define LK_EXPECT ${_lux_id}\n#include \"nnue_kernels.h\"\n")
         set(_lux_opts ${_lux_k_${_lux_level}} ${_lux_k_common})
         list(APPEND LUMINEX_NNUE_SOURCES ${_lux_src})
         set_source_files_properties(${_lux_src} PROPERTIES COMPILE_OPTIONS "${_lux_opts}")
+        math(EXPR _lux_id "${_lux_id} + 1")
     endforeach()
     message(STATUS "Universal x86-64 build: the engine for x86-64-v2, network kernels for avx512vnni, avx512, avxvnni, avx2 and base")
 endif()
 
-# Source files
-set(SOURCES
-    src/main.cpp
-    src/uci.cpp
+# Source files: the position, the evaluations and the network, which the
+# tools link too (LUMINEX_CORE_SOURCES), then the search and the UCI loop.
+set(LUMINEX_CORE_SOURCES
     src/board.cpp
-    src/movegen.cpp
-    src/search.cpp
     src/evaluation.cpp
-    src/transposition.cpp
-    src/magic.cpp
-    src/tuner_params.cpp
-    src/book.cpp
     ${LUMINEX_NNUE_SOURCES}
-    src/embedded_net.cpp
 )
-
+set(SOURCES
+    src/uci.cpp
+    src/search.cpp
+    ${LUMINEX_CORE_SOURCES}
+)
 set(HEADERS
     src/luminex.h
-    src/uci.h
-    src/board.h
-    src/movegen.h
-    src/search.h
-    src/evaluation.h
-    src/transposition.h
-    src/large_pages.h
-    src/bitboard.h
-    src/types.h
-    src/book.h
-    src/embedded_net.h
-    src/nnue.h
     src/nnue_kernels.h
-    src/v5_rel.h
-    src/nnue_kernels.inc
 )
 
 add_executable(luminex ${SOURCES} ${HEADERS})
@@ -223,7 +212,7 @@ target_include_directories(luminex PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
 # A network built into the binary, so it plays with NNUE on its own instead of
 # needing the .nnue file beside it; the release builds carry the shipped net.
 # The NNUEFile option still loads any other file. MSVC and clang-cl link it as
-# a resource, GCC and Clang assemble it in (src/embedded_net.cpp). Empty, the
+# a resource, GCC and Clang assemble it in (the end of src/nnue.cpp). Empty, the
 # default, builds without one, as OpenBench's Makefile build does.
 #
 # The shipped network's name has one source: the file name of the asset
@@ -261,7 +250,7 @@ if(LUMINEX_EMBED_NET)
     else()
         target_compile_definitions(luminex PRIVATE "LUMINEX_EMBED_NET_FILE=\"${_lux_net}\"")
         # .incbin is invisible to the compiler's dependency scan.
-        set_source_files_properties(src/embedded_net.cpp PROPERTIES OBJECT_DEPENDS "${_lux_net}")
+        set_source_files_properties(src/nnue.cpp PROPERTIES OBJECT_DEPENDS "${_lux_net}")
     endif()
     message(STATUS "Building in the network ${_lux_net}")
 endif()
@@ -309,70 +298,44 @@ if(LUMINEX_STACKTRACE)
     endif()
 endif()
 
-# === Tuner target ===
+# === The training data tools (src/tools.cpp, one section and one executable each) ===
 option(BUILD_FEATURIZER "Build Game-Pack NNUE featurizer" OFF)
 option(BUILD_EVALTRACE "Build HCE eval trace tool" OFF)
 option(BUILD_LC0PACK "Build Leela-chunk -> gamepack converter (needs zlib)" OFF)
 option(BUILD_VERIFY "Build gamepack frame verifier" OFF)
 
+# A tool: tools.cpp compiled with its macro (LUMINEX_TOOL_<TOOL>), and with
+# CORE the position, evaluation and network sources it links.
+function(luminex_tool name tool)
+    cmake_parse_arguments(_t "CORE" "" "" ${ARGN})
+    if(_t_CORE)
+        add_executable(${name} src/tools.cpp ${LUMINEX_CORE_SOURCES})
+    else()
+        add_executable(${name} src/tools.cpp)
+    endif()
+    target_include_directories(${name} PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
+    target_compile_definitions(${name} PRIVATE LUMINEX_TOOL_${tool} _CRT_SECURE_NO_WARNINGS)
+endfunction()
+
 if(BUILD_FEATURIZER)
-    add_executable(luminex-featurize
-        src/featurize.cpp
-        src/tuner_params.cpp
-        src/board.cpp
-        src/movegen.cpp
-        src/evaluation.cpp
-        ${LUMINEX_NNUE_SOURCES}
-        src/embedded_net.cpp
-        src/magic.cpp
-        src/transposition.cpp
-    )
-    target_include_directories(luminex-featurize PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
+    luminex_tool(luminex-featurize FEATURIZE CORE)
     # RAW_MOVES: gamepack frames store u16 raw moves (lc0pack format, the only
     # live data path). Without this the featurizer would read u8 move indices
     # and silently misparse every frame.
-    target_compile_definitions(luminex-featurize PRIVATE RAW_MOVES _CRT_SECURE_NO_WARNINGS)
+    target_compile_definitions(luminex-featurize PRIVATE RAW_MOVES)
 endif()
 
 if(BUILD_EVALTRACE)
-    add_executable(luminex-evaltrace
-        src/eval_trace.cpp
-        src/tuner_params.cpp
-        src/board.cpp
-        src/movegen.cpp
-        src/evaluation.cpp
-        ${LUMINEX_NNUE_SOURCES}
-        src/embedded_net.cpp
-        src/magic.cpp
-        src/transposition.cpp
-    )
-    target_include_directories(luminex-evaltrace PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
-    target_compile_definitions(luminex-evaltrace PRIVATE _CRT_SECURE_NO_WARNINGS)
+    luminex_tool(luminex-evaltrace EVALTRACE CORE)
 endif()
-
-
 
 if(BUILD_LC0PACK)
     find_package(ZLIB REQUIRED)
-    add_executable(luminex-lc0pack
-        src/lc0pack.cpp
-        src/tuner_params.cpp
-        src/board.cpp
-        src/movegen.cpp
-        src/evaluation.cpp
-        ${LUMINEX_NNUE_SOURCES}
-        src/embedded_net.cpp
-        src/magic.cpp
-        src/transposition.cpp
-    )
-    target_include_directories(luminex-lc0pack PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
+    luminex_tool(luminex-lc0pack LC0PACK CORE)
     target_link_libraries(luminex-lc0pack PRIVATE ZLIB::ZLIB)
-    target_compile_definitions(luminex-lc0pack PRIVATE _CRT_SECURE_NO_WARNINGS)
-    add_executable(frame_merge src/frame_merge.cpp)
+    luminex_tool(frame_merge FRAME_MERGE)
 endif()
 
 if(BUILD_VERIFY)
-    enable_language(C)
-    add_executable(verify_frames src/verify_frames.c)
-    target_compile_definitions(verify_frames PRIVATE _CRT_SECURE_NO_WARNINGS)
+    luminex_tool(verify_frames VERIFY_FRAMES)
 endif()
