@@ -2256,14 +2256,12 @@ static void helper_thread_func(Position pos_copy, int thread_id) {
         const RootIteration r = root_iteration(pos_copy, moves, end, d, alpha, beta, aspiration_delta);
         if (stop.load(std::memory_order_relaxed)) break;
 
+        // No root hash entry: the root is never searched, so only the main
+        // thread's PV print reads that entry, and a helper's deeper one would
+        // start the printed PV with a move the main thread does not play.
         if (r.best_move != MOVE_NONE) {
             prev_best = r.best_move;
             prev_value = r.best_value;
-            // Save to TT (shared with main thread)
-            bool found;
-            TTEntry* tte = TT.probe(pos_copy.key(), found);
-            if (TT.should_store(tte, found, d))
-                tte->save(pos_copy.key(), r.best_value, true, BOUND_EXACT, d, r.best_move, VALUE_INFINITE, TT.generation());
         }
 
         d = std::max(d + 1, main_depth.load(std::memory_order_relaxed) + (thread_id & 1));
@@ -2641,6 +2639,18 @@ Move search(Position& pos, Limits& lim) {
         check_time();
         if (stop.load(std::memory_order_relaxed)) {
             if (proven_move != MOVE_NONE) {
+                // This move is played. The last PV printed is the previous
+                // iteration's; when it starts with another move, print the
+                // move played, its score a lower bound of the unfinished
+                // iteration's.
+                if (proven_move != best_move) {
+                    nodes.fetch_add(local_nodes - last_reported_nodes, std::memory_order_relaxed);
+                    last_reported_nodes = local_nodes;
+                    const int t_ms = int(std::chrono::duration_cast<std::chrono::milliseconds>(
+                        std::chrono::steady_clock::now() - search_start).count());
+                    uci_info(pos, root_depth, proven_value, nodes.load(std::memory_order_relaxed), t_ms,
+                             1, proven_move, true);
+                }
                 best_move = proven_move;
                 best_value = proven_value;
             }
@@ -2689,8 +2699,11 @@ Move search(Position& pos, Limits& lim) {
         int time_ms = static_cast<int>(std::chrono::duration_cast<std::chrono::milliseconds>(search_end - search_start).count());
         last_iteration_ms = time_ms - iteration_start_ms;
 
-        // Send UCI info (global counter — helpers' nodes must be included)
-        uci_info(pos, root_depth, depth_best_value, nodes.load(std::memory_order_relaxed), time_ms);
+        // Send UCI info (global counter — helpers' nodes must be included).
+        // The PV starts with this iteration's move rather than the root's
+        // hash entry, which may hold an older search's deeper result.
+        uci_info(pos, root_depth, depth_best_value, nodes.load(std::memory_order_relaxed), time_ms,
+                 1, depth_best_move);
     }
 
     // Fallback: if best_move is still MOVE_NONE, use the first legal move we found
@@ -2941,11 +2954,12 @@ Move search(Position& pos, Limits& lim) {
 }
 
 void uci_info(const Position& pos, int depth, Value score, uint64_t node_count, int time_ms,
-              int multipv, Move seed_move) {
+              int multipv, Move seed_move, bool lower_bound) {
     std::string line;
     uint64_t nps = time_ms > 0 ? node_count * 1000 / uint64_t(time_ms) : 0;
     const bool mpv = multipv > 1;
     const std::string mpv_tag = mpv ? std::format(" multipv {}", multipv) : "";
+    const char* bound = lower_bound ? " lowerbound" : "";
 
     // Handle mate scores
     // Note: -VALUE_INFINITE is not a mate score, it means no valid search result
@@ -2954,11 +2968,11 @@ void uci_info(const Position& pos, int depth, Value score, uint64_t node_count, 
         // plies from the root position.
         int mate_in = (VALUE_MATE - score + 2) / 2;                       // Mate in N moves
         std::format_to(std::back_inserter(line),
-            "info depth {}{} score mate {} nodes {} nps {} pv", depth, mpv_tag, mate_in, node_count, nps);
+            "info depth {}{} score mate {}{} nodes {} nps {} pv", depth, mpv_tag, mate_in, bound, node_count, nps);
     } else if (score <= -VALUE_MATE_IN_MAX_PLY && score > -VALUE_INFINITE) {
         int mate_in = -(VALUE_MATE + score + 1) / 2;                      // Being mated in N moves
         std::format_to(std::back_inserter(line),
-            "info depth {}{} score mate {} nodes {} nps {} pv", depth, mpv_tag, mate_in, node_count, nps);
+            "info depth {}{} score mate {}{} nodes {} nps {} pv", depth, mpv_tag, mate_in, bound, node_count, nps);
     } else {
         // Normal score in centipawns (score is side-to-move relative, like evaluate())
         int score_cp = score * 100 / PAWN_VALUE;
@@ -2976,7 +2990,7 @@ void uci_info(const Position& pos, int depth, Value score, uint64_t node_count, 
             wdl = std::format(" wdl {} {} {}", int(win * 1000), int(draw * 1000), int(loss * 1000));
         }
         std::format_to(std::back_inserter(line),
-            "info depth {}{} score cp {}{} nodes {} nps {} pv", depth, mpv_tag, score_cp, wdl, node_count, nps);
+            "info depth {}{} score cp {}{}{} nodes {} nps {} pv", depth, mpv_tag, score_cp, bound, wdl, node_count, nps);
     }
 
     // Extract PV from TT (uses std::formatter<luminex::Move> for each move).

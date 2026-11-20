@@ -158,9 +158,9 @@ void clear_search_history();
 // The clock's lag measurement - clear on new game
 void clear_clock_lag();
 
-// UCI info output
+// UCI info output; lower_bound marks the score as a lower bound
 void uci_info(const Position& pos, int depth, Value score, uint64_t nodes, int time,
-              int multipv = 1, Move seed_move = MOVE_NONE);
+              int multipv = 1, Move seed_move = MOVE_NONE, bool lower_bound = false);
 
 // Search globals
 extern Limits limits;
