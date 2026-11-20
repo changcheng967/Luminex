@@ -74,11 +74,6 @@ struct SearchParams {
     // in search.cpp), the default; 0 = it does not. Without measurable lag the
     // two give the same budgets.
     int time_lag = 1;
-    // UCI "TimePonder", games with go ponder: 1 = the solved schedules spread the
-    // clock over the fraction of each move's target it pays, measured in the
-    // game (ponder_fraction() in search.cpp); 0 = as without pondering. Without
-    // go ponder the two give the same budgets.
-    int time_ponder = 0;
 };
 
 // Search statistics for debugging

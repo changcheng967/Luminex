@@ -335,7 +335,6 @@ void handle_uci() {
     safe_output("option name TimeZeroInc type spin default 1 min 0 max 1\n");
     safe_output("option name TimeMovesToGo type spin default 1 min 0 max 1\n");
     safe_output("option name TimeLag type spin default 1 min 0 max 1\n");
-    safe_output("option name TimePonder type spin default 0 min 0 max 1\n");
     safe_output("option name SyzygyPath type string default <empty>\n");
     safe_output("option name Skill Level type spin default 20 min 0 max 20\n");
     safe_output("option name UCI_ShowWDL type check default false\n");
@@ -671,9 +670,6 @@ void handle_setoption(const std::string& cmd) {
     }
     else if (name == "TimeLag") {
         params.time_lag = std::clamp(v, 0, 1);
-    }
-    else if (name == "TimePonder") {
-        params.time_ponder = std::clamp(v, 0, 1);
     }
     else if (name == "UseNNUE") {
         g_use_nnue = (value == "true");
