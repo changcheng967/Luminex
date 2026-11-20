@@ -281,7 +281,7 @@ before it lands:
 
 ## NNUE training
 
-The current network, gen768t_02q, is V5 ([docs/nnue/V5-GEN768T.md](docs/nnue/V5-GEN768T.md)):
+The current network, gen768t_02q, is V5 ([docs/NNUE.md](docs/NNUE.md#v5-gen768t)):
 gen768s's feature layer plus 55,960 int8 relation rows (attacks, and pawn
 pairs in contact) summed into 256 of its 768 lanes, stored as LNT8. It is
 gen768t_01's float network (450K steps from gen768s_03's, on Leela BT4's
@@ -313,17 +313,17 @@ The trainer and its data tools have their own repository,
 [Luminex-NNUE](https://github.com/changcheng967/Luminex-NNUE): the GPU trainer and its
 quantization-aware training, the quantizers, the binpack and Leela-shard
 converters, and network forensics. This repository keeps the network specs
-(`docs/nnue/`), the network reader, and the data tools that build against
+(`docs/NNUE.md`), the network reader, and the data tools that build against
 the engine (`src/tools.cpp`).
 
 Networks are named `luminex_<architecture>_<NN>.nnue`. The architecture is
-the network name of its spec in `docs/nnue/` (`gen768`, `gen768r`, ...), and `NN`
+the network name of its spec in `docs/NNUE.md` (`gen768`, `gen768r`, ...), and `NN`
 numbers that architecture's training runs in order, starting at `01`. The
 trainer writes the float network under that name and its checkpoint as the
 matching `.pt`; the quantized network the engine loads adds `_i8`
 (`luminex_gen768r_01_i8.nnue`). The built-in network is pinned by name in
 `src/luminex.h` (`DEFAULT_NET`) and by URL and sha256 in
-`.github/scripts/fetch-net.sh`.
+`.github/scripts/ci.sh` (`pin_url`, `pin_sha256`).
 
 ## Build
 
@@ -340,13 +340,13 @@ cmake --build build --config Release
 
 That binary has no network inside; it loads the shipped network,
 `luminex_gen768t_02q_i8.nnue`, from the working directory or its own
-directory. The name comes from `.github/scripts/fetch-net.sh`, which pins the
-network: CMake reads it there, so a build always names the network it ships
+directory. The name comes from the network pin in `.github/scripts/ci.sh`
+(`pin_url`): CMake reads it there, so a build always names the network it ships
 with. To build the network in, as the releases do, fetch the pinned file and
 ask for it at configure time:
 
 ```bash
-bash .github/scripts/fetch-net.sh
+bash .github/scripts/ci.sh fetch-net
 cmake -B build -DCMAKE_BUILD_TYPE=Release -DLUMINEX_EMBED_PINNED=ON
 cmake --build build --config Release
 ```
@@ -395,9 +395,9 @@ src/
                    verify_frames: exhaustive frame-integrity verifier (BUILD_VERIFY)
                    luminex-evaltrace: HCE evaluation tracing for tuning (BUILD_EVALTRACE)
 
-docs/nnue/
-  NNUE Template.md, V1-GEN768.md .. V5-GEN768T.md   the network specs
-                        (the trainer and its tools: Luminex-NNUE)
+docs/
+  NNUE.md          the network specs, V1 to V5, and their template
+                   (the trainer and its tools: Luminex-NNUE)
 ```
 
 ## License

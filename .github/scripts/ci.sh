@@ -2,14 +2,57 @@
 # Luminex's CI tools, one subcommand each (the workflows call them as
 # bash .github/scripts/ci.sh SUBCOMMAND ARGS):
 #   clang install | clang check DIR   clang 23 for this runner; fail unless CMake found it
+#   fetch-net [DIR]                   the pinned network, downloaded into DIR (net) and its sha256 checked
 #   isa BINARY LEVEL                  the binary's own code needs no more than LEVEL
-#   name BINARY BUILD_ID              the binary reports the development build's name
+#   name BINARY NAME                  the binary reports itself as Luminex NAME (a build's id, or a version)
 #   net [--no-embed] BINARY           the built-in network loads and is the pinned one
 #   simd BINARY [--net FILE] [CHIP "LEVELS"]   every kernel level evaluates alike
 #   sde                               fetch Intel SDE, print the launcher's path
 #   dev-release DIST                  publish the rolling luminex-dev pre-release
 #   deps BINARY ASSET                 the binary needs no more from the system than its notes say
-# The network pin (url, sha256) stays in fetch-net.sh, which CMake reads.
+# Below them: the network pin, which CMake reads too; and, before deps, the
+# format of a release's notes.
+
+# ----- the network pin
+# The network the release binaries carry. fetch-net downloads it and checks
+# its sha256, so every build embeds exactly the shipped file. The pin is
+# gen768t_02q (luminex_gen768t_02q_i8.nnue on the engine-archives
+# pre-release). Shipping a new network means attaching it to a release and
+# moving pin_url, pin_sha256 and pin_about here. The url's file name is the
+# network's real name and its only source: fetch-net saves the file under it,
+# CMake (from the pin_url line) makes it the engine's default network
+# (DEFAULT_NET) and the name the built-in network reports, and releases attach
+# the file under it (net fails a build that names another network).
+# pin_about, the network's name and a line on how it was made, goes into the
+# development build's notes (dev-release).
+pin_url=https://github.com/changcheng967/Luminex/releases/download/engine-archives/luminex_gen768t_02q_i8.nnue
+pin_sha256=40443df6ebe3cbd8b793fcf11c3f07351414932116df6a892ba044fd072e6dd0
+pin_about="gen768t_02q: V5 (gen768t, docs/NNUE.md), gen768s's feature layer with 55,960 int8 relation rows (attacks, and pawn pairs in contact) summed into 256 of its 768 lanes (the LNT8 format); gen768t_01's float network trained on for 1,142,724 more steps (149.8B positions, a fresh optimizer, lr 5e-5) on Leela BT4's relabel of every t91 month (January's tail held out) and the BT4 corpus, then 30K steps of QAT with int8 relation rows and one int8 scale per tail row"
+
+# ----- fetch-net
+# Download the pinned network and check its sha256. Prints the file's path and
+# which network it holds: the file is always saved under the network's real
+# name, so the path alone says.
+#
+#   ci.sh fetch-net [DIR]   (default: net)
+cmd_fetch_net() {
+set -euo pipefail
+dir=${1:-net}
+out=$dir/${pin_url##*/}
+mkdir -p "$dir"
+[ -f "$out" ] || curl -fsSL --retry 3 -o "$out" "$pin_url"
+if command -v sha256sum > /dev/null; then
+  got=$(sha256sum "$out" | cut -d' ' -f1)
+else
+  got=$(shasum -a 256 "$out" | cut -d' ' -f1)
+fi
+if [ "$got" != "$pin_sha256" ]; then
+  echo "$out: sha256 $got, expected $pin_sha256" >&2
+  rm -f "$out"
+  exit 1
+fi
+echo "$out (OpenBench id $(printf '%s' "${pin_sha256:0:8}" | tr a-f A-F)), sha256 checked"
+}
 
 # ----- clang
 # clang 23, the compiler of every build: clang 23 + lld + no PIE is the fastest
@@ -199,16 +242,15 @@ fi
 #   ci.sh net --no-embed BINARY   a build without one (the Makefile's, as
 #                                    OpenBench builds): only NNUEFile's default
 #
-# The real name is the file name of the asset fetch-net.sh pins (its url=
-# line). The binary must offer it as NNUEFile's default and, with the network
-# inside, report its built-in network under it, or the check fails.
+# The real name is the file name of the pinned network (pin_url, above). The
+# binary must offer it as NNUEFile's default and, with the network inside,
+# report its built-in network under it, or the check fails.
 cmd_net() {
 set -euo pipefail
 embed=1
 if [ "${1:-}" = --no-embed ]; then embed=0; shift; fi
 bin=$1
-want=$(sed -n 's#^url=.*/##p' "$(dirname "$0")/fetch-net.sh")
-[ -n "$want" ] || { echo "no url= line in fetch-net.sh" >&2; exit 1; }
+want=${pin_url##*/}
 dir=$(mktemp -d)
 cp "$bin" "$dir/"
 out=$(cd "$dir" && printf 'uci\nisready\nposition startpos\neval\nquit\n' | "./$(basename "$bin")" 2>&1 | tr -d '\r')
@@ -360,14 +402,13 @@ pattern='^luminex-dev-[0-9]{8}-[0-9a-f]{8}$'
 [[ $tag =~ $pattern ]] || { echo "$tag is not a development build tag" >&2; exit 1; }
 [[ $BUILD_ID == *-"${sha:0:8}" ]] || { echo "$BUILD_ID does not name commit $sha" >&2; exit 1; }
 
-# The network the binaries carry, as fetch-net.sh pins it: its file name on
+# The network the binaries carry, as the pin above names it: its file name on
 # engine-archives, its OpenBench id (the first 8 hex digits of its sha256) and
-# its about line. fetch-net.sh saved it under its own name, the name it is
+# its about line. fetch-net saved it under its own name, the name it is
 # attached under, so the notes and the file say which network it is.
 here=$(dirname "$0")
-net_name=$(sed -n 's#^url=.*/##p' "$here/fetch-net.sh")
-net_about=$(sed -n 's#^about="\(.*\)"$#\1#p' "$here/fetch-net.sh")
-[ -n "$net_name" ] || { echo "no url= line in fetch-net.sh" >&2; exit 1; }
+net_name=${pin_url##*/}
+net_about=$pin_about
 net_id=$(sha256sum "$dir/$net_name" | cut -c1-8 | tr a-f A-F)
 if [ -n "$net_about" ]; then
   net_line="the network ${net_about%%: *} (OpenBench id \`$net_id\`): ${net_about#*: }."
@@ -403,16 +444,20 @@ while read -r h; do
   pr=$(gh api "repos/$repo/commits/$h/pulls" --jq '[.[] | select(.merged_at != null)][0].number // empty' 2> /dev/null || true)
   [ -z "$pr" ] || line+=" ([#$pr]($url/pull/$pr))"
   engine=$(git show --name-only --format= "$h" | grep -E '^src/' | grep -vE "$tool_only" || true)
-  # fetch-net.sh counts when it moved the network pin, not for other edits
-  [ -n "$engine" ] || engine=$(git show --format= "$h" -- .github/scripts/fetch-net.sh | grep -E '^[-+]sha256=' || true)
+  # A move of the network pin counts (pin_sha256 here, sha256 in fetch-net.sh
+  # before the pin moved into this file), not the files' other edits
+  [ -n "$engine" ] || engine=$(git show --format= "$h" -- .github/scripts/ci.sh .github/scripts/fetch-net.sh \
+                               | grep -E '^[-+](pin_)?sha256=' || true)
   if [ -n "$engine" ]; then engine_lines+=("$line"); else other_lines+=("$line"); fi
 done < <(git rev-list --no-merges "$base..$sha")
 count=$(( ${#engine_lines[@]} + ${#other_lines[@]} ))
 [ "$count" = 1 ] && commits="1 commit" || commits="$count commits"
 when=$(TZ=UTC git show -s --format=%cd --date=format-local:'%d %B %Y' "$sha")
 when=${when#0}
-stable_net=$(git show "$stable:.github/scripts/fetch-net.sh" 2> /dev/null \
-             | sed -n 's/^sha256=\([0-9a-f]\{8\}\).*/\1/p' | tr a-f A-F || true)
+# The stable release's network: its pin in ci.sh, or in fetch-net.sh before the pin moved here
+stable_net=$( { git show "$stable:.github/scripts/ci.sh" 2> /dev/null | sed -n 's/^pin_sha256=\([0-9a-f]\{8\}\).*/\1/p'
+                git show "$stable:.github/scripts/fetch-net.sh" 2> /dev/null | sed -n 's/^sha256=\([0-9a-f]\{8\}\).*/\1/p'; } \
+             | head -n 1 | tr a-f A-F || true)
 if [ -z "$stable_net" ]; then
   net_since=""
 elif [ "$stable_net" = "$net_id" ]; then
@@ -504,6 +549,85 @@ for old in "${stale_tags[@]}"; do
 done
 }
 
+# ----- release notes
+# The format of a v* release's notes (the release job in build.yml creates the
+# release; its notes are written by hand, in this shape):
+#
+# > **Bold one line:** the Elo over the previous release and the rating-list
+# > estimate. Under it, one plain sentence on what the release brings.
+#
+# ## What's new
+#
+# One bold line per area (network, time management, search, speed, ...) with
+# its PR links, then short plain bullets: what changed, a sentence each. No
+# figures here; they go in Measured gains.
+#
+# ## Strength
+#
+# | Match | Games | W-D-L | Result |
+# |---|---:|---:|---|
+# | vX vs the previous release (test N) | N | W-D-L | **Elo ± 95%** |
+# | The gauntlet (gauntlet N) | N | W-D-L | **rating ±** per list |
+#
+# One line of conditions (threads, hash, time control, openings), then any
+# caveat. The results against each opponent go in a collapsed `<details>` table.
+#
+# ## Measured gains
+#
+# | Change | Elo | PR | Test |
+# |---|---:|:---:|:---:|
+#
+# One row per SPRT, grouped under bold rows by area. Quote each Elo as its
+# OpenBench test page shows it, with the 95% interval, and link the page:
+# commit messages keep the figure of their day, which drifts when OpenBench's
+# error model changes (v6.6.0's first notes quoted several that had). Mark a
+# non-regression test, and a test stopped undecided.
+#
+# ## Downloads
+#
+# | Platform | Binary | CPU | Needs |
+# |---|---|---|---|
+# | Linux | `luminex-linux-x86-64` | any x86-64 with SSE4.2 and POPCNT (x86-64-v2) | Ubuntu 22.04 or newer (glibc 2.35) |
+# | Windows | `luminex-windows-x86-64.exe` | any x86-64 with POPCNT | nothing to install |
+# | macOS | `luminex-macos-arm64` | Apple silicon | macOS 13.3 or newer |
+#
+# One binary per platform: the x86-64 ones carry the network kernels of every
+# instruction-set level (AVX-512 with VNNI, AVX-512, AVX-VNNI, AVX2, a
+# baseline), use the best the CPU supports, and name it at the end of the
+# `info string` that reports the network. Every level evaluates alike
+# (nnuecheck in CI).
+#
+# The first release with these binaries says, under Downloads, that the old
+# x86-64 assets are gone, since the README told users with fast CPUs to take
+# `-modern`:
+#
+# > **One x86-64 download per OS now.** The `-modern`, `-glibc235` and
+# > `-glibc235-modern` binaries are retired. If you used `-modern`, take
+# > `luminex-linux-x86-64` or `luminex-windows-x86-64.exe`: it picks the
+# > AVX2 or AVX-512 kernels `-modern` had by itself, and AVX-VNNI on CPUs
+# > such as Arrow Lake.
+#
+# Needs is what the binary needs from the system: glibc and libstdc++ on Linux,
+# any runtime to install on Windows, the oldest macOS. ci.sh deps reads it
+# from every binary's headers in CI and fails a build that needs more than its
+# row says, so a changed limit changes the row.
+#
+# Every asset carries its real name: the network is attached as
+# `luminex_<architecture>_<NN>_i8.nnue`, the name the binaries report, never
+# under a past network's name or a neutral one. ci.sh net fails a build that
+# reports any other.
+#
+# ## Options
+#
+# | To play with | Set |
+# |---|---|
+#
+# The UCI options a user may need.
+#
+# ## Credits
+#
+# Training data, testing, attribution; the license line.
+
 # ----- deps (Python: reads the ELF, PE or Mach-O headers)
 cmd_deps() {
     local py=python3
@@ -511,7 +635,7 @@ cmd_deps() {
     "$py" - "$@" <<'PY'
 # Check what a release binary needs from the system, read from its headers,
 # against what the release notes promise for it: the System column of the
-# Binaries table (RELEASE_TEMPLATE.md).
+# Binaries table (the release notes' format, in ci.sh).
 #
 #   ci.sh deps BINARY ASSET
 #
@@ -736,6 +860,6 @@ PY
 cmd=${1:-}
 shift || true
 case "$cmd" in
-    clang|isa|name|net|simd|sde|dev-release|deps) "cmd_${cmd//-/_}" "$@" ;;
-    *) sed -n '2,12p' "$0" >&2; exit 2 ;;
+    clang|fetch-net|isa|name|net|simd|sde|dev-release|deps) "cmd_${cmd//-/_}" "$@" ;;
+    *) sed -n '2,14p' "$0" >&2; exit 2 ;;
 esac
