@@ -1968,6 +1968,13 @@ struct SPSAParams {
     int nmp_shallow_margin = 57;
     int nmp_shallow_depth  = 5;
 
+    // The width rule (search.cpp, WIDTH_MODEL): 1 replaces history pruning,
+    // late move pruning and futility for the quiets after the first at non-PV
+    // nodes of depth 2-12 by one price per node; width_lambda is that price,
+    // ln(fail highs per node) in thousandths. 0, the default, keeps the old rules.
+    int width_rule   = 0;
+    int width_lambda = -9000;
+
     // Load from file (COUNT ints, one per line, in field order). Returns true if loaded.
     bool load(const std::string& path) {
         FILE* f = std::fopen(path.c_str(), "r");
@@ -2037,6 +2044,8 @@ inline constexpr SPSAOption SPSA_OPTIONS[] = {
     {"CorrWeightMax",   &SPSAParams::corr_weight_max,     1,   128},
     {"NmpShallowMargin", &SPSAParams::nmp_shallow_margin, 0,  300},
     {"NmpShallowDepth", &SPSAParams::nmp_shallow_depth,   0,   12},
+    {"WidthRule",       &SPSAParams::width_rule,          0,    1},
+    {"WidthLambda",     &SPSAParams::width_lambda,   -20000,    0},
 };
 
 inline const SPSAOption* find_spsa_option(const std::string& name) {
