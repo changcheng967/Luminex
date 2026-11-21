@@ -1546,8 +1546,10 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
                 }
             }
         } else {
-            // First move: full window search
-            value = -search_worker(pos, ss + 1, -beta, -alpha, full_depth, false);
+            // First move: full window search. A non-PV node's first move takes the
+            // opposite label, like every other move: under an expected-ALL node it
+            // is an expected CUT node.
+            value = -search_worker(pos, ss + 1, -beta, -alpha, full_depth, pv_node ? false : !cut_node);
             if (stop.load(std::memory_order_relaxed)) {
                 pos.undo_move(m);
                 return false;
