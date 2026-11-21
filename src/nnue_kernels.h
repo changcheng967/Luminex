@@ -261,6 +261,49 @@ static_assert(2 * ACT_MAX * 128 <= 32767, "AVX2's vpmaddubsw would saturate and 
 
 inline float clip01(float x) { float c = x < 0.0f ? 0.0f : (x > 1.0f ? 1.0f : x); return c * c; }
 
+// SCReLU's activation byte from an accumulator lane in 16-bit integer steps.
+// The float steps give round(c^2 * 127 / 2^22) for the lane clamped to
+// c in [0, 2048]: c^2 is exact in a float, the x127 rounds once, and no c
+// lands on or next to a half. Here c is clamped to [0, 2047] (2047 and 2048
+// both give 127). v = c^2 / 64 comes from the high half of (c << 5)^2, and
+// round(v * 127 / 2^16) is (the high half of v * 254, plus 1) / 2. Dropping
+// c^2's low 6 bits moves the result by less than 0.002, which changes it for
+// c = 340 only (exact value 3.50027), so a comparison adds its 1. The
+// static_assert checks every c, so the SIMD versions below, which take these
+// steps lane by lane, give the float steps' bytes.
+constexpr int screlu_i16(int x) {
+    const int c = x < 0 ? 0 : (x > 2047 ? 2047 : x);
+    const unsigned a = unsigned(c) << 5, v = (a * a) >> 16, h = (v * 254u) >> 16;
+    return int((h + 1) >> 1) + (c == 340);
+}
+constexpr bool screlu_i16_exact() {
+    for (int c = 0; c <= int(NNUE_FT_SCALE); ++c)
+        if (screlu_i16(c) != int((static_cast<long long>(c) * c * 127 + (1 << 21)) >> 22)) return false;
+    return true;
+}
+static_assert(screlu_i16_exact(), "the 16-bit SCReLU must equal round(c^2 * 127 / 2^22) for every c");
+
+#if defined(LK_AVX2)
+// screlu_i16 on 16 lanes
+inline __m256i screlu_i16_256(__m256i x) {
+    const __m256i c = _mm256_min_epi16(_mm256_max_epi16(x, _mm256_setzero_si256()), _mm256_set1_epi16(2047));
+    const __m256i a = _mm256_slli_epi16(c, 5);
+    const __m256i h = _mm256_mulhi_epu16(_mm256_mulhi_epu16(a, a), _mm256_set1_epi16(254));
+    const __m256i y = _mm256_avg_epu16(h, _mm256_setzero_si256());
+    return _mm256_sub_epi16(y, _mm256_cmpeq_epi16(c, _mm256_set1_epi16(340)));
+}
+#endif
+#if defined(LK_AVX512)
+// screlu_i16 on 32 lanes
+inline __m512i screlu_i16_512(__m512i x) {
+    const __m512i c = _mm512_min_epi16(_mm512_max_epi16(x, _mm512_setzero_si512()), _mm512_set1_epi16(2047));
+    const __m512i a = _mm512_slli_epi16(c, 5);
+    const __m512i h = _mm512_mulhi_epu16(_mm512_mulhi_epu16(a, a), _mm512_set1_epi16(254));
+    const __m512i y = _mm512_avg_epu16(h, _mm512_setzero_si512());
+    return _mm512_mask_add_epi16(y, _mm512_cmpeq_epi16_mask(c, _mm512_set1_epi16(340)), y, _mm512_set1_epi16(1));
+}
+#endif
+
 // A quantized activation: x in [0, 127] rounded to the nearest integer, ties
 // to even (the default rounding mode), as cvtps rounds on the SIMD levels.
 inline uint8_t round_u8(float x) {
@@ -712,32 +755,18 @@ float forward_int8_impl(const int16_t* acc_stm, const int16_t* acc_nstm, const R
     uint8_t h_i8[2 * NNUE_L1_MAX];
     const __m256 sc127 = _mm256_set1_ps(127.0f);  // shared for quant8 (L3/out)
 #if defined(LK_AVX512)
-    // AVX-512, 64 lanes per pass. Clamping to the SCReLU window
-    // [0, NNUE_FT_SCALE] in int16 and then rounding fl(a*a * 127/SCALE^2)
-    // gives the same bytes as the float clamp-square-scale below: a*a is at
-    // most 2^22, exact in a float, and scaling by a power of two never
-    // rounds, so both round the same product. Packing 4 vectors at a time
-    // replaces two narrowing converts per 16 lanes.
+    // AVX-512, 64 lanes per pass, in 16-bit integer steps (screlu_i16): the
+    // float steps' bytes. packus works inside 128-bit lanes, so a qword
+    // permute restores input order.
     if (L1 % 64 == 0) {
-        const __m512i lo16 = _mm512_setzero_si512(), hi16 = _mm512_set1_epi16(int16_t(NNUE_FT_SCALE));
-        const __m512 k = _mm512_set1_ps(127.0f / (NNUE_FT_SCALE * NNUE_FT_SCALE));   // 127 * 2^-22, exact
-        // packs/packus work inside 128-bit lanes; this dword permute (a 4x4
-        // transpose of 4-byte groups) restores input order
-        const __m512i order = _mm512_setr_epi32(0, 4, 8, 12, 1, 5, 9, 13, 2, 6, 10, 14, 3, 7, 11, 15);
-        auto act16 = [&](__m256i v) {   // 16 clamped int16 -> 16 int32 in [0, 127]
-            const __m512 f = _mm512_cvtepi32_ps(_mm512_cvtepi16_epi32(v));
-            return _mm512_cvtps_epi32(_mm512_mul_ps(_mm512_mul_ps(f, f), k));
-        };
+        const __m512i order = _mm512_setr_epi64(0, 2, 4, 6, 1, 3, 5, 7);
         for (int side = 0; side < 2; ++side) {
             uint8_t* out = h_i8 + side * L1;
             for (int l = 0; l < L1; l += 64) {
                 const int16_t* in = src(side, l);
-                const __m512i x0 = _mm512_min_epi16(_mm512_max_epi16(_mm512_loadu_si512(in), lo16), hi16);
-                const __m512i x1 = _mm512_min_epi16(_mm512_max_epi16(_mm512_loadu_si512(in + 32), lo16), hi16);
-                const __m512i q0 = act16(_mm512_castsi512_si256(x0)), q1 = act16(_mm512_extracti64x4_epi64(x0, 1));
-                const __m512i q2 = act16(_mm512_castsi512_si256(x1)), q3 = act16(_mm512_extracti64x4_epi64(x1, 1));
-                const __m512i b = _mm512_packus_epi16(_mm512_packs_epi32(q0, q1), _mm512_packs_epi32(q2, q3));
-                _mm512_storeu_si512(out + l, _mm512_permutexvar_epi32(order, b));
+                const __m512i y0 = screlu_i16_512(_mm512_loadu_si512(in));
+                const __m512i y1 = screlu_i16_512(_mm512_loadu_si512(in + 32));
+                _mm512_storeu_si512(out + l, _mm512_permutexvar_epi64(order, _mm512_packus_epi16(y0, y1)));
             }
         }
     } else {
@@ -764,6 +793,20 @@ float forward_int8_impl(const int16_t* acc_stm, const int16_t* acc_nstm, const R
     }
     }
 #else
+    if (L1 % 32 == 0) {
+        // 32 lanes per pass in 16-bit integer steps (screlu_i16): the float
+        // steps' bytes. packus works inside 128-bit lanes, so a qword permute
+        // restores input order.
+        for (int side = 0; side < 2; ++side) {
+            uint8_t* out = h_i8 + side * L1;
+            for (int l = 0; l < L1; l += 32) {
+                const int16_t* in = src(side, l);
+                const __m256i y0 = screlu_i16_256(_mm256_loadu_si256((const __m256i*)in));
+                const __m256i y1 = screlu_i16_256(_mm256_loadu_si256((const __m256i*)(in + 16)));
+                _mm256_storeu_si256((__m256i*)(out + l), _mm256_permute4x64_epi64(_mm256_packus_epi16(y0, y1), 0xD8));
+            }
+        }
+    } else {
     const __m256 z = _mm256_setzero_ps(), one = _mm256_set1_ps(1.0f), winv8 = _mm256_set1_ps(FT_WINV);
     for (int l = 0; l < L1; l += 8) {
         __m256 s = _mm256_mul_ps(_mm256_cvtepi32_ps(_mm256_cvtepi16_epi32(_mm_loadu_si128((const __m128i*)src(0, l)))), winv8);
@@ -778,6 +821,7 @@ float forward_int8_impl(const int16_t* acc_stm, const int16_t* acc_nstm, const R
         i32 = _mm256_cvtps_epi32(_mm256_mul_ps(sq, sc127));
         lo = _mm256_castsi256_si128(i32); hi = _mm256_extracti128_si256(i32, 1);
         _mm_storel_epi64((__m128i*)(h_i8 + L1 + l), _mm_packus_epi16(_mm_packs_epi32(lo, hi), _mm_setzero_si128()));
+    }
     }
 #endif
     if (act_nonzero) { long long nz = 0; for (int i = 0; i < 2 * L1; ++i) nz += (h_i8[i] != 0); *act_nonzero += nz; }
