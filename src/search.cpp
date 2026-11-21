@@ -1427,14 +1427,15 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
         // Late Move Reduction: reduce moves that are unlikely to be best
         // Apply LMR to quiet moves and losing captures (SEE < 0), from the
         // second move at non-PV nodes and the fourth at PV nodes
-        // But NEVER reduce moves that give check — they are forcing
+        // A move that gives check keeps only ChkLmrScale's share of its
+        // reduction (0, the default: never reduced, as checks are forcing)
         Depth new_depth = depth - 1;
         int lmr_reduction = 0;  // actual reduction, before extensions
         bool gives_chk = gives_check(m);
         bool is_losing_capture = m.is_capture() && !m.is_promotion() && depth >= 1 &&
                                   !pos.see_ge(m, VALUE_ZERO);
         bool do_lmr = depth >= 3 && moves_played >= (pv_node ? 3 : 1) &&
-                      (is_quiet || is_losing_capture) && !gives_chk;
+                      (is_quiet || is_losing_capture) && (!gives_chk || sp.chk_lmr_scale > 0);
 
         if (do_lmr) g_stats.lmr_total++;
 
@@ -1448,9 +1449,15 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
             }
             // Reduce less in PV nodes
             if (pv_node) reduction = std::max(1, reduction - 1);
-            new_depth = depth - 1 - reduction;
-            if (new_depth < 1) new_depth = 1;
-            lmr_reduction = depth - 1 - new_depth;
+            // A checking move keeps chk_lmr_scale 1024ths of its reduction
+            if (gives_chk) reduction = reduction * sp.chk_lmr_scale / 1024;
+            if (reduction > 0) {
+                new_depth = depth - 1 - reduction;
+                if (new_depth < 1) new_depth = 1;
+                lmr_reduction = depth - 1 - new_depth;
+            } else {
+                do_lmr = false;   // nothing left to reduce: searched as an unreduced move
+            }
         }
 
         // Extensions
@@ -1463,7 +1470,7 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
         // piece is simply taken leaves nothing forcing to look deeper into.
         // Recaptures get no extension; they are captures the search already
         // orders first and qsearch resolves.
-        if (gives_chk && pos.see_ge(m, VALUE_ZERO)) {
+        if (gives_chk && depth >= sp.chk_ext_min_depth && pos.see_ge(m, VALUE_ZERO)) {
             ext_count++;
             g_stats.check_extensions++;
         }

@@ -1968,6 +1968,14 @@ struct SPSAParams {
     int nmp_shallow_margin = 57;
     int nmp_shallow_depth  = 5;
 
+    // Checking moves. A check that does not lose material is extended only
+    // at depth >= chk_ext_min_depth (0: at every depth). A checking quiet
+    // move or losing capture is reduced by chk_lmr_scale 1024ths of the LMR
+    // reduction it would get (0: never reduced, as before); one left with no
+    // reduction is searched as an unreduced move.
+    int chk_ext_min_depth = 0;
+    int chk_lmr_scale     = 0;
+
     // Load from file (COUNT ints, one per line, in field order). Returns true if loaded.
     bool load(const std::string& path) {
         FILE* f = std::fopen(path.c_str(), "r");
@@ -2037,6 +2045,8 @@ inline constexpr SPSAOption SPSA_OPTIONS[] = {
     {"CorrWeightMax",   &SPSAParams::corr_weight_max,     1,   128},
     {"NmpShallowMargin", &SPSAParams::nmp_shallow_margin, 0,  300},
     {"NmpShallowDepth", &SPSAParams::nmp_shallow_depth,   0,   12},
+    {"ChkExtMinDepth",  &SPSAParams::chk_ext_min_depth,   0,   64},
+    {"ChkLmrScale",     &SPSAParams::chk_lmr_scale,       0, 2048},
 };
 
 inline const SPSAOption* find_spsa_option(const std::string& name) {
