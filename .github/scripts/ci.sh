@@ -16,7 +16,7 @@
 # ----- the network pin
 # The network the release binaries carry. fetch-net downloads it and checks
 # its sha256, so every build embeds exactly the shipped file. The pin is
-# gen768t_02q (luminex_gen768t_02q_i8.nnue on the engine-archives
+# gen768t_03q (luminex_gen768t_03q_i8.nnue on the engine-archives
 # pre-release). Shipping a new network means attaching it to a release and
 # moving pin_url, pin_sha256 and pin_about here. The url's file name is the
 # network's real name and its only source: fetch-net saves the file under it,
@@ -25,9 +25,9 @@
 # the file under it (net fails a build that names another network).
 # pin_about, the network's name and a line on how it was made, goes into the
 # development build's notes (dev-release).
-pin_url=https://github.com/changcheng967/Luminex/releases/download/engine-archives/luminex_gen768t_02q_i8.nnue
-pin_sha256=40443df6ebe3cbd8b793fcf11c3f07351414932116df6a892ba044fd072e6dd0
-pin_about="gen768t_02q: V5 (gen768t, docs/NNUE.md), gen768s's feature layer with 55,960 int8 relation rows (attacks, and pawn pairs in contact) summed into 256 of its 768 lanes (the LNT8 format); gen768t_01's float network trained on for 1,142,724 more steps (149.8B positions, a fresh optimizer, lr 5e-5) on Leela BT4's relabel of every t91 month (January's tail held out) and the BT4 corpus, then 30K steps of QAT with int8 relation rows and one int8 scale per tail row"
+pin_url=https://github.com/changcheng967/Luminex/releases/download/engine-archives/luminex_gen768t_03q_i8.nnue
+pin_sha256=f9caa9867fec446f8485b4a48c1c5e5b22e124f6d754ab8996c7927066f90a82
+pin_about="gen768t_03q: V5 (gen768t, docs/NNUE.md), gen768s's feature layer with 55,960 int8 relation rows (attacks, and pawn pairs in contact) summed into 256 of its 768 lanes (the LNT8 format); gen768t_02's float network trained on for 2,614,140 more steps (342.6B positions, a fresh optimizer, lr 5e-5) on Leela BT4's relabel of every t91 month (January's tail held out) and twelve files of the BT4 corpus that gen768t_02 never saw, then 30K steps of QAT with int8 relation rows and one int8 scale per tail row"
 
 # ----- fetch-net
 # Download the pinned network and check its sha256. Prints the file's path and
