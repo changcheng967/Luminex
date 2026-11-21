@@ -712,7 +712,7 @@ static bool load_stream(std::istream& f, const std::string& name) {
     g_buckets = NB;
     g_L1 = L1; g_L2 = L2; g_L3 = L3;
     g_rel_T = 0;   // an LNT8 net sets it again once it has loaded whole
-    long long clamped = 0, beyond_rule = 0;
+    long long clamped = 0;
     if (lnt8) {
         // The feature layer as the engine holds it: int16 rows, feature-major, on the grid; the bias in int32.
         auto read_count = [&](int32_t expected, const char* what) -> bool {
@@ -732,9 +732,6 @@ static bool load_stream(std::istream& f, const std::string& name) {
         g_rel_w.reset(size_t(rh[1]) * size_t(rh[0]));
         f.read(reinterpret_cast<char*>(g_rel_w.data()), std::streamsize(size_t(rh[1]) * size_t(rh[0])));
         if (!f) { std::fprintf(stderr, "nnue: truncated LNT8 tables\n"); return false; }
-        // The spec clips a piece-square weight to |w| <= 3.99; count the ones beyond it for the load report.
-        const int rule = int(3.99f * FT_WSCALE);
-        for (size_t i = 0; i < size_t(NUM_INPUTS) * size_t(L1); ++i) beyond_rule += (ft_w[i] > rule || ft_w[i] < -rule);
     } else {
     std::vector<float> ft_w_raw;
     if (!read_tensor(f, ft_w_raw, L1 * NUM_INPUTS)) return false;
@@ -844,8 +841,6 @@ static bool load_stream(std::istream& f, const std::string& name) {
     if (clamped > 0)
         std::printf("info string NNUE warning: %lld feature weights exceed the int16 range and were clamped\n",
                     clamped);
-    if (beyond_rule > 0)
-        std::printf("info string NNUE warning: %lld piece-square weights are beyond the range rule's 3.99\n", beyond_rule);
     return true;
 }
 
