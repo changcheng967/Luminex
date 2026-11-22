@@ -1190,10 +1190,11 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
             singular_extension = 1;
             // Double extension: if move is EXTREMELY singular (fails by a lot),
             // double extension for strongly singular moves
-            if (singular_value < sBeta - depth * sp.dext_margin / 16) {
+            if (singular_value < sBeta - depth * sp.dext_margin / 16 - (pv_node ? sp.se_pv_dext : 0)) {
                 singular_extension = 2;
                 // and a triple one past depth * se_triple_margin / 16 (0 = none)
-                if (sp.se_triple_margin && singular_value < sBeta - depth * sp.se_triple_margin / 16)
+                if (sp.se_triple_margin && singular_value < sBeta - depth * sp.se_triple_margin / 16
+                                                            - (pv_node ? sp.se_pv_triple : 0))
                     singular_extension = 3;
             }
             // The node's other moves a ply deeper (se_depth_inc); the TT move's

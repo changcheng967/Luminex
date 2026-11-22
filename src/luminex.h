@@ -1978,6 +1978,9 @@ struct SPSAParams {
     // opposite. The defaults are the old rules.
     int se_pv = 0, se_triple_margin = 0, ext_cap = 2, se_depth_inc = 0;
     int negext_tt = -2, negext_cut = -1, se_same_cut = 0;
+    // At a PV node the double (triple) extension also needs the verification
+    // to fail se_pv_dext (se_pv_triple) more, in eval units (0 = as elsewhere)
+    int se_pv_dext = 0, se_pv_triple = 0;
 
     // Load from file (COUNT ints, one per line, in field order). Returns true if loaded.
     bool load(const std::string& path) {
@@ -2055,6 +2058,8 @@ inline constexpr SPSAOption SPSA_OPTIONS[] = {
     {"NegExtTt",        &SPSAParams::negext_tt,          -4,     0},
     {"NegExtCut",       &SPSAParams::negext_cut,         -4,     0},
     {"SeSameCut",       &SPSAParams::se_same_cut,         0,     1},
+    {"SePvDext",        &SPSAParams::se_pv_dext,          0,  1000},
+    {"SePvTriple",      &SPSAParams::se_pv_triple,        0,  1000},
 };
 
 inline const SPSAOption* find_spsa_option(const std::string& name) {
