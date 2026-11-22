@@ -1393,8 +1393,23 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
         const bool early_chk = (sp.prune_red_share | sp.qsee_coeff) != 0;
         const bool gives_chk_early = early_chk && gives_check(m);
         int pd = depth;
-        if (sp.prune_red_share && is_quiet && !pv_node && depth >= 3 && moves_played >= 1 && !gives_chk_early)
-            pd = depth - compute_reduction(m, moves_played, gives_chk_early) * sp.prune_red_share / 1024;
+        if (sp.prune_red_share && is_quiet && !pv_node && depth >= 3 && moves_played >= 1 && !gives_chk_early) {
+            int r;
+            if (sp.prune_red_base) {
+                // The base reduction: the LMR table, a ply when not improving, less the history term
+                const int d_idx = std::clamp(depth - 1, 1, 63), m_idx = std::clamp(moves_played, 1, 63);
+                int r1024 = reductions_quiet[d_idx] * reductions_quiet[m_idx] + LMR_DENOM / 2;
+                if (!ss->improving && !opponent_worsening) r1024 += LMR_DENOM;
+                r = r1024 / LMR_DENOM;
+                const Piece hpc = pos.piece_on(m.from());
+                if (hpc != NO_PIECE)
+                    r -= std::max(-3, std::min(3, combined_history(worker, ss, hpc, m.to()) / sp.lmr_hist_div));
+                r = std::max(r, 0);
+            } else {
+                r = compute_reduction(m, moves_played, gives_chk_early);
+            }
+            pd = depth - r * sp.prune_red_share / 1024;
+        }
 
         // Continuation pruning: skip quiet moves with very poor history at low depth
         // Combined counter+continuation history

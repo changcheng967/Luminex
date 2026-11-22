@@ -1984,6 +1984,10 @@ struct SPSAParams {
     // count and then scales it by lmp_imp_mult / 1024. The defaults are the
     // old rule (depth 8, +100, x1).
     int lmp_max_depth = 8, lmp_imp_add = 100, lmp_imp_mult = 1024;
+    // prune_red_base 1: the pruning depth subtracts only the move's base
+    // reduction (the LMR table, the non-improving ply and the history term),
+    // not LMR's per-move adjustments (0 = the whole reduction)
+    int prune_red_base = 0;
 
     // Load from file (COUNT ints, one per line, in field order). Returns true if loaded.
     bool load(const std::string& path) {
@@ -2062,6 +2066,7 @@ inline constexpr SPSAOption SPSA_OPTIONS[] = {
     {"LmpMaxDepth",     &SPSAParams::lmp_max_depth,       1,    30},
     {"LmpImpAdd",       &SPSAParams::lmp_imp_add,         0,  1000},
     {"LmpImpMult",      &SPSAParams::lmp_imp_mult,     1024,  4096},
+    {"PruneRedBase",    &SPSAParams::prune_red_base,      0,     1},
 };
 
 inline const SPSAOption* find_spsa_option(const std::string& name) {
