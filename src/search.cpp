@@ -1179,7 +1179,10 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
     }
     if (tt_move != MOVE_NONE && !pv_node && found && tt_depth >= depth - 3 && depth >= 6 &&
         (tte->bound() & BOUND_LOWER) && abs(tt_value) < VALUE_KNOWN_WIN && !is_shuffling
-        && !(sp.fix_se_nested && ss->excluded_move)) {
+        // A verification search runs no singular test of its own: the inner
+        // test's reset of excluded_move wiped the outer exclusion, and the
+        // outer verification then searched the move it excluded
+        && !ss->excluded_move) {
         // Singular margin scales with depth; _singular_margin default 200
         // reproduces the prior depth*10/16 (= depth*200/320) exactly.
         Value sBeta = Value(tt_value - depth * sp._singular_margin / 320);
@@ -1421,7 +1424,10 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
             margin += std::min(eval_uncertainty / 3, 50);  // Less pruning when eval uncertain
             if (eval + margin < alpha) {
                 g_stats.futility_prunes++;
-                if (sp.fix_fut_bound && eval + margin > best_value && std::abs(eval) < VALUE_KNOWN_WIN)
+                // Fail-soft: the pruned move is worth at most eval + margin, so
+                // the node's upper bound must cover it, not the searched moves
+                // alone
+                if (eval + margin > best_value && std::abs(eval) < VALUE_KNOWN_WIN)
                     best_value = Value(eval + margin);
                 return false;
             }
@@ -1513,7 +1519,7 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
             // above the current best earns a ply more, barely above alpha a
             // ply less. Only a PV node whose score lands inside (alpha, beta)
             // then pays for the full window, as a PV child.
-            if (sp.fix_re_reduction) ss->reduction = 0;   // the re-search is not a reduced child
+            ss->reduction = 0;   // the re-search is not a reduced child: the child's hindsight rule reads this
             if (value > alpha) {
                 g_stats.lmr_researches++;
                 int r_depth = full_depth;
@@ -1521,8 +1527,9 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
                     r_depth++;
                 else if (value < alpha + 8 && r_depth > 1)
                     r_depth--;
-                if (!(sp.fix_re_skip && r_depth <= new_depth))
-                value = -search_worker(pos, ss + 1, -alpha - 1, -alpha, r_depth, !cut_node);
+                // Not at a depth the reduced search already ran: it would repeat it
+                if (r_depth > new_depth)
+                    value = -search_worker(pos, ss + 1, -alpha - 1, -alpha, r_depth, !cut_node);
                 if (stop.load(std::memory_order_relaxed)) {
                     pos.undo_move(m);
                     return false;
@@ -1551,9 +1558,9 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
                 }
             }
         } else {
-            // First move: full window search (FixFirstCut: as the opposite node type at a non-PV node)
-            value = -search_worker(pos, ss + 1, -beta, -alpha, full_depth,
-                                   sp.fix_first_cut && !pv_node ? !cut_node : false);
+            // First move: full window search; at a non-PV node the child is
+            // the opposite node type, like every later move's
+            value = -search_worker(pos, ss + 1, -beta, -alpha, full_depth, !pv_node && !cut_node);
             if (stop.load(std::memory_order_relaxed)) {
                 pos.undo_move(m);
                 return false;
@@ -1974,7 +1981,7 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
     // All legal moves were pruned: return eval as best estimate
     // This prevents -INFINITE garbage from polluting TT
     if (moves_played == 0 && !stop.load(std::memory_order_relaxed)) {
-        if (sp.fix_fut_bound && best_value > -VALUE_INFINITE) return best_value;
+        if (best_value > -VALUE_INFINITE) return best_value;   // a futility-pruned move's bound
         return eval;
     }
 

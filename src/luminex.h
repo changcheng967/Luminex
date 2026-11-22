@@ -649,7 +649,8 @@ public:
     int psq_eg() const;
 
     bool is_draw() const;
-    // The search root's place in the history (FixRep: repetitions of earlier positions need a second one)
+    // The search root's place in the history: a repetition of a position
+    // from before the search needs a second earlier occurrence (is_draw)
     void mark_root() { root_history_size_ = history_size; }
     bool is_check() const;
 
@@ -1971,9 +1972,10 @@ struct SPSAParams {
     int nmp_shallow_margin = 57;
     int nmp_shallow_depth  = 5;
 
-    // Defect fixes under measurement (0 = today's behaviour): see search.cpp
-    int fix_se_nested = 0, fix_re_reduction = 0, fix_first_cut = 0, fix_fut_bound = 0, fix_re_skip = 0;
-    int tt_store_slack = 0, fix_rep = 0;
+    // A main-search result replaces a same-key entry when its depth plus
+    // this reaches the entry's (0 kept only results as deep or deeper, so a
+    // shallower search of the same position lost its best move)
+    int tt_store_slack = 3;
 
     // Load from file (COUNT ints, one per line, in field order). Returns true if loaded.
     bool load(const std::string& path) {
@@ -2044,13 +2046,7 @@ inline constexpr SPSAOption SPSA_OPTIONS[] = {
     {"CorrWeightMax",   &SPSAParams::corr_weight_max,     1,   128},
     {"NmpShallowMargin", &SPSAParams::nmp_shallow_margin, 0,  300},
     {"NmpShallowDepth", &SPSAParams::nmp_shallow_depth,   0,   12},
-    {"FixSeNested",     &SPSAParams::fix_se_nested,       0,     1},
-    {"FixReReduction",  &SPSAParams::fix_re_reduction,    0,     1},
-    {"FixFirstCut",     &SPSAParams::fix_first_cut,       0,     1},
-    {"FixFutBound",     &SPSAParams::fix_fut_bound,       0,     1},
-    {"FixReSkip",       &SPSAParams::fix_re_skip,         0,     1},
     {"TtStoreSlack",    &SPSAParams::tt_store_slack,      0,     8},
-    {"FixRep",          &SPSAParams::fix_rep,             0,     1},
 };
 
 inline const SPSAOption* find_spsa_option(const std::string& name) {
