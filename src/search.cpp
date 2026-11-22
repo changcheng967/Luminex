@@ -1178,7 +1178,8 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
                        (ss - 2)->current_move.from() == (ss - 4)->current_move.to();
     }
     if (tt_move != MOVE_NONE && !pv_node && found && tt_depth >= depth - 3 && depth >= 6 &&
-        (tte->bound() & BOUND_LOWER) && abs(tt_value) < VALUE_KNOWN_WIN && !is_shuffling) {
+        (tte->bound() & BOUND_LOWER) && abs(tt_value) < VALUE_KNOWN_WIN && !is_shuffling
+        && !(sp.fix_se_nested && ss->excluded_move)) {
         // Singular margin scales with depth; _singular_margin default 200
         // reproduces the prior depth*10/16 (= depth*200/320) exactly.
         Value sBeta = Value(tt_value - depth * sp._singular_margin / 320);
@@ -1420,6 +1421,8 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
             margin += std::min(eval_uncertainty / 3, 50);  // Less pruning when eval uncertain
             if (eval + margin < alpha) {
                 g_stats.futility_prunes++;
+                if (sp.fix_fut_bound && eval + margin > best_value && std::abs(eval) < VALUE_KNOWN_WIN)
+                    best_value = Value(eval + margin);
                 return false;
             }
         }
@@ -1510,6 +1513,7 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
             // above the current best earns a ply more, barely above alpha a
             // ply less. Only a PV node whose score lands inside (alpha, beta)
             // then pays for the full window, as a PV child.
+            if (sp.fix_re_reduction) ss->reduction = 0;   // the re-search is not a reduced child
             if (value > alpha) {
                 g_stats.lmr_researches++;
                 int r_depth = full_depth;
@@ -1517,6 +1521,7 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
                     r_depth++;
                 else if (value < alpha + 8 && r_depth > 1)
                     r_depth--;
+                if (!(sp.fix_re_skip && r_depth <= new_depth))
                 value = -search_worker(pos, ss + 1, -alpha - 1, -alpha, r_depth, !cut_node);
                 if (stop.load(std::memory_order_relaxed)) {
                     pos.undo_move(m);
@@ -1546,8 +1551,9 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
                 }
             }
         } else {
-            // First move: full window search
-            value = -search_worker(pos, ss + 1, -beta, -alpha, full_depth, false);
+            // First move: full window search (FixFirstCut: as the opposite node type at a non-PV node)
+            value = -search_worker(pos, ss + 1, -beta, -alpha, full_depth,
+                                   sp.fix_first_cut && !pv_node ? !cut_node : false);
             if (stop.load(std::memory_order_relaxed)) {
                 pos.undo_move(m);
                 return false;
@@ -1679,7 +1685,7 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
                 // An excluded (singular verification) node searched a different
                 // move set than its key describes: it must not write the entry.
                 if (!stop.load(std::memory_order_relaxed) && !ss->excluded_move
-                    && TT.should_store(tte, found, depth)) {
+                    && TT.should_store(tte, found, depth + sp.tt_store_slack)) {
                     tte->save(pos.key(), value_to_tt(value, ss->ply), pv_node, BOUND_LOWER, depth, m, tt_store_eval, TT.generation());
                 }
                 // A cutoff proves the node is worth at least `value`. Above the
@@ -1968,6 +1974,7 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
     // All legal moves were pruned: return eval as best estimate
     // This prevents -INFINITE garbage from polluting TT
     if (moves_played == 0 && !stop.load(std::memory_order_relaxed)) {
+        if (sp.fix_fut_bound && best_value > -VALUE_INFINITE) return best_value;
         return eval;
     }
 
@@ -1983,7 +1990,7 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
         // A fail-low node has no best move: every move failed, and the one that
         // failed least is noise. It stores none, so the entry keeps the move an
         // earlier search found (TTEntry::save preserves it).
-        if (TT.should_store(tte, found, depth))
+        if (TT.should_store(tte, found, depth + sp.tt_store_slack))
             tte->save(pos.key(), value_to_tt(best_value, ss->ply), pv_node, bound, depth,
                       bound == BOUND_UPPER ? MOVE_NONE : best_move_found, tt_store_eval, TT.generation());
 
@@ -2312,6 +2319,7 @@ static void helper_thread_func(Position pos_copy, int thread_id) {
 // Root search with iterative deepening
 Move search(Position& pos, Limits& lim) {
     limits = lim;
+    pos.mark_root();
     root_side.store(int(pos.side_to_move()), std::memory_order_relaxed);
     // The stop flags are the caller's to clear (handle_go, bench) before the
     // search starts: clearing them here lost a "stop" sent right after "go".
