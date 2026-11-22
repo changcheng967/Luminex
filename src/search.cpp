@@ -1124,7 +1124,9 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
     // ProbCut - if a capture is obviously good enough, verify with shallow search
     // Skipped in excluded nodes: pruning the singular verification would
     // shortcut the very measurement the verification exists to make.
-    if (!pv_node && depth >= 5 && !pos.is_check() && ss->ply >= 2 && !ss->excluded_move) {
+    if (!pv_node && depth >= 5 && !pos.is_check() && ss->ply >= 2 && !ss->excluded_move
+        && !(sp.pc_tt_skip && found && std::abs(tt_value) < VALUE_KNOWN_WIN
+             && tt_value < std::min(beta + sp.probcut_margin, VALUE_INFINITE - 200))) {
         Value rbeta = std::min(beta + sp.probcut_margin, VALUE_INFINITE - 200);
         int rdepth = depth - 3;
 
@@ -1133,6 +1135,15 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
 
         ExtMove probcut_moves[MAX_MOVES];
         ExtMove* probcut_end = generate<GEN_CAPTURE>(pos, probcut_moves);
+        if (sp.pc_sort) {
+            static constexpr int pcv[] = {100, 320, 330, 500, 900, 20000, 0};
+            for (ExtMove* it = probcut_moves; it != probcut_end; ++it) {
+                const PieceType victim = it->move.is_en_passant() ? PAWN : pos.piece_type_on(it->move.to());
+                it->value = pcv[victim] * 10 - pcv[pos.piece_type_on(it->move.from())];
+            }
+            std::stable_sort(probcut_moves, probcut_end,
+                             [](const ExtMove& a, const ExtMove& b) { return a.value > b.value; });
+        }
 
         for (ExtMove* it = probcut_moves; it != probcut_end; ++it) {
             if (stop.load(std::memory_order_relaxed)) break;
@@ -1152,14 +1163,21 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
             ss->reduction = 0;
             if (!pos.do_move(m)) continue;
 
+            // A cheap check first (PcQsVerify): the capture must hold in qsearch
+            Value value = sp.pc_qs_verify ? -qsearch(pos, ss + 1, -rbeta, -rbeta + 1, 0) : rbeta;
             // Shallow search with reduced beta
-            Value value = -search_worker(pos, ss + 1, -rbeta, -rbeta + 1, rdepth, !cut_node);
+            if (value >= rbeta)
+                value = -search_worker(pos, ss + 1, -rbeta, -rbeta + 1, rdepth, !cut_node);
 
             pos.undo_move(m);
 
             if (value >= rbeta) {
                 // Shallow search confirms this move is very good - prune
                 g_stats.probcut_prunes++;
+                if (sp.pc_tt_store && !stop.load(std::memory_order_relaxed) && std::abs(value) < VALUE_KNOWN_WIN
+                    && TT.should_store(tte, found, rdepth + 1))
+                    tte->save(pos.key(), value_to_tt(value, ss->ply), ttPv, BOUND_LOWER, rdepth + 1, m,
+                              tt_store_eval, TT.generation());
                 return value;
             }
         }

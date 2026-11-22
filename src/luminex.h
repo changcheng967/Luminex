@@ -2020,6 +2020,11 @@ struct SPSAParams {
     // piece-to history.
     // All 0 = off.
     int eval_tt_adjust = 0, qs_fut_margin = 0, hist_eval_diff = 0;
+    // ProbCut: pc_qs_verify 1 runs a null-window qsearch against rbeta before
+    // the reduced search; pc_tt_skip 1 skips ProbCut when the TT value sits
+    // below rbeta; pc_tt_store 1 stores a confirmed cut as a lower bound at
+    // rdepth + 1; pc_sort 1 tries captures by victim, then attacker. 0 = off.
+    int pc_qs_verify = 0, pc_tt_skip = 0, pc_tt_store = 0, pc_sort = 0;
 
     // Load from file (COUNT ints, one per line, in field order). Returns true if loaded.
     bool load(const std::string& path) {
@@ -2121,6 +2126,10 @@ inline constexpr SPSAOption SPSA_OPTIONS[] = {
     {"EvalTtAdjust",    &SPSAParams::eval_tt_adjust,      0,     1},
     {"QsFutMargin",     &SPSAParams::qs_fut_margin,       0,  2000},
     {"HistEvalDiff",    &SPSAParams::hist_eval_diff,      0,   512},
+    {"PcQsVerify",      &SPSAParams::pc_qs_verify,        0,     1},
+    {"PcTtSkip",        &SPSAParams::pc_tt_skip,          0,     1},
+    {"PcTtStore",       &SPSAParams::pc_tt_store,         0,     1},
+    {"PcSort",          &SPSAParams::pc_sort,             0,     1},
 };
 
 inline const SPSAOption* find_spsa_option(const std::string& name) {
