@@ -374,6 +374,14 @@ inline void quant8(const float* h, uint8_t* dst, __m256 scale127) {
     __m128i i8 = _mm_packus_epi16(i16, i16);      // 16 uint8 (low 8 = ours)
     _mm_storel_epi64((__m128i*)dst, i8);          // store low 8 bytes
 }
+// Eight outputs' float steps after their integer dots d: h = clip01(bias_add(b, d, s)), lane by lane. The FMA
+// is bias_add's single rounding (AVX2 has FMA: explicit in the dispatch build, the compilers' contraction
+// otherwise), and max, min and the square are clip01's, so each lane equals the scalar steps bit for bit.
+inline void tail8(__m256i d, const float* b, const float* s, float* h) {
+    const __m256 x = _mm256_fmadd_ps(_mm256_cvtepi32_ps(d), _mm256_loadu_ps(s), _mm256_loadu_ps(b));
+    const __m256 c = _mm256_min_ps(_mm256_max_ps(x, _mm256_setzero_ps()), _mm256_set1_ps(1.0f));
+    _mm256_storeu_ps(h, _mm256_mul_ps(c, c));
+}
 // 32 uint8 x int8 products, summed in fours into 8 int32 lanes and added to acc.
 inline __m256i dpbusd256(__m256i acc, __m256i a, __m256i w) {
 #if defined(LK_AVXVNNI)
@@ -850,7 +858,8 @@ float forward_int8_impl(const int16_t* acc_stm, const int16_t* acc_nstm, const R
             s0 = _mm512_dpbusd_epi32(s0, chunk(c), _mm512_loadu_si512(w + 64 * c));
         alignas(64) int32_t d[16];
         _mm512_store_si512(d, _mm512_add_epi32(_mm512_add_epi32(s0, s1), _mm512_add_epi32(s2, s3)));
-        for (int o = 0; o < 16; ++o) h2[o] = clip01(bias_add(t.l2_b[o], d[o], t.ics2[o]));
+        tail8(_mm256_load_si256((const __m256i*)d), t.l2_b, t.ics2, h2);
+        tail8(_mm256_load_si256((const __m256i*)(d + 8)), t.l2_b + 8, t.ics2 + 8, h2 + 8);
     } else
     // VPDPBUSD: 64 MACs/instruction. Per-output dot (output-major weights, no reorder).
     for (int o = 0; o < L2; ++o)
@@ -871,12 +880,22 @@ float forward_int8_impl(const int16_t* acc_stm, const int16_t* acc_nstm, const R
             for (int o = 0; o < n_out; ++o)
                 acc8[o] = dpbusd256(acc8[o], hv, _mm256_loadu_si256((const __m256i*)(wp + o * 32)));
         }
-        for (int o = 0; o < n_out; ++o) {
-            __m128i lo = _mm256_castsi256_si128(acc8[o]);
-            __m128i hi = _mm256_extracti128_si256(acc8[o], 1);
-            __m128i sv = _mm_hadd_epi32(_mm_add_epi32(lo, hi), _mm_setzero_si128());
-            int32_t d = _mm_cvtsi128_si32(_mm_hadd_epi32(sv, sv));
-            h2[base_o + o] = clip01(bias_add(t.l2_b[base_o + o], d, t.ics2[base_o + o]));
+        if (n_out == 8) {
+            // The eight outputs' sums in one register: two vphaddd levels leave, in each 128-bit half, four
+            // outputs' sums over that half's lanes; the halves added give outputs 0-3, the second pair 4-7.
+            const __m256i s0 = _mm256_hadd_epi32(_mm256_hadd_epi32(acc8[0], acc8[1]), _mm256_hadd_epi32(acc8[2], acc8[3]));
+            const __m256i s1 = _mm256_hadd_epi32(_mm256_hadd_epi32(acc8[4], acc8[5]), _mm256_hadd_epi32(acc8[6], acc8[7]));
+            const __m128i d0 = _mm_add_epi32(_mm256_castsi256_si128(s0), _mm256_extracti128_si256(s0, 1));
+            const __m128i d1 = _mm_add_epi32(_mm256_castsi256_si128(s1), _mm256_extracti128_si256(s1, 1));
+            tail8(_mm256_inserti128_si256(_mm256_castsi128_si256(d0), d1, 1), t.l2_b + base_o, t.ics2 + base_o, h2 + base_o);
+        } else {
+            for (int o = 0; o < n_out; ++o) {
+                __m128i lo = _mm256_castsi256_si128(acc8[o]);
+                __m128i hi = _mm256_extracti128_si256(acc8[o], 1);
+                __m128i sv = _mm_hadd_epi32(_mm_add_epi32(lo, hi), _mm_setzero_si128());
+                int32_t d = _mm_cvtsi128_si32(_mm_hadd_epi32(sv, sv));
+                h2[base_o + o] = clip01(bias_add(t.l2_b[base_o + o], d, t.ics2[base_o + o]));
+            }
         }
     }
 #endif // AVX2 SF-L2 vs AVX512 VNNI L2
@@ -915,8 +934,26 @@ float forward_int8_impl(const int16_t* acc_stm, const int16_t* acc_nstm, const R
     for (int l = 0; l < L3; l += 8) quant8(h3 + l, h3_i8 + l, sc127);
     return bias_add(t.out_b, dot_i8_vnni_small(t.out_w, h3_i8, L3), t.icso);
 #else
-    for (int o = 0; o < L3; ++o)
-        h3[o] = clip01(bias_add(t.l3_b[o], dot_i8(&t.l3_w[static_cast<size_t>(o) * L2], h2_i8, L2), t.ics3[o]));
+    if (L2 == 16 && L3 % 8 == 0) {
+        // L3's dots two outputs a register: the 16 L2 bytes in both 128-bit halves against outputs o's and o+1's
+        // 16 weights (stored one after the other), vpmaddubsw + vpmaddwd to four partial sums each, then a
+        // vphaddd tree for eight outputs at a time. Integer sums: the order does not change them. The tree
+        // leaves the eight in the order 0 2 4 6 1 3 5 7; one vpermd restores 0-7.
+        const __m256i a = _mm256_broadcastsi128_si256(_mm_loadu_si128((const __m128i*)h2_i8));
+        const __m256i ones = _mm256_set1_epi16(1);
+        const __m256i order = _mm256_setr_epi32(0, 4, 1, 5, 2, 6, 3, 7);
+        for (int g = 0; g < L3; g += 8) {
+            __m256i p[4];
+            for (int k = 0; k < 4; ++k)
+                p[k] = _mm256_madd_epi16(_mm256_maddubs_epi16(a, _mm256_loadu_si256(
+                           (const __m256i*)&t.l3_w[static_cast<size_t>(g + 2 * k) * 16])), ones);
+            const __m256i r = _mm256_hadd_epi32(_mm256_hadd_epi32(p[0], p[1]), _mm256_hadd_epi32(p[2], p[3]));
+            tail8(_mm256_permutevar8x32_epi32(r, order), t.l3_b + g, t.ics3 + g, h3 + g);
+        }
+    } else {
+        for (int o = 0; o < L3; ++o)
+            h3[o] = clip01(bias_add(t.l3_b[o], dot_i8(&t.l3_w[static_cast<size_t>(o) * L2], h2_i8, L2), t.ics3[o]));
+    }
     for (int l = 0; l < L3; l += 8) quant8(h3 + l, h3_i8 + l, sc127);
     return bias_add(t.out_b, dot_i8(t.out_w, h3_i8, L3), t.icso);
 #endif
