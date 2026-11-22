@@ -1988,6 +1988,19 @@ struct SPSAParams {
     // reduction (the LMR table, the non-improving ply and the history term),
     // not LMR's per-move adjustments (0 = the whole reduction)
     int prune_red_base = 0;
+    // Singular extensions: se_pv 1 also tries them at PV nodes; a triple
+    // extension when the verification fails by more than depth *
+    // se_triple_margin / 16 (0 = none); ext_cap caps a move's extensions;
+    // se_depth_inc 1 searches the node's other moves a ply deeper after a
+    // singular TT move (whose own extension stays); the negative extensions
+    // are negext_tt (TT value above beta) and negext_cut (cut node);
+    // se_same_cut 1 runs the verification as the node's own type, not the
+    // opposite. The defaults are the old rules.
+    int se_pv = 0, se_triple_margin = 0, ext_cap = 2, se_depth_inc = 0;
+    int negext_tt = -2, negext_cut = -1, se_same_cut = 0;
+    // At a PV node the double (triple) extension also needs the verification
+    // to fail se_pv_dext (se_pv_triple) more, in eval units (0 = as elsewhere)
+    int se_pv_dext = 0, se_pv_triple = 0;
 
     // Load from file (COUNT ints, one per line, in field order). Returns true if loaded.
     bool load(const std::string& path) {
@@ -2067,6 +2080,15 @@ inline constexpr SPSAOption SPSA_OPTIONS[] = {
     {"LmpImpAdd",       &SPSAParams::lmp_imp_add,         0,  1000},
     {"LmpImpMult",      &SPSAParams::lmp_imp_mult,     1024,  4096},
     {"PruneRedBase",    &SPSAParams::prune_red_base,      0,     1},
+    {"SePv",            &SPSAParams::se_pv,               0,     1},
+    {"SeTripleMargin",  &SPSAParams::se_triple_margin,    0,   256},
+    {"ExtCap",          &SPSAParams::ext_cap,             1,     4},
+    {"SeDepthInc",      &SPSAParams::se_depth_inc,        0,     1},
+    {"NegExtTt",        &SPSAParams::negext_tt,          -4,     0},
+    {"NegExtCut",       &SPSAParams::negext_cut,         -4,     0},
+    {"SeSameCut",       &SPSAParams::se_same_cut,         0,     1},
+    {"SePvDext",        &SPSAParams::se_pv_dext,          0,  1000},
+    {"SePvTriple",      &SPSAParams::se_pv_triple,        0,  1000},
 };
 
 inline const SPSAOption* find_spsa_option(const std::string& name) {
