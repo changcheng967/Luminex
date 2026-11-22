@@ -328,6 +328,8 @@ struct DenseTail {
     std::vector<int8_t> l2_w_file, l3_w_file;   // L2 and L3 as the file stores them (output-major)
     WeightBytes l2_w_i8, l3_w_i8;       // the same, arranged for the kernels in use (arrange_tails)
     WeightBytes out_w_i8;
+    std::vector<uint8_t> l2_slot;   // L2Layout::Pairs: each input chunk's slot (pair_chunks)
+    int l2_pairs = 0;
     std::vector<float> l2_b, l3_b;
     // A dot of int8 weights (w x s) with uint8 activations (a x 127) becomes
     // the float sum when multiplied by 1 / (s x 127): one factor per output.
@@ -574,6 +576,68 @@ std::string set_simd_level(const std::string& request) {
     return msg;
 }
 
+// Pair L2's 32-input chunks for L2Layout::Pairs. Chunk c's int16 lane j holds inputs 32c + 2j and 32c + 2j + 1:
+// two products of an activation in [0, NNUE_ACT_MAX] and an int8 weight. Two chunks may share an int16 sum when,
+// for every output and lane, NNUE_ACT_MAX times the four weights' |w| summed fits int16: then the sum is exact
+// whatever the activations. The pairs are a matching in the graph of such chunk pairs: the free chunk with the
+// fewest free partners pairs first, with its partner of fewest; then two chunks left over take the halves of a
+// pair that suit them, until none do. A chunk left single is still exact (the kernel adds it alone), only
+// slower. Returns the pair count; order gets the chunks slot by slot, the pairs first, single chunks after.
+static int pair_chunks(const std::vector<int8_t>& w, int L2, int total_in, std::vector<uint8_t>& order) {
+    const int n = total_in / 32, lim = 32767 / NNUE_ACT_MAX;
+    const size_t m = size_t(L2) * 16;
+    std::vector<int> s(size_t(n) * m);   // s[c * m + o * 16 + j]: chunk c's lane j |w| sum for output o
+    for (int o = 0; o < L2; ++o)
+        for (int c = 0; c < n; ++c)
+            for (int j = 0; j < 16; ++j) {
+                const int8_t* p = &w[size_t(o) * total_in + 32 * c + 2 * j];
+                s[c * m + size_t(o) * 16 + j] = std::abs(int(p[0])) + std::abs(int(p[1]));
+            }
+    std::vector<char> ok(size_t(n) * n, 0);
+    for (int c = 0; c < n; ++c)
+        for (int d = c + 1; d < n; ++d) {
+            bool fits = true;
+            for (size_t i = 0; i < m && fits; ++i) fits = s[c * m + i] + s[d * m + i] <= lim;
+            ok[size_t(c) * n + d] = ok[size_t(d) * n + c] = fits;
+        }
+    std::vector<int> mate(n, -1);
+    auto partners = [&](int c) {
+        int k = 0;
+        for (int d = 0; d < n; ++d) k += (d != c && mate[d] < 0 && ok[size_t(c) * n + d]);
+        return k;
+    };
+    for (;;) {
+        int u = -1, ku = 0;
+        for (int c = 0; c < n; ++c)
+            if (mate[c] < 0)
+                if (const int k = partners(c); k > 0 && (u < 0 || k < ku)) { u = c; ku = k; }
+        if (u < 0) break;
+        int v = -1, kv = 0;
+        for (int d = 0; d < n; ++d)
+            if (d != u && mate[d] < 0 && ok[size_t(u) * n + d])
+                if (const int k = partners(d); v < 0 || k < kv) { v = d; kv = k; }
+        mate[u] = v; mate[v] = u;
+    }
+    for (bool more = true; more;) {
+        more = false;
+        for (int u = 0; u < n && !more; ++u)
+            for (int v = u + 1; v < n && !more && mate[u] < 0; ++v)
+                for (int a = 0; a < n && !more && mate[v] < 0; ++a) {
+                    const int b = mate[a];
+                    if (b < 0 || !ok[size_t(u) * n + a] || !ok[size_t(v) * n + b]) continue;
+                    mate[u] = a; mate[a] = u; mate[v] = b; mate[b] = v;
+                    more = true;
+                }
+    }
+    order.clear();
+    for (int c = 0; c < n; ++c)
+        if (mate[c] > c) { order.push_back(uint8_t(c)); order.push_back(uint8_t(mate[c])); }
+    const int pairs = int(order.size()) / 2;
+    for (int c = 0; c < n; ++c)
+        if (mate[c] < 0) order.push_back(uint8_t(c));
+    return pairs;
+}
+
 // Arrange every tail's L2 and L3 weights the way the kernels in use read them,
 // from the file's output-major order, and point the kernels' view at them.
 static void arrange_tails() {
@@ -583,6 +647,8 @@ static void arrange_tails() {
     for (DenseTail& t : g_tails) {
         TailView v;
         if (g_int8) {
+            t.l2_slot.clear();
+            t.l2_pairs = 0;
             const bool by_input = k.l2_layout == L2Layout::ByInput4 && L2 == 16;
             const bool batched = k.l3_batched && L2 == 16 && L3 % 4 == 0;
             if (batched) {
@@ -604,6 +670,26 @@ static void arrange_tails() {
                     for (int o = 0; o < L2; ++o)
                         std::memcpy(&t.l2_w_i8[(static_cast<size_t>(c) * L2 + o) * 4],
                                     &t.l2_w_file[static_cast<size_t>(o) * total_in + c * 4], 4);
+            } else if (k.l2_layout == L2Layout::Pairs) {
+                // Paired chunks (pair_chunks), four outputs a pass: for each pass, pair k's 4 x 2 rows of 32
+                // weights (output by output, its two chunks in slot order), then each single chunk's 4 rows.
+                const int nslot = total_in / 32;
+                std::vector<uint8_t> order;
+                t.l2_pairs = pair_chunks(t.l2_w_file, L2, total_in, order);
+                t.l2_slot.assign(nslot, 0);
+                for (int s = 0; s < nslot; ++s) t.l2_slot[order[s]] = uint8_t(s);
+                t.l2_w_i8.assign(t.l2_w_file.size(), 0);
+                size_t at = 0;
+                auto put = [&](int o, int c) {
+                    std::memcpy(&t.l2_w_i8[at], &t.l2_w_file[static_cast<size_t>(o) * total_in + 32 * c], 32);
+                    at += 32;
+                };
+                for (int q = 0; q < L2; q += 4) {
+                    for (int p = 0; p < t.l2_pairs; ++p)
+                        for (int o = q; o < q + 4; ++o) { put(o, order[2 * p]); put(o, order[2 * p + 1]); }
+                    for (int s = 2 * t.l2_pairs; s < nslot; ++s)
+                        for (int o = q; o < q + 4; ++o) put(o, order[s]);
+                }
             } else if (k.l2_layout == L2Layout::Chunk32) {
                 // AVX2 SF-style chunk access. Old: [output][chunk] → New: [chunk][output]
                 // (each chunk's L2 weight rows contiguous)
@@ -620,6 +706,8 @@ static void arrange_tails() {
             v.out_w = t.out_w_i8.data();
             v.l2_by_input = by_input;
             v.l3_batched = batched;
+            v.l2_slot = t.l2_slot.empty() ? nullptr : t.l2_slot.data();
+            v.l2_pairs = t.l2_pairs;
         } else {
             v.l2_wf = l2_w.data();
             v.l3_wf = l3_w.data();
