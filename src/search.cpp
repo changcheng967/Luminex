@@ -1387,14 +1387,23 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
         if (!pos.legal(m, true)) return false;  // Skip pseudo_legal check for generated moves
         any_legal_move = true;  // Legal move exists (even if later pruned)
 
+        // The depth the pruning rules below read: the node's, less a share of
+        // the reduction LMR would give this quiet move (PruneRedShare; 0 = the
+        // node's depth). The check test runs early only when a rule needs it.
+        const bool early_chk = (sp.prune_red_share | sp.qsee_coeff) != 0;
+        const bool gives_chk_early = early_chk && gives_check(m);
+        int pd = depth;
+        if (sp.prune_red_share && is_quiet && !pv_node && depth >= 3 && moves_played >= 1 && !gives_chk_early)
+            pd = depth - compute_reduction(m, moves_played, gives_chk_early) * sp.prune_red_share / 1024;
+
         // Continuation pruning: skip quiet moves with very poor history at low depth
         // Combined counter+continuation history
-        if (is_quiet && !pv_node && depth <= 4 && moves_played > 0) {
+        if (is_quiet && !pv_node && pd <= sp.hist_prune_max_depth && moves_played > 0) {
             Piece pc = pos.piece_on(m.from());
             if (pc != NO_PIECE) {
                 int hist_score = combined_history(worker, ss, pc, m.to());
                 // Prune if history is very negative (move has historically been bad)
-                if (hist_score < sp.hist_prune_base - sp.hist_prune_coeff * (depth - 1)) {
+                if (hist_score < sp.hist_prune_base - sp.hist_prune_coeff * (pd - 1)) {
                     g_stats.history_prunes++;
                     return false;
                 }
@@ -1415,13 +1424,21 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
         }
 
         // Futility pruning: skip quiet moves that can't improve alpha
-        if (is_quiet && !pv_node && ss->ply > 0 && !pos.is_check() && depth <= 5) {
-            int margin = depth * sp.fut_coeff + (ss->improving ? sp.fut_improving : sp.fut_base);
+        if (is_quiet && !pv_node && ss->ply > 0 && !pos.is_check() && pd <= sp.fut_max_depth) {
+            int margin = pd * sp.fut_coeff + (ss->improving ? sp.fut_improving : sp.fut_base);
             margin += std::min(eval_uncertainty / 3, 50);  // Less pruning when eval uncertain
             if (eval + margin < alpha) {
                 g_stats.futility_prunes++;
                 return false;
             }
+        }
+
+        // SEE pruning of quiet moves: one that gives no check and loses more
+        // than qsee_coeff * pd^2 by SEE is not searched (qsee_coeff 0 = off)
+        if (sp.qsee_coeff && is_quiet && !pv_node && ss->ply > 0 && moves_played > 0 && !gives_chk_early
+            && pd <= sp.qsee_max_depth && !pos.see_ge(m, Value(-sp.qsee_coeff * pd * pd))) {
+            g_stats.futility_prunes++;
+            return false;
         }
 
         // Late Move Reduction: reduce moves that are unlikely to be best
@@ -1430,7 +1447,7 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
         // But NEVER reduce moves that give check — they are forcing
         Depth new_depth = depth - 1;
         int lmr_reduction = 0;  // actual reduction, before extensions
-        bool gives_chk = gives_check(m);
+        bool gives_chk = early_chk ? gives_chk_early : gives_check(m);
         bool is_losing_capture = m.is_capture() && !m.is_promotion() && depth >= 1 &&
                                   !pos.see_ge(m, VALUE_ZERO);
         bool do_lmr = depth >= 3 && moves_played >= (pv_node ? 3 : 1) &&

@@ -1968,6 +1968,18 @@ struct SPSAParams {
     int nmp_shallow_margin = 57;
     int nmp_shallow_depth  = 5;
 
+    // The depth futility and history pruning read for a quiet move: depth -
+    // prune_red_share / 1024 of the reduction LMR would give the move (0 =
+    // the node's depth, as before). They apply up to fut_max_depth and
+    // hist_prune_max_depth of it. A quiet move that gives no check is also
+    // pruned when it loses more than qsee_coeff * d^2 by SEE at that depth d
+    // (d <= qsee_max_depth; qsee_coeff 0 = off). The defaults are the old rules.
+    int prune_red_share = 0;
+    int fut_max_depth = 5;
+    int hist_prune_max_depth = 4;
+    int qsee_coeff = 0;
+    int qsee_max_depth = 8;
+
     // Load from file (COUNT ints, one per line, in field order). Returns true if loaded.
     bool load(const std::string& path) {
         FILE* f = std::fopen(path.c_str(), "r");
@@ -2037,6 +2049,11 @@ inline constexpr SPSAOption SPSA_OPTIONS[] = {
     {"CorrWeightMax",   &SPSAParams::corr_weight_max,     1,   128},
     {"NmpShallowMargin", &SPSAParams::nmp_shallow_margin, 0,  300},
     {"NmpShallowDepth", &SPSAParams::nmp_shallow_depth,   0,   12},
+    {"PruneRedShare",   &SPSAParams::prune_red_share,     0,  1024},
+    {"FutMaxDepth",     &SPSAParams::fut_max_depth,       1,    16},
+    {"HistPruneMaxDepth", &SPSAParams::hist_prune_max_depth, 1, 16},
+    {"QseeCoeff",       &SPSAParams::qsee_coeff,          0,   200},
+    {"QseeMaxDepth",    &SPSAParams::qsee_max_depth,      1,    16},
 };
 
 inline const SPSAOption* find_spsa_option(const std::string& name) {
