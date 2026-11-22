@@ -1979,6 +1979,11 @@ struct SPSAParams {
     int hist_prune_max_depth = 4;
     int qsee_coeff = 0;
     int qsee_max_depth = 8;
+    // Late move pruning applies up to lmp_max_depth; an improving position
+    // (or a worsening opponent) adds lmp_imp_add hundredths of a move to the
+    // count and then scales it by lmp_imp_mult / 1024. The defaults are the
+    // old rule (depth 8, +100, x1).
+    int lmp_max_depth = 8, lmp_imp_add = 100, lmp_imp_mult = 1024;
 
     // Load from file (COUNT ints, one per line, in field order). Returns true if loaded.
     bool load(const std::string& path) {
@@ -2054,6 +2059,9 @@ inline constexpr SPSAOption SPSA_OPTIONS[] = {
     {"HistPruneMaxDepth", &SPSAParams::hist_prune_max_depth, 1, 16},
     {"QseeCoeff",       &SPSAParams::qsee_coeff,          0,   200},
     {"QseeMaxDepth",    &SPSAParams::qsee_max_depth,      1,    16},
+    {"LmpMaxDepth",     &SPSAParams::lmp_max_depth,       1,    30},
+    {"LmpImpAdd",       &SPSAParams::lmp_imp_add,         0,  1000},
+    {"LmpImpMult",      &SPSAParams::lmp_imp_mult,     1024,  4096},
 };
 
 inline const SPSAOption* find_spsa_option(const std::string& name) {

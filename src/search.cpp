@@ -1415,9 +1415,11 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
         // improving, or whose opponent is worsening, keep one more move.
         // Quiets arrive ordered by history, so the skipped moves are the
         // ones it rates lowest. The count is tunable in hundredths of a move.
-        int lmp_threshold = (sp.lmp_base + ((ss->improving || opponent_worsening) ? 100 : 0)
-                             + depth * depth * sp.lmp_coeff) / 100;
-        if (is_quiet && !pv_node && ss->ply > 0 && depth <= 8 && moves_played >= lmp_threshold
+        const bool lmp_imp = ss->improving || opponent_worsening;
+        int lmp_threshold = sp.lmp_base + (lmp_imp ? sp.lmp_imp_add : 0) + depth * depth * sp.lmp_coeff;
+        if (lmp_imp) lmp_threshold = lmp_threshold * sp.lmp_imp_mult / 1024;
+        lmp_threshold /= 100;
+        if (is_quiet && !pv_node && ss->ply > 0 && depth <= sp.lmp_max_depth && moves_played >= lmp_threshold
             && m != worker->killers[ss->ply][0] && m != worker->killers[ss->ply][1]) {
             g_stats.lmp_prunes++;
             return false;
