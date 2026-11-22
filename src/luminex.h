@@ -1978,6 +1978,16 @@ struct SPSAParams {
     // are 0 is neither read nor written, so the defaults search as before.
     int ord_main = 1024, ord_cm = 1024, ord_ch2 = 1024, ord_ch3 = 0, ord_ch4 = 0, ord_pawn = 0, ord_bfly = 0;
     int red_main = 1024, red_cm = 1024, red_ch2 = 1024, red_ch3 = 0, red_ch4 = 0, red_pawn = 0, red_bfly = 0;
+    // An eighth table, keyed by our own move 6 plies back, weighed the same way
+    int ord_ch6 = 0, red_ch6 = 0;
+    // Threat terms in the quiet ordering: a knight or bishop that leaves
+    // (enters) a square an enemy pawn attacks, a rook one an enemy pawn,
+    // knight or bishop attacks, a queen one any of those or a rook attacks,
+    // gains (loses) its value * ord_threat_escape (ord_threat_into) / 32.
+    // A quiet move of any piece that gives check and keeps SEE >= -ord_check_see
+    // gains ord_check. All 0 = off.
+    int ord_threat_escape = 0, ord_threat_into = 0;
+    int ord_check = 0, ord_check_see = 36;
     // Quiet move ordering, the bonuses on top of the history score: killers,
     // the counter move, a piece leaving a pawn's attack, a piece moving next
     // to the enemy king, the centre table (in 1024ths), a pawn attacking a
@@ -2069,6 +2079,12 @@ inline constexpr SPSAOption SPSA_OPTIONS[] = {
     {"RedCh4",          &SPSAParams::red_ch4,             0,  4096},
     {"RedPawn",         &SPSAParams::red_pawn,            0,  4096},
     {"RedBfly",         &SPSAParams::red_bfly,            0,  4096},
+    {"OrdCh6",          &SPSAParams::ord_ch6,             0,  4096},
+    {"RedCh6",          &SPSAParams::red_ch6,             0,  4096},
+    {"OrdThreatEscape", &SPSAParams::ord_threat_escape,   0,  4096},
+    {"OrdThreatInto",   &SPSAParams::ord_threat_into,     0,  4096},
+    {"OrdCheck",        &SPSAParams::ord_check,           0,  40000},
+    {"OrdCheckSee",     &SPSAParams::ord_check_see,       0,   400},
     {"OrdKiller1",      &SPSAParams::ord_killer1,         0, 120000},
     {"OrdKiller2",      &SPSAParams::ord_killer2,         0, 100000},
     {"OrdCounter",      &SPSAParams::ord_counter,         0,  80000},

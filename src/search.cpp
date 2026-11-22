@@ -148,6 +148,7 @@ struct SearchWorker {
     // structure, and by the side, from and to squares
     int continuation3[12][64][12][64] = {};
     int continuation4[12][64][12][64] = {};
+    int continuation6[12][64][12][64] = {};
     static constexpr int PAWN_HIST_SIZE = 512;
     int pawn_history[PAWN_HIST_SIZE][12][64] = {};
     int butterfly[2][64][64] = {};
@@ -280,13 +281,13 @@ inline bool has_prior(const Stack* ss, int k) {
     return ss->ply >= k && (ss - k)->current_move != MOVE_NONE && (ss - k)->moved_piece != NO_PIECE;
 }
 
-// A quiet move's history score: the seven tables, each times its weight in
+// A quiet move's history score: the eight tables, each times its weight in
 // 1024ths (SPSAParams ord_* for move ordering, red_* for LMR and history
 // pruning; wt lists them in table order). The defaults weigh the piece-to,
 // counter-move and 2-ply tables 1024 each and the rest 0, which is the old
 // sum exactly; a table with weight 0 is not read.
 inline int weighted_history(const SearchWorker* w, const Stack* ss, const Position& pos, Move m, Piece pc,
-                            const int (&wt)[7]) {
+                            const int (&wt)[8]) {
     const Square to = m.to();
     int score = 0;
     if (wt[0]) score += wt[0] * w->history[int(pc)][int(to)];
@@ -302,11 +303,13 @@ inline int weighted_history(const SearchWorker* w, const Stack* ss, const Positi
         score += wt[5] * w->pawn_history[pos.pawn_key() & (SearchWorker::PAWN_HIST_SIZE - 1)][int(pc)][int(to)];
     if (wt[6])
         score += wt[6] * w->butterfly[int(color_of_piece(pc))][int(m.from())][int(to)];
+    if (wt[7] && has_prior(ss, 6))
+        score += wt[7] * w->continuation6[int((ss - 6)->moved_piece)][int((ss - 6)->current_move.to())][int(pc)][int(to)];
     return score / 1024;
 }
 
 struct HistWeights {
-    int ord[7], red[7];
+    int ord[8], red[8];
 };
 
 // The two weight lists, read from the search constants once per search
@@ -315,9 +318,9 @@ static thread_local HistWeights hist_weights;
 
 inline void refresh_hist_weights() {
     const SPSAParams& sp = SPSAParams::get();
-    const int ord[7] = {sp.ord_main, sp.ord_cm, sp.ord_ch2, sp.ord_ch3, sp.ord_ch4, sp.ord_pawn, sp.ord_bfly};
-    const int red[7] = {sp.red_main, sp.red_cm, sp.red_ch2, sp.red_ch3, sp.red_ch4, sp.red_pawn, sp.red_bfly};
-    for (int i = 0; i < 7; ++i) {
+    const int ord[8] = {sp.ord_main, sp.ord_cm, sp.ord_ch2, sp.ord_ch3, sp.ord_ch4, sp.ord_pawn, sp.ord_bfly, sp.ord_ch6};
+    const int red[8] = {sp.red_main, sp.red_cm, sp.red_ch2, sp.red_ch3, sp.red_ch4, sp.red_pawn, sp.red_bfly, sp.red_ch6};
+    for (int i = 0; i < 8; ++i) {
         hist_weights.ord[i] = ord[i];
         hist_weights.red[i] = red[i];
     }
@@ -338,6 +341,8 @@ inline void update_weighted_tables(SearchWorker* w, const Stack* ss, const Posit
         grav(w->pawn_history[pos.pawn_key() & (SearchWorker::PAWN_HIST_SIZE - 1)][int(pc)][int(to)]);
     if (hw.ord[6] | hw.red[6])
         grav(w->butterfly[int(color_of_piece(pc))][int(m.from())][int(to)]);
+    if ((hw.ord[7] | hw.red[7]) && has_prior(ss, 6))
+        grav(w->continuation6[int((ss - 6)->moved_piece)][int((ss - 6)->current_move.to())][int(pc)][int(to)]);
 }
 
 inline Value eval_cached(const Position& pos) {
@@ -1874,6 +1879,21 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
         // Score quiets: killers + counter-moves + history + escape-aware + danger-aware
         Bitboard enemy_pawn_attacks = pawn_attacks_bb(Color(pos.side_to_move() ^ 1), pos.pieces(Color(pos.side_to_move() ^ 1), PAWN));
         Square opp_ksq = pos.king_sq(Color(pos.side_to_move() ^ 1));
+        // Squares a lesser enemy piece attacks, per mover type (only when a
+        // threat weight is on): knights and bishops fear pawns, rooks also
+        // knights and bishops, queens also rooks
+        Bitboard thr_minor = 0, thr_rook = 0, thr_queen = 0;
+        if (sp.ord_threat_escape | sp.ord_threat_into) {
+            const Color them = Color(pos.side_to_move() ^ 1);
+            const Bitboard occ = pos.pieces();
+            Bitboard minor_att = 0, rook_att = 0;
+            for (Bitboard b = pos.pieces(them, KNIGHT); b; ) minor_att |= knight_attacks_bb(pop_lsb(b));
+            for (Bitboard b = pos.pieces(them, BISHOP); b; ) minor_att |= bishop_attacks_bb(pop_lsb(b), occ);
+            for (Bitboard b = pos.pieces(them, ROOK); b; ) rook_att |= rook_attacks_bb(pop_lsb(b), occ);
+            thr_minor = enemy_pawn_attacks;
+            thr_rook = thr_minor | minor_att;
+            thr_queen = thr_rook | rook_att;
+        }
         for (ExtMove* it = quiets; it != quiet_end; ++it) {
             Move m = it->move;
             int score = 0;
@@ -1954,6 +1974,18 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
                     // Check-giving knight: cheap lookup, forcing move
                     if (pt == KNIGHT && (knight_attacks_bb(m.to()) & square_bb(opp_ksq)))
                         score += sp.ord_knight_check;
+
+                    // Threat terms (ord_threat_escape / ord_threat_into, 0 = off)
+                    if (sp.ord_threat_escape | sp.ord_threat_into) {
+                        static constexpr int thr_value[7] = {0, 320, 330, 500, 900, 0, 0};
+                        const Bitboard thr = (pt == KNIGHT || pt == BISHOP) ? thr_minor
+                                           : pt == ROOK ? thr_rook : pt == QUEEN ? thr_queen : Bitboard(0);
+                        if (thr & square_bb(m.from())) score += thr_value[pt] * sp.ord_threat_escape / 32;
+                        if (thr & square_bb(m.to()))   score -= thr_value[pt] * sp.ord_threat_into / 32;
+                    }
+                    // A check by any piece that keeps SEE >= -ord_check_see (ord_check, 0 = off)
+                    if (sp.ord_check && gives_check(m) && pos.see_ge(m, Value(-sp.ord_check_see)))
+                        score += sp.ord_check;
                 }
             }
             it->value = score;
@@ -3182,6 +3214,7 @@ void clear_search_history() {
         std::memset(w->continuation_history, 0, sizeof(w->continuation_history));
         std::memset(w->continuation3, 0, sizeof(w->continuation3));
         std::memset(w->continuation4, 0, sizeof(w->continuation4));
+        std::memset(w->continuation6, 0, sizeof(w->continuation6));
         std::memset(w->pawn_history, 0, sizeof(w->pawn_history));
         std::memset(w->butterfly, 0, sizeof(w->butterfly));
     };
