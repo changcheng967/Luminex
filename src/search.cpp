@@ -1177,7 +1177,7 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
         is_shuffling = tt_move.from() == (ss - 2)->current_move.to() &&
                        (ss - 2)->current_move.from() == (ss - 4)->current_move.to();
     }
-    if (tt_move != MOVE_NONE && (!pv_node || sp.se_pv) && ss->ply > 0 && found && tt_depth >= depth - 3 && depth >= 6 &&
+    if (tt_move != MOVE_NONE && (!pv_node || sp.se_pv) && found && tt_depth >= depth - 3 && depth >= 6 &&
         (tte->bound() & BOUND_LOWER) && abs(tt_value) < VALUE_KNOWN_WIN && !is_shuffling) {
         // Singular margin scales with depth; _singular_margin default 200
         // reproduces the prior depth*10/16 (= depth*200/320) exactly.
