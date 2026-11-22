@@ -89,7 +89,7 @@ the speed. It is the bench OpenBench runs.
 | `Ponder` | false | Allow `go ponder` and `ponderhit` |
 | `UCI_ShowWDL` | false | Add `wdl` (win, draw and loss per mille) to the info lines |
 | `UseNNUE` | true | Evaluate with the network; false uses the hand-crafted evaluation |
-| `NNUEFile` | `luminex_gen768t_03q_i8.nnue` | The network. The default name selects the built-in network; any other file is looked for as given, then next to the binary |
+| `NNUEFile` | `luminex_gen768t_04q_i8.nnue` | The network. The default name selects the built-in network; any other file is looked for as given, then next to the binary |
 | `SimdLevel` | auto | x86-64 release binaries: the kernels' level (`avx512vnni`, `avx512`, `avxvnni`, `avx2`, `base`), for testing |
 | `Contempt` | 0 | Draw avoidance, in centipawns |
 | `Move Overhead` | 30 | Milliseconds kept back on each move for the GUI and the connection |
@@ -191,7 +191,7 @@ data: its test91 games relabelled by BT4, and BT4's own games. [`docs/NNUE.md`](
 specifies every architecture, V1 to V5.
 
 A network's name gives its architecture and run. For example,
-`luminex_gen768t_03q_i8.nnue` is gen768t's third run, finished with
+`luminex_gen768t_04q_i8.nnue` is gen768t's fourth run, finished with
 quantization-aware training (`q`) and quantized to int8 (`_i8`). The built-in
 network is pinned in [`.github/scripts/ci.sh`](.github/scripts/ci.sh)
 (`pin_url`, `pin_sha256`), and CMake reads its name there.
@@ -224,7 +224,7 @@ cmake -B build -DCMAKE_BUILD_TYPE=Release -DCMAKE_CXX_COMPILER=clang++-23
 cmake --build build --config Release -j
 ```
 
-That binary has no network inside. It loads `luminex_gen768t_03q_i8.nnue`
+That binary has no network inside. It loads `luminex_gen768t_04q_i8.nnue`
 from the working directory or its own. To build the network in, as the
 releases do:
 
