@@ -2001,6 +2001,17 @@ struct SPSAParams {
     // At a PV node the double (triple) extension also needs the verification
     // to fail se_pv_dext (se_pv_triple) more, in eval units (0 = as elsewhere)
     int se_pv_dext = 0, se_pv_triple = 0;
+    // Static pruning. nmp_cut_only 1: null move only at expected-cut nodes.
+    // Reverse futility up to rfp_max_depth; it returns rfp_blend / 1024 of
+    // beta and the rest of the eval (0 = the eval); rfp_tt_cond 1: only
+    // without a TT move or with a capture one; rfp_no_ttpv 1: not at a node
+    // the TT marks PV. IIR from iir_min_depth, and iir_no_all 1 keeps it off
+    // expected-ALL nodes; IID at PV nodes from iid_min_depth (99 = off);
+    // razoring up to razor_max_depth; small_pc_margin > 0: a TT lower bound
+    // that far above beta, stored at depth - 4 or deeper, returns beta + the
+    // margin. The defaults are the old rules.
+    int nmp_cut_only = 0, rfp_max_depth = 8, rfp_blend = 0, rfp_tt_cond = 0, rfp_no_ttpv = 0;
+    int iir_min_depth = 3, iir_no_all = 0, iid_min_depth = 4, razor_max_depth = 4, small_pc_margin = 0;
 
     // Load from file (COUNT ints, one per line, in field order). Returns true if loaded.
     bool load(const std::string& path) {
@@ -2089,6 +2100,16 @@ inline constexpr SPSAOption SPSA_OPTIONS[] = {
     {"SeSameCut",       &SPSAParams::se_same_cut,         0,     1},
     {"SePvDext",        &SPSAParams::se_pv_dext,          0,  1000},
     {"SePvTriple",      &SPSAParams::se_pv_triple,        0,  1000},
+    {"NmpCutOnly",      &SPSAParams::nmp_cut_only,        0,     1},
+    {"RfpMaxDepth",     &SPSAParams::rfp_max_depth,       1,    24},
+    {"RfpBlend",        &SPSAParams::rfp_blend,           0,  1024},
+    {"RfpTtCond",       &SPSAParams::rfp_tt_cond,         0,     1},
+    {"RfpNoTtPv",       &SPSAParams::rfp_no_ttpv,         0,     1},
+    {"IirMinDepth",     &SPSAParams::iir_min_depth,       1,    16},
+    {"IirNoAll",        &SPSAParams::iir_no_all,          0,     1},
+    {"IidMinDepth",     &SPSAParams::iid_min_depth,       1,    99},
+    {"RazorMaxDepth",   &SPSAParams::razor_max_depth,     0,    12},
+    {"SmallPcMargin",   &SPSAParams::small_pc_margin,     0,  2000},
 };
 
 inline const SPSAOption* find_spsa_option(const std::string& name) {

@@ -997,7 +997,8 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
 
     // Internal Iterative Reduction (IIR): reduce depth by 1 when no TT move available
     // Broader threshold from Stash (depth >= 3 instead of 4)
-    if (!pv_node && tt_move == MOVE_NONE && depth >= 3) {
+    if (!pv_node && tt_move == MOVE_NONE && depth >= SPSAParams::get().iir_min_depth
+        && !(SPSAParams::get().iir_no_all && !cut_node)) {
         depth--;
         g_stats.iir_reductions++;
     }
@@ -1010,14 +1011,16 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
     {
         int rev_margin = sp.rev_fut_coeff * depth + ((ss->improving || opponent_worsening) ? 0 : sp.rfp_not_improving);
         rev_margin += std::min(eval_uncertainty / 2, 80);  // Up to 80cp extra margin when uncertain
-        if (!pv_node && !pos.is_check() && depth <= 8 && eval - rev_margin >= beta) {
+        if (!pv_node && !pos.is_check() && depth <= sp.rfp_max_depth && eval - rev_margin >= beta
+            && !(sp.rfp_tt_cond && tt_move != MOVE_NONE && !tt_move.is_capture())
+            && !(sp.rfp_no_ttpv && ttPv)) {
             g_stats.rev_futility_prunes++;
-            return eval;
+            return sp.rfp_blend ? Value((sp.rfp_blend * int(beta) + (1024 - sp.rfp_blend) * int(eval)) / 1024) : eval;
         }
     }
 
     // Razoring: at low depths, if eval is far below alpha, try qsearch to confirm
-    if (!pv_node && !pos.is_check() && depth <= 4) {
+    if (!pv_node && !pos.is_check() && depth <= sp.razor_max_depth) {
         Value razor_margin = sp.razor_base + depth * depth * sp.razor_coeff;
         if (eval + razor_margin < alpha) {
             // qsearch fail-high against the (alpha-1, alpha) window returns
@@ -1040,7 +1043,7 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
     int piece_count = popcount(pos.pieces()) - popcount(pos.pieces(PAWN)) - 2;
     const Color stm = pos.side_to_move();
     int own_pieces = popcount(pos.pieces(stm)) - popcount(pos.pieces(stm, PAWN)) - 1;
-    bool null_move_ok = !pv_node && !pos.is_check() && depth >= 2 && own_pieces >= 1 &&
+    bool null_move_ok = !pv_node && (!sp.nmp_cut_only || cut_node) && !pos.is_check() && depth >= 2 && own_pieces >= 1 &&
                           eval >= beta + (depth <= sp.nmp_shallow_depth ? sp.nmp_shallow_margin : 0) &&
                           ss->ply >= 1 && !ss->excluded_move &&
                           (ss - 1)->current_move != MOVE_NULL &&
@@ -1157,7 +1160,14 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
 
     // Internal Iterative Deepening: if no TT move at PV nodes, search at reduced depth
     // to populate TT with a good move for ordering
-    if (pv_node && tt_move == MOVE_NONE && depth >= 4) {
+    // Small ProbCut (small_pc_margin > 0): a TT lower bound far above beta, from
+    // nearly this depth, returns beta + the margin without a search
+    if (sp.small_pc_margin && !pv_node && found && !ss->excluded_move && (tte->bound() & BOUND_LOWER)
+        && tt_depth >= depth - 4 && tt_value >= beta + sp.small_pc_margin
+        && std::abs(beta) < VALUE_KNOWN_WIN && std::abs(tt_value) < VALUE_KNOWN_WIN)
+        return Value(beta + sp.small_pc_margin);
+
+    if (pv_node && tt_move == MOVE_NONE && depth >= sp.iid_min_depth) {
         search_worker(pos, ss, alpha, beta, depth - 2, false);
         TTEntry* iid_tte = TT.probe(pos.key(), found);
         if (found) {
