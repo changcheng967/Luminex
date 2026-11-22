@@ -1511,7 +1511,17 @@ bool Position::is_draw() const {
             int idx = history_size - 1 - i;
             if (idx < 0) break;
             if (position_history[idx] == k) {
-                return true;  // Twofold in search = draw
+                // A repetition inside the search is a draw; one with a position
+                // from before the root (the root included) is a draw only when
+                // that position also occurred earlier: a single earlier
+                // occurrence is a twofold, which the game does not end on
+                if (idx >= root_history_size_) return true;
+                for (int j = i + 2; j <= limit; j += 2) {
+                    const int idx2 = history_size - 1 - j;
+                    if (idx2 < 0) break;
+                    if (position_history[idx2] == k) return true;
+                }
+                return false;
             }
         }
     }

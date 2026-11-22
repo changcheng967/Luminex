@@ -649,6 +649,9 @@ public:
     int psq_eg() const;
 
     bool is_draw() const;
+    // The search root's place in the history: a repetition of a position
+    // from before the search needs a second earlier occurrence (is_draw)
+    void mark_root() { root_history_size_ = history_size; }
     bool is_check() const;
 
     bool do_move(Move m);  // Returns true if move executed, false if failed
@@ -713,6 +716,7 @@ private:
     static constexpr int MAX_HISTORY = MAX_STATES;
     Key position_history[MAX_HISTORY];
     int history_size = 0;
+    int root_history_size_ = 0;
 };
 
 inline Bitboard Position::pieces() const { return pieces_by_color[WHITE] | pieces_by_color[BLACK]; }
@@ -1968,6 +1972,11 @@ struct SPSAParams {
     int nmp_shallow_margin = 57;
     int nmp_shallow_depth  = 5;
 
+    // A main-search result replaces a same-key entry when its depth plus
+    // this reaches the entry's (0 kept only results as deep or deeper, so a
+    // shallower search of the same position lost its best move)
+    int tt_store_slack = 3;
+
     // Load from file (COUNT ints, one per line, in field order). Returns true if loaded.
     bool load(const std::string& path) {
         FILE* f = std::fopen(path.c_str(), "r");
@@ -2037,6 +2046,7 @@ inline constexpr SPSAOption SPSA_OPTIONS[] = {
     {"CorrWeightMax",   &SPSAParams::corr_weight_max,     1,   128},
     {"NmpShallowMargin", &SPSAParams::nmp_shallow_margin, 0,  300},
     {"NmpShallowDepth", &SPSAParams::nmp_shallow_depth,   0,   12},
+    {"TtStoreSlack",    &SPSAParams::tt_store_slack,      0,     8},
 };
 
 inline const SPSAOption* find_spsa_option(const std::string& name) {
