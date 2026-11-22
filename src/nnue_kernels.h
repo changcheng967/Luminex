@@ -26,6 +26,9 @@ inline constexpr int NNUE_L1_MAX = 1024;
 // The widest L2 and L3 a net may have (load() checks it); the dense layers'
 // buffers are sized from it.
 inline constexpr int NNUE_DENSE_MAX = 64;
+// The largest activation byte a dense layer reads (SCReLU's window top, x127). The int16 sums of the AVX2
+// kernels are exact up to it, and arrange_tails pairs L2's input chunks from it (L2Layout::Pairs).
+inline constexpr int NNUE_ACT_MAX = 127;
 // Feature weights and accumulator lanes are int16 at this scale: SCReLU's
 // window [0, 1] is lanes [0, 2048], and int16 holds sums to +-16.0 window
 // units. At x8192 int16 ended at 4.0, below the sums real nets reach (11.5
@@ -41,7 +44,8 @@ inline constexpr float NNUE_FT_SCALE = 2048.0f;
 // arranged; the file stores them output-major.
 enum class L2Layout : uint8_t {
     OutputMajor,   // as stored: row o holds output o's 2*L1 weights
-    Chunk32,       // AVX2: per 32-input chunk, the L2 outputs' 32 weights each
+    Chunk32,       // AVX2 with AVX-512 or AVX-VNNI: per 32-input chunk, the L2 outputs' 32 weights each
+    Pairs,         // AVX2 alone: 32-input chunks in pairs (TailView::l2_slot), four outputs a pass
     ByInput4,      // AVX-512 VNNI with L2 = 16: per 4 inputs, the 16 outputs' 4 weights each
 };
 
@@ -66,6 +70,10 @@ struct TailView {
     float out_b = 0.0f;
     bool l2_by_input = false;
     bool l3_batched = false;
+    // Pairs: each 32-input chunk's slot in the activation bytes the kernel reads (slots 2k and 2k + 1 are pair
+    // k), and the number of pairs; the slots after the pairs hold one chunk each
+    const uint8_t* l2_slot = nullptr;
+    int l2_pairs = 0;
 };
 
 // One side of a child accumulator, from its parent's lanes and the feature
@@ -167,7 +175,8 @@ namespace k_base       { extern const Kernels kernels; }   // what the rest of t
 // library function but memcpy and lrintf, which are the C library's.
 //
 // Every level computes the same evaluation, bit for bit, for int8 nets:
-// - The integer dot products are exact everywhere. AVX2's vpmaddubsw adds
+// - The integer dot products are exact everywhere (the AVX2 level's paired
+//   int16 sums in L2 too: see the kernel). AVX2's vpmaddubsw adds
 //   pairs of uint8 x int8 products with int16 saturation, which would differ
 //   from VNNI's vpdpbusd (no intermediate saturation) for activations up to
 //   255; but the activations are quantized to [0, 127] (ACT_MAX below), so a
@@ -249,6 +258,9 @@ namespace k_base       { extern const Kernels kernels; }   // what the rest of t
 #if defined(LK_DISPATCH) && defined(LK_X86) && !defined(LK_AVX2)
 #define LK_SSE2_LANES 1        // the universal build's base level: SSE2 lane kernels
 #endif
+#if defined(LK_AVX2) && !defined(LK_AVX512) && !defined(LK_AVXVNNI)
+#define LK_L2_PAIRS 1          // L2 over paired input chunks (L2Layout::Pairs): AVX2 alone, which Zen 2 runs
+#endif
 
 namespace luminex::nnue::LK_NAMESPACE {
 namespace {
@@ -256,8 +268,10 @@ namespace {
 constexpr float FT_WINV = 1.0f / NNUE_FT_SCALE;
 // The largest quantized activation. vpmaddubsw is exact only while two
 // products fit int16: 2 * ACT_MAX * 128 <= 32767.
-constexpr int ACT_MAX = 127;
+constexpr int ACT_MAX = NNUE_ACT_MAX;
 static_assert(2 * ACT_MAX * 128 <= 32767, "AVX2's vpmaddubsw would saturate and differ from VNNI");
+// The paired L2 kernel's low-byte sums: at most one term a slot, each in [0, 255], must stay below 2^15.
+static_assert(2 * NNUE_L1_MAX / 32 * 255 <= 32767, "the paired L2 kernel's low-byte sums would not fit int16");
 
 inline float clip01(float x) { float c = x < 0.0f ? 0.0f : (x > 1.0f ? 1.0f : x); return c * c; }
 
@@ -806,12 +820,17 @@ float forward_int8_impl(const int16_t* acc_stm, const int16_t* acc_nstm, const R
         // steps' bytes. packus works inside 128-bit lanes, so a qword permute
         // restores input order.
         for (int side = 0; side < 2; ++side) {
-            uint8_t* out = h_i8 + side * L1;
+            [[maybe_unused]] uint8_t* out = h_i8 + side * L1;
             for (int l = 0; l < L1; l += 32) {
                 const int16_t* in = src(side, l);
                 const __m256i y0 = screlu_i16_256(_mm256_loadu_si256((const __m256i*)in));
                 const __m256i y1 = screlu_i16_256(_mm256_loadu_si256((const __m256i*)(in + 16)));
-                _mm256_storeu_si256((__m256i*)(out + l), _mm256_permute4x64_epi64(_mm256_packus_epi16(y0, y1), 0xD8));
+#if defined(LK_L2_PAIRS)
+                uint8_t* dst = h_i8 + 32 * t.l2_slot[(side * L1 + l) / 32];   // the chunk's slot (L2Layout::Pairs)
+#else
+                uint8_t* dst = out + l;
+#endif
+                _mm256_storeu_si256((__m256i*)dst, _mm256_permute4x64_epi64(_mm256_packus_epi16(y0, y1), 0xD8));
             }
         }
     } else {
@@ -864,6 +883,59 @@ float forward_int8_impl(const int16_t* acc_stm, const int16_t* acc_nstm, const R
     // VPDPBUSD: 64 MACs/instruction. Per-output dot (output-major weights, no reorder).
     for (int o = 0; o < L2; ++o)
         h2[o] = clip01(bias_add(t.l2_b[o], dot_i8_vnni(&t.l2_w[static_cast<size_t>(o) * 2 * L1], h_i8, 2 * L1), t.ics2[o]));
+#elif defined(LK_L2_PAIRS)
+    // L2 for AVX2 alone, the level Zen 2 runs. There vpmaddubsw and vpmaddwd issue on one pipe (FP0), so
+    // widening every chunk's int16 products with vpmaddwd doubled the work on it; here vpmaddubsw is the only
+    // multiply in the loop. Pair k's two chunks (slots 2k, 2k + 1) add their products in int16, x: arrange_tails
+    // paired them so that the sum is exact for every output whatever the activations (in each lane, ACT_MAX x
+    // the four weights' |w| fits int16). Each output keeps two int16 sums: lo, of the x's in wrapping
+    // arithmetic, and hi, of their high bytes x >> 8 (in [-128, 127]). x - 256 (x >> 8) is x's low byte, in
+    // [0, 255], so lo - 256 hi is the low bytes' sum, exact although lo wrapped: it lies in [0, 255 n] for n
+    // terms, below 2^15 for n <= 128 (the static_assert at ACT_MAX), and hi stays within 128 n. The lane's
+    // total is then 256 hi + (lo - 256 hi), widened once at the end. The shift issues on FP2 and the adds on
+    // FP1 and FP3, beside the multiplies on FP0. Four outputs a pass keep the eight sums in registers. load()
+    // admits only L1 a multiple of 32, so the activations came from the 32-lane loop above, which writes each
+    // chunk to its slot.
+    {
+        const int nslot = 2 * L1 / 32, np = t.l2_pairs;
+        const int8_t* w = t.l2_w;
+        const __m256i ones = _mm256_set1_epi16(1), k256 = _mm256_set1_epi16(256);
+        auto add = [](__m256i& lo, __m256i& hi, __m256i x) {
+            lo = _mm256_add_epi16(lo, x);
+            hi = _mm256_add_epi16(hi, _mm256_srai_epi16(x, 8));
+        };
+        // each output's 16 lane totals 256 hi + (lo - 256 hi), summed in pairs to eight int32 lanes
+        auto total = [&](__m256i lo, __m256i hi) {
+            return _mm256_add_epi32(_mm256_madd_epi16(hi, k256),
+                                    _mm256_madd_epi16(_mm256_sub_epi16(lo, _mm256_slli_epi16(hi, 8)), ones));
+        };
+        alignas(32) int32_t d[NNUE_DENSE_MAX];
+        for (int q = 0; q < L2; q += 4) {
+            __m256i lo0 = _mm256_setzero_si256(), lo1 = lo0, lo2 = lo0, lo3 = lo0;
+            __m256i hi0 = lo0, hi1 = lo0, hi2 = lo0, hi3 = lo0;
+            const uint8_t* a = h_i8;
+            for (int k = 0; k < np; ++k, a += 64, w += 256) {
+                const __m256i a0 = _mm256_loadu_si256((const __m256i*)a);
+                const __m256i a1 = _mm256_loadu_si256((const __m256i*)(a + 32));
+                auto two = [&](int o) {
+                    return _mm256_add_epi16(_mm256_maddubs_epi16(a0, _mm256_loadu_si256((const __m256i*)(w + 64 * o))),
+                                            _mm256_maddubs_epi16(a1, _mm256_loadu_si256((const __m256i*)(w + 64 * o + 32))));
+                };
+                add(lo0, hi0, two(0)); add(lo1, hi1, two(1)); add(lo2, hi2, two(2)); add(lo3, hi3, two(3));
+            }
+            for (int s = 2 * np; s < nslot; ++s, a += 32, w += 128) {
+                const __m256i a0 = _mm256_loadu_si256((const __m256i*)a);
+                auto one = [&](int o) { return _mm256_maddubs_epi16(a0, _mm256_loadu_si256((const __m256i*)(w + 32 * o))); };
+                add(lo0, hi0, one(0)); add(lo1, hi1, one(1)); add(lo2, hi2, one(2)); add(lo3, hi3, one(3));
+            }
+            // the four outputs' sums: two vphaddd levels, then the 128-bit halves added (outputs q to q + 3)
+            const __m256i r = _mm256_hadd_epi32(_mm256_hadd_epi32(total(lo0, hi0), total(lo1, hi1)),
+                                                _mm256_hadd_epi32(total(lo2, hi2), total(lo3, hi3)));
+            _mm_store_si128((__m128i*)(d + q), _mm_add_epi32(_mm256_castsi256_si128(r), _mm256_extracti128_si256(r, 1)));
+        }
+        for (int o = 0; o < L2; o += 8)
+            tail8(_mm256_load_si256((const __m256i*)(d + o)), t.l2_b + o, t.ics2 + o, h2 + o);
+    }
 #else
     // AVX2 SF-style chunk L2 (chunk-major weights, reordered at load); with
     // AVX-VNNI each chunk's dot is one VPDPBUSD.
@@ -1200,6 +1272,9 @@ float forward_float(const int16_t* acc_stm, const int16_t* acc_nstm, const TailV
 #if defined(LK_AVX512VNNI)
 #define LK_L2_LAYOUT L2Layout::ByInput4
 #define LK_L3_BATCHED true
+#elif defined(LK_L2_PAIRS)
+#define LK_L2_LAYOUT L2Layout::Pairs
+#define LK_L3_BATCHED false
 #elif defined(LK_AVX2)
 #define LK_L2_LAYOUT L2Layout::Chunk32
 #define LK_L3_BATCHED false
@@ -1231,6 +1306,7 @@ constexpr Kernels kernels = {
 #undef LK_ID
 #undef LK_DISPATCH
 #undef LK_SSE2_LANES
+#undef LK_L2_PAIRS
 #undef LK_L2_LAYOUT
 #undef LK_L3_BATCHED
 
