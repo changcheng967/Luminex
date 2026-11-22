@@ -1177,13 +1177,14 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
         is_shuffling = tt_move.from() == (ss - 2)->current_move.to() &&
                        (ss - 2)->current_move.from() == (ss - 4)->current_move.to();
     }
-    if (tt_move != MOVE_NONE && !pv_node && found && tt_depth >= depth - 3 && depth >= 6 &&
+    if (tt_move != MOVE_NONE && (!pv_node || sp.se_pv) && ss->ply > 0 && found && tt_depth >= depth - 3 && depth >= 6 &&
         (tte->bound() & BOUND_LOWER) && abs(tt_value) < VALUE_KNOWN_WIN && !is_shuffling) {
         // Singular margin scales with depth; _singular_margin default 200
         // reproduces the prior depth*10/16 (= depth*200/320) exactly.
         Value sBeta = Value(tt_value - depth * sp._singular_margin / 320);
         ss->excluded_move = tt_move;
-        Value singular_value = search_worker(pos, ss, sBeta - 1, sBeta, (depth - 1) / 2, !cut_node);
+        Value singular_value = search_worker(pos, ss, sBeta - 1, sBeta, (depth - 1) / 2,
+                                             sp.se_same_cut ? cut_node : !cut_node);
         ss->excluded_move = MOVE_NONE;
         if (singular_value < sBeta) {
             singular_extension = 1;
@@ -1191,6 +1192,15 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
             // double extension for strongly singular moves
             if (singular_value < sBeta - depth * sp.dext_margin / 16) {
                 singular_extension = 2;
+                // and a triple one past depth * se_triple_margin / 16 (0 = none)
+                if (sp.se_triple_margin && singular_value < sBeta - depth * sp.se_triple_margin / 16)
+                    singular_extension = 3;
+            }
+            // The node's other moves a ply deeper (se_depth_inc); the TT move's
+            // own total stays its extension
+            if (sp.se_depth_inc) {
+                depth++;
+                singular_extension--;
             }
         } else if (singular_value >= beta) {
             // Multi-cut: other moves are also good enough to beat beta
@@ -1199,9 +1209,9 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
         } else if (tt_value >= beta) {
             // TT move is NOT singular but expected to beat beta
             // Negative extension: reduce depth for non-singular expected cutoff
-            singular_extension = -2;
+            singular_extension = sp.negext_tt;
         } else if (cut_node) {
-            singular_extension = -1;
+            singular_extension = sp.negext_cut;
         }
     }
 
@@ -1477,7 +1487,7 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
         }
         // Depth-explosion guard: a line of checks + singular doubles could
         // otherwise extend faster than depth shrinks
-        if (ext_count > 2) ext_count = 2;
+        if (ext_count > sp.ext_cap) ext_count = sp.ext_cap;
         new_depth += ext_count;
         // Every full-window search must keep the extension. The pre-fix code
         // passed literal depth - 1 at all full-depth call sites, so extensions

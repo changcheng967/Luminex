@@ -1968,6 +1968,17 @@ struct SPSAParams {
     int nmp_shallow_margin = 57;
     int nmp_shallow_depth  = 5;
 
+    // Singular extensions: se_pv 1 also tries them at PV nodes; a triple
+    // extension when the verification fails by more than depth *
+    // se_triple_margin / 16 (0 = none); ext_cap caps a move's extensions;
+    // se_depth_inc 1 searches the node's other moves a ply deeper after a
+    // singular TT move (whose own extension stays); the negative extensions
+    // are negext_tt (TT value above beta) and negext_cut (cut node);
+    // se_same_cut 1 runs the verification as the node's own type, not the
+    // opposite. The defaults are the old rules.
+    int se_pv = 0, se_triple_margin = 0, ext_cap = 2, se_depth_inc = 0;
+    int negext_tt = -2, negext_cut = -1, se_same_cut = 0;
+
     // Load from file (COUNT ints, one per line, in field order). Returns true if loaded.
     bool load(const std::string& path) {
         FILE* f = std::fopen(path.c_str(), "r");
@@ -2037,6 +2048,13 @@ inline constexpr SPSAOption SPSA_OPTIONS[] = {
     {"CorrWeightMax",   &SPSAParams::corr_weight_max,     1,   128},
     {"NmpShallowMargin", &SPSAParams::nmp_shallow_margin, 0,  300},
     {"NmpShallowDepth", &SPSAParams::nmp_shallow_depth,   0,   12},
+    {"SePv",            &SPSAParams::se_pv,               0,     1},
+    {"SeTripleMargin",  &SPSAParams::se_triple_margin,    0,   256},
+    {"ExtCap",          &SPSAParams::ext_cap,             1,     4},
+    {"SeDepthInc",      &SPSAParams::se_depth_inc,        0,     1},
+    {"NegExtTt",        &SPSAParams::negext_tt,          -4,     0},
+    {"NegExtCut",       &SPSAParams::negext_cut,         -4,     0},
+    {"SeSameCut",       &SPSAParams::se_same_cut,         0,     1},
 };
 
 inline const SPSAOption* find_spsa_option(const std::string& name) {
