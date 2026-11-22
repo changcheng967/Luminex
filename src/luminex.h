@@ -2012,6 +2012,14 @@ struct SPSAParams {
     // margin. The defaults are the old rules.
     int nmp_cut_only = 0, rfp_max_depth = 8, rfp_blend = 0, rfp_tt_cond = 0, rfp_no_ttpv = 0;
     int iir_min_depth = 3, iir_no_all = 0, iid_min_depth = 4, razor_max_depth = 4, small_pc_margin = 0;
+    // eval_tt_adjust 1: pruning reads the TT value when its bound says the
+    // true score lies beyond the static eval; qs_fut_margin > 0: qsearch
+    // skips a capture whose eval + margin + victim cannot reach alpha;
+    // hist_eval_diff > 0: the opponent's last quiet move earns
+    // hist_eval_diff * (its eval change, clamped to [-180, 140]) / 8 in the
+    // piece-to history.
+    // All 0 = off.
+    int eval_tt_adjust = 0, qs_fut_margin = 0, hist_eval_diff = 0;
 
     // Load from file (COUNT ints, one per line, in field order). Returns true if loaded.
     bool load(const std::string& path) {
@@ -2110,6 +2118,9 @@ inline constexpr SPSAOption SPSA_OPTIONS[] = {
     {"IidMinDepth",     &SPSAParams::iid_min_depth,       1,    99},
     {"RazorMaxDepth",   &SPSAParams::razor_max_depth,     0,    12},
     {"SmallPcMargin",   &SPSAParams::small_pc_margin,     0,  2000},
+    {"EvalTtAdjust",    &SPSAParams::eval_tt_adjust,      0,     1},
+    {"QsFutMargin",     &SPSAParams::qs_fut_margin,       0,  2000},
+    {"HistEvalDiff",    &SPSAParams::hist_eval_diff,      0,   512},
 };
 
 inline const SPSAOption* find_spsa_option(const std::string& name) {

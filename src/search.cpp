@@ -727,6 +727,15 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
             continue;
         }
 
+        // Futility per capture (QsFutMargin; 0 = off): one that cannot lift the
+        // eval to alpha even winning its victim outright is skipped
+        if (!in_check && SPSAParams::get().qs_fut_margin && !it->move.is_promotion() && it->move.is_capture()) {
+            static constexpr int qv[] = {100, 320, 330, 500, 900, 0, 0};
+            const PieceType victim = it->move.is_en_passant() ? PAWN : pos.piece_type_on(it->move.to());
+            if (eval + SPSAParams::get().qs_fut_margin + qv[victim] <= alpha)
+                continue;
+        }
+
         // Skip losing captures with negative SEE (but keep queen promotions).
         // Threshold goes negative as depth drops: deeper in qsearch tolerates
         // increasingly losing captures. Exception: in check, try all evasions.
@@ -993,6 +1002,28 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
         } else if (prior_reduction >= 2 && depth >= 2 && eval + (ss - 1)->static_eval > 195) {
             depth--;
         }
+    }
+
+    // The static eval as computed, for the correction history: `eval` below may
+    // become the TT value (EvalTtAdjust)
+    const Value static_eval = eval;
+    {
+        const SPSAParams& spm = SPSAParams::get();
+        // The opponent's last quiet move, rated by how our static eval moved
+        // across it (HistEvalDiff; 0 = off)
+        if (spm.hist_eval_diff && ss->ply >= 1 && !pos.is_check() && (ss - 1)->current_move != MOVE_NONE
+            && (ss - 1)->current_move != MOVE_NULL && (ss - 1)->moved_piece != NO_PIECE
+            && !(ss - 1)->current_move.is_capture() && !(ss - 1)->current_move.is_promotion()
+            && (ss - 1)->static_eval != VALUE_ZERO && !known_eg) {
+            const int diff = std::clamp(-int((ss - 1)->static_eval + eval), -180, 140);
+            const int bonus = spm.hist_eval_diff * diff / 8;
+            int& h = worker->history[int((ss - 1)->moved_piece)][int((ss - 1)->current_move.to())];
+            h += bonus - h * std::abs(bonus) / 16368;
+        }
+        // The TT value as a better estimate for pruning (EvalTtAdjust; 0 = off)
+        if (spm.eval_tt_adjust && found && !pos.is_check() && !known_eg && std::abs(tt_value) < VALUE_KNOWN_WIN
+            && (tte->bound() & (tt_value > eval ? BOUND_LOWER : BOUND_UPPER)))
+            eval = tt_value;
     }
 
     // Internal Iterative Reduction (IIR): reduce depth by 1 when no TT move available
@@ -1741,10 +1772,10 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
                 // static eval, that says the eval was too low here, so cut nodes
                 // teach the correction history too, not only fail-low ends.
                 if (!stop.load(std::memory_order_relaxed) && !ss->excluded_move && !pv_node
-                    && !pos.is_check() && !m.is_capture() && value > eval && !known_eg
-                    && std::abs(value) < VALUE_KNOWN_WIN && std::abs(eval) < VALUE_KNOWN_WIN
+                    && !pos.is_check() && !m.is_capture() && value > static_eval && !known_eg
+                    && std::abs(value) < VALUE_KNOWN_WIN && std::abs(static_eval) < VALUE_KNOWN_WIN
                     && depth >= 2) {
-                    update_all_corrections(pos, depth, value - eval);
+                    update_all_corrections(pos, depth, value - static_eval);
                 }
                 if (moves_played_before == 0) g_stats.first_move_cutoffs++;
                 return true;  // beta cutoff
@@ -2049,10 +2080,10 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
         // proves the eval too high when it lies below it, and proves nothing
         // when it lies above (the true score may be anywhere beneath it).
         bool best_is_capture = best_move_found.is_capture();
-        if (!pv_node && !pos.is_check() && !best_is_capture && best_value < eval && !known_eg
-            && abs(best_value) < VALUE_KNOWN_WIN && abs(eval) < VALUE_KNOWN_WIN
+        if (!pv_node && !pos.is_check() && !best_is_capture && best_value < static_eval && !known_eg
+            && abs(best_value) < VALUE_KNOWN_WIN && abs(static_eval) < VALUE_KNOWN_WIN
             && moves_played > 0 && depth >= 2) {
-            update_all_corrections(pos, depth, best_value - eval);
+            update_all_corrections(pos, depth, best_value - static_eval);
         }
     }
 
