@@ -142,6 +142,15 @@ struct SearchWorker {
     int counter_moves[12][64][12][64] = {};
     int continuation_history[12][64][12][64] = {};
     int low_ply_history[4][12][64] = {};  // Plies 1-3 history (index 0 unused)
+    // The quiet-history tables that only enter the score through a weight
+    // (SPSAParams ord_* / red_*): keyed by the move 3 plies back (the
+    // opponent's before last), by our own move 4 plies back, by the pawn
+    // structure, and by the side, from and to squares
+    int continuation3[12][64][12][64] = {};
+    int continuation4[12][64][12][64] = {};
+    static constexpr int PAWN_HIST_SIZE = 512;
+    int pawn_history[PAWN_HIST_SIZE][12][64] = {};
+    int butterfly[2][64][64] = {};
     // Correction history lives per-worker: as shared globals these 192 KiB were
     // written six times per node from every thread — the third instance of the
     // shared-writable-state scaling bug (see g_stats and eval_cache). Per-worker
@@ -266,19 +275,69 @@ static void init_reductions() {
     reductions_initialized = true;
 }
 
-// Combined history: main + counter-move (1-ply) + continuation (2-ply, 4-ply)
-inline int combined_history(const SearchWorker* w, const Stack* ss, Piece pc, Square to) {
-    int score = w->history[int(pc)][int(to)];
+// The move k plies back, if there is one to key a continuation table by
+inline bool has_prior(const Stack* ss, int k) {
+    return ss->ply >= k && (ss - k)->current_move != MOVE_NONE && (ss - k)->moved_piece != NO_PIECE;
+}
 
-    if (ss->ply >= 1 && (ss - 1)->current_move != MOVE_NONE && (ss - 1)->moved_piece != NO_PIECE) {
-        score += w->counter_moves[int((ss - 1)->moved_piece)][int((ss - 1)->current_move.to())][int(pc)][int(to)];
+// A quiet move's history score: the seven tables, each times its weight in
+// 1024ths (SPSAParams ord_* for move ordering, red_* for LMR and history
+// pruning; wt lists them in table order). The defaults weigh the piece-to,
+// counter-move and 2-ply tables 1024 each and the rest 0, which is the old
+// sum exactly; a table with weight 0 is not read.
+inline int weighted_history(const SearchWorker* w, const Stack* ss, const Position& pos, Move m, Piece pc,
+                            const int (&wt)[7]) {
+    const Square to = m.to();
+    int score = 0;
+    if (wt[0]) score += wt[0] * w->history[int(pc)][int(to)];
+    if (wt[1] && has_prior(ss, 1))
+        score += wt[1] * w->counter_moves[int((ss - 1)->moved_piece)][int((ss - 1)->current_move.to())][int(pc)][int(to)];
+    if (wt[2] && has_prior(ss, 2))
+        score += wt[2] * w->continuation_history[int((ss - 2)->moved_piece)][int((ss - 2)->current_move.to())][int(pc)][int(to)];
+    if (wt[3] && has_prior(ss, 3))
+        score += wt[3] * w->continuation3[int((ss - 3)->moved_piece)][int((ss - 3)->current_move.to())][int(pc)][int(to)];
+    if (wt[4] && has_prior(ss, 4))
+        score += wt[4] * w->continuation4[int((ss - 4)->moved_piece)][int((ss - 4)->current_move.to())][int(pc)][int(to)];
+    if (wt[5])
+        score += wt[5] * w->pawn_history[pos.pawn_key() & (SearchWorker::PAWN_HIST_SIZE - 1)][int(pc)][int(to)];
+    if (wt[6])
+        score += wt[6] * w->butterfly[int(color_of_piece(pc))][int(m.from())][int(to)];
+    return score / 1024;
+}
+
+struct HistWeights {
+    int ord[7], red[7];
+};
+
+// The two weight lists, read from the search constants once per search
+// (refresh_hist_weights, from begin_worker_search)
+static thread_local HistWeights hist_weights;
+
+inline void refresh_hist_weights() {
+    const SPSAParams& sp = SPSAParams::get();
+    const int ord[7] = {sp.ord_main, sp.ord_cm, sp.ord_ch2, sp.ord_ch3, sp.ord_ch4, sp.ord_pawn, sp.ord_bfly};
+    const int red[7] = {sp.red_main, sp.red_cm, sp.red_ch2, sp.red_ch3, sp.red_ch4, sp.red_pawn, sp.red_bfly};
+    for (int i = 0; i < 7; ++i) {
+        hist_weights.ord[i] = ord[i];
+        hist_weights.red[i] = red[i];
     }
+}
 
-    if (ss->ply >= 2 && (ss - 2)->current_move != MOVE_NONE && (ss - 2)->moved_piece != NO_PIECE) {
-        score += w->continuation_history[int((ss - 2)->moved_piece)][int((ss - 2)->current_move.to())][int(pc)][int(to)];
-    }
-
-    return score;
+// The weighted-only tables take the same bonus or malus, by the same gravity,
+// as the piece-to table whenever a quiet does; one whose two weights are 0
+// is left alone.
+inline void update_weighted_tables(SearchWorker* w, const Stack* ss, const Position& pos, Move m, Piece pc, int bonus) {
+    const HistWeights& hw = hist_weights;
+    const Square to = m.to();
+    auto grav = [bonus](int& h) { h += bonus - h * std::abs(bonus) / 16368; };
+    if ((hw.ord[3] | hw.red[3]) && has_prior(ss, 3))
+        grav(w->continuation3[int((ss - 3)->moved_piece)][int((ss - 3)->current_move.to())][int(pc)][int(to)]);
+    if ((hw.ord[4] | hw.red[4]) && has_prior(ss, 4))
+        grav(w->continuation4[int((ss - 4)->moved_piece)][int((ss - 4)->current_move.to())][int(pc)][int(to)]);
+    if (hw.ord[5] | hw.red[5])
+        grav(w->pawn_history[pos.pawn_key() & (SearchWorker::PAWN_HIST_SIZE - 1)][int(pc)][int(to)]);
+    if (hw.ord[6] | hw.red[6])
+        grav(w->butterfly[int(color_of_piece(pc))][int(m.from())][int(to)]);
 }
 
 inline Value eval_cached(const Position& pos) {
@@ -915,6 +974,7 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
                     int& ch = worker->continuation_history[int(prev2_pc)][int(prev2_move.to())][int(moved)][int(tt_move.to())];
                     ch += bonus - ch * std::abs(bonus) / 16368;
                 }
+                update_weighted_tables(worker, ss, pos, tt_move, moved, bonus);
             } else if (moved != NO_PIECE && tt_move.is_capture()) {
                 // Capture history bonus for TT cutoff captures
                 int bonus = hist_bonus(depth);
@@ -1235,7 +1295,7 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
         // History-based adjustment: combine plain + counter + continuation
         Piece pc = pos.piece_on(m.from());
         if (pc != NO_PIECE) {
-            int history_score = combined_history(worker, ss, pc, m.to());
+            int history_score = weighted_history(worker, ss, pos, m, pc, hist_weights.red);
 
             // History influence on reduction, clamped to prevent extreme adjustments
             reduction -= std::max(-3, std::min(3, history_score / sp.lmr_hist_div));
@@ -1392,7 +1452,7 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
         if (is_quiet && !pv_node && depth <= 4 && moves_played > 0) {
             Piece pc = pos.piece_on(m.from());
             if (pc != NO_PIECE) {
-                int hist_score = combined_history(worker, ss, pc, m.to());
+                int hist_score = weighted_history(worker, ss, pos, m, pc, hist_weights.red);
                 // Prune if history is very negative (move has historically been bad)
                 if (hist_score < sp.hist_prune_base - sp.hist_prune_coeff * (depth - 1)) {
                     g_stats.history_prunes++;
@@ -1628,6 +1688,7 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
                             int& lh = worker->low_ply_history[ss->ply][int(pc)][int(m.to())];
                             lh += bonus - lh * abs(bonus) / 16368;
                         }
+                        update_weighted_tables(worker, ss, pos, m, pc, bonus);
                     }
                 } // end quiet-cutoff updates
 
@@ -1673,6 +1734,7 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
                             int& lh = worker->low_ply_history[ss->ply][int(qpc)][int(qm.to())];
                             lh += malus - lh * abs(malus) / 16368;
                         }
+                        update_weighted_tables(worker, ss, pos, qm, qpc, malus);
                     }
                 }
                 } // end common malus updates
@@ -1821,7 +1883,7 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
             } else {
                 Piece pc = pos.piece_on(m.from());
                 if (pc != NO_PIECE) {
-                    score = combined_history(worker, ss, pc, m.to());
+                    score = weighted_history(worker, ss, pos, m, pc, hist_weights.ord);
                     // Low-ply history: extra history for plies 1-3 (better opening ordering)
                     if (ss->ply >= 1 && ss->ply <= 3) {
                         score += worker->low_ply_history[ss->ply][int(pc)][int(m.to())];
@@ -1829,13 +1891,13 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
                 }
 
                 // Killer moves bonus ON TOP of history
-                if (m == worker->killers[ss->ply][0]) score += 60000;
-                else if (m == worker->killers[ss->ply][1]) score += 50000;
+                if (m == worker->killers[ss->ply][0]) score += sp.ord_killer1;
+                else if (m == worker->killers[ss->ply][1]) score += sp.ord_killer2;
                 else if (ss->ply >= 1 && (ss - 1)->current_move != MOVE_NONE && (ss - 1)->moved_piece != NO_PIECE) {
                     Move prev_move = (ss - 1)->current_move;
                     Piece prev_pc = (ss - 1)->moved_piece;
                     if (m == worker->counter_move_table[int(prev_pc)][int(prev_move.to())]) {
-                        score += 40000;
+                        score += sp.ord_counter;
                     }
                 }
 
@@ -1847,7 +1909,7 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
                     if (pt != PAWN) {
                         // Escape-aware: pieces under pawn attack should move first
                         if (enemy_pawn_attacks & square_bb(m.from())) {
-                            score += 15000;
+                            score += sp.ord_escape;
                         }
 
                         // King-zone pressure ordering: pieces moving adjacent to
@@ -1855,7 +1917,7 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
                         // as king-zone LMR, applied to move ordering
                         int kdist = std::max(abs(int(m.to() % 8) - int(enemy_ksq % 8)),
                                              abs(int(m.to() / 8) - int(enemy_ksq / 8)));
-                        if (kdist <= 1) score += 3000;
+                        if (kdist <= 1) score += sp.ord_king_zone;
 
                         // Centralization bonus: pieces moving to central squares searched earlier
                         // Principle: centralized pieces are disproportionately strong (Nimzowitsch)
@@ -1878,20 +1940,20 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
                         if (pt == KNIGHT) cbo = cbo * 2;
                         else if (pt == BISHOP) cbo = cbo * 3 / 2;
                         else if (pt == QUEEN) cbo = cbo / 2;
-                        score += cbo;
+                        score += cbo * sp.ord_center / 1024;
                     } else {
                         // Pawn threat ordering: pawn advances that threaten enemy pieces
                         // are forcing and should be searched earlier (Philidor)
                         Bitboard enemy_pieces = pos.pieces(Color(pos.side_to_move() ^ 1));
                         Bitboard pawn_att = pawn_attacks_bb(pos.side_to_move(), square_bb(m.to()));
-                        if (pawn_att & enemy_pieces) score += 8000;
+                        if (pawn_att & enemy_pieces) score += sp.ord_pawn_threat;
                         // Check-giving pawn: reuse pawn_att, nearly free
-                        if (pawn_att & square_bb(opp_ksq)) score += 5000;
+                        if (pawn_att & square_bb(opp_ksq)) score += sp.ord_pawn_check;
                     }
 
                     // Check-giving knight: cheap lookup, forcing move
                     if (pt == KNIGHT && (knight_attacks_bb(m.to()) & square_bb(opp_ksq)))
-                        score += 5000;
+                        score += sp.ord_knight_check;
                 }
             }
             it->value = score;
@@ -2239,6 +2301,11 @@ static void begin_worker_search(SearchWorker* w) {
     for (int i = 0; i < 12; ++i)
         for (int j = 0; j < 64; ++j)
             w->history[i][j] /= 2;
+    refresh_hist_weights();
+    if (hist_weights.ord[6] | hist_weights.red[6])
+        for (auto& side : w->butterfly)
+            for (auto& from : side)
+                for (int& h : from) h /= 2;
     for (int p = 0; p < 12; ++p)
         for (int s = 0; s < 64; ++s)
             for (int c = 0; c < 7; ++c)
@@ -3113,6 +3180,10 @@ void clear_search_history() {
         std::memset(w->killers, 0, sizeof(w->killers));
         std::memset(w->counter_moves, 0, sizeof(w->counter_moves));
         std::memset(w->continuation_history, 0, sizeof(w->continuation_history));
+        std::memset(w->continuation3, 0, sizeof(w->continuation3));
+        std::memset(w->continuation4, 0, sizeof(w->continuation4));
+        std::memset(w->pawn_history, 0, sizeof(w->pawn_history));
+        std::memset(w->butterfly, 0, sizeof(w->butterfly));
     };
     if (main_search_worker) clear(main_search_worker);
     for (SearchWorker* w : helper_workers)

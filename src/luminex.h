@@ -1968,6 +1968,24 @@ struct SPSAParams {
     int nmp_shallow_margin = 57;
     int nmp_shallow_depth  = 5;
 
+    // Quiet history. A move's history score is the sum of seven tables, each
+    // times its weight in 1024ths: the piece-to table, the counter-move and
+    // 2-ply continuation tables, the 3-ply (the opponent's move before last)
+    // and 4-ply continuation tables, the pawn-structure table and the
+    // from-to table. ord_* weigh the move-ordering score, red_* the score
+    // that LMR and history pruning read. The defaults are the old sum (the
+    // first three at 1024, the new four at 0), and a table whose two weights
+    // are 0 is neither read nor written, so the defaults search as before.
+    int ord_main = 1024, ord_cm = 1024, ord_ch2 = 1024, ord_ch3 = 0, ord_ch4 = 0, ord_pawn = 0, ord_bfly = 0;
+    int red_main = 1024, red_cm = 1024, red_ch2 = 1024, red_ch3 = 0, red_ch4 = 0, red_pawn = 0, red_bfly = 0;
+    // Quiet move ordering, the bonuses on top of the history score: killers,
+    // the counter move, a piece leaving a pawn's attack, a piece moving next
+    // to the enemy king, the centre table (in 1024ths), a pawn attacking a
+    // piece, a pawn or knight giving check
+    int ord_killer1 = 60000, ord_killer2 = 50000, ord_counter = 40000, ord_escape = 15000;
+    int ord_king_zone = 3000, ord_center = 1024, ord_pawn_threat = 8000;
+    int ord_pawn_check = 5000, ord_knight_check = 5000;
+
     // Load from file (COUNT ints, one per line, in field order). Returns true if loaded.
     bool load(const std::string& path) {
         FILE* f = std::fopen(path.c_str(), "r");
@@ -2037,6 +2055,29 @@ inline constexpr SPSAOption SPSA_OPTIONS[] = {
     {"CorrWeightMax",   &SPSAParams::corr_weight_max,     1,   128},
     {"NmpShallowMargin", &SPSAParams::nmp_shallow_margin, 0,  300},
     {"NmpShallowDepth", &SPSAParams::nmp_shallow_depth,   0,   12},
+    {"OrdMain",         &SPSAParams::ord_main,            0,  4096},
+    {"OrdCm",           &SPSAParams::ord_cm,              0,  4096},
+    {"OrdCh2",          &SPSAParams::ord_ch2,             0,  4096},
+    {"OrdCh3",          &SPSAParams::ord_ch3,             0,  4096},
+    {"OrdCh4",          &SPSAParams::ord_ch4,             0,  4096},
+    {"OrdPawn",         &SPSAParams::ord_pawn,            0,  4096},
+    {"OrdBfly",         &SPSAParams::ord_bfly,            0,  4096},
+    {"RedMain",         &SPSAParams::red_main,            0,  4096},
+    {"RedCm",           &SPSAParams::red_cm,              0,  4096},
+    {"RedCh2",          &SPSAParams::red_ch2,             0,  4096},
+    {"RedCh3",          &SPSAParams::red_ch3,             0,  4096},
+    {"RedCh4",          &SPSAParams::red_ch4,             0,  4096},
+    {"RedPawn",         &SPSAParams::red_pawn,            0,  4096},
+    {"RedBfly",         &SPSAParams::red_bfly,            0,  4096},
+    {"OrdKiller1",      &SPSAParams::ord_killer1,         0, 120000},
+    {"OrdKiller2",      &SPSAParams::ord_killer2,         0, 100000},
+    {"OrdCounter",      &SPSAParams::ord_counter,         0,  80000},
+    {"OrdEscape",       &SPSAParams::ord_escape,          0,  40000},
+    {"OrdKingZone",     &SPSAParams::ord_king_zone,       0,  12000},
+    {"OrdCenter",       &SPSAParams::ord_center,          0,  4096},
+    {"OrdPawnThreat",   &SPSAParams::ord_pawn_threat,     0,  24000},
+    {"OrdPawnCheck",    &SPSAParams::ord_pawn_check,      0,  16000},
+    {"OrdKnightCheck",  &SPSAParams::ord_knight_check,    0,  16000},
 };
 
 inline const SPSAOption* find_spsa_option(const std::string& name) {
