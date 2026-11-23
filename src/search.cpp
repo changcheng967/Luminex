@@ -598,9 +598,12 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
 
     // Check for draw
     if (pos.is_draw()) {
-        if (alpha >= VALUE_DRAW) return alpha;
         Value draw_noise = (local_nodes & 2) - 1;
-        return VALUE_DRAW + draw_noise - (int(pos.side_to_move()) == root_side.load(std::memory_order_relaxed) ? params.contempt / 2 : -params.contempt / 2);
+        const Value draw_value = VALUE_DRAW + draw_noise - (int(pos.side_to_move()) == root_side.load(std::memory_order_relaxed) ? params.contempt / 2 : -params.contempt / 2);
+        // The shortcut compares alpha with the draw's real value (contempt and
+        // noise), not with 0
+        if (alpha >= draw_value) return alpha;
+        return draw_value;
     }
 
     // TT probe: memoizes qsearch nodes (the bulk of the tree). Bound-consistent
@@ -856,9 +859,12 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
 
     // Check for draw
     if (pos.is_draw()) {
-        if (alpha >= VALUE_DRAW) return alpha;
         Value draw_noise = (local_nodes & 2) - 1;
-        return VALUE_DRAW + draw_noise - (int(pos.side_to_move()) == root_side.load(std::memory_order_relaxed) ? params.contempt / 2 : -params.contempt / 2);
+        const Value draw_value = VALUE_DRAW + draw_noise - (int(pos.side_to_move()) == root_side.load(std::memory_order_relaxed) ? params.contempt / 2 : -params.contempt / 2);
+        // The shortcut compares alpha with the draw's real value (contempt and
+        // noise), not with 0
+        if (alpha >= draw_value) return alpha;
+        return draw_value;
     }
 
     ++local_nodes;
@@ -1038,7 +1044,8 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
     // If parent was reduced >= 3 and position isn't worsening for us,
     // the reduction was likely too aggressive — increase depth to compensate.
     // If both plies have very positive eval sum, position is winning — save time.
-    if (!pv_node && ss->ply >= 2 && !pos.is_check()) {
+    // From ply 1: the rule reads only the parent's entry, a searched node there
+    if (!pv_node && ss->ply >= 1 && !pos.is_check()) {
         int prior_reduction = (ss - 1)->reduction;
         if (prior_reduction >= 3 && !opponent_worsening) {
             depth++;
@@ -1388,6 +1395,10 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
         Bitboard their_pieces = pos.pieces(them);
         Bitboard our_bishops = pos.pieces(us, BISHOP, QUEEN) & ~square_bb(from);
         Bitboard our_rooks   = pos.pieces(us, ROOK, QUEEN) & ~square_bb(from);
+        // The castling rook has left its start square, so it gives no
+        // discovered check from there
+        if (m.is_castling())
+            our_rooks &= ~square_bb(to > from ? Square(from + 3) : Square(from - 4));
 
         // Direct check by the moved piece (promotions check as the new
         // type; castling is handled separately below via the rook square)
@@ -1445,7 +1456,10 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
 
         // Continuation pruning: skip quiet moves with very poor history at low depth
         // Combined counter+continuation history
-        if (is_quiet && !pv_node && depth <= 4 && moves_played > 0) {
+        // Not while every searched move is mated: the node's bound would not
+        // cover the moves this skips, and it would claim a mate it has not proven
+        if (is_quiet && !pv_node && depth <= 4 && moves_played > 0
+            && best_value > -VALUE_MATE_IN_MAX_PLY) {
             Piece pc = pos.piece_on(m.from());
             if (pc != NO_PIECE) {
                 int hist_score = combined_history(worker, ss, pc, m.to());
@@ -1465,7 +1479,8 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
         int lmp_threshold = (sp.lmp_base + ((ss->improving || opponent_worsening) ? 100 : 0)
                              + depth * depth * sp.lmp_coeff) / 100;
         if (is_quiet && !pv_node && depth <= 8 && moves_played >= lmp_threshold
-            && m != worker->killers[ss->ply][0] && m != worker->killers[ss->ply][1]) {
+            && m != worker->killers[ss->ply][0] && m != worker->killers[ss->ply][1]
+            && best_value > -VALUE_MATE_IN_MAX_PLY) {   // not while every searched move is mated
             g_stats.lmp_prunes++;
             return false;
         }
@@ -1707,8 +1722,11 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
                 // Capture history malus for fail-low captures
                 if (ss->ply < MAX_PLY) {
                 int cap_malus = hist_malus(depth);
-                // If quiet caused cutoff: penalize ALL captures. If capture caused cutoff: skip the best capture.
-                int cap_malus_end = is_quiet ? capturesSearched_count : (capturesSearched_count > 0 ? capturesSearched_count - 1 : 0);
+                // Every capture searched is penalized except the cutoff move, when
+                // it is the last capture searched (a non-capture promotion is not
+                // in the list)
+                int cap_malus_end = (!is_quiet && capturesSearched_count > 0 && capturesSearched[capturesSearched_count - 1] == m)
+                                  ? capturesSearched_count - 1 : capturesSearched_count;
                 for (int i = 0; i < cap_malus_end; ++i) {
                     int& ch = worker->capture_history[int(capturesSearched_piece[i])][int(capturesSearched[i].to())][int(capturesSearched_cap[i])];
                     ch += cap_malus - ch * abs(cap_malus) / 16368;
@@ -2189,6 +2207,10 @@ static RootIteration root_iteration(Position& pos, ExtMove* moves, ExtMove* end,
         // bound is in question, and proving it at full depth is waste.
         int asp_depth = depth - 1
                       - (fail_high_streak >= 2 ? std::min(fail_high_streak - 1, 3) : 0);
+        // A run of fail highs never takes the re-search below depth 1 (at a
+        // shallow iteration it sent the root's children to qsearch); the
+        // depth-1 iteration itself searches them at depth 0
+        asp_depth = std::max(asp_depth, std::min(depth - 1, 1));
 
         // Search all root moves with current bounds
         int root_moves_searched = 0;
