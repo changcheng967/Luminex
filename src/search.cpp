@@ -2687,6 +2687,9 @@ Move search(Position& pos, Limits& lim) {
         if (params.multi_pv > 1) {
             int n_moves = int(end - moves);
             Value mv_scores[MAX_MOVES];
+            // The extension cap's iteration depth (root_iteration sets it on
+            // the other path)
+            iter_depth = root_depth;
 
             for (ExtMove* it = moves; it != end; ++it) {
                 if (g_stop_requested || stop.load(std::memory_order_relaxed)) break;
@@ -2721,10 +2724,15 @@ Move search(Position& pos, Limits& lim) {
                 best_move = moves[0].move;
                 best_value = mv_scores[idx[0]];
                 root_score = best_value;
+                // A finished iteration: the clock may now stop the search inside
+                // the next one (check_time reads depth1_done), and the next one
+                // is not started when it could not finish
+                depth1_done.store(true, std::memory_order_relaxed);
 
                 auto search_end = std::chrono::steady_clock::now();
                 int t_ms = int(std::chrono::duration_cast<std::chrono::milliseconds>(
                     search_end - search_start).count());
+                last_iteration_ms = t_ms - iteration_start_ms;
                 uint64_t total_nodes = nodes.load(std::memory_order_relaxed);
                 int report = std::min(params.multi_pv, n_moves);
                 for (int k = 0; k < report; ++k) {
