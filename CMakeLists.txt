@@ -180,8 +180,9 @@ if(LUMINEX_DISPATCH)
     if(MSVC)   # clang-cl
         # MSBuild passes /fp:precise, clang's -ffp-model=precise, which
         # contracts within a statement. -ffp-contract=off overrides that part
-        # only, as meant, and clang would say so (-Woverriding-option).
-        set(_lux_k_common /clang:-ffp-contract=off /clang:-Wno-overriding-option)
+        # only, as meant, and clang would say so (-Woverriding-option). The
+        # driver reads that warning flag only as itself, not through /clang:.
+        set(_lux_k_common /clang:-ffp-contract=off -Wno-overriding-option)
     else()
         set(_lux_k_common -ffp-contract=off -fno-lto)
     endif()
