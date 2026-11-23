@@ -367,8 +367,11 @@ static uint32_t g_net_id = 0;   // incremented by every successful load(); keys 
 // multiple): a child built from its parent then never stores to an address whose
 // low 12 bits match a parent load just ahead (4,160 bytes apart they matched 64
 // bytes on, which store-to-load forwarding treats as a possible dependence on
-// AMD Zen 2, Software Optimization Guide 56305 section 2.12). Exact.
-struct alignas(64) Accumulator { int16_t v[2][NNUE_L1_MAX]; int32_t lin[2]; char pad_[7168 - 2 * NNUE_L1_MAX * 2 - 8]; };
+// AMD Zen 2, Software Optimization Guide 56305 section 2.12). Exact. The cost is
+// memory: 2,048 entries (NNUE_MAX_PLY) x 7,168 bytes = 14.7 MB a thread, 6.2 MB
+// more than at 4,160 bytes (about 376 MiB more at 64 threads). The padding is
+// zeroed, so copying a whole Accumulator never reads indeterminate bytes.
+struct alignas(64) Accumulator { int16_t v[2][NNUE_L1_MAX]; int32_t lin[2]; char pad_[7168 - 2 * NNUE_L1_MAX * 2 - 8] = {}; };
 static_assert(sizeof(Accumulator) % 4096 == 3072, "accumulator stride: see above");
 
 // Heap-allocated per thread, NOT a thread_local C-array: an 8MB thread_local array
