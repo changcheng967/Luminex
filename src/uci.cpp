@@ -1,5 +1,6 @@
-#define _CRT_SECURE_NO_WARNINGS
+#ifdef _MSC_VER
 #pragma warning(disable: 4459) // variable shadowing - intentional for pos parameter
+#endif
 #include "luminex.h"
 #include <algorithm>
 #include <cctype>
@@ -241,13 +242,15 @@ static void search_worker(Position pos_copy, Limits lim) {
         }
     }
 
-    if (best_move == MOVE_NONE) {
+    const bool from_book = best_move != MOVE_NONE;
+    if (!from_book)
         best_move = search(pos_copy, lim);
-    }
 
     // A ponder or infinite search replies only on ponderhit or stop, however
     // early its move was ready (a book move, a forced mate, the depth limit)
     hold_reply(lim);
+    if (!from_book)
+        report_after_hit(pos_copy);
     finish_clock(lim);
 
     if (dbglog) { fprintf(dbglog, "SEARCH_DONE: about to send bestmove\n"); fflush(dbglog); }
@@ -343,6 +346,13 @@ static void ensure_net_loaded(bool force = false) {
         safe_output("info string no NNUE network loaded, using the classical evaluation\n");
 }
 
+// The net's load report, printed by the commands that use the net (go, eval,
+// nnuecheck, ...) rather than at the load: see nnue::take_report
+static void print_net_report() {
+    if (const std::string report = nnue::take_report(); !report.empty())
+        safe_output(report);
+}
+
 // luminex nnuecheck [NETFILE]: the nnuecheck command from the command line,
 // with NETFILE or the default network (the built-in one, or the file of its
 // name) loaded as NNUEFile would load it. True when every level agrees.
@@ -350,6 +360,7 @@ bool run_nnuecheck(const std::string& net_file) {
     g_net_option = net_file;
     g_net_attempted = false;
     ensure_net_loaded(true);
+    print_net_report();
     std::string report;
     const bool ok = nnue::check_simd(report);
     safe_output(report + "\n");
@@ -581,6 +592,7 @@ void handle_go(Position& pos, const std::string& cmd) {
 
     // A GUI may send go without isready; the net must be in place either way.
     ensure_net_loaded();
+    print_net_report();
 
     TT.new_search();
 
@@ -855,6 +867,7 @@ void uci_loop() {
             // games alike (nnue::check_simd); not during a search.
             end_search();
             ensure_net_loaded();
+            print_net_report();
             std::string report;
             nnue::check_simd(report);
             safe_output(report + "\n");
@@ -863,6 +876,7 @@ void uci_loop() {
             // side-to-move-relative cp. Used to validate the NNUE inference
             // against the Python trainer's eval.
             ensure_net_loaded();
+            print_net_report();
             Value v = evaluate(pos, false);
             std::string out = "eval cp " + std::to_string(int(v));
             safe_output(out + "\n");
@@ -874,11 +888,13 @@ void uci_loop() {
         } else if (cmd == "lanes") {
             // the feature-layer lanes the forward pass reads for the current position (debugging)
             ensure_net_loaded();
+            print_net_report();
             safe_output(nnue::lane_dump(pos));
         } else if (cmd.rfind("evalbench", 0) == 0) {
             // evalbench <N>: raw evaluate() throughput on the current position
             // (roofline probe — measures the eval kernel ceiling, no search).
             ensure_net_loaded();
+            print_net_report();
             long n = atol(cmd.c_str() + 10);
             if (n <= 0) n = 1000000;
             auto t0 = std::chrono::steady_clock::now();
@@ -887,8 +903,8 @@ void uci_loop() {
             auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(
                           std::chrono::steady_clock::now() - t0).count();
             char buf[128];
-            std::snprintf(buf, sizeof buf, "evalbench %ld in %ldms = %.0f evals/s (sink %d)\n",
-                          n, ms, ms ? n * 1000.0 / ms : 0.0, int(acc) & 1);
+            std::snprintf(buf, sizeof buf, "evalbench %ld in %lldms = %.0f evals/s (sink %d)\n",
+                          n, static_cast<long long>(ms), ms ? n * 1000.0 / ms : 0.0, int(acc) & 1);
             safe_output(buf);
         }
     }

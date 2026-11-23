@@ -54,6 +54,13 @@ function(try_add_flag flag)
     endif()
 endfunction()
 
+# The Microsoft C runtime marks fopen, fscanf and getenv deprecated in favour
+# of its own _s variants, which no other platform has; the engine keeps the
+# standard calls
+if(WIN32)
+    add_compile_definitions(_CRT_SECURE_NO_WARNINGS)
+endif()
+
 # Compiler flags for maximum performance
 if(MSVC)
     # The C and C++ runtime linked into the .exe (/MT), so it runs on a Windows
@@ -171,7 +178,10 @@ if(LUMINEX_DISPATCH)
     set(_lux_k_avx2 -march=x86-64-v3)
     set(_lux_k_base "")   # the engine's own level
     if(MSVC)   # clang-cl
-        set(_lux_k_common /clang:-ffp-contract=off)
+        # MSBuild passes /fp:precise, clang's -ffp-model=precise, which
+        # contracts within a statement. -ffp-contract=off overrides that part
+        # only, as meant, and clang would say so (-Woverriding-option).
+        set(_lux_k_common /clang:-ffp-contract=off /clang:-Wno-overriding-option)
     else()
         set(_lux_k_common -ffp-contract=off -fno-lto)
     endif()
@@ -314,7 +324,7 @@ function(luminex_tool name tool)
         add_executable(${name} src/tools.cpp)
     endif()
     target_include_directories(${name} PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
-    target_compile_definitions(${name} PRIVATE LUMINEX_TOOL_${tool} _CRT_SECURE_NO_WARNINGS)
+    target_compile_definitions(${name} PRIVATE LUMINEX_TOOL_${tool})
 endfunction()
 
 if(BUILD_FEATURIZER)

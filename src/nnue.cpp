@@ -305,6 +305,8 @@ static std::vector<float> ft_b;   // (L1,)
 static std::vector<float> l2_w, l3_w, out_w;   // float dense weights (LNN1 nets)
 static bool g_int8 = false;
 static bool g_loaded = false;
+// The last load's report, until take_report() hands it to the UCI layer
+static std::string g_report;
 // gen768t (LNT8 nets, docs/NNUE.md, V5-GEN768T): attack-relation and pawn-pair rows, int8 in steps of
 // 2^g_rel_rs on the feature grid, summed into int16 relation lanes of their own and added into the first
 // g_rel_T lanes of the feature layer at evaluation (RelLanes). g_rel_T = 0 for every other format.
@@ -453,9 +455,9 @@ static const Kernels* const g_k = &k_native::kernels;
 #define NNUE_K(fn) (k_native::fn)
 #endif
 constexpr int NUM_LEVELS = int(sizeof(LEVELS) / sizeof(LEVELS[0]));
-static int g_request = -1;   // SimdLevel: an index into LEVELS, -1 for auto
 
 #if defined(LUMINEX_NNUE_DISPATCH)
+static int g_request = -1;   // SimdLevel: an index into LEVELS, -1 for auto
 namespace {
 // cpuid(leaf, subleaf) -> eax, ebx, ecx, edx
 void cpuid(uint32_t leaf, uint32_t sub, uint32_t r[4]) {
@@ -570,9 +572,9 @@ std::string set_simd_level(const std::string& request) {
             if (request == LEVELS[i]->name) want = i;
         if (want == -2) return "SimdLevel " + request + " is not a level of this build; SIMD level " + simd_level();
     }
-    g_request = want;
     const int got = best_level(want);
 #if defined(LUMINEX_NNUE_DISPATCH)
+    g_request = want;
     g_k = LEVELS[got];
     g_k_chosen = true;
 #endif
@@ -919,22 +921,23 @@ static bool load_stream(std::istream& f, const std::string& name) {
     }
     g_loaded = true;
     ++g_net_id;   // refresh-cache entries of the previous net are stale
-    // stdout carries UCI traffic, so the report is an info string. It ends
-    // with the kernels' instruction-set level (SimdLevel).
+    // The report: an info string (stdout carries UCI traffic) ending with the
+    // kernels' instruction-set level (SimdLevel), then any warning. It is kept
+    // for take_report(), not printed here.
     if (lnt8)
-        std::printf("info string NNUE evaluation using %s (gen768t: int8 L1=%d L2=%d L3=%d, %d output buckets, a scale per row; "
-                    "relation lanes T=%d, %d rows, step 2^%d, pawn pairs %s%s), SIMD level %s\n",
-                    name.c_str(), L1, L2, L3, NB, g_rel_T, rh[1], g_rel_rs, g_rel_ppm ? "all" : "in contact",
-                    g_rel_check ? ", LUMINEX_REL_CHECK on" : "", g_k->name);
+        g_report = std::format("info string NNUE evaluation using {} (gen768t: int8 L1={} L2={} L3={}, {} output buckets, "
+                               "a scale per row; relation lanes T={}, {} rows, step 2^{}, pawn pairs {}{}), SIMD level {}\n",
+                               name, L1, L2, L3, NB, g_rel_T, rh[1], g_rel_rs, g_rel_ppm ? "all" : "in contact",
+                               g_rel_check ? ", LUMINEX_REL_CHECK on" : "", g_k->name);
     else if (NB > 1)
-        std::printf("info string NNUE evaluation using %s (int8 L1=%d L2=%d L3=%d, %d output buckets%s), SIMD level %s\n",
-                    name.c_str(), L1, L2, L3, NB, rows ? ", a scale per row" : "", g_k->name);
+        g_report = std::format("info string NNUE evaluation using {} (int8 L1={} L2={} L3={}, {} output buckets{}), SIMD level {}\n",
+                               name, L1, L2, L3, NB, rows ? ", a scale per row" : "", g_k->name);
     else
-        std::printf("info string NNUE evaluation using %s (%s L1=%d L2=%d L3=%d), SIMD level %s\n",
-                    name.c_str(), g_int8 ? "int8" : "float", L1, L2, L3, g_k->name);
+        g_report = std::format("info string NNUE evaluation using {} ({} L1={} L2={} L3={}), SIMD level {}\n",
+                               name, g_int8 ? "int8" : "float", L1, L2, L3, g_k->name);
     if (clamped > 0)
-        std::printf("info string NNUE warning: %lld feature weights exceed the int16 range and were clamped\n",
-                    clamped);
+        g_report += std::format("info string NNUE warning: {} feature weights exceed the int16 range and were clamped\n",
+                                clamped);
     return true;
 }
 
@@ -969,6 +972,11 @@ protected:
 } // namespace
 
 bool has_embedded() { return embedded_net().size > 0; }
+
+std::string take_report() {
+    std::string report = std::exchange(g_report, std::string());
+    return g_loaded ? report : std::string();   // a load that failed part-way left no net to report
+}
 
 bool load_embedded() {
     const EmbeddedNet net = embedded_net();
@@ -1383,9 +1391,6 @@ void update(Position& pos, Move m, Piece moved, PieceType captured) {
     const int ply = pos.state_ply();
     const Color us = color_of_piece(moved);
     const PieceType moved_pt = piece_type_of(moved);
-    const bool promo = m.is_promotion();
-    const PieceType from_pt = promo ? PAWN : moved_pt;
-    const PieceType to_pt   = promo ? PieceType(m.promotion_type()) : moved_pt;
 
     // Record the move; make_current applies it when an evaluation needs this ply.
     PlyDelta& d = nnue_deltas()[ply];
@@ -1411,8 +1416,13 @@ void update(Position& pos, Move m, Piece moved, PieceType captured) {
     }
 
     // Prefetch the feature weight rows the delta reads: a child evaluated soon
-    // (most qsearch nodes) then finds them in cache.
+    // (most qsearch nodes) then finds them in cache. x86 only: other targets
+    // have no prefetch here.
+#if defined(__x86_64__) || defined(__i386__) || defined(_M_X64) || defined(_M_IX86)
     {
+        const bool promo = m.is_promotion();
+        const PieceType from_pt = promo ? PAWN : moved_pt;
+        const PieceType to_pt   = promo ? PieceType(m.promotion_type()) : moved_pt;
         const Square from = m.from(), to = m.to();
         int wk = static_cast<int>(pos.king_sq(WHITE));
         int bk = static_cast<int>(pos.king_sq(BLACK));
@@ -1424,11 +1434,10 @@ void update(Position& pos, Move m, Piece moved, PieceType captured) {
             else if (i == 1) idx = halfka_idx(true,  wk, to, arr_piece);
             else if (i == 2) idx = halfka_idx(false, bk, from, dep_piece);
             else idx = halfka_idx(false, bk, to, arr_piece);
-#if defined(__x86_64__) || defined(__i386__) || defined(_M_X64) || defined(_M_IX86)
             _mm_prefetch((const char*)&ft_w[static_cast<size_t>(idx) * g_L1], _MM_HINT_T0);
-#endif
         }
     }
+#endif
     if (pr) { st_update.cyc += rdtsc() - t0; st_update.n++; }
 }
 

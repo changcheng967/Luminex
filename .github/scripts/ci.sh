@@ -119,8 +119,11 @@ install_windows() {
 }
 
 install_macos() {
-    local llvm lld
-    brew install ninja llvm lld || return 1
+    local llvm lld f
+    # only what the runner lacks: brew warns of a formula already installed
+    for f in ninja llvm lld; do
+        brew list --formula "$f" > /dev/null 2>&1 || brew install "$f" || return 1
+    done
     llvm=$(brew --prefix llvm)
     if ! "$llvm/bin/clang++" --version | sed -n 1p | grep -qE "clang version $V\."; then
         brew install "llvm@$V" || return 1   # Homebrew's llvm has moved past 23

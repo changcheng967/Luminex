@@ -855,7 +855,6 @@ bool Position::do_move_replay(Move m) {
     if (pc == NO_PIECE) return false;
     Color us = Color(pc / 6), them = Color(us ^ 1);
     if (us != side_to_move_) return false;
-    PieceType pt = piece_type_of(pc);
 
     // Capture (normal or en passant). remove_piece clears board[]/bitboards/piece_list.
     if (m.is_en_passant()) {

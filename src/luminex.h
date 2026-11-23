@@ -1643,6 +1643,14 @@ bool load_embedded();
 // Whether the binary carries a built-in network.
 bool has_embedded();
 
+// The last load's report ("info string NNUE evaluation using ...", then any
+// warning of that load), once: empty when it was taken or no net is loaded.
+// The UCI layer prints it at the next command that uses the net (go, eval,
+// ...). A load happens at setoption or isready, where a UCI client reads
+// any line but readyok as unexpected output (python-chess, and so
+// lichess-bot, warns on each).
+std::string take_report();
+
 // True iff a net is loaded AND the user enabled UseNNUE. evaluate() checks this.
 bool enabled();
 
@@ -1893,6 +1901,9 @@ extern std::atomic<bool> ponderhit_received;
 // a played move's clock is recorded for the next own move's lag sample.
 void hold_reply(const Limits& lim);
 void finish_clock(const Limits& lim);
+// After hold_reply, for a search's reply (not a book move's): the line a
+// reply after a ponderhit needs when none was printed since the hit.
+void report_after_hit(const Position& root);
 
 } // namespace luminex
 

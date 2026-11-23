@@ -29,6 +29,14 @@ on:
 # and, under Intel SDE (ci.sh sde), as the CPUs that have the levels the
 # runner lacks; simd-digests then checks that both binaries and the build
 # OpenBench runs (the makefile job) evaluate those games alike too.
+
+# actions/checkout runs git init, which otherwise prints its hint on the
+# unset init.defaultBranch in every job
+env:
+  GIT_CONFIG_COUNT: 1
+  GIT_CONFIG_KEY_0: init.defaultBranch
+  GIT_CONFIG_VALUE_0: main
+
 jobs:
   # The build every job builds. A development build is named
   # dev-<commit date, UTC>-<the commit's first 8 hex digits>, as in
@@ -119,7 +127,7 @@ jobs:
       shell: bash
       run: |
         bash .github/scripts/ci.sh deps luminex-linux-x86-64 luminex-linux-x86-64
-    - uses: actions/upload-artifact@v4
+    - uses: actions/upload-artifact@v7
       with:
         name: luminex-linux-x86-64
         path: luminex-linux-x86-64
@@ -189,7 +197,7 @@ jobs:
       shell: bash
       run: |
         bash .github/scripts/ci.sh deps luminex-windows-x86-64.exe luminex-windows-x86-64.exe
-    - uses: actions/upload-artifact@v4
+    - uses: actions/upload-artifact@v7
       with:
         name: luminex-windows-x86-64
         path: luminex-windows-x86-64.exe
@@ -231,7 +239,7 @@ jobs:
       shell: bash
       run: |
         bash .github/scripts/ci.sh deps luminex-macos-arm64 luminex-macos-arm64
-    - uses: actions/upload-artifact@v4
+    - uses: actions/upload-artifact@v7
       with:
         name: luminex-macos-arm64
         path: luminex-macos-arm64
@@ -324,7 +332,7 @@ jobs:
     - uses: actions/checkout@v5
       with:
         fetch-depth: 0
-    - uses: actions/download-artifact@v4
+    - uses: actions/download-artifact@v8
       with:
         path: dist
         pattern: luminex-*
@@ -352,7 +360,7 @@ jobs:
       contents: write
     steps:
     - uses: actions/checkout@v5
-    - uses: actions/download-artifact@v4
+    - uses: actions/download-artifact@v8
       with:
         path: dist
         pattern: luminex-*
