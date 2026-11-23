@@ -1985,6 +1985,12 @@ struct SPSAParams {
     // labels its child an expected CUT node (see search.cpp)
     int late_child_cut = 0;
 
+    // Under measurement: futility and history pruning read the node's depth
+    // less prune_red_share / 1024 of the reduction LMR would give the quiet
+    // move (0 = the node's depth, today's rule), and apply while that depth is
+    // at most fut_max_depth / hist_prune_max_depth (5 and 4 = today's)
+    int prune_red_share = 0, fut_max_depth = 5, hist_prune_max_depth = 4;
+
     // Load from file (COUNT ints, one per line, in field order). Returns true if loaded.
     bool load(const std::string& path) {
         FILE* f = std::fopen(path.c_str(), "r");
@@ -2057,6 +2063,9 @@ inline constexpr SPSAOption SPSA_OPTIONS[] = {
     {"TtStoreSlack",    &SPSAParams::tt_store_slack,      0,     8},
     {"ExtPathCap",      &SPSAParams::ext_path_cap,        0,    16},
     {"LateChildCut",    &SPSAParams::late_child_cut,      0,     1},
+    {"PruneRedShare",   &SPSAParams::prune_red_share,     0,  1024},
+    {"FutMaxDepth",     &SPSAParams::fut_max_depth,       1,    16},
+    {"HistPruneMaxDepth", &SPSAParams::hist_prune_max_depth, 1, 16},
 };
 
 inline const SPSAOption* find_spsa_option(const std::string& name) {
