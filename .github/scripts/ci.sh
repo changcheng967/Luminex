@@ -16,7 +16,7 @@
 # ----- the network pin
 # The network the release binaries carry. fetch-net downloads it and checks
 # its sha256, so every build embeds exactly the shipped file. The pin is
-# gen768t_04q (luminex_gen768t_04q_i8.nnue on the engine-archives
+# gen768t_05q (luminex_gen768t_05q_i8.nnue on the engine-archives
 # pre-release). Shipping a new network means attaching it to a release and
 # moving pin_url, pin_sha256 and pin_about here. The url's file name is the
 # network's real name and its only source: fetch-net saves the file under it,
@@ -25,9 +25,9 @@
 # the file under it (net fails a build that names another network).
 # pin_about, the network's name and a line on how it was made, goes into the
 # development build's notes (dev-release).
-pin_url=https://github.com/changcheng967/Luminex/releases/download/engine-archives/luminex_gen768t_04q_i8.nnue
-pin_sha256=d955d5a27ad5a331f5c89d3666e7bdf6381ee6d04a590ad5190038f3ffb31047
-pin_about="gen768t_04q: V5 (gen768t, docs/NNUE.md), gen768s's feature layer with 55,960 int8 relation rows (attacks, and pawn pairs in contact) summed into 256 of its 768 lanes (the LNT8 format); gen768t_03's float network trained on for 2,497,248 more steps (327.3B positions, a fresh optimizer, lr 5e-5) on Leela BT4's relabel of eleven corpus files that no earlier run saw (test77, test78 and test80 games, 2021-2023), then 30K steps of QAT with int8 relation rows and one int8 scale per tail row"
+pin_url=https://github.com/changcheng967/Luminex/releases/download/engine-archives/luminex_gen768t_05q_i8.nnue
+pin_sha256=1d9f44604e289cda055e246166b7f9a5fe419bf351d4b25142e9a2c35eb75544
+pin_about="gen768t_05q: V5 (gen768t, docs/NNUE.md), gen768s's feature layer with 55,960 int8 relation rows (attacks, and pawn pairs in contact) summed into 256 of its 768 lanes (the LNT8 format); gen768t_04's float network trained on for 2,693,718 more steps (353.1B positions, a fresh optimizer, lr 5e-5) on Leela data relabelled by BT4: eleven months of test91 games and six corpus files (leela96 splits 2-4, test80 games of April, May and July 2023), then 30K steps of QAT with int8 relation rows and one int8 scale per tail row"
 
 # ----- fetch-net
 # Download the pinned network and check its sha256. Prints the file's path and
