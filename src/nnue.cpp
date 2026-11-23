@@ -370,7 +370,9 @@ static uint32_t g_net_id = 0;   // incremented by every successful load(); keys 
 // AMD Zen 2, Software Optimization Guide 56305 section 2.12). Exact. The cost is
 // memory: 2,048 entries (NNUE_MAX_PLY) x 7,168 bytes = 14.7 MB a thread, 6.2 MB
 // more than at 4,160 bytes (about 376 MiB more at 64 threads). The padding is
-// zeroed, so copying a whole Accumulator never reads indeterminate bytes.
+// zeroed, so copying a whole Accumulator never reads indeterminate bytes, but
+// nothing should copy one: a copy moves its 3 KB of padding too. Every use is
+// a reference, and the null move copies the lanes only.
 struct alignas(64) Accumulator { int16_t v[2][NNUE_L1_MAX]; int32_t lin[2]; char pad_[7168 - 2 * NNUE_L1_MAX * 2 - 8] = {}; };
 static_assert(sizeof(Accumulator) % 4096 == 3072, "accumulator stride: see above");
 
