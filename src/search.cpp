@@ -1577,8 +1577,9 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
 
         Value value;
         if (do_lmr && new_depth > 0) {
-            // LMR: reduced zero-window search
-            value = -search_worker(pos, ss + 1, -alpha - 1, -alpha, new_depth, !cut_node);
+            // LMR: reduced zero-window search (LateChildCut: the child of a move
+            // after the first is an expected CUT node, it should refute the move)
+            value = -search_worker(pos, ss + 1, -alpha - 1, -alpha, new_depth, sp.late_child_cut || !cut_node);
             if (stop.load(std::memory_order_relaxed)) {
                 pos.undo_move(m);
                 return false;
@@ -1612,8 +1613,9 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
                 }
             }
         } else if (moves_played > 0) {
-            // PVS: zero-window scout search for non-first moves
-            value = -search_worker(pos, ss + 1, -alpha - 1, -alpha, full_depth, !cut_node);
+            // PVS: zero-window scout search for non-first moves (LateChildCut as
+            // above)
+            value = -search_worker(pos, ss + 1, -alpha - 1, -alpha, full_depth, sp.late_child_cut || !cut_node);
             if (stop.load(std::memory_order_relaxed)) {
                 pos.undo_move(m);
                 return false;

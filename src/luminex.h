@@ -1981,6 +1981,10 @@ struct SPSAParams {
     // could otherwise keep the depth from falling
     int ext_path_cap = 8;
 
+    // Under measurement (0 = off): the first search of a move after the first
+    // labels its child an expected CUT node (see search.cpp)
+    int late_child_cut = 0;
+
     // Load from file (COUNT ints, one per line, in field order). Returns true if loaded.
     bool load(const std::string& path) {
         FILE* f = std::fopen(path.c_str(), "r");
@@ -2052,6 +2056,7 @@ inline constexpr SPSAOption SPSA_OPTIONS[] = {
     {"NmpShallowDepth", &SPSAParams::nmp_shallow_depth,   0,   12},
     {"TtStoreSlack",    &SPSAParams::tt_store_slack,      0,     8},
     {"ExtPathCap",      &SPSAParams::ext_path_cap,        0,    16},
+    {"LateChildCut",    &SPSAParams::late_child_cut,      0,     1},
 };
 
 inline const SPSAOption* find_spsa_option(const std::string& name) {
