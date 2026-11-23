@@ -361,7 +361,13 @@ static uint32_t g_net_id = 0;   // incremented by every successful load(); keys 
 // The updates wrap, so a partial sum that leaves int16 within one update cannot
 // change the result; the grid, not the SCReLU clip, is what keeps the lanes exact.
 // Halves copy/update/eval traffic vs the int32 accumulator.
-struct alignas(64) Accumulator { int16_t v[2][NNUE_L1_MAX]; int32_t lin[2]; };
+// Padded so consecutive plies' entries sit 7,168 bytes apart (3,072 past a 4 KB
+// multiple): a child built from its parent then never stores to an address whose
+// low 12 bits match a parent load just ahead (4,160 bytes apart they matched 64
+// bytes on, which store-to-load forwarding treats as a possible dependence on
+// AMD Zen 2, Software Optimization Guide 56305 section 2.12). Exact.
+struct alignas(64) Accumulator { int16_t v[2][NNUE_L1_MAX]; int32_t lin[2]; char pad_[7168 - 2 * NNUE_L1_MAX * 2 - 8]; };
+static_assert(sizeof(Accumulator) % 4096 == 3072, "accumulator stride: see above");
 
 // Heap-allocated per thread, NOT a thread_local C-array: an 8MB thread_local array
 // reserves 8MB of *static TLS* for every thread and overflows the stack at creation.
