@@ -73,6 +73,8 @@ SearchParams params;
 std::atomic<uint64_t> nodes;
 std::atomic<bool> stop;
 int root_depth;
+// The depth of the root iteration this thread is searching (root_iteration sets it)
+static thread_local int iter_depth = 1;
 Value root_score;
 
 // Lazy SMP thread management
@@ -307,6 +309,23 @@ inline Value eval_cached(const Position& pos) {
     int correction = get_total_correction(pos);
     correction = std::max(-200, std::min(200, correction));
     return Value(eval + correction);
+}
+
+// The eval cache's value without the correction: the TT keeps the
+// uncorrected eval, and every read adds the current correction
+inline Value eval_cached_raw(const Position& pos) {
+    uint64_t key = pos.key();
+    uint32_t idx = uint32_t(key) & (EVAL_CACHE_SIZE - 1);
+    if (eval_cache[idx].key == key && (nnue::loaded() || eval_cache[idx].tactical == 0)) {
+        g_stats.eval_cache_hits_main++;
+        return Value(eval_cache[idx].value);
+    }
+    g_stats.eval_cache_misses_main++;
+    Value eval = evaluate(pos);
+    eval_cache[idx].key = key;
+    eval_cache[idx].value = int32_t(eval);
+    eval_cache[idx].tactical = 0;
+    return eval;
 }
 
 [[maybe_unused]] inline void clear_eval_cache() {
@@ -615,6 +634,7 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
     // what stand-pat decisions see.
     Value eval = VALUE_ZERO;
     Value raw_eval = VALUE_ZERO;
+    Value tt_eval_store = VALUE_ZERO;   // what the TT keeps: the uncorrected eval
     Value known_value = VALUE_ZERO;
     const bool known_eg = !in_check && known_endgame(pos, known_value);
 
@@ -622,9 +642,14 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
         if (known_eg) {
             // A known endgame's score, without correction (see eval_cached)
             raw_eval = known_value;
+            tt_eval_store = raw_eval;
         } else if (tt_found && tte->eval() != VALUE_INFINITE) {
-            // Stored static eval (already correction-adjusted at store time)
+            // Stored static eval, uncorrected: the current correction is
+            // added on every read (a stored corrected eval kept its first
+            // visit's correction for the entry's life)
             raw_eval = tte->eval();
+            tt_eval_store = raw_eval;
+            raw_eval = Value(raw_eval + std::max(-200, std::min(200, get_total_correction(pos))));
         } else {
             // Qsearch fills the cache itself; the tactical bit gates only under
             // HCE, preserving full sharing under NNUE. The cache holds the
@@ -641,6 +666,7 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
                 eval_cache[idx].tactical = 1;
                 g_stats.eval_cache_misses_qs++;
             }
+            tt_eval_store = raw_eval;   // uncorrected
             int correction = get_total_correction(pos);
             correction = std::max(-200, std::min(200, correction));
             raw_eval = Value(raw_eval + correction);
@@ -702,23 +728,37 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
             }
             if (it->move == tt_move) it->value += 1000000;
         }
+    } else {
+        // Evasions: the TT move, then captures by MVV-LVA, then the rest by
+        // history (they were searched in generation order, the TT move too)
+        static constexpr int pv[] = {100, 320, 330, 500, 900, 20000, 0};
+        for (ExtMove* it = moves; it != end; ++it) {
+            const Move m = it->move;
+            if (m == tt_move)
+                it->value = 4000000;
+            else if (m.is_capture()) {
+                PieceType captured = m.is_en_passant() ? PAWN : pos.piece_type_on(m.to());
+                it->value = 2000000 + pv[captured] * 10 - pv[pos.piece_type_on(m.from())];
+            } else if (m.is_promotion())
+                it->value = 1900000;
+            else
+                it->value = combined_history(worker, ss, pos.piece_on(m.from()), m.to());
+        }
     }
 
     for (ExtMove* it = moves; it != end; ++it) {
         // FIX: Check for stop at top of move loop for faster response
         if (stop.load(std::memory_order_relaxed)) break;
 
-        // Pick-best for captures: swap highest-scored remaining move to front
-        if (!in_check) {
-            ExtMove* best = it;
-            for (ExtMove* jt = it + 1; jt != end; ++jt) {
-                if (jt->value > best->value) best = jt;
-            }
-            if (best != it) {
-                ExtMove tmp = *it;
-                *it = *best;
-                *best = tmp;
-            }
+        // Pick-best: swap the highest-scored remaining move to the front
+        ExtMove* best = it;
+        for (ExtMove* jt = it + 1; jt != end; ++jt) {
+            if (jt->value > best->value) best = jt;
+        }
+        if (best != it) {
+            ExtMove tmp = *it;
+            *it = *best;
+            *best = tmp;
         }
 
         if (in_check) {
@@ -765,7 +805,7 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
             // move, and every repeated cutoff searched its captures again.
             if (!stop.load(std::memory_order_relaxed) && TT.should_store(tte, tt_found, 0)) {
                 tte->save(pos.key(), value_to_tt(value, ss->ply), false, BOUND_LOWER, 0,
-                          it->move, in_check ? Value(VALUE_INFINITE) : raw_eval, TT.generation());
+                          it->move, in_check ? Value(VALUE_INFINITE) : tt_eval_store, TT.generation());
             }
             return value;  // fail-soft
         }
@@ -792,7 +832,7 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
     // below beta: an upper bound. Mate returns skip the store entirely.
     if (!stop.load(std::memory_order_relaxed) && TT.should_store(tte, tt_found, 0)) {
         tte->save(pos.key(), value_to_tt(alpha, ss->ply), false, BOUND_UPPER, 0,
-                  MOVE_NONE, in_check ? Value(VALUE_INFINITE) : raw_eval, TT.generation());
+                  MOVE_NONE, in_check ? Value(VALUE_INFINITE) : tt_eval_store, TT.generation());
     }
 
     return alpha;
@@ -878,6 +918,9 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
     // (2 plies per intervening search, clamped) so stale entries lose BOTH their
     // cutoff authority and their replacement-priority simultaneously.
     Depth tt_depth = found ? tte->depth() : DEPTH_ZERO;
+    // The bound as probed: the singular test reads this, not the slot, which
+    // the null move or ProbCut may have overwritten since
+    const int tt_bound_probed = found ? int(tte->bound()) : 0;
 
     // ttPv: this position was a PV node when stored in TT
     bool ttPv = found && tte->is_pv();
@@ -892,7 +935,7 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
         (tt_value >= beta ? (tte->bound() & BOUND_LOWER) : (tte->bound() & BOUND_UPPER))) {
         g_stats.tt_cutoffs++;
         // TT cutoff stat updates: reinforce heuristics even on TT hits
-        if (tt_value >= beta && tt_move && ss->ply > 0) {
+        if (tt_value >= beta && tt_move) {
             Piece moved = pos.piece_on(tt_move.from());
             if (moved != NO_PIECE && !tt_move.is_capture()) {
                 int bonus = hist_bonus(depth);
@@ -944,15 +987,24 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
     if (!pos.is_check()) {
         Value known_value;
         known_eg = known_endgame(pos, known_value);
-        // The stored TT eval (correction-adjusted at store time) skips the
-        // eval-cache probe and the NNUE call; VALUE_INFINITE marks entries
-        // saved without one (root stores, in-check nodes)
-        tt_store_eval = known_eg ? known_value
-                      : (found && tte->eval() != VALUE_INFINITE) ? tte->eval() : eval_cached(pos);
+        // The stored TT eval skips the eval-cache probe and the NNUE call;
+        // VALUE_INFINITE marks entries saved without one (root stores,
+        // in-check nodes). The TT keeps the uncorrected eval and every read
+        // adds the current correction: a stored corrected eval kept its first
+        // visit's correction for the entry's life, and the correction history
+        // learned its residuals against that stale value.
+        Value base_eval;   // the static eval before damping
+        if (known_eg) {
+            tt_store_eval = known_value;
+            base_eval = known_value;
+        } else {
+            tt_store_eval = (found && tte->eval() != VALUE_INFINITE) ? tte->eval() : eval_cached_raw(pos);
+            base_eval = Value(tt_store_eval + std::max(-200, std::min(200, get_total_correction(pos))));
+        }
         // Draw-clock damping: decisive evals count for less as the 50-move
         // draw nears. Caches and the TT keep the undamped value.
         eval = pos.halfmove_clock() > 0 && !known_eg
-             ? Value(tt_store_eval * (200 - pos.halfmove_clock()) / 200) : tt_store_eval;
+             ? Value(base_eval * (200 - pos.halfmove_clock()) / 200) : base_eval;
         // Correction history magnitude = how wrong the eval has been in similar positions.
         // High uncertainty → eval is unreliable → search should be less aggressive.
         // Low uncertainty → eval is reliable → search can be more aggressive.
@@ -1042,7 +1094,7 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
     int own_pieces = popcount(pos.pieces(stm)) - popcount(pos.pieces(stm, PAWN)) - 1;
     bool null_move_ok = !pv_node && !pos.is_check() && depth >= 2 && own_pieces >= 1 &&
                           eval >= beta + (depth <= sp.nmp_shallow_depth ? sp.nmp_shallow_margin : 0) &&
-                          ss->ply >= 1 && !ss->excluded_move &&
+                          !ss->excluded_move &&
                           (ss - 1)->current_move != MOVE_NULL &&
                           ss->ply >= worker->nmp_disabled_ply;
 
@@ -1074,7 +1126,7 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
             if (depth >= 14 || (piece_count < 4 && depth >= 6)) {
                 int saved_disable_ply = worker->nmp_disabled_ply;
                 worker->nmp_disabled_ply = ss->ply + 3 * (depth - R) / 4;
-                Value verify = search_worker(pos, ss, beta - 1, beta, (depth - R) * 3 / 4, !cut_node);
+                Value verify = search_worker(pos, ss, beta - 1, beta, depth - R, !cut_node);
                 worker->nmp_disabled_ply = saved_disable_ply;
                 if (verify >= beta) {
                     g_stats.null_move_prunes++;
@@ -1090,7 +1142,7 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
     // ProbCut - if a capture is obviously good enough, verify with shallow search
     // Skipped in excluded nodes: pruning the singular verification would
     // shortcut the very measurement the verification exists to make.
-    if (!pv_node && depth >= 5 && !pos.is_check() && ss->ply >= 2 && !ss->excluded_move) {
+    if (!pv_node && depth >= 5 && !pos.is_check() && ss->ply >= 1 && !ss->excluded_move) {
         Value rbeta = std::min(beta + sp.probcut_margin, VALUE_INFINITE - 200);
         int rdepth = depth - 3;
 
@@ -1178,7 +1230,7 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
                        (ss - 2)->current_move.from() == (ss - 4)->current_move.to();
     }
     if (tt_move != MOVE_NONE && !pv_node && found && tt_depth >= depth - 3 && depth >= 6 &&
-        (tte->bound() & BOUND_LOWER) && abs(tt_value) < VALUE_KNOWN_WIN && !is_shuffling
+        (tt_bound_probed & BOUND_LOWER) && abs(tt_value) < VALUE_KNOWN_WIN && !is_shuffling
         // A verification search runs no singular test of its own: the inner
         // test's reset of excluded_move wiped the outer exclusion, and the
         // outer verification then searched the move it excluded
@@ -1412,14 +1464,14 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
         // ones it rates lowest. The count is tunable in hundredths of a move.
         int lmp_threshold = (sp.lmp_base + ((ss->improving || opponent_worsening) ? 100 : 0)
                              + depth * depth * sp.lmp_coeff) / 100;
-        if (is_quiet && !pv_node && ss->ply > 0 && depth <= 8 && moves_played >= lmp_threshold
+        if (is_quiet && !pv_node && depth <= 8 && moves_played >= lmp_threshold
             && m != worker->killers[ss->ply][0] && m != worker->killers[ss->ply][1]) {
             g_stats.lmp_prunes++;
             return false;
         }
 
         // Futility pruning: skip quiet moves that can't improve alpha
-        if (is_quiet && !pv_node && ss->ply > 0 && !pos.is_check() && depth <= 5) {
+        if (is_quiet && !pv_node && !pos.is_check() && depth <= 5) {
             int margin = depth * sp.fut_coeff + (ss->improving ? sp.fut_improving : sp.fut_base);
             margin += std::min(eval_uncertainty / 3, 50);  // Less pruning when eval uncertain
             if (eval + margin < alpha) {
@@ -1487,6 +1539,8 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
         // Depth-explosion guard: a line of checks + singular doubles could
         // otherwise extend faster than depth shrinks
         if (ext_count > 2) ext_count = 2;
+        // No extension once the path is ext_path_cap/4 of the iteration's depth
+        if (sp.ext_path_cap && ext_count > 0 && 4 * ss->ply >= sp.ext_path_cap * iter_depth) ext_count = 0;
         new_depth += ext_count;
         // Every full-window search must keep the extension. The pre-fix code
         // passed literal depth - 1 at all full-depth call sites, so extensions
@@ -1928,7 +1982,7 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
             }
 
             // Skip TT move (already searched in Phase 1)
-            if (it->value == -1) continue;
+            if (it->move == tt_move) continue;   // not by its -1 mark: a quiet's history can be -1 too
 
             if (search_move(it->move, true)) {
                 if (!stop.load(std::memory_order_relaxed)) {
@@ -2120,6 +2174,7 @@ static RootIteration root_iteration(Position& pos, ExtMove* moves, ExtMove* end,
                                     Value alpha, Value beta, int aspiration_delta) {
     RootIteration r;
     int fail_high_streak = 0;
+    iter_depth = depth;
     while (true) {
         r.aspiration_attempts++;
         // Reset on each aspiration iteration to avoid stale values
@@ -2225,6 +2280,10 @@ static RootIteration root_iteration(Position& pos, ExtMove* moves, ExtMove* end,
             r.proven_move = r.best_move;
             r.proven_value = r.best_value;
             fail_high_streak++;
+            // The move that failed high leads the re-search (the old first
+            // move went first again and took the full window)
+            for (ExtMove* it = moves + 1; it != end; ++it)
+                if (it->move == r.best_move) { std::rotate(moves, it, it + 1); break; }
             beta = std::min(Value(VALUE_INFINITE),
                             Value(r.best_value + aspiration_delta));
             aspiration_delta += aspiration_delta / 2;
@@ -2686,9 +2745,12 @@ Move search(Position& pos, Limits& lim) {
         const int aspiration_attempts = iter.aspiration_attempts;
         nodes_spent_on_best = iter.nodes_on_best;
 
-        // Check time after all moves searched
+        // Check time after all moves searched. An iteration that finished
+        // before the clock tripped keeps its result: only a stop inside it
+        // leaves it unfinished
+        const bool stopped_inside = stop.load(std::memory_order_relaxed);
         check_time();
-        if (stop.load(std::memory_order_relaxed)) {
+        if (stopped_inside) {
             if (proven_move != MOVE_NONE) {
                 // This move is played. The last PV printed is the previous
                 // iteration's; when it starts with another move, print the

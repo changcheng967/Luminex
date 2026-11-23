@@ -1976,6 +1976,10 @@ struct SPSAParams {
     // this reaches the entry's (0 kept only results as deep or deeper, so a
     // shallower search of the same position lost its best move)
     int tt_store_slack = 3;
+    // No extension once a path is this many quarters of the iteration's
+    // depth long (0 = no cap): a line of checks and singular extensions
+    // could otherwise keep the depth from falling
+    int ext_path_cap = 8;
 
     // Load from file (COUNT ints, one per line, in field order). Returns true if loaded.
     bool load(const std::string& path) {
@@ -2047,6 +2051,7 @@ inline constexpr SPSAOption SPSA_OPTIONS[] = {
     {"NmpShallowMargin", &SPSAParams::nmp_shallow_margin, 0,  300},
     {"NmpShallowDepth", &SPSAParams::nmp_shallow_depth,   0,   12},
     {"TtStoreSlack",    &SPSAParams::tt_store_slack,      0,     8},
+    {"ExtPathCap",      &SPSAParams::ext_path_cap,        0,    16},
 };
 
 inline const SPSAOption* find_spsa_option(const std::string& name) {
