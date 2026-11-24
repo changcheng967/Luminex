@@ -1948,19 +1948,21 @@ struct SPSAParams {
 
     // Reverse futility: extra margin when neither side's eval trend helps us
     int rfp_not_improving = 26;
-    // Futility (quiet moves, depth <= 5): prune if eval + depth * fut_coeff
-    // + (improving ? fut_improving : fut_base) < alpha
-    int fut_coeff        = 134;
-    int fut_base         = 101;
-    int fut_improving    = 27;
+    // Futility (quiet moves, depth <= fut_max_depth): prune if eval + depth *
+    // fut_coeff + (improving ? fut_improving : fut_base) < alpha
+    int fut_coeff        = 136;
+    int fut_base         = 108;
+    int fut_improving    = 22;
+    int fut_max_depth    = 6;
     // Late move pruning, in hundredths of a move: the count is
     // (lmp_base + 100 if improving + depth^2 * lmp_coeff) / 100
     int lmp_base         = 233;
     int lmp_coeff        = 94;
-    // History pruning (quiets, depth <= 4): prune if combined history
-    // < hist_prune_base - hist_prune_coeff * (depth - 1)
-    int hist_prune_base  = 896;
-    int hist_prune_coeff = 5050;
+    // History pruning (quiets, depth <= hist_prune_max_depth): prune if
+    // combined history < hist_prune_base - hist_prune_coeff * (depth - 1)
+    int hist_prune_base  = 764;
+    int hist_prune_coeff = 5031;
+    int hist_prune_max_depth = 4;
     // ProbCut: rbeta = beta + probcut_margin
     int probcut_margin   = 132;
     // Null-move R: the depth term is depth * 100 / nmp_depth_div, the eval
@@ -1970,7 +1972,7 @@ struct SPSAParams {
     // LMR: history adjustment = clamp(history / lmr_hist_div, -3, 3); the
     // cut-node and ttPv adjustments are in 1024ths of a ply
     int lmr_hist_div     = 3894;
-    int lmr_cut_node     = 1021;
+    int lmr_cut_node     = 1034;
     int lmr_ttpv         = 2101;
     // Double singular extension when the verification fails by more than
     // depth * dext_margin / 16
@@ -2050,10 +2052,12 @@ inline constexpr SPSAOption SPSA_OPTIONS[] = {
     {"FutCoeff",        &SPSAParams::fut_coeff,          50,   300},
     {"FutBase",         &SPSAParams::fut_base,            0,   250},
     {"FutImproving",    &SPSAParams::fut_improving,       0,   200},
+    {"FutMaxDepth",     &SPSAParams::fut_max_depth,       1,    16},
     {"LmpBase",         &SPSAParams::lmp_base,           50,   600},
     {"LmpCoeff",        &SPSAParams::lmp_coeff,          25,   300},
     {"HistPruneBase",   &SPSAParams::hist_prune_base, -4000,  4000},
     {"HistPruneCoeff",  &SPSAParams::hist_prune_coeff, 1000, 12000},
+    {"HistPruneMaxDepth", &SPSAParams::hist_prune_max_depth, 1,  16},
     {"ProbcutMargin",   &SPSAParams::probcut_margin,     50,   400},
     {"NmpDepthDiv",     &SPSAParams::nmp_depth_div,     150,   800},
     {"NmpEvalDiv",      &SPSAParams::nmp_eval_div,       50,   600},
