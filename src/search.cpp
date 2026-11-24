@@ -1,4 +1,3 @@
-#define _CRT_SECURE_NO_WARNINGS
 #include "luminex.h"
 #ifdef _WIN32
 #ifndef NOMINMAX
@@ -346,6 +345,10 @@ static std::chrono::steady_clock::time_point clock_start;
 static bool past_soft_limit = false;
 // A ponderhit was taken in this search: its move is the one played.
 static bool hit_taken = false;
+// The line the last finished iteration printed (its move is the one played),
+// and whether any line was printed since the ponderhit: report_after_hit
+static struct { int depth = 0; Value value = VALUE_ZERO; Move move = MOVE_NONE; bool lower = false; } last_line;
+static bool line_since_hit = false;
 
 static int ms_between(std::chrono::steady_clock::time_point from, std::chrono::steady_clock::time_point to) {
     return int(std::chrono::duration_cast<std::chrono::milliseconds>(to - from).count());
@@ -482,6 +485,7 @@ static bool take_ponderhit() {
         return false;
     clock_start = std::chrono::steady_clock::now();
     hit_taken = true;
+    line_since_hit = false;
     if (pending_clock.has_sample) {
         add_lag_sample(pending_clock.sample);
         pending_clock.has_sample = false;
@@ -1392,7 +1396,6 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
             occ_after ^= square_bb(rfrom) | square_bb(rto);
         }
 
-        Bitboard their_pieces = pos.pieces(them);
         Bitboard our_bishops = pos.pieces(us, BISHOP, QUEEN) & ~square_bb(from);
         Bitboard our_rooks   = pos.pieces(us, ROOK, QUEEN) & ~square_bb(from);
         // The castling rook has left its start square, so it gives no
@@ -2110,6 +2113,19 @@ void hold_reply(const Limits& lim) {
     }
 }
 
+// The reply after a ponderhit. A GUI files the lines printed while pondering
+// under the ponder search (python-chess, and so lichess-bot, drops them), so a
+// reply with no line since the hit (the search stopped at the hit, or had
+// ended and waited for it) would show none: it repeats the line of the last
+// finished iteration, whose move it plays, with the nodes and time of now.
+// Without a ponderhit nothing is printed.
+void report_after_hit(const Position& root) {
+    if (!hit_taken || line_since_hit || last_line.move == MOVE_NONE)
+        return;
+    uci_info(root, last_line.depth, last_line.value, nodes.load(std::memory_order_relaxed),
+             ms_since(search_start), 1, last_line.move, last_line.lower);
+}
+
 // After the reply is released: a played move's clock becomes the record the
 // next own move samples its lag from. A search not on the clock records
 // untimed, so the next one takes no sample.
@@ -2422,6 +2438,7 @@ Move search(Position& pos, Limits& lim) {
     search_start = std::chrono::steady_clock::now();
     clock_start = search_start;
     hit_taken = false;
+    last_line = {};
 
     Move best_move = MOVE_NONE;
     Value best_value = -VALUE_INFINITE;
@@ -2761,6 +2778,7 @@ Move search(Position& pos, Limits& lim) {
                     uci_info(pos, root_depth, mv_scores[idx[k]], total_nodes, t_ms,
                              k + 1, moves[k].move);
                 }
+                last_line = {root_depth, mv_scores[idx[0]], moves[0].move, false};
             }
             continue;  // next depth iteration
         }
@@ -2793,6 +2811,7 @@ Move search(Position& pos, Limits& lim) {
                         std::chrono::steady_clock::now() - search_start).count());
                     uci_info(pos, root_depth, proven_value, nodes.load(std::memory_order_relaxed), t_ms,
                              1, proven_move, true);
+                    last_line = {root_depth, proven_value, proven_move, true};
                 }
                 best_move = proven_move;
                 best_value = proven_value;
@@ -2847,6 +2866,7 @@ Move search(Position& pos, Limits& lim) {
         // hash entry, which may hold an older search's deeper result.
         uci_info(pos, root_depth, depth_best_value, nodes.load(std::memory_order_relaxed), time_ms,
                  1, depth_best_move);
+        last_line = {root_depth, depth_best_value, depth_best_move, false};
     }
 
     // Fallback: if best_move is still MOVE_NONE, use the first legal move we found
@@ -3098,9 +3118,12 @@ Move search(Position& pos, Limits& lim) {
 
 void uci_info(const Position& pos, int depth, Value score, uint64_t node_count, int time_ms,
               int multipv, Move seed_move, bool lower_bound) {
+    line_since_hit = true;
     std::string line;
     uint64_t nps = time_ms > 0 ? node_count * 1000 / uint64_t(time_ms) : 0;
-    const bool mpv = multipv > 1;
+    // In MultiPV mode every line names its index, the best one too (UCI: "for
+    // the best move/pv add multipv 1 in the string"); with one line, none does
+    const bool mpv = params.multi_pv > 1;
     const std::string mpv_tag = mpv ? std::format(" multipv {}", multipv) : "";
     const char* bound = lower_bound ? " lowerbound" : "";
 

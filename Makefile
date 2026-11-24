@@ -17,14 +17,12 @@ BUILD_DIR ?= build-openbench
 
 # The compiler is clang 23: clang 23 + lld + no PIE is the fastest build
 # measured, +25% game speed and +16-22% bench over gcc 14 on the SPRT
-# workers (CMakeLists.txt adds lld and no PIE for clang on Linux). A CC= or
-# CXX= given to make or in the environment (OpenBench's build_compilers) is
-# kept; make's own defaults (cc, g++) are not.
+# workers (CMakeLists.txt adds lld and no PIE for clang on Linux). A CXX=
+# given to make or in the environment (OpenBench's build_compilers) is kept;
+# make's own default (g++) is not. CC= is accepted and unused: the engine is
+# C++ only, and CMake warns of a C compiler given to a project without C.
 ifeq ($(origin CXX),default)
   CXX := $(or $(shell command -v clang++-23 2>/dev/null),clang++)
-endif
-ifeq ($(origin CC),default)
-  CC := $(or $(shell command -v clang-23 2>/dev/null),clang)
 endif
 
 # Why not -march=native: OpenBench verifies that every worker produces the same
@@ -82,14 +80,16 @@ EVALFILE  ?=
 
 .PHONY: all clean
 
+# The build runs its own make with -j, outside this make's jobserver: given
+# both (make -j here), GNU make warns "-j0 forced in submake" and drops the
+# jobserver anyway, so its MAKEFLAGS are not passed on.
 all:
 	@cmake -S . -B $(BUILD_DIR) \
 		-DCMAKE_BUILD_TYPE=Release \
-		-DCMAKE_C_COMPILER=$(CC) \
 		-DCMAKE_CXX_COMPILER=$(CXX) \
 		-DLUMINEX_MARCH=$(MARCH) \
 		-DLUMINEX_NATIVE=OFF
-	@cmake --build $(BUILD_DIR) --target luminex -j
+	@MAKEFLAGS= MFLAGS= cmake --build $(BUILD_DIR) --target luminex -j
 	@cp -f $(BUILD_DIR)/luminex ./$(EXE)
 	@echo "built $(EXE)"
 
