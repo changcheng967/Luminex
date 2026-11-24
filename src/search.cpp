@@ -3121,7 +3121,9 @@ void uci_info(const Position& pos, int depth, Value score, uint64_t node_count, 
     line_since_hit = true;
     std::string line;
     uint64_t nps = time_ms > 0 ? node_count * 1000 / uint64_t(time_ms) : 0;
-    const bool mpv = multipv > 1;
+    // In MultiPV mode every line names its index, the best one too (UCI: "for
+    // the best move/pv add multipv 1 in the string"); with one line, none does
+    const bool mpv = params.multi_pv > 1;
     const std::string mpv_tag = mpv ? std::format(" multipv {}", multipv) : "";
     const char* bound = lower_bound ? " lowerbound" : "";
 
