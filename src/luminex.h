@@ -3,6 +3,13 @@
 // instruction-set level, so they include none of this. CMake reads the version, ENGINE_VERSION, from the end.
 #pragma once
 
+// The Microsoft C runtime marks fopen, fscanf and getenv deprecated in favour of its own _s variants, which no
+// other platform has. CMake defines this for every Windows target; it is here too for the builds and editors
+// that do not take CMake's definitions. Every source file includes this header first.
+#if defined(_WIN32) && !defined(_CRT_SECURE_NO_WARNINGS)
+#define _CRT_SECURE_NO_WARNINGS
+#endif
+
 // =====================================================================================================================
 // Types
 // =====================================================================================================================
