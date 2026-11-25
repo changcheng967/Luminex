@@ -1049,7 +1049,7 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
     // the reduction was likely too aggressive — increase depth to compensate.
     // If both plies have very positive eval sum, position is winning — save time.
     // From ply 1: the rule reads only the parent's entry, a searched node there
-    if (!pv_node && ss->ply >= 1 && !pos.is_check()) {
+    if (!pv_node && ss->ply >= 1 && !pos.is_check() && !(SPSAParams::get().ko_mask & 1)) {   // KoMask bit 0
         int prior_reduction = (ss - 1)->reduction;
         if (prior_reduction >= 3 && !opponent_worsening) {
             depth++;
@@ -1084,7 +1084,7 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
     }
 
     // Razoring: at low depths, if eval is far below alpha, try qsearch to confirm
-    if (!pv_node && !pos.is_check() && depth <= 4) {
+    if (!pv_node && !pos.is_check() && depth <= 4 && !(SPSAParams::get().ko_mask & 2)) {   // KoMask bit 1
         Value razor_margin = sp.razor_base + depth * depth * sp.razor_coeff;
         if (eval + razor_margin < alpha) {
             // qsearch fail-high against the (alpha-1, alpha) window returns
@@ -1157,7 +1157,7 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
     // ProbCut - if a capture is obviously good enough, verify with shallow search
     // Skipped in excluded nodes: pruning the singular verification would
     // shortcut the very measurement the verification exists to make.
-    if (!pv_node && depth >= 5 && !pos.is_check() && ss->ply >= 1 && !ss->excluded_move) {
+    if (!pv_node && depth >= 5 && !pos.is_check() && ss->ply >= 1 && !ss->excluded_move && !(SPSAParams::get().ko_mask & 4)) {   // KoMask bit 2
         Value rbeta = std::min(beta + sp.probcut_margin, VALUE_INFINITE - 200);
         int rdepth = depth - 3;
 
@@ -1224,7 +1224,7 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
 
     // Internal Iterative Deepening: if no TT move at PV nodes, search at reduced depth
     // to populate TT with a good move for ordering
-    if (pv_node && tt_move == MOVE_NONE && depth >= 4) {
+    if (pv_node && tt_move == MOVE_NONE && depth >= 4 && !(SPSAParams::get().ko_mask & 8)) {   // KoMask bit 3
         search_worker(pos, ss, alpha, beta, depth - 2, false);
         TTEntry* iid_tte = TT.probe(pos.key(), found);
         if (found) {
@@ -1260,7 +1260,7 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
             singular_extension = 1;
             // Double extension: if move is EXTREMELY singular (fails by a lot),
             // double extension for strongly singular moves
-            if (singular_value < sBeta - depth * sp.dext_margin / 16) {
+            if (singular_value < sBeta - depth * sp.dext_margin / 16 && !(sp.ko_mask & 16)) {   // KoMask bit 4
                 singular_extension = 2;
             }
         } else if (singular_value >= beta) {
@@ -1270,9 +1270,9 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
         } else if (tt_value >= beta) {
             // TT move is NOT singular but expected to beat beta
             // Negative extension: reduce depth for non-singular expected cutoff
-            singular_extension = -2;
+            singular_extension = (sp.ko_mask & 32) ? 0 : -2;   // KoMask bit 5
         } else if (cut_node) {
-            singular_extension = -1;
+            singular_extension = (sp.ko_mask & 32) ? 0 : -1;
         }
     }
 
@@ -1296,12 +1296,12 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
         if (ttPv) reduction_1024 -= sp.lmr_ttpv;
         int reduction = reduction_1024 >= 0 ? reduction_1024 / LMR_DENOM
                                             : -((-reduction_1024 + LMR_DENOM - 1) / LMR_DENOM);
-        if (!ss->improving && !opponent_worsening) reduction += 1;
+        if (!ss->improving && !opponent_worsening && !(sp.ko_mask & 32768)) reduction += 1;   // KoMask bit 15
         // Deep worsening: position declining over 4 plies, search less aggressively
-        if (!ss->improving && !ss->improving_deep && !opponent_worsening) reduction += 1;
+        if (!ss->improving && !ss->improving_deep && !opponent_worsening && !(sp.ko_mask & 32768)) reduction += 1;
 
         // TT move gets less reduction
-        if (m == tt_move) reduction -= 1;
+        if (m == tt_move && !(sp.ko_mask & 65536)) reduction -= 1;   // KoMask bit 16
 
         // History-based adjustment: combine plain + counter + continuation
         Piece pc = pos.piece_on(m.from());
@@ -1313,17 +1313,17 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
         }
 
         // Reduce less for killer moves
-        if (m == worker->killers[ss->ply][0]) reduction -= 1;
+        if (m == worker->killers[ss->ply][0] && !(sp.ko_mask & 16384)) reduction -= 1;   // KoMask bit 14
 
         // Counter-move LMR bonus removed: counter-moves already get +40000
         // in move ordering, ensuring they're searched early. The LMR -1
         // was making pruning less aggressive for counter-moves.
 
         // Check-giving moves: reduce less (use pre-computed value)
-        if (gives_chk) reduction -= 1;
+        if (gives_chk && !(sp.ko_mask & 262144)) reduction -= 1;   // KoMask bit 18
 
         // Promotion moves: reduce less
-        if (m.is_promotion()) reduction -= 1;
+        if (m.is_promotion() && !(sp.ko_mask & 131072)) reduction -= 1;   // KoMask bit 17
 
         // Pawn advancing to 7th rank: about to promote, extremely forcing
         // The opponent MUST respond to this (Capablanca)
@@ -1332,22 +1332,22 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
             if (pt == PAWN) {
                 Color us = pos.side_to_move();
                 Rank to_rank = rank_of(m.to());
-                if (relative_rank(us, to_rank) >= RANK_7) {
+                if (relative_rank(us, to_rank) >= RANK_7 && !(sp.ko_mask & 64)) {   // KoMask bit 6
                     reduction -= 1;
                 }
             }
         }
 
         // Castling: king safety is paramount, never reduce aggressively
-        if (m.is_castling()) reduction -= 1;
+        if (m.is_castling() && !(sp.ko_mask & 128)) reduction -= 1;   // KoMask bit 7
 
         // TT-move-noisy LMR: if TT found a tactical (capture) solution,
         // quiet moves are less likely to beat it — reduce more
-        if (!m.is_capture() && !m.is_promotion() && tt_move.is_capture()) reduction += 1;
+        if (!m.is_capture() && !m.is_promotion() && tt_move.is_capture() && !(sp.ko_mask & 256)) reduction += 1;   // KoMask bit 8
 
         // Capture-response LMR: after opponent's capture, quiets are less
         // likely to be best — recapture is usually the critical response.
-        if (!m.is_capture() && !m.is_promotion() && depth >= 4 && ss->ply >= 1
+        if (!m.is_capture() && !m.is_promotion() && depth >= 4 && ss->ply >= 1 && !(sp.ko_mask & 512)   // KoMask bit 9
             && (ss - 1)->current_move.is_capture()) {
             reduction += 1;
         }
@@ -1364,7 +1364,7 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
         // Eval-adaptive: use eval-to-beta distance to adjust reductions
         // Far above beta = position is clearly winning, reduce more
         // Near alpha = critical position, reduce less
-        if (!pos.is_check()) {
+        if (!pos.is_check() && !(sp.ko_mask & 1024)) {   // KoMask bit 10
             int eval_margin = int(eval) - int(alpha);
             if (eval_margin > 250) reduction += 1;
             else if (eval_margin > -50 && eval_margin < 100) reduction -= 1;
@@ -1465,7 +1465,7 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
         // Combined counter+continuation history
         // Not while every searched move is mated: the node's bound would not
         // cover the moves this skips, and it would claim a mate it has not proven
-        if (is_quiet && !pv_node && depth <= 4 && moves_played > 0
+        if (is_quiet && !pv_node && depth <= 4 && moves_played > 0 && !(sp.ko_mask & 2048)   // KoMask bit 11
             && best_value > -VALUE_MATE_IN_MAX_PLY) {
             Piece pc = pos.piece_on(m.from());
             if (pc != NO_PIECE) {
@@ -1560,7 +1560,7 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
         // piece is simply taken leaves nothing forcing to look deeper into.
         // Recaptures get no extension; they are captures the search already
         // orders first and qsearch resolves.
-        if (gives_chk && pos.see_ge(m, VALUE_ZERO)) {
+        if (gives_chk && pos.see_ge(m, VALUE_ZERO) && !(sp.ko_mask & 4096)) {   // KoMask bit 12
             ext_count++;
             g_stats.check_extensions++;
         }
@@ -1569,7 +1569,7 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
         // Individual check extensions handle single checks, but long forcing sequences
         // need extra depth because LMR aggressively reduces them as "late moves".
         // Only apply when no other extension is active to avoid compounding.
-        if (ss->forced_ply_count >= 3 && ext_count == 0 && depth >= 4) {
+        if (ss->forced_ply_count >= 3 && ext_count == 0 && depth >= 4 && !(sp.ko_mask & 8192)) {   // KoMask bit 13
             ext_count++;
         }
         // Depth-explosion guard: a line of checks + singular doubles could
