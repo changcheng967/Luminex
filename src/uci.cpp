@@ -753,6 +753,7 @@ void handle_setoption(const std::string& cmd) {
         SPSAParams::get().*o->field = std::clamp(v, o->min, o->max);
         if (o->field == &SPSAParams::lmr_scale_quiet)
             init_search_params();  // the reduction table is derived from it
+        SPSAParams::get().refresh_ko();
     }
     else if (name == "Contempt" || name == "UCI_AnalyseMode") {
         if (name == "Contempt") {

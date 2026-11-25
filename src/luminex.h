@@ -2001,7 +2001,32 @@ struct SPSAParams {
 
     // Under measurement (0 = off): each bit switches one search heuristic off
     // (the self-knockout campaign; the bits are listed at KoMask's uses)
-    int ko_mask = 0;
+    int ko_mask = 0;      // derived: ko_mask_opt | the Ko<b> options (refresh_ko)
+    int ko_mask_opt = 0;  // the KoMask option
+    // Ko<b> > 0 switches bit b off (the knockout factorial: OpenBench's SPSA flips them all at once)
+    int ko0 = 0, ko1 = 0, ko2 = 0, ko3 = 0, ko4 = 0, ko5 = 0, ko6 = 0, ko7 = 0, ko8 = 0, ko9 = 0, ko10 = 0, ko11 = 0, ko12 = 0, ko13 = 0, ko14 = 0, ko15 = 0, ko16 = 0, ko17 = 0, ko18 = 0;
+    void refresh_ko() {
+        ko_mask = ko_mask_opt
+            | ((ko0 > 0) << 0)
+            | ((ko1 > 0) << 1)
+            | ((ko2 > 0) << 2)
+            | ((ko3 > 0) << 3)
+            | ((ko4 > 0) << 4)
+            | ((ko5 > 0) << 5)
+            | ((ko6 > 0) << 6)
+            | ((ko7 > 0) << 7)
+            | ((ko8 > 0) << 8)
+            | ((ko9 > 0) << 9)
+            | ((ko10 > 0) << 10)
+            | ((ko11 > 0) << 11)
+            | ((ko12 > 0) << 12)
+            | ((ko13 > 0) << 13)
+            | ((ko14 > 0) << 14)
+            | ((ko15 > 0) << 15)
+            | ((ko16 > 0) << 16)
+            | ((ko17 > 0) << 17)
+            | ((ko18 > 0) << 18);
+    }
 
     // Load from file (COUNT ints, one per line, in field order). Returns true if loaded.
     bool load(const std::string& path) {
@@ -2074,7 +2099,26 @@ inline constexpr SPSAOption SPSA_OPTIONS[] = {
     {"NmpShallowDepth", &SPSAParams::nmp_shallow_depth,   0,   12},
     {"TtStoreSlack",    &SPSAParams::tt_store_slack,      0,     8},
     {"ExtPathCap",      &SPSAParams::ext_path_cap,        0,    16},
-    {"KoMask",          &SPSAParams::ko_mask,             0, 1048575},
+    {"KoMask",          &SPSAParams::ko_mask_opt,         0, 1048575},
+    {"Ko0",             &SPSAParams::ko0,                  -10000, 10000},
+    {"Ko1",             &SPSAParams::ko1,                  -10000, 10000},
+    {"Ko2",             &SPSAParams::ko2,                  -10000, 10000},
+    {"Ko3",             &SPSAParams::ko3,                  -10000, 10000},
+    {"Ko4",             &SPSAParams::ko4,                  -10000, 10000},
+    {"Ko5",             &SPSAParams::ko5,                  -10000, 10000},
+    {"Ko6",             &SPSAParams::ko6,                  -10000, 10000},
+    {"Ko7",             &SPSAParams::ko7,                  -10000, 10000},
+    {"Ko8",             &SPSAParams::ko8,                  -10000, 10000},
+    {"Ko9",             &SPSAParams::ko9,                  -10000, 10000},
+    {"Ko10",            &SPSAParams::ko10,                 -10000, 10000},
+    {"Ko11",            &SPSAParams::ko11,                 -10000, 10000},
+    {"Ko12",            &SPSAParams::ko12,                 -10000, 10000},
+    {"Ko13",            &SPSAParams::ko13,                 -10000, 10000},
+    {"Ko14",            &SPSAParams::ko14,                 -10000, 10000},
+    {"Ko15",            &SPSAParams::ko15,                 -10000, 10000},
+    {"Ko16",            &SPSAParams::ko16,                 -10000, 10000},
+    {"Ko17",            &SPSAParams::ko17,                 -10000, 10000},
+    {"Ko18",            &SPSAParams::ko18,                 -10000, 10000},
 };
 
 inline const SPSAOption* find_spsa_option(const std::string& name) {
