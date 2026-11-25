@@ -1062,6 +1062,9 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
     // Broader threshold from Stash (depth >= 3 instead of 4)
     if (!pv_node && tt_move == MOVE_NONE && depth >= 3) {
         depth--;
+        // CutIir: a ply more at an expected CUT node, deep enough to afford it
+        if (SPSAParams::get().cut_iir && cut_node && depth >= 5)
+            depth--;
         g_stats.iir_reductions++;
     }
 
@@ -1517,7 +1520,8 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
         // on moves that rarely cut
         const bool cap_lmr = !pv_node && m.is_capture() && !m.is_promotion() && !is_losing_capture;
         bool do_lmr = depth >= 3 && moves_played >= (pv_node ? 3 : 1) &&
-                      (is_quiet || is_losing_capture || cap_lmr) && !gives_chk;
+                      (is_quiet || is_losing_capture || cap_lmr)
+                      && (!gives_chk || (sp.check_lmr && !pv_node && is_quiet));   // CheckLmr
 
         if (do_lmr) g_stats.lmr_total++;
 
