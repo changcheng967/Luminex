@@ -1512,8 +1512,12 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
         bool gives_chk = gives_check(m);
         bool is_losing_capture = m.is_capture() && !m.is_promotion() && depth >= 1 &&
                                   !pos.see_ge(m, VALUE_ZERO);
+        // A good capture after the first move is reduced too, at a node that is
+        // not PV: searched in full it cost most of an expected CUT node's work
+        // on moves that rarely cut
+        const bool cap_lmr = !pv_node && m.is_capture() && !m.is_promotion() && !is_losing_capture;
         bool do_lmr = depth >= 3 && moves_played >= (pv_node ? 3 : 1) &&
-                      (is_quiet || is_losing_capture) && !gives_chk;
+                      (is_quiet || is_losing_capture || cap_lmr) && !gives_chk;
 
         if (do_lmr) g_stats.lmr_total++;
 
@@ -1522,6 +1526,13 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
             // Losing captures get aggressive fixed reduction (they're almost never best)
             if (is_losing_capture) {
                 reduction = gives_chk ? 2 : 3;
+            } else if (cap_lmr) {
+                // the table's reduction and the cut-node term, a ply less than
+                // a quiet move: a capture is more forcing
+                const int r1024 = reductions_quiet[std::min(std::max(depth - 1, 1), 63)]
+                                * reductions_quiet[std::min(std::max(moves_played, 1), 63)]
+                                + LMR_DENOM / 2 + (cut_node ? sp.lmr_cut_node : 0);
+                reduction = std::max(0, r1024 / LMR_DENOM - 1);
             } else {
                 reduction = compute_reduction(m, moves_played, gives_chk);
             }
