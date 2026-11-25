@@ -1539,11 +1539,13 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
                 const int r1024 = reductions_quiet[std::min(std::max(depth - 1, 1), 63)]
                                 * reductions_quiet[std::min(std::max(moves_played, 1), 63)]
                                 + LMR_DENOM / 2 + (cut_node ? sp.lmr_cut_node : 0);
-                reduction = std::max(0, r1024 / LMR_DENOM - 1);
+                reduction = std::max(sp.cap_floor1 ? 1 : 0, r1024 / LMR_DENOM - 1);   // CapFloor1
             } else {
                 reduction = compute_reduction(m, moves_played, gives_chk);
             }
             // Reduce less in PV nodes
+            // AllRedPlus: a ply more for a quiet move from the third at an expected ALL node
+            if (sp.all_red_plus && !pv_node && !cut_node && is_quiet && moves_played >= 2) reduction += 1;
             if (pv_node) reduction = std::max(1, reduction - 1);
             new_depth = depth - 1 - reduction;
             if (new_depth < 1) new_depth = 1;

@@ -1999,6 +1999,10 @@ struct SPSAParams {
     // could otherwise keep the depth from falling
     int ext_path_cap = 8;
 
+    // Under measurement (0 = off): capture LMR's reduction at least 1; a ply
+    // more for quiet moves from the third at expected ALL nodes
+    int cap_floor1 = 0, all_red_plus = 0;
+
     // Load from file (COUNT ints, one per line, in field order). Returns true if loaded.
     bool load(const std::string& path) {
         FILE* f = std::fopen(path.c_str(), "r");
@@ -2070,6 +2074,8 @@ inline constexpr SPSAOption SPSA_OPTIONS[] = {
     {"NmpShallowDepth", &SPSAParams::nmp_shallow_depth,   0,   12},
     {"TtStoreSlack",    &SPSAParams::tt_store_slack,      0,     8},
     {"ExtPathCap",      &SPSAParams::ext_path_cap,        0,    16},
+    {"CapFloor1",       &SPSAParams::cap_floor1,          0,     1},
+    {"AllRedPlus",      &SPSAParams::all_red_plus,        0,     1},
 };
 
 inline const SPSAOption* find_spsa_option(const std::string& name) {
