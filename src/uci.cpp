@@ -1354,34 +1354,46 @@ static void crash_trace(int sig) {
 
 } // namespace luminex
 
-// genfens N seed S book <path|None> [plies K] [dfrc P] [maxscore M] [nodes X]
+// genfens N seed S book <path|None> [net PATH] [plies K] [maxplies K2] [dfrc P]
+//         [maxscore M] [nodes X]
 // OpenBench's DATAGEN workloads ask the engine for N opening positions and read
 // the lines "info string genfens <fen>"; fastchess then plays the games. Each
 // opening is a random line of the book (or the start position) or, P percent
 // of the time, a Double Fischer Random start with its castling rights cleared
-// (castling here is standard chess only), followed by K random legal plies.
-// An opening with no legal move, or whose X-node search scores beyond M
-// centipawns either way, is drawn again; the bench never loads a network, and
-// neither does this, so that search is the HCE's: a balance filter, not a
-// label. The seed fixes every choice. Exactly N lines are printed: after 200
-// tries per line the filter is dropped rather than stall the client.
+// (castling here is standard chess only), followed by K to K2 random legal
+// plies (default 8 to 9, so either side may move first). An opening with no
+// legal move, or whose X-node search scores beyond M centipawns either way, is
+// drawn again. The search uses the network at PATH (OpenBench's client keeps
+// the workload's network at Networks/<id> beside the engine's working
+// directory); without one it would be the HCE's, which passed half of the
+// openings 05q scores beyond 300. The seed fixes every choice. Exactly N lines
+// are printed: after 200 tries per line the filter is dropped rather than
+// stall the client.
 static int run_genfens(const std::string& command) {
     using namespace luminex;
     std::istringstream in(command);
     std::string tok, book = "None";
     long long n = 0;
     uint64_t seed = 0;
-    int plies = 8, dfrc = 10, max_score = 300, filter_nodes = 5000;
+    std::string net;
+    int plies = 8, max_plies = -1, dfrc = 10, max_score = 300, filter_nodes = 10000;
     in >> tok >> n;
     while (in >> tok) {
         if (tok == "seed") in >> seed;
         else if (tok == "book") in >> book;
+        else if (tok == "net") in >> net;
         else if (tok == "plies") in >> plies;
+        else if (tok == "maxplies") in >> max_plies;
         else if (tok == "dfrc") in >> dfrc;
         else if (tok == "maxscore") in >> max_score;
         else if (tok == "nodes") in >> filter_nodes;
     }
     plies = std::clamp(plies, 0, 40);
+    max_plies = max_plies < 0 ? plies + 1 : std::clamp(max_plies, plies, 40);
+    if (!net.empty() && !load_net_file(net)) {
+        std::cerr << "genfens: the network " << net << " did not load" << std::endl;
+        return 1;
+    }
     dfrc = std::clamp(dfrc, 0, 100);
     filter_nodes = std::clamp(filter_nodes, 100, 10000000);
     std::vector<std::string> lines;
@@ -1448,7 +1460,8 @@ static int run_genfens(const std::string& command) {
                                : lines.empty() ? std::string("rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1")
                                                : lines[below(lines.size())]);
                 bool dead = false;
-                for (int i = 0; i < plies && !dead; ++i) {
+                const int k = plies + int(below(uint64_t(max_plies - plies + 1)));
+                for (int i = 0; i < k && !dead; ++i) {
                     ExtMove moves[MAX_MOVES];
                     ExtMove* end = generate<GEN_LEGAL>(p, moves);
                     if (end == moves || !p.do_move(moves[below(uint64_t(end - moves))].move)) dead = true;
