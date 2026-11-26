@@ -1190,8 +1190,12 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
             ss->reduction = 0;
             if (!pos.do_move(m)) continue;
 
+            // The capture must hold in qsearch first: one whose exchange does not
+            // reach ProbCut's beta there is not worth the reduced search
+            Value value = -qsearch(pos, ss + 1, -rbeta, -rbeta + 1, 0);
             // Shallow search with reduced beta
-            Value value = -search_worker(pos, ss + 1, -rbeta, -rbeta + 1, rdepth, !cut_node);
+            if (value >= rbeta)
+                value = -search_worker(pos, ss + 1, -rbeta, -rbeta + 1, rdepth, !cut_node);
 
             pos.undo_move(m);
 
