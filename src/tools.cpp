@@ -16,7 +16,7 @@
 // into luminex_nnue_train.py's .npy path (NNUE_NPY_DIR).
 //
 // CORRECTNESS GUARANTEES (the #1 constraint — no silent data corruption):
-//   1. Reuses Luminex's OWN tested Position + generate<GEN_LEGAL> (perft + competitive play).
+//   1. Reuses Luminex's OWN tested Position + generate<MOVES_LEGAL> (perft + competitive play).
 //   2. halfka_idx/orient/KingBuckets copied VERBATIM from nnue.cpp — which is itself
 //      "mirrored EXACTLY from luminex_nnue_train.py" (confirmed bit-identical to the trainer).
 //   3. Legal moves sorted by (from, to, promo) — the SAME key python-chess used when encoding
@@ -644,7 +644,7 @@ int main(int argc, char** argv) {
 
     auto worker = [&](int tid) {
         Position pos;
-        ExtMove list[MAX_MOVES];
+        ScoredMove list[MAX_MOVES];
         std::vector<char> tbuf;   // per-thread stream buffer (140 bytes/record)
         tbuf.reserve(140 * 2048); // no reallocation; flush every 2048 records
         long local_n = 0;         // positions buffered since last global update (batch the atomic)
@@ -682,8 +682,8 @@ int main(int argc, char** argv) {
 #endif
 #ifdef RAW_MOVES
                 // Direct-move: read the raw 16-bit Move (from/to/flags) written by encode and
-                // replay it. ZERO generate<GEN_LEGAL>, ZERO sort -> ~5-10x faster featurize.
-                // The move is exactly legal (encode parsed it via generate<GEN_LEGAL>), so
+                // replay it. ZERO generate<MOVES_LEGAL>, ZERO sort -> ~5-10x faster featurize.
+                // The move is exactly legal (encode parsed it via generate<MOVES_LEGAL>), so
                 // do_move cannot diverge from the index path -> bit-identical features.
                 uint16_t raw = (uint16_t)mv[mv_p] | ((uint16_t)mv[mv_p + 1] << 8); mv_p += 2;
                 Move mvmove(raw);
@@ -695,10 +695,10 @@ int main(int argc, char** argv) {
 #else
                 // Decode the move index -> legal move.
                 uint8_t idx = mv[mv_p++];
-                ExtMove* end = generate<GEN_LEGAL>(pos, list);
+                ScoredMove* end = generate<MOVES_LEGAL>(pos, list);
                 int nlegal = (int)(end - list);
                 // Sort by (from,to,promo) to match python-chess's indexing order.
-                std::sort(list, end, [](const ExtMove& a, const ExtMove& b){
+                std::sort(list, end, [](const ScoredMove& a, const ScoredMove& b){
                     return move_sort_key(a.move) < move_sort_key(b.move);
                 });
                 if (idx >= nlegal) {
@@ -3136,8 +3136,8 @@ static void process_game(const std::vector<uint8_t>& dec, Shared& sh, PerThread&
 
         if (!applied) {
             // Fallback: legal-gen + full scan (castling edge cases, rare failures)
-            ExtMove list[MAX_MOVES];
-            ExtMove* end = generate<GEN_LEGAL>(pos, list);
+            ScoredMove list[MAX_MOVES];
+            ScoredMove* end = generate<MOVES_LEGAL>(pos, list);
             int nlegal = (int)(end - list);
             for (int k = 0; k < nlegal; ++k) {
                 Position trial = pos;

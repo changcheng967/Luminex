@@ -594,8 +594,8 @@ bool known_endgame(const Position& pos, Value& value) {
     if (mating) {
         // A stalemated bare king draws; the search sees that only at nodes that generate moves
         if (pos.side_to_move() != strong && !pos.is_check()) {
-            ExtMove moves[MAX_MOVES];
-            if (generate<GEN_LEGAL>(pos, moves) == moves) { value = VALUE_DRAW; return true; }
+            ScoredMove moves[MAX_MOVES];
+            if (generate<MOVES_LEGAL>(pos, moves) == moves) { value = VALUE_DRAW; return true; }
         }
         const Value v = mating_value(pos, strong);
         value = pos.side_to_move() == strong ? v : -v;

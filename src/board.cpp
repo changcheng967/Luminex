@@ -1,4 +1,5 @@
 #include "luminex.h"
+#include <cassert>
 #include <algorithm>
 #include <cctype>
 #include <cmath>
@@ -466,32 +467,26 @@ Bitboard Position::attackers_to(Square s, Bitboard occupied) const {
          | (bishop_attacks_bb(s, occupied) & (pieces(BISHOP) | pieces(QUEEN)));
 }
 
-Bitboard Position::slider_blockers([[maybe_unused]] Bitboard sliders, Bitboard& pinners) const {
+// The pieces of either colour that stand alone between our king and an enemy
+// slider aimed at it, by x-ray: lift the first piece on each of the king's
+// lines, and an enemy slider of the line's kind seen behind it makes that
+// piece a blocker. pinners gets the sliders whose blocker is ours.
+Bitboard Position::xray_blockers(Bitboard& pinners) const {
+    const Color us = side_to_move_, them = Color(us ^ 1);
+    const Square ksq = king_square[us];
+    const Bitboard occupied = pieces();
+    const Bitboard first_straight = rook_attacks_bb(ksq, occupied) & occupied;
+    const Bitboard first_diagonal = bishop_attacks_bb(ksq, occupied) & occupied;
+    Bitboard behind = (rook_attacks_bb(ksq, occupied ^ first_straight) & ~first_straight & pieces(them, ROOK, QUEEN))
+                    | (bishop_attacks_bb(ksq, occupied ^ first_diagonal) & ~first_diagonal & pieces(them, BISHOP, QUEEN));
     Bitboard blockers = BB_EMPTY;
     pinners = BB_EMPTY;
-
-    Square ksq = king_square[side_to_move_];
-
-    // CRITICAL FIX: Find all enemy sliders that could potentially pin through our king
-    // Use attack functions with empty occupancy (0) to get all squares along each ray
-    // Then filter by actual enemy sliders to find potential snipers
-    Bitboard snipers = (rook_attacks_bb(ksq, 0) & pieces(Color(side_to_move_ ^ 1), ROOK, QUEEN))
-                     | (bishop_attacks_bb(ksq, 0) & pieces(Color(side_to_move_ ^ 1), BISHOP, QUEEN));
-
-    Bitboard occupancy = pieces();
-
-    while (snipers) {
-        Square sniper_sq = pop_lsb(snipers);
-        Bitboard b = between_bb(ksq, sniper_sq) & occupancy;
-
-        if (b && !more_than_one(b)) {
-            blockers |= b;
-            if (b & pieces(side_to_move_)) {
-                pinners |= square_bb(sniper_sq);
-            }
-        }
+    while (behind) {
+        const Square slider = pop_lsb(behind);
+        const Bitboard blocker = between_bb(ksq, slider) & occupied;   // the lifted piece
+        blockers |= blocker;
+        if (blocker & pieces(us)) pinners |= square_bb(slider);
     }
-
     return blockers;
 }
 
@@ -501,7 +496,7 @@ void Position::set_check_info(StateInfo* si) {
     si->block_checkers = 0;
 
     Square ksq = king_square[side_to_move_];
-    si->block_checkers = slider_blockers(pieces(Color(side_to_move_ ^ 1)), si->pinned);
+    si->block_checkers = xray_blockers(si->pinned);
 
     // Pawn checks
     Bitboard pawns = pieces(Color(side_to_move_ ^ 1), PAWN);
@@ -1473,8 +1468,8 @@ bool Position::is_draw() const {
     // claim), so a mated side at the boundary loses rather than draws.
     if (st_->halfmove_clock >= 100) {
         if (!is_check()) return true;
-        ExtMove evasions[MAX_MOVES];
-        return generate<GEN_LEGAL>(*this, evasions) != evasions;
+        ScoredMove evasions[MAX_MOVES];
+        return generate<MOVES_LEGAL>(*this, evasions) != evasions;
     }
 
     // Insufficient material detection
@@ -1546,8 +1541,8 @@ namespace luminex {
 
 // Move generation implementation
 
-template<GenType T>
-ExtMove* generate_moves(const Position& pos, ExtMove* moveList) {
+template<MoveSet T>
+ScoredMove* generate_moves(const Position& pos, ScoredMove* moveList) {
     Color us = pos.side_to_move();
     Color them = Color(us ^ 1);  // Switch color by XORing with 1
     Square ksq = pos.king_sq(us);
@@ -1570,25 +1565,25 @@ ExtMove* generate_moves(const Position& pos, ExtMove* moveList) {
                 // A queen promotion gains material like a capture, so it is
                 // generated with the captures (main-search noisy stage and
                 // qsearch); underpromotions stay with the quiet moves.
-                if constexpr (T != GEN_QUIET) {
-                    *moveList++ = Move(from, to, MF_PROMO_QUEEN);
+                if constexpr (T != MOVES_QUIETS) {
+                    (moveList++)->move = Move(from, to, MF_PROMO_QUEEN);
                 }
-                if constexpr (T != GEN_CAPTURE) {
-                    *moveList++ = Move(from, to, MF_PROMO_ROOK);
-                    *moveList++ = Move(from, to, MF_PROMO_BISHOP);
-                    *moveList++ = Move(from, to, MF_PROMO_KNIGHT);
+                if constexpr (T != MOVES_CAPTURES) {
+                    (moveList++)->move = Move(from, to, MF_PROMO_ROOK);
+                    (moveList++)->move = Move(from, to, MF_PROMO_BISHOP);
+                    (moveList++)->move = Move(from, to, MF_PROMO_KNIGHT);
                 }
             } else {
-                if constexpr (T == GEN_QUIET || T == GEN_ALL || T == GEN_LEGAL || T == GEN_EVASION || T == GEN_NON_EVASION) {
-                    *moveList++ = Move(from, to, MF_QUIET);
+                if constexpr (T == MOVES_QUIETS || T == MOVES_ALL || T == MOVES_LEGAL || T == MOVES_EVASIONS || T == MOVES_PSEUDO) {
+                    (moveList++)->move = Move(from, to, MF_QUIET);
                 }
 
                 // Double pawn push
                 if (relative_rank(us, from) == RANK_2) {
                     Square to2 = Square(from + NORTH * 2);
                     if (!(pos.pieces() & square_bb(to2))) {
-                        if constexpr (T == GEN_QUIET || T == GEN_ALL || T == GEN_LEGAL || T == GEN_EVASION || T == GEN_NON_EVASION) {
-                            *moveList++ = Move(from, to2, MF_DOUBLE_PAWN);
+                        if constexpr (T == MOVES_QUIETS || T == MOVES_ALL || T == MOVES_LEGAL || T == MOVES_EVASIONS || T == MOVES_PSEUDO) {
+                            (moveList++)->move = Move(from, to2, MF_DOUBLE_PAWN);
                         }
                     }
                 }
@@ -1612,21 +1607,21 @@ ExtMove* generate_moves(const Position& pos, ExtMove* moveList) {
 
             if (relative_rank(us, cap_to) == RANK_8) {
                 // Promotion capture
-                if constexpr (T == GEN_CAPTURE || T == GEN_ALL || T == GEN_LEGAL || T == GEN_EVASION || T == GEN_NON_EVASION) {
-                    *moveList++ = Move(from, cap_to, MF_CAPTURE_PROMO_QUEEN);
-                    *moveList++ = Move(from, cap_to, MF_CAPTURE_PROMO_ROOK);
-                    *moveList++ = Move(from, cap_to, MF_CAPTURE_PROMO_BISHOP);
-                    *moveList++ = Move(from, cap_to, MF_CAPTURE_PROMO_KNIGHT);
+                if constexpr (T == MOVES_CAPTURES || T == MOVES_ALL || T == MOVES_LEGAL || T == MOVES_EVASIONS || T == MOVES_PSEUDO) {
+                    (moveList++)->move = Move(from, cap_to, MF_CAPTURE_PROMO_QUEEN);
+                    (moveList++)->move = Move(from, cap_to, MF_CAPTURE_PROMO_ROOK);
+                    (moveList++)->move = Move(from, cap_to, MF_CAPTURE_PROMO_BISHOP);
+                    (moveList++)->move = Move(from, cap_to, MF_CAPTURE_PROMO_KNIGHT);
                 }
             } else if (cap_to == pos.ep_square()) {
                 // En passant
-                if constexpr (T == GEN_CAPTURE || T == GEN_ALL || T == GEN_LEGAL || T == GEN_EVASION || T == GEN_NON_EVASION) {
-                    *moveList++ = Move(from, cap_to, MF_EN_PASSANT);
+                if constexpr (T == MOVES_CAPTURES || T == MOVES_ALL || T == MOVES_LEGAL || T == MOVES_EVASIONS || T == MOVES_PSEUDO) {
+                    (moveList++)->move = Move(from, cap_to, MF_EN_PASSANT);
                 }
             } else {
                 // Normal capture
-                if constexpr (T == GEN_CAPTURE || T == GEN_ALL || T == GEN_LEGAL || T == GEN_EVASION || T == GEN_NON_EVASION) {
-                    *moveList++ = Move(from, cap_to, MF_CAPTURE);
+                if constexpr (T == MOVES_CAPTURES || T == MOVES_ALL || T == MOVES_LEGAL || T == MOVES_EVASIONS || T == MOVES_PSEUDO) {
+                    (moveList++)->move = Move(from, cap_to, MF_CAPTURE);
                 }
             }
         }
@@ -1643,19 +1638,19 @@ ExtMove* generate_moves(const Position& pos, ExtMove* moveList) {
         Bitboard quiets = knight_attacks_bb(from) & ~pos.pieces();
 
         // Captures
-        if constexpr (T == GEN_CAPTURE || T == GEN_ALL || T == GEN_LEGAL || T == GEN_EVASION || T == GEN_NON_EVASION) {
+        if constexpr (T == MOVES_CAPTURES || T == MOVES_ALL || T == MOVES_LEGAL || T == MOVES_EVASIONS || T == MOVES_PSEUDO) {
             while (attacks) {
                 Square to = pop_lsb(attacks);
-                *moveList++ = Move(from, to, MF_CAPTURE);
+                (moveList++)->move = Move(from, to, MF_CAPTURE);
             }
         }
 
         // Quiets
-        if constexpr (T == GEN_QUIET || T == GEN_ALL || T == GEN_LEGAL || T == GEN_EVASION || T == GEN_NON_EVASION) {
+        if constexpr (T == MOVES_QUIETS || T == MOVES_ALL || T == MOVES_LEGAL || T == MOVES_EVASIONS || T == MOVES_PSEUDO) {
             quiets &= ~pos.pieces(us);
             while (quiets) {
                 Square to = pop_lsb(quiets);
-                *moveList++ = Move(from, to, MF_QUIET);
+                (moveList++)->move = Move(from, to, MF_QUIET);
             }
         }
     }
@@ -1672,19 +1667,19 @@ ExtMove* generate_moves(const Position& pos, ExtMove* moveList) {
         Bitboard quiets = all_attacks & ~pos.pieces();
 
         // Captures
-        if constexpr (T == GEN_CAPTURE || T == GEN_ALL || T == GEN_LEGAL || T == GEN_EVASION || T == GEN_NON_EVASION) {
+        if constexpr (T == MOVES_CAPTURES || T == MOVES_ALL || T == MOVES_LEGAL || T == MOVES_EVASIONS || T == MOVES_PSEUDO) {
             while (attacks) {
                 Square to = pop_lsb(attacks);
-                *moveList++ = Move(from, to, MF_CAPTURE);
+                (moveList++)->move = Move(from, to, MF_CAPTURE);
             }
         }
 
         // Quiets
-        if constexpr (T == GEN_QUIET || T == GEN_ALL || T == GEN_LEGAL || T == GEN_EVASION || T == GEN_NON_EVASION) {
+        if constexpr (T == MOVES_QUIETS || T == MOVES_ALL || T == MOVES_LEGAL || T == MOVES_EVASIONS || T == MOVES_PSEUDO) {
             quiets &= ~pos.pieces(us);
             while (quiets) {
                 Square to = pop_lsb(quiets);
-                *moveList++ = Move(from, to, MF_QUIET);
+                (moveList++)->move = Move(from, to, MF_QUIET);
             }
         }
     }
@@ -1701,19 +1696,19 @@ ExtMove* generate_moves(const Position& pos, ExtMove* moveList) {
         Bitboard quiets = all_attacks & ~pos.pieces();
 
         // Captures
-        if constexpr (T == GEN_CAPTURE || T == GEN_ALL || T == GEN_LEGAL || T == GEN_EVASION || T == GEN_NON_EVASION) {
+        if constexpr (T == MOVES_CAPTURES || T == MOVES_ALL || T == MOVES_LEGAL || T == MOVES_EVASIONS || T == MOVES_PSEUDO) {
             while (attacks) {
                 Square to = pop_lsb(attacks);
-                *moveList++ = Move(from, to, MF_CAPTURE);
+                (moveList++)->move = Move(from, to, MF_CAPTURE);
             }
         }
 
         // Quiets
-        if constexpr (T == GEN_QUIET || T == GEN_ALL || T == GEN_LEGAL || T == GEN_EVASION || T == GEN_NON_EVASION) {
+        if constexpr (T == MOVES_QUIETS || T == MOVES_ALL || T == MOVES_LEGAL || T == MOVES_EVASIONS || T == MOVES_PSEUDO) {
             quiets &= ~pos.pieces(us);
             while (quiets) {
                 Square to = pop_lsb(quiets);
-                *moveList++ = Move(from, to, MF_QUIET);
+                (moveList++)->move = Move(from, to, MF_QUIET);
             }
         }
     }
@@ -1730,19 +1725,19 @@ ExtMove* generate_moves(const Position& pos, ExtMove* moveList) {
         Bitboard quiets = all_attacks & ~pos.pieces();
 
         // Captures
-        if constexpr (T == GEN_CAPTURE || T == GEN_ALL || T == GEN_LEGAL || T == GEN_EVASION || T == GEN_NON_EVASION) {
+        if constexpr (T == MOVES_CAPTURES || T == MOVES_ALL || T == MOVES_LEGAL || T == MOVES_EVASIONS || T == MOVES_PSEUDO) {
             while (attacks) {
                 Square to = pop_lsb(attacks);
-                *moveList++ = Move(from, to, MF_CAPTURE);
+                (moveList++)->move = Move(from, to, MF_CAPTURE);
             }
         }
 
         // Quiets
-        if constexpr (T == GEN_QUIET || T == GEN_ALL || T == GEN_LEGAL || T == GEN_EVASION || T == GEN_NON_EVASION) {
+        if constexpr (T == MOVES_QUIETS || T == MOVES_ALL || T == MOVES_LEGAL || T == MOVES_EVASIONS || T == MOVES_PSEUDO) {
             quiets &= ~pos.pieces(us);
             while (quiets) {
                 Square to = pop_lsb(quiets);
-                *moveList++ = Move(from, to, MF_QUIET);
+                (moveList++)->move = Move(from, to, MF_QUIET);
             }
         }
     }
@@ -1754,24 +1749,24 @@ ExtMove* generate_moves(const Position& pos, ExtMove* moveList) {
     Bitboard king_quiets = king_attacks_bb(ksq) & ~pos.pieces();
 
     // King captures
-    if constexpr (T == GEN_CAPTURE || T == GEN_ALL || T == GEN_LEGAL || T == GEN_EVASION || T == GEN_NON_EVASION) {
+    if constexpr (T == MOVES_CAPTURES || T == MOVES_ALL || T == MOVES_LEGAL || T == MOVES_EVASIONS || T == MOVES_PSEUDO) {
         while (king_attacks) {
             Square to = pop_lsb(king_attacks);
-            *moveList++ = Move(ksq, to, MF_CAPTURE);
+            (moveList++)->move = Move(ksq, to, MF_CAPTURE);
         }
     }
 
     // King quiets
-    if constexpr (T == GEN_QUIET || T == GEN_ALL || T == GEN_LEGAL || T == GEN_EVASION || T == GEN_NON_EVASION) {
+    if constexpr (T == MOVES_QUIETS || T == MOVES_ALL || T == MOVES_LEGAL || T == MOVES_EVASIONS || T == MOVES_PSEUDO) {
         king_quiets &= ~pos.pieces(us);
         while (king_quiets) {
             Square to = pop_lsb(king_quiets);
-            *moveList++ = Move(ksq, to, MF_QUIET);
+            (moveList++)->move = Move(ksq, to, MF_QUIET);
         }
     }
 
     // Castling (only when not in check and not generating evasions)
-    if constexpr (T == GEN_QUIET || T == GEN_ALL || T == GEN_LEGAL || T == GEN_NON_EVASION) {
+    if constexpr (T == MOVES_QUIETS || T == MOVES_ALL || T == MOVES_LEGAL || T == MOVES_PSEUDO) {
         if (!checkers) {
             // CRITICAL: Only generate castling if king is on starting square
             // White king must be on e1, black king must be on e8
@@ -1787,7 +1782,7 @@ ExtMove* generate_moves(const Position& pos, ExtMove* moveList) {
                     Square rook_sq = Square(us == WHITE ? H1 : H8);
                     if (pos.piece_on(rook_sq) == make_piece(us, ROOK)) {
                         Square to = Square(us == WHITE ? G1 : G8);
-                        *moveList++ = Move(ksq, to, MF_CASTLING_KING);
+                        (moveList++)->move = Move(ksq, to, MF_CASTLING_KING);
                     }
                 }
                 // Queenside
@@ -1797,7 +1792,7 @@ ExtMove* generate_moves(const Position& pos, ExtMove* moveList) {
                     Square rook_sq = Square(us == WHITE ? A1 : A8);
                     if (pos.piece_on(rook_sq) == make_piece(us, ROOK)) {
                         Square to = Square(us == WHITE ? C1 : C8);
-                        *moveList++ = Move(ksq, to, MF_CASTLING_QUEEN);
+                        (moveList++)->move = Move(ksq, to, MF_CASTLING_QUEEN);
                     }
                 }
             }
@@ -1807,29 +1802,40 @@ ExtMove* generate_moves(const Position& pos, ExtMove* moveList) {
     return moveList;
 }
 
-template<GenType T>
-ExtMove* generate(const Position& pos, ExtMove* moveList) {
-    if constexpr (T == GEN_LEGAL) {
-        ExtMove* start = moveList;
-        ExtMove* end;
+template<MoveSet T>
+ScoredMove* generate(const Position& pos, ScoredMove* moveList) {
+    if constexpr (T == MOVES_LEGAL) {
+        ScoredMove* start = moveList;
+        ScoredMove* end;
 
         // When in check, use evasion generation; otherwise use non-evasion
         if (pos.is_check()) {
-            end = generate_moves<GEN_EVASION>(pos, moveList);
+            end = generate_moves<MOVES_EVASIONS>(pos, moveList);
         } else {
-            end = generate_moves<GEN_NON_EVASION>(pos, moveList);
+            end = generate_moves<MOVES_PSEUDO>(pos, moveList);
         }
 
-        // Filter for legal moves (evasion moves should already be legal, but verify anyway)
-        ExtMove* legal_end = start;
-        for (ExtMove* it = start; it != end; ++it) {
-            // skip_pseudo=true: generate_moves only emitted pseudo-legal moves,
-            // so re-validating pseudo-legality here did the work twice on the
-            // hottest path (every root node and perft node)
-            bool is_legal = pos.legal(it->move, true);
-            if (is_legal) {
-                *(legal_end++) = *it;
-            }
+        // Keep the legal ones, in generation order. Outside check a move of a
+        // piece that is not pinned is legal, unless the king makes it or it
+        // takes en passant; a pinned piece's move is legal exactly when it stays
+        // on the line through its king (towards the pinner or back towards the
+        // king). Kings, en passant and every move in check take the full test.
+        const bool in_check = pos.is_check();
+        const Color us = pos.side_to_move();
+        const Square ksq = pos.king_sq(us);
+        const Bitboard pinned = pos.king_blockers() & pos.pieces(us);
+        ScoredMove* legal_end = start;
+        for (ScoredMove* it = start; it != end; ++it) {
+            const Move m = it->move;
+            const Square from = m.from(), to = m.to();
+            bool keep;
+            if (in_check || from == ksq || m.is_en_passant())
+                keep = pos.legal(m, true);   // generate_moves emitted it pseudo-legal
+            else if (!(pinned & square_bb(from)))
+                keep = true;
+            else
+                keep = (between_bb(ksq, to) & square_bb(from)) || (between_bb(ksq, from) & square_bb(to));
+            if (keep) *(legal_end++) = *it;
         }
         return legal_end;
     } else {
@@ -1838,11 +1844,11 @@ ExtMove* generate(const Position& pos, ExtMove* moveList) {
 }
 
 // Explicit template instantiations
-template ExtMove* generate<GEN_LEGAL>(const Position& pos, ExtMove* moveList);
-template ExtMove* generate<GEN_CAPTURE>(const Position& pos, ExtMove* moveList);
-template ExtMove* generate<GEN_QUIET>(const Position& pos, ExtMove* moveList);
-template ExtMove* generate<GEN_EVASION>(const Position& pos, ExtMove* moveList);
-template ExtMove* generate<GEN_ALL>(const Position& pos, ExtMove* moveList);
+template ScoredMove* generate<MOVES_LEGAL>(const Position& pos, ScoredMove* moveList);
+template ScoredMove* generate<MOVES_CAPTURES>(const Position& pos, ScoredMove* moveList);
+template ScoredMove* generate<MOVES_QUIETS>(const Position& pos, ScoredMove* moveList);
+template ScoredMove* generate<MOVES_EVASIONS>(const Position& pos, ScoredMove* moveList);
+template ScoredMove* generate<MOVES_ALL>(const Position& pos, ScoredMove* moveList);
 
 } // namespace luminex
 
@@ -1852,11 +1858,10 @@ template ExtMove* generate<GEN_ALL>(const Position& pos, ExtMove* moveList);
 
 namespace luminex {
 
-// Magic bitboard tables
-Magic RookMagics[64];
-Magic BishopMagics[64];
-Bitboard RookTable[262144];   // Large enough for all rook entries
-Bitboard BishopTable[65536];  // Large enough for all bishop entries
+// Slider hashing (luminex.h): one exact-size table, rooks then bishops
+SliderHash RookHash[64];
+SliderHash BishopHash[64];
+Bitboard SliderAttacks[ROOK_ATTACK_SLOTS + BISHOP_ATTACK_SLOTS];
 
 namespace {
 
@@ -1983,34 +1988,25 @@ constexpr Bitboard BishopMagicNumbers[64] = {
 };
 
 // Initialize magic tables for one piece type
-void init_magics(Magic magics[], Bitboard table[], bool is_rook) {
-    Bitboard* table_ptr = table;
-
+// Fill one piece type's entries from slot `offset` on; returns the next free slot
+uint32_t init_slider_hash(SliderHash hash[], uint32_t offset, bool is_rook) {
     for (int sq = 0; sq < 64; ++sq) {
-        magics[sq].mask = is_rook ? compute_rook_mask(Square(sq)) : compute_bishop_mask(Square(sq));
-        magics[sq].attacks = table_ptr;
-
-        int bits = popcount(magics[sq].mask);
-        magics[sq].shift = 64 - bits;
-        int size = 1 << bits;
-
-        Bitboard magic = is_rook ? RookMagicNumbers[sq] : BishopMagicNumbers[sq];
-        magics[sq].magic = magic;
-
-        // Now fill the table using the found magic
-        Bitboard occ = 0;
+        SliderHash& h = hash[sq];
+        h.mask = is_rook ? compute_rook_mask(Square(sq)) : compute_bishop_mask(Square(sq));
+        const int bits = popcount(h.mask);
+        h.shift = uint32_t(64 - bits);
+        h.factor = is_rook ? RookMagicNumbers[sq] : BishopMagicNumbers[sq];
+        h.offset = offset;
+        // Every subset of the mask (the carry-rippler walk), its attack set at its hashed slot
+        Bitboard occupied = 0;
         do {
-            Bitboard attacks = is_rook ? slow_rook_attacks(Square(sq), occ)
-                                       : slow_bishop_attacks(Square(sq), occ);
-
-            unsigned index = unsigned((occ * magic) >> magics[sq].shift);
-            table_ptr[index] = attacks;
-
-            occ = (occ - magics[sq].mask) & magics[sq].mask;
-        } while (occ);
-
-        table_ptr += size;
+            SliderAttacks[offset + uint32_t((occupied * h.factor) >> h.shift)] =
+                is_rook ? slow_rook_attacks(Square(sq), occupied) : slow_bishop_attacks(Square(sq), occupied);
+            occupied = (occupied - h.mask) & h.mask;
+        } while (occupied);
+        offset += uint32_t(1) << bits;
     }
+    return offset;
 }
 
 } // anonymous namespace
@@ -2020,8 +2016,9 @@ void init_magic_bitboards() {
     if (initialized) return;
     initialized = true;
 
-    init_magics(RookMagics, RookTable, true);
-    init_magics(BishopMagics, BishopTable, false);
+    const uint32_t rook_end = init_slider_hash(RookHash, 0, true);
+    [[maybe_unused]] const uint32_t end = init_slider_hash(BishopHash, rook_end, false);
+    assert(rook_end == uint32_t(ROOK_ATTACK_SLOTS) && end == uint32_t(ROOK_ATTACK_SLOTS + BISHOP_ATTACK_SLOTS));
 }
 
 } // namespace luminex
