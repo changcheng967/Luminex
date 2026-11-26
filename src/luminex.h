@@ -1899,6 +1899,7 @@ extern std::atomic<uint64_t> nodes;
 extern std::atomic<bool> stop;
 extern int root_depth;
 extern Value root_score;
+extern bool g_datagen_info;  // DatagenInfo: one "info string pgncomment" record per search
 extern int num_threads; // Default 1, SMP only helps at longer TC
 extern std::atomic<bool> ponder_mode;
 extern std::atomic<bool> ponderhit_received;

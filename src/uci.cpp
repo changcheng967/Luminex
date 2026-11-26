@@ -393,6 +393,7 @@ void handle_uci() {
     safe_output("option name SyzygyPath type string default <empty>\n");
     safe_output("option name Skill Level type spin default 20 min 0 max 20\n");
     safe_output("option name UCI_ShowWDL type check default false\n");
+    safe_output("option name DatagenInfo type check default false\n");
     safe_output("option name SearchDepth type spin default 0 min 0 max 30\n");
     safe_output("option name NodesPerMove type spin default 0 min 0 max 100000000\n");
     // Search constants (SPSAParams, luminex.h), exposed for OpenBench SPSA tuning
@@ -681,7 +682,7 @@ void handle_setoption(const std::string& cmd) {
     // int is reported and the option left as it was (release builds have no
     // exceptions, so std::stoi on such a value used to end the engine).
     const bool text_option = name == "Ponder" || name == "Clear Hash" || name == "BookFile" ||
-        name == "SyzygyPath" || name == "UCI_ShowWDL" || name == "UCI_LimitStrength" ||
+        name == "SyzygyPath" || name == "UCI_ShowWDL" || name == "DatagenInfo" || name == "UCI_LimitStrength" ||
         name == "UseNNUE" || name == "NNUEFile" || name == "SimdLevel" ||
         name == "UCI_Chess960" || name == "Analysis" || name == "UCI_AnalyseMode";
     int v = 0;
@@ -705,6 +706,9 @@ void handle_setoption(const std::string& cmd) {
     }
     else if (name == "UCI_ShowWDL") {
         params.show_wdl = (value == "true");
+    }
+    else if (name == "DatagenInfo") {
+        g_datagen_info = (value == "true");
     }
     else if (name == "Move Overhead") {
         int ov = v;

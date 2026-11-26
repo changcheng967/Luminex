@@ -75,6 +75,7 @@ int root_depth;
 // The depth of the root iteration this thread is searching (root_iteration sets it)
 static thread_local int iter_depth = 1;
 Value root_score;
+bool g_datagen_info = false;
 
 // Lazy SMP thread management
 int num_threads = 1;
@@ -252,6 +253,18 @@ static inline void corr_sample(int c) {
 // Thread-local node counter to avoid atomic overhead on every node
 static thread_local uint64_t local_nodes = 0;
 static thread_local uint64_t last_reported_nodes = 0;
+
+// DatagenInfo's nodes under each root move, summed over the search's iterations
+static thread_local struct DatagenRootNodes {
+    Move move[MAX_MOVES];
+    uint64_t nodes[MAX_MOVES];
+    int count = 0;
+    void add(Move m, uint64_t n) {
+        for (int i = 0; i < count; ++i)
+            if (move[i] == m) { nodes[i] += n; return; }
+        if (count < MAX_MOVES) { move[count] = m; nodes[count] = n; ++count; }
+    }
+} dg_root;
 
 // Precomputed LMR reduction table. Only quiet moves take the formula
 // reduction; losing captures use a fixed one (see search_move).
@@ -2256,6 +2269,7 @@ static RootIteration root_iteration(Position& pos, ExtMove* moves, ExtMove* end,
 
             if (!pos.do_move(it->move)) continue;
             uint64_t nodes_before_move = nodes.load(std::memory_order_relaxed);
+            const uint64_t dg_nodes_before = local_nodes;
 
             // Check stop immediately after do_move
             if (g_stop_requested || stop.load(std::memory_order_relaxed)) {
@@ -2292,6 +2306,7 @@ static RootIteration root_iteration(Position& pos, ExtMove* moves, ExtMove* end,
 
             pos.undo_move(it->move);
             root_moves_searched++;
+            if (g_datagen_info) dg_root.add(it->move, local_nodes - dg_nodes_before);
 
             // No clock check here: it threw away the move just finished. The
             // check at the top of the loop stops before the next one.
@@ -2457,6 +2472,11 @@ Move search(Position& pos, Limits& lim) {
     clock_start = search_start;
     hit_taken = false;
     last_line = {};
+    // DatagenInfo: the root's static eval and every completed iteration's score
+    std::vector<Value> dg_iters;
+    const bool dg_static_ok = g_datagen_info && !pos.is_check();
+    const Value dg_static = dg_static_ok ? evaluate(pos) : VALUE_ZERO;
+    if (g_datagen_info) dg_root.count = 0;
 
     Move best_move = MOVE_NONE;
     Value best_value = -VALUE_INFINITE;
@@ -2885,6 +2905,7 @@ Move search(Position& pos, Limits& lim) {
         uci_info(pos, root_depth, depth_best_value, nodes.load(std::memory_order_relaxed), time_ms,
                  1, depth_best_move);
         last_line = {root_depth, depth_best_value, depth_best_move, false};
+        if (g_datagen_info) dg_iters.push_back(depth_best_value);
     }
 
     // Fallback: if best_move is still MOVE_NONE, use the first legal move we found
@@ -2999,6 +3020,26 @@ Move search(Position& pos, Limits& lim) {
             fclose(sf);
         }
 
+        // DatagenInfo: the search's record for OpenBench's datagen PGNs
+        if (g_datagen_info) {
+            auto cp = [](Value v) -> std::string {
+                if (v >= VALUE_MATE_IN_MAX_PLY && v < VALUE_INFINITE) return std::format("M{}", (VALUE_MATE - v + 2) / 2);
+                if (v <= -VALUE_MATE_IN_MAX_PLY && v > -VALUE_INFINITE) return std::format("M{}", -(VALUE_MATE + v + 1) / 2);
+                return std::to_string(int(v) * 100 / PAWN_VALUE);
+            };
+            std::string rec = "info string pgncomment se=" + (dg_static_ok ? cp(dg_static) : std::string()) + " it=";
+            for (size_t i = 0; i < dg_iters.size(); ++i) rec += (i ? "," : "") + cp(dg_iters[i]);
+            uint64_t total = 0;
+            int order[MAX_MOVES];
+            for (int i = 0; i < dg_root.count; ++i) { total += dg_root.nodes[i]; order[i] = i; }
+            std::stable_sort(order, order + dg_root.count,
+                             [](int a, int b) { return dg_root.nodes[a] > dg_root.nodes[b]; });
+            rec += " rn=";
+            for (int k = 0; k < std::min(8, dg_root.count) && total; ++k)
+                rec += std::format("{}{}:{}", k ? "," : "", dg_root.move[order[k]], dg_root.nodes[order[k]] * 1000 / total);
+            rec += std::string(" b=") + (last_line.lower ? "l" : "e") + "\n";
+            uci_safe_output(rec);
+        }
         // NNUE_CORR_STATS: stand-pat |correction| distribution (see corr_sample)
         if (std::getenv("NNUE_CORR_STATS")) {
             static const char* corr_labels[6] = {"<16", "16-32", "32-64", "64-128", "128-200", ">=200"};
