@@ -1262,6 +1262,11 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
             // double extension for strongly singular moves
             if (singular_value < sBeta - depth * sp.dext_margin / 16) {
                 singular_extension = 2;
+                // Triple extension: a move whose rivals fail low by more than
+                // three plies' worth (depth * 48 / 16) is extended once more
+                // (SPRT 309: +3.30 +- 2.56 over the double extension alone)
+                if (singular_value < sBeta - depth * 48 / 16)
+                    singular_extension = 3;
             }
         } else if (singular_value >= beta) {
             // Multi-cut: other moves are also good enough to beat beta
@@ -1574,7 +1579,8 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
         }
         // Depth-explosion guard: a line of checks + singular doubles could
         // otherwise extend faster than depth shrinks
-        if (ext_count > 2) ext_count = 2;
+        // At most three plies a node, so the triple extension reaches the tree
+        if (ext_count > 3) ext_count = 3;
         // No extension once the path is ext_path_cap/4 of the iteration's depth
         if (sp.ext_path_cap && ext_count > 0 && 4 * ss->ply >= sp.ext_path_cap * iter_depth) ext_count = 0;
         new_depth += ext_count;
