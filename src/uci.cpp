@@ -1355,13 +1355,14 @@ static void crash_trace(int sig) {
 } // namespace luminex
 
 // genfens N seed S book <path|None> [net PATH] [plies K] [maxplies K2] [dfrc P]
-//         [maxscore M] [nodes X]
+//         [dfrcplies D] [dfrcmaxplies D2] [maxscore M] [nodes X]
 // OpenBench's DATAGEN workloads ask the engine for N opening positions and read
 // the lines "info string genfens <fen>"; fastchess then plays the games. Each
 // opening is a random line of the book (or the start position) or, P percent
 // of the time, a Double Fischer Random start with its castling rights cleared
 // (castling here is standard chess only), followed by K to K2 random legal
-// plies (default 8 to 9, so either side may move first). An opening with no
+// plies (default 8 to 9, so either side may move first; D to D2 after a DFRC
+// start, by default the same). An opening with no
 // legal move, or whose X-node search scores beyond M centipawns either way, is
 // drawn again. The search uses the network at PATH (OpenBench's client keeps
 // the workload's network at Networks/<id> beside the engine's working
@@ -1377,6 +1378,7 @@ static int run_genfens(const std::string& command) {
     uint64_t seed = 0;
     std::string net;
     int plies = 8, max_plies = -1, dfrc = 10, max_score = 300, filter_nodes = 10000;
+    int dfrc_plies = -1, dfrc_max_plies = -1;
     in >> tok >> n;
     while (in >> tok) {
         if (tok == "seed") in >> seed;
@@ -1384,12 +1386,16 @@ static int run_genfens(const std::string& command) {
         else if (tok == "net") in >> net;
         else if (tok == "plies") in >> plies;
         else if (tok == "maxplies") in >> max_plies;
+        else if (tok == "dfrcplies") in >> dfrc_plies;
+        else if (tok == "dfrcmaxplies") in >> dfrc_max_plies;
         else if (tok == "dfrc") in >> dfrc;
         else if (tok == "maxscore") in >> max_score;
         else if (tok == "nodes") in >> filter_nodes;
     }
     plies = std::clamp(plies, 0, 40);
     max_plies = max_plies < 0 ? plies + 1 : std::clamp(max_plies, plies, 40);
+    dfrc_plies = dfrc_plies < 0 ? plies : std::clamp(dfrc_plies, 0, 40);
+    dfrc_max_plies = dfrc_max_plies < 0 ? std::max(dfrc_plies, max_plies) : std::clamp(dfrc_max_plies, dfrc_plies, 40);
     if (!net.empty() && !load_net_file(net)) {
         std::cerr << "genfens: the network " << net << " did not load" << std::endl;
         return 1;
@@ -1460,7 +1466,8 @@ static int run_genfens(const std::string& command) {
                                : lines.empty() ? std::string("rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1")
                                                : lines[below(lines.size())]);
                 bool dead = false;
-                const int k = plies + int(below(uint64_t(max_plies - plies + 1)));
+                const int lo = use_dfrc ? dfrc_plies : plies, hi = use_dfrc ? dfrc_max_plies : max_plies;
+                const int k = lo + int(below(uint64_t(hi - lo + 1)));
                 for (int i = 0; i < k && !dead; ++i) {
                     ExtMove moves[MAX_MOVES];
                     ExtMove* end = generate<GEN_LEGAL>(p, moves);
