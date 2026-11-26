@@ -403,7 +403,12 @@ static void evaluate_pawns(const Position& pos, int32_t& mg_out, int32_t& eg_out
 
             // Pawn phalanx: side-by-side pawns on same rank
             {
-                Bitboard neighbors = our_pawns & (file_bb(File(f - 1)) | file_bb(File(f + 1)));
+                // The adjacent files on the board only: file_bb(File(-1)) and
+                // file_bb(File(8)) read past BB_FILES, whatever the build put there
+                Bitboard adjacent = 0;
+                if (f > FILE_A) adjacent |= file_bb(File(f - 1));
+                if (f < FILE_H) adjacent |= file_bb(File(f + 1));
+                Bitboard neighbors = our_pawns & adjacent;
                 Bitboard same_rank = neighbors & rank_bb(rank_of(sq));
                 if (same_rank) {
                     if (r >= RANK_2 && r <= RANK_7) {

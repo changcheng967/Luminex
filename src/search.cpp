@@ -2196,8 +2196,11 @@ static void order_root_moves(const Position& pos, ExtMove* moves, ExtMove* end, 
         it->value = score;
     }
 
-    // Sort moves by score (only need to sort once per depth)
-    std::sort(moves, end, [](const ExtMove& a, const ExtMove& b) {
+    // Sort moves by score (only need to sort once per depth). Stable: equal
+    // scores (most quiet moves at a fresh history) keep the generation order,
+    // where std::sort left their order to the standard library, so libc++ and
+    // libstdc++ builds searched different trees from the same position
+    std::stable_sort(moves, end, [](const ExtMove& a, const ExtMove& b) {
         return a.value > b.value;
     });
 }
