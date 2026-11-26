@@ -213,6 +213,25 @@ before it lands. The server runs a fork,
 Every pull request and merge commit carries its test's numbers. A change
 that fails is closed with them.
 
+## How close to Stockfish
+
+The parts that derive from Stockfish and Stash are credited under
+[License](#license). Two measurements of how close the engine is to
+Stockfish, on main 69961ca (26 November 2026):
+
+- **Shared source lines.** Of the engine's 13,012 source lines of 25
+  characters or more (whitespace collapsed, each file's opening comment
+  left out, the data tools in `tools.cpp` not counted), 0.58% are identical
+  to a line of any Stockfish release from 8 to 18 or of its master branch of
+  August 2026. 0.04% are identical to a line of Stash. The shared lines are
+  one-liners such as signatures in Stockfish's naming conventions
+  (`attackers_to`, `see_ge`, `relative_rank`) and the start position's FEN.
+- **Same moves.** On 2,000 positions from games, at 100 ms a move on one
+  thread with 16 MB of hash, Luminex plays Stockfish 19's move in 55.5% of
+  them. On the same test Stockfish 19 agrees with itself 98.2% of the time,
+  and Stash 37 picks Stockfish 19's move in 47.5% of the positions.
+  Agreement rises with strength, so compare engines of similar strength.
+
 ## Build
 
 You need C++23, CMake 3.20 or newer, and clang 23. Clang 23 is the compiler
