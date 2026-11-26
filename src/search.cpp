@@ -2502,9 +2502,9 @@ Move search(Position& pos, Limits& lim) {
 
     // Initialize LMR reduction table (once)
     if (!reductions_initialized) init_reductions();
-    // Age TT authority: each new "go" discounts entries from earlier searches
+    // The table ages by generation: each go's new_search() makes the entries
+    // of earlier searches stale (TranspositionTable::probe)
     TT.ensure_allocated();
-    TT.begin_search();
 
     // Reuse or create persistent main worker (history persists across searches)
     if (!main_search_worker) {
