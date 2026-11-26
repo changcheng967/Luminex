@@ -566,7 +566,8 @@ done
 #
 # One bold line per area (network, time management, search, speed, ...) with
 # its PR links, then short plain bullets: what changed, a sentence each. No
-# figures here; they go in Measured gains.
+# figures: the release's own Elo is in Strength, and each change's is on its
+# PR and test page.
 #
 # ## Strength
 #
@@ -577,17 +578,13 @@ done
 #
 # One line of conditions (threads, hash, time control, openings), then any
 # caveat. The results against each opponent go in a collapsed `<details>` table.
+# Quote each Elo as its OpenBench test page shows it, with the 95% interval,
+# and link the page: commit messages keep the figure of their day, which drifts
+# when OpenBench's error model changes (v6.6.0's first notes quoted several
+# that had).
 #
-# ## Measured gains
-#
-# | Change | Elo | PR | Test |
-# |---|---:|:---:|:---:|
-#
-# One row per SPRT, grouped under bold rows by area. Quote each Elo as its
-# OpenBench test page shows it, with the 95% interval, and link the page:
-# commit messages keep the figure of their day, which drifts when OpenBench's
-# error model changes (v6.6.0's first notes quoted several that had). Mark a
-# non-regression test, and a test stopped undecided.
+# No table of each change's SPRT: it was the longest part of the notes and
+# few read it (v6.6.0's was removed); the PRs and their test pages keep them.
 #
 # ## Downloads
 #
