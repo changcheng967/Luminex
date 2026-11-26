@@ -1494,7 +1494,9 @@ int main(int argc, char* argv[]) {
         //     strength measurement — the client reports it as the machine's
         //     engine speed, which drives time-control scaling per worker.
         {
-            const int bench_depth = argc > 2 ? std::max(1, std::atoi(argv[2])) : BENCH_DEPTH;
+            // `bench <depth>`: 1-30, the SearchDepth option's range; on the search
+            // thread below any of them runs on the stack every `go` has
+            const int bench_depth = argc > 2 ? std::clamp(std::atoi(argv[2]), 1, 30) : BENCH_DEPTH;
             long long sms = 0;
             uint64_t probe_nps = 0, bench_nodes = 0;
             // On a search thread, as every `go` runs: its 32 MiB stack (SearchThread,
