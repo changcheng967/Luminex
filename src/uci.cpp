@@ -1494,36 +1494,43 @@ int main(int argc, char* argv[]) {
         //     strength measurement — the client reports it as the machine's
         //     engine speed, which drives time-control scaling per worker.
         {
-            Position probe;
-            probe.set("rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1");
-            Limits lim;
-            lim.depth = 11;
-            // Allocate the hash table before the clock starts: the first search
-            // would otherwise allocate it inside the timed probe and report a
-            // speed that includes zeroing 256 MB, which OpenBench then scales
-            // every time control by.
-            TT.ensure_allocated();
-            stop = false;   // search() leaves the stop flags to its caller
-            auto t0 = high_resolution_clock::now();
-            search(probe, lim);
-            auto sms = duration_cast<milliseconds>(high_resolution_clock::now() - t0).count();
-            const uint64_t probe_nps = sms > 0 ? nodes.load() * 1000ULL / (uint64_t)sms : 0;
-
             const int bench_depth = argc > 2 ? std::max(1, std::atoi(argv[2])) : BENCH_DEPTH;
-            uint64_t bench_nodes = 0;
-            for (const char* fen : BENCH_FENS) {
-                TT.clear();
-                TT.new_search();
-                clear_correction_history();
-                clear_search_history();
-                Position bp;
-                bp.set(fen);
-                Limits bl;
-                bl.depth = bench_depth;
-                stop = false;
-                search(bp, bl);
-                bench_nodes += nodes.load();
-            }
+            long long sms = 0;
+            uint64_t probe_nps = 0, bench_nodes = 0;
+            // On a search thread, as every `go` runs: its 32 MiB stack (SearchThread,
+            // luminex.h), where Windows gives the main thread 1 MiB, which a bench
+            // position overflows
+            SearchThread bench_thread([&] {
+                Position probe;
+                probe.set("rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1");
+                Limits lim;
+                lim.depth = 11;
+                // Allocate the hash table before the clock starts: the first search
+                // would otherwise allocate it inside the timed probe and report a
+                // speed that includes zeroing 256 MB, which OpenBench then scales
+                // every time control by.
+                TT.ensure_allocated();
+                stop = false;   // search() leaves the stop flags to its caller
+                auto t0 = high_resolution_clock::now();
+                search(probe, lim);
+                sms = duration_cast<milliseconds>(high_resolution_clock::now() - t0).count();
+                probe_nps = sms > 0 ? nodes.load() * 1000ULL / (uint64_t)sms : 0;
+
+                for (const char* fen : BENCH_FENS) {
+                    TT.clear();
+                    TT.new_search();
+                    clear_correction_history();
+                    clear_search_history();
+                    Position bp;
+                    bp.set(fen);
+                    Limits bl;
+                    bl.depth = bench_depth;
+                    stop = false;
+                    search(bp, bl);
+                    bench_nodes += nodes.load();
+                }
+            });
+            bench_thread.join();
             std::cout << "Nodes searched " << bench_nodes << std::endl;
             if (sms > 0)
                 std::cout << "NPS " << probe_nps << std::endl;
