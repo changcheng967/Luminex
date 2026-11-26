@@ -264,6 +264,17 @@ constexpr int NUM_INPUTS = NUM_PLANES * 32;  // 24576 per half (32 king buckets)
 constexpr int OUT_SCALE = 300;               // matches trainer's output *300
 constexpr int NNUE_MAX_PLY = 2048;           // MUST match Position::MAX_STATES (luminex.h)
 
+// PB3 (V6): the feature table once per game phase. A PB3 net's header says
+// NI = 3 x NUM_INPUTS, and feature = block x NUM_INPUTS + the HalfKAv2_hm
+// index, the same block for both sides: block 0 at 26 or more men (every
+// piece, kings and pawns included), 1 at 13 to 25, 2 at 12 or fewer, the
+// trainer's count. Every other net has one block.
+constexpr int PHASE_BLOCKS_MAX = 3;
+static int g_blocks = 1;
+static inline int phase_block(int men) {
+    return g_blocks == 1 ? 0 : (men >= 26 ? 0 : men >= 13 ? 1 : 2);
+}
+
 static const int KingBuckets[NUM_SQ] = {
     -1, -1, -1, -1, 31, 30, 29, 28,
     -1, -1, -1, -1, 27, 26, 25, 24,
@@ -395,7 +406,9 @@ struct PlyDelta {
     Piece moved = NO_PIECE;        // the moving piece before the move (a pawn for promotions)
     PieceType captured = PT_NONE;
     uint8_t ksq[2] = {0, 0};       // both kings' squares after the move
-    int8_t rebuild = -1;           // the side whose own king moved: rebuilt there, not updated
+    uint8_t rebuild = 0;           // bit p: side p is rebuilt here, not updated (its own king moved, or a
+                                   // capture changed the phase block: both sides)
+    uint8_t block = 0;             // the phase block after the move (PB3; 0 for every other net)
     bool null_move = false;
     bool current[2] = {false, false};
     bool relc[2] = {false, false};      // gen768t: this ply's relation lanes are computed, per side
@@ -793,7 +806,9 @@ static bool load_stream(std::istream& f, const std::string& name) {
             return false;
         }
     }
-    if (NI != NUM_INPUTS) { std::fprintf(stderr, "nnue: NUM_INPUTS mismatch %d\n", NI); return false; }
+    // One block, or PB3's three (an LNT8 net with NI = 3 x NUM_INPUTS)
+    const int blocks = NI == NUM_INPUTS ? 1 : (lnt8 && NI == NUM_INPUTS * PHASE_BLOCKS_MAX ? PHASE_BLOCKS_MAX : 0);
+    if (!blocks) { std::fprintf(stderr, "nnue: NUM_INPUTS mismatch %d\n", NI); return false; }
     if (L1 <= 0 || L1 > NNUE_L1_MAX) { std::fprintf(stderr, "nnue: L1=%d out of range (max %d)\n", L1, NNUE_L1_MAX); return false; }
     // The SIMD loops step L1 in 32-lane blocks and L2/L3 in 8-lane blocks, and
     // the small VNNI dots read at most 64 bytes.
@@ -812,6 +827,7 @@ static bool load_stream(std::istream& f, const std::string& name) {
     g_tails.assign(NB, DenseTail{});
     g_buckets = NB;
     g_L1 = L1; g_L2 = L2; g_L3 = L3;
+    g_blocks = blocks;
     g_rel_T = 0;   // an LNT8 net sets it again once it has loaded whole
     long long clamped = 0;
     if (lnt8) {
@@ -821,9 +837,9 @@ static bool load_stream(std::istream& f, const std::string& name) {
             f.read(reinterpret_cast<char*>(&n), 4);
             if (!f || n != expected) { std::fprintf(stderr, "nnue: LNT8 %s size %d != %d\n", what, n, expected); return false; }
             return true; };
-        if (!read_count(NUM_INPUTS * L1, "piece-square table")) return false;
-        ft_w.reset(static_cast<size_t>(NUM_INPUTS) * L1);
-        f.read(reinterpret_cast<char*>(ft_w.data()), std::streamsize(sizeof(int16_t) * size_t(NUM_INPUTS) * size_t(L1)));
+        if (!read_count(NI * L1, "piece-square table")) return false;
+        ft_w.reset(static_cast<size_t>(NI) * L1);
+        f.read(reinterpret_cast<char*>(ft_w.data()), std::streamsize(sizeof(int16_t) * size_t(NI) * size_t(L1)));
         if (!read_count(L1, "bias")) return false;
         ft_b_i32.resize(L1);
         f.read(reinterpret_cast<char*>(ft_b_i32.data()), std::streamsize(sizeof(int32_t) * size_t(L1)));
@@ -930,10 +946,11 @@ static bool load_stream(std::istream& f, const std::string& name) {
     // kernels' instruction-set level (SimdLevel), then any warning. It is kept
     // for take_report(), not printed here.
     if (lnt8)
-        g_report = std::format("info string NNUE evaluation using {} (gen768t: int8 L1={} L2={} L3={}, {} output buckets, "
+        g_report = std::format("info string NNUE evaluation using {} (gen768t{}: int8 L1={} L2={} L3={}, {} output buckets, "
                                "a scale per row; relation lanes T={}, {} rows, step 2^{}, pawn pairs {}{}), SIMD level {}\n",
-                               name, L1, L2, L3, NB, g_rel_T, rh[1], g_rel_rs, g_rel_ppm ? "all" : "in contact",
-                               g_rel_check ? ", LUMINEX_REL_CHECK on" : "", g_k->name);
+                               name, g_blocks > 1 ? ", PB3: 3 phase blocks" : "", L1, L2, L3, NB, g_rel_T, rh[1],
+                               g_rel_rs, g_rel_ppm ? "all" : "in contact", g_rel_check ? ", LUMINEX_REL_CHECK on" : "",
+                               g_k->name);
     else if (NB > 1)
         g_report = std::format("info string NNUE evaluation using {} (int8 L1={} L2={} L3={}, {} output buckets{}), SIMD level {}\n",
                                name, L1, L2, L3, NB, rows ? ", a scale per row" : "", g_k->name);
@@ -995,8 +1012,9 @@ bool load_embedded() {
 #endif
 }
 
-static inline const int16_t* feature_row(bool white_pov, int ksq, int sq, Piece piece) {
-    return &ft_w[static_cast<size_t>(halfka_idx(white_pov, ksq, sq, piece)) * g_L1];
+static inline const int16_t* feature_row(bool white_pov, int ksq, int sq, Piece piece, int block) {
+    return &ft_w[(static_cast<size_t>(block) * NUM_INPUTS + static_cast<size_t>(halfka_idx(white_pov, ksq, sq, piece)))
+                 * g_L1];
 }
 
 // Rebuild side p's lanes from the board: the bias, then every piece's row in
@@ -1005,18 +1023,19 @@ static inline const int16_t* feature_row(bool white_pov, int ksq, int sq, Piece 
 static void refresh_perspective(const Position& pos, Accumulator& a, int p) {
     bool white_pov = (p == 0);
     int ksq = static_cast<int>(pos.king_sq(white_pov ? WHITE : BLACK));
+    const int block = phase_block(popcount(pos.pieces()));
     const int16_t* rows[NUM_SQ];
     int n = 0;
     for (int sq = 0; sq < NUM_SQ; ++sq) {
         Piece pc = pos.piece_on(Square(sq));
         if (pc == NO_PIECE) continue;
-        rows[n++] = feature_row(white_pov, ksq, sq, pc);
+        rows[n++] = feature_row(white_pov, ksq, sq, pc, block);
     }
     NNUE_K(refresh_lanes)(a.v[p], ft_b_i32.data(), rows, n, g_L1);
 }
 
-// Refresh cache: per perspective and own-king square, the lanes of the board
-// that king square last saw. A king move then applies only the pieces that
+// Refresh cache: per perspective, own-king square and phase block, the lanes
+// of the board that king square last saw in that block. A king move then applies only the pieces that
 // differ from that board instead of rebuilding from every piece. The cached
 // sums are exact int32, saturated only on the copy into the int16
 // accumulator, so an entry reused for a whole game never drifts. Entries
@@ -1028,7 +1047,7 @@ struct alignas(64) RefreshEntry {
 };
 
 static inline RefreshEntry* refresh_cache() {
-    thread_local std::vector<RefreshEntry> store(2 * NUM_SQ);
+    thread_local std::vector<RefreshEntry> store(2 * NUM_SQ * PHASE_BLOCKS_MAX);
     return store.data();
 }
 
@@ -1037,9 +1056,9 @@ static inline RefreshEntry* refresh_cache() {
 // holds, so after the diff they are the exact sum for `pieces`, saturated once
 // here: the result does not depend on what the entry held before, which is
 // what lets a rebuild wait until an evaluation needs it.
-static void refresh_from_board(const Bitboard (&pieces)[2][6], int ksq, Accumulator& a, int p) {
+static void refresh_from_board(const Bitboard (&pieces)[2][6], int ksq, Accumulator& a, int p, int block) {
     bool white_pov = (p == 0);
-    RefreshEntry& e = refresh_cache()[p * NUM_SQ + ksq];
+    RefreshEntry& e = refresh_cache()[(block * 2 + p) * NUM_SQ + ksq];
     if (e.net_id != g_net_id) {
         std::memcpy(e.acc, ft_b_i32.data(), sizeof(int32_t) * size_t(g_L1));
         std::memset(e.pieces, 0, sizeof(e.pieces));
@@ -1055,9 +1074,9 @@ static void refresh_from_board(const Bitboard (&pieces)[2][6], int ksq, Accumula
             if (now == was) continue;
             Piece pc = make_piece(Color(c), PieceType(pt));
             for (Bitboard gone = was & ~now; gone; )
-                gone_rows[ngone++] = feature_row(white_pov, ksq, pop_lsb(gone), pc);
+                gone_rows[ngone++] = feature_row(white_pov, ksq, pop_lsb(gone), pc, block);
             for (Bitboard added = now & ~was; added; )
-                added_rows[nadded++] = feature_row(white_pov, ksq, pop_lsb(added), pc);
+                added_rows[nadded++] = feature_row(white_pov, ksq, pop_lsb(added), pc, block);
             e.pieces[c][pt] = now;
         }
     NNUE_K(refresh_cached)(e.acc, gone_rows, ngone, added_rows, nadded, a.v[p], g_L1);
@@ -1104,15 +1123,15 @@ static void apply_delta(const PlyDelta& d, const Accumulator& parent, Accumulato
         DeltaRows& r = jobs[njobs++];
         r.parent = parent.v[p];
         r.child = child.v[p];
-        r.add0 = feature_row(white_pov, ksq, to, to_pc);
-        r.sub0 = feature_row(white_pov, ksq, from, from_pc);
+        r.add0 = feature_row(white_pov, ksq, to, to_pc, d.block);
+        r.sub0 = feature_row(white_pov, ksq, from, from_pc, d.block);
         r.sub1 = nullptr;
         r.add1 = nullptr;
         if (castling) {
-            r.sub1 = feature_row(white_pov, ksq, rfrom, rook);
-            r.add1 = feature_row(white_pov, ksq, rto, rook);
+            r.sub1 = feature_row(white_pov, ksq, rfrom, rook, d.block);
+            r.add1 = feature_row(white_pov, ksq, rto, rook, d.block);
         } else if (cap_pc != NO_PIECE) {
-            r.sub1 = feature_row(white_pov, ksq, cap_sq, cap_pc);
+            r.sub1 = feature_row(white_pov, ksq, cap_sq, cap_pc, d.block);
         }
     }
     NNUE_K(update_lanes)(jobs, njobs, g_L1);
@@ -1299,7 +1318,7 @@ static void rel_check(const Position& pos) {
         for (int sq = 0; sq < NUM_SQ; ++sq) {
             const Piece pc = pos.piece_on(Square(sq));
             if (pc == NO_PIECE) continue;
-            const int16_t* row = &ft_w[static_cast<size_t>(halfka_idx(white_pov, ksq, sq, pc)) * g_L1];
+            const int16_t* row = feature_row(white_pov, ksq, sq, pc, phase_block(popcount(pos.pieces())));
             for (int l = 0; l < g_L1; ++l) ref[l] += row[l];
         }
         for (int l = 0; l < g_L1; ++l)
@@ -1319,9 +1338,9 @@ static void make_current(const Position& pos) {
     int start[2];
     for (int p = 0; p < 2; ++p) {
         int j = ply;
-        while (j > 0 && !ds[j].current[p] && ds[j].rebuild != p) --j;
+        while (j > 0 && !ds[j].current[p] && !(ds[j].rebuild >> p & 1)) --j;
         if (!ds[j].current[p]) {
-            if (ds[j].rebuild != p) {
+            if (!(ds[j].rebuild >> p & 1)) {
                 // Nothing below was ever computed on this thread (no refresh
                 // since the net loaded): rebuild this ply from the board.
                 refresh_perspective(pos, acc_stack[ply], p);
@@ -1329,7 +1348,7 @@ static void make_current(const Position& pos) {
                 j = ply;
             } else {
                 const long long kr_t0 = pr ? rdtsc() : 0;
-                refresh_from_board(nnue_king_boards()[j].pieces, ds[j].ksq[p], acc_stack[j], p);
+                refresh_from_board(nnue_king_boards()[j].pieces, ds[j].ksq[p], acc_stack[j], p, ds[j].block);
                 ds[j].current[p] = true;
                 if (pr) { st_king_refresh.cyc += rdtsc() - kr_t0; st_king_refresh.n++; }
             }
@@ -1358,7 +1377,8 @@ void refresh(Position& pos) {
     refresh_perspective(pos, a, 1);
     PlyDelta& d = nnue_deltas()[pos.state_ply()];
     d.null_move = false;
-    d.rebuild = -1;
+    d.rebuild = 0;
+    d.block = uint8_t(phase_block(popcount(pos.pieces())));
     d.current[0] = d.current[1] = true;
     if (g_rel_T) {
         v5rel::Bd& b = rel_boards()[pos.state_ply()];
@@ -1378,7 +1398,8 @@ void copy_for_null(Position& pos) {
     // made when an evaluation needs them.
     PlyDelta& d = nnue_deltas()[pos.state_ply()];
     d.null_move = true;
-    d.rebuild = -1;
+    d.rebuild = 0;
+    d.block = uint8_t(phase_block(popcount(pos.pieces())));
     d.current[0] = d.current[1] = false;
     if (g_rel_T) {
         v5rel::Bd* const boards = rel_boards();
@@ -1404,7 +1425,15 @@ void update(Position& pos, Move m, Piece moved, PieceType captured) {
     d.captured = captured;
     d.ksq[0] = uint8_t(pos.king_sq(WHITE));
     d.ksq[1] = uint8_t(pos.king_sq(BLACK));
-    d.rebuild = moved_pt == KING ? int8_t(us == WHITE ? 0 : 1) : int8_t(-1);
+    d.rebuild = moved_pt == KING ? uint8_t(us == WHITE ? 1 : 2) : uint8_t(0);
+    // PB3: a capture that takes the men across 26->25 or 13->12 changes every
+    // feature of both sides, so both are rebuilt from this ply's board. The
+    // count before the move is the count after it plus the captured piece (en
+    // passant arrives with no captured type: its square was empty).
+    const int men = popcount(pos.pieces());
+    d.block = uint8_t(phase_block(men));
+    if (g_blocks > 1 && (captured != PT_NONE || m.is_en_passant()) && phase_block(men + 1) != d.block)
+        d.rebuild = 3;
     d.null_move = false;
     d.current[0] = d.current[1] = false;
     if (g_rel_T) {
@@ -1413,7 +1442,7 @@ void update(Position& pos, Move m, Piece moved, PieceType captured) {
         d.relflip[0] = d.relflip[1] = false;
         if (moved_pt == KING && ((int(m.from()) & 7) < 4) != ((int(m.to()) & 7) < 4)) d.relflip[us == WHITE ? 0 : 1] = true;
     }
-    if (d.rebuild >= 0) {
+    if (d.rebuild) {
         KingBoard& kb = nnue_king_boards()[ply];
         for (int c = 0; c < 2; ++c)
             for (int pt = PAWN; pt <= KING; ++pt)
@@ -1439,7 +1468,8 @@ void update(Position& pos, Move m, Piece moved, PieceType captured) {
             else if (i == 1) idx = halfka_idx(true,  wk, to, arr_piece);
             else if (i == 2) idx = halfka_idx(false, bk, from, dep_piece);
             else idx = halfka_idx(false, bk, to, arr_piece);
-            _mm_prefetch((const char*)&ft_w[static_cast<size_t>(idx) * g_L1], _MM_HINT_T0);
+            _mm_prefetch((const char*)&ft_w[(static_cast<size_t>(d.block) * NUM_INPUTS + static_cast<size_t>(idx)) * g_L1],
+                         _MM_HINT_T0);
         }
     }
 #endif
@@ -1468,10 +1498,9 @@ Value evaluate(const Position& pos) {
                 for (int sq = 0; sq < NUM_SQ; ++sq) {
                     Piece pc = pos.piece_on(Square(sq));
                     if (pc == NO_PIECE) continue;
-                    int idx = halfka_idx(white_pov, ksq, sq, pc);
-                    // the loop computed idx and discarded it — the "reference"
+                    // the loop once computed idx and discarded it: the "reference"
                     // was the bias alone, so any real position aborted here
-                    ref += ft_w[(size_t)idx * g_L1 + l];
+                    ref += feature_row(white_pov, ksq, sq, pc, phase_block(popcount(pos.pieces())))[l];
                 }
                 // The lane must be the exact sum whenever that fits int16: the
                 // updates wrap, so a partial sum that left int16 on the way
