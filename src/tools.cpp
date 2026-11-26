@@ -2271,7 +2271,7 @@ static TraceOut trace_eval(const Position& pos, Tracer& t) {
 
 // ============================================================================
 // Current-engine coefficients (for --verify reconstruction). Every value is
-// read from the engine's own tables/params via etrace/g_eval_params so the
+// read from the engine's own tables/params via etrace so the
 // check can never drift from the engine.
 // ============================================================================
 static double CMG[feat::NPHASE];

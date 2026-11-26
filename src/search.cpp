@@ -53,7 +53,6 @@ void SearchThread::start(Job job) {
 
 // Forward declaration - defined in uci.cpp
 extern bool check_for_stop_command();
-extern void uci_debug_log(const char* format, ...);
 
 // Global volatile stop flag for immediate response
 // This is set by the main thread when "stop" is received
@@ -67,7 +66,7 @@ volatile bool g_stop_requested = false;
 thread_local SearchStats g_stats;
 
 // Search globals
-Limits limits;
+static SearchBudget budget;   // this search's "go" (search() takes a copy)
 SearchParams params;
 std::atomic<uint64_t> nodes;
 std::atomic<bool> stop;
@@ -464,15 +463,14 @@ static void add_lag_sample(int sample) {
 
 // At the start of a search: the previous own move's sample when there is one
 // (a ponder search takes it at the ponderhit), and this search's clock.
-static void note_clock(const Position& pos, const Limits& lim) {
-    const bool timed = lim.use_time_management();
-    const Color us = pos.side_to_move();
-    const int time_left = std::max(0, lim.time[int(us)]);
-    const int inc = std::max(0, lim.inc[int(us)]);
+static void note_clock(const Position& pos, const SearchBudget& request) {
+    const bool timed = request.on_clock();
+    const int time_left = std::max(0, request.clock_ms);
+    const int inc = std::max(0, request.increment_ms);
     const bool has_sample = timed && prev_clock.timed && pos.game_ply() == prev_clock.ply + 2;
     const int sample = has_sample ? prev_clock.time_left + prev_clock.inc - time_left - prev_clock.think_ms : 0;
-    pending_clock = {time_left, inc, pos.game_ply(), sample, timed, true, has_sample && lim.ponder};
-    if (has_sample && !lim.ponder)
+    pending_clock = {time_left, inc, pos.game_ply(), sample, timed, true, has_sample && request.ponder};
+    if (has_sample && !request.ponder)
         add_lag_sample(sample);
 }
 
@@ -512,7 +510,7 @@ bool check_time() {
         return true;
     }
 
-    if (limits.nodes && nodes >= uint64_t(limits.nodes)) {
+    if (budget.max_nodes && nodes >= budget.max_nodes) {
         stop = true;
         return true;
     }
@@ -528,21 +526,21 @@ bool check_time() {
     if (ponder_mode.load(std::memory_order_acquire)) {
         if (worker != main_search_worker || !take_ponderhit())
             return false;
-        if (limits.use_time_management() && depth1_done.load(std::memory_order_relaxed) && past_soft_limit) {
+        if (budget.on_clock() && depth1_done.load(std::memory_order_relaxed) && past_soft_limit) {
             stop = true;
             return true;
         }
     }
 
-    if (limits.movetime) {
+    if (budget.move_time_ms) {
         int elapsed = ms_since(clock_start);
-        if (elapsed >= limits.movetime && depth1_done.load(std::memory_order_relaxed)) {
+        if (elapsed >= budget.move_time_ms && depth1_done.load(std::memory_order_relaxed)) {
             stop = true;
             return true;
         }
     }
 
-    if (limits.use_time_management()) {
+    if (budget.on_clock()) {
         int elapsed = ms_since(clock_start);
         // Hard limit on the own clock: stop immediately when max_time is exceeded
         if (elapsed >= max_time && depth1_done.load(std::memory_order_relaxed)) {
@@ -552,7 +550,7 @@ bool check_time() {
     }
 
     // SAFETY: For depth-only searches (not infinite), add a 30-minute maximum
-    if (!limits.infinite && !limits.movetime && !limits.use_time_management() && limits.nodes == 0) {
+    if (!budget.infinite && !budget.move_time_ms && !budget.on_clock() && budget.max_nodes == 0) {
         auto now = std::chrono::steady_clock::now();
         int elapsed = static_cast<int>(std::chrono::duration_cast<std::chrono::milliseconds>(
             now - search_start).count());
@@ -2129,14 +2127,14 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
 // the search in ponder mode, even if it's mate"). A reply ready early (the
 // depth limit, a forced mate, a book move) waits here for ponderhit or stop;
 // after a ponderhit an infinite search still waits for stop.
-void hold_reply(const Limits& lim) {
+void hold_reply(const SearchBudget& request) {
     for (;;) {
         if (g_stop_requested)
             return;
         if (ponder_mode.load(std::memory_order_acquire)) {
-            if (take_ponderhit() && !lim.infinite)
+            if (take_ponderhit() && !request.infinite)
                 return;
-        } else if (!lim.infinite) {
+        } else if (!request.infinite) {
             return;
         }
         std::this_thread::sleep_for(std::chrono::milliseconds(1));
@@ -2159,10 +2157,10 @@ void report_after_hit(const Position& root) {
 // After the reply is released: a played move's clock becomes the record the
 // next own move samples its lag from. A search not on the clock records
 // untimed, so the next one takes no sample.
-void finish_clock(const Limits& lim) {
+void finish_clock(const SearchBudget& request) {
     if (!pending_clock.valid)
         return;
-    if (!lim.ponder || hit_taken) {
+    if (!request.ponder || hit_taken) {
         const int own = ms_since(clock_start);
         prev_clock = {pending_clock.time_left, pending_clock.inc, pending_clock.ply, own, pending_clock.timed};
     }
@@ -2416,7 +2414,7 @@ static void helper_thread_func(Position pos_copy, int thread_id) {
 
     Move prev_best = MOVE_NONE;
     Value prev_value = -VALUE_INFINITE;
-    const int effective_depth = (limits.depth == 0) ? MAX_PLY : limits.depth;
+    const int effective_depth = budget.max_depth == 0 ? MAX_PLY : budget.max_depth;
 
     for (int d = 1; d <= effective_depth; ) {
         if (stop.load(std::memory_order_relaxed) || g_stop_requested) break;
@@ -2454,8 +2452,8 @@ static void helper_thread_func(Position pos_copy, int thread_id) {
 }
 
 // Root search with iterative deepening
-Move search(Position& pos, Limits& lim) {
-    limits = lim;
+Move search(Position& pos, const SearchBudget& request) {
+    budget = request;
     pos.mark_root();
     root_side.store(int(pos.side_to_move()), std::memory_order_relaxed);
     // The stop flags are the caller's to clear (handle_go, bench) before the
@@ -2527,11 +2525,10 @@ Move search(Position& pos, Limits& lim) {
     // spawning first left the helpers reading the previous search's values for
     // the first instant of each search (same shape as the correction-history
     // bug: shared state written after the readers have already started).
-    note_clock(pos, limits);
-    if (limits.use_time_management()) {
-        Color us = pos.side_to_move();
-        int time_left = limits.time[int(us)];
-        int time_inc = limits.inc[int(us)];
+    note_clock(pos, budget);
+    if (budget.on_clock()) {
+        int time_left = budget.clock_ms;
+        int time_inc = budget.increment_ms;
 
         if (time_left < 0) time_left = 0;
         if (time_inc < 0) time_inc = 0;
@@ -2539,20 +2536,20 @@ Move search(Position& pos, Limits& lim) {
         int overhead = std::max(0, params.move_overhead_ms);
         int move_no  = pos.game_ply() / 2 + 1;
 
-        if (limits.movestogo > 0 && params.time_moves_to_go > 0) {
+        if (budget.moves_to_go > 0 && params.time_moves_to_go > 0) {
             // Moves to go: the clock above a small reserve (it refills after
             // this block; 0.1 s at the default overhead) spread over the
             // value-weighted horizon to the block's last move, plus 90% of
             // any increment. Before the last move of the block, one move takes
             // at most 2/3 of the excess.
-            int mtg     = std::max(1, limits.movestogo);
+            int mtg     = std::max(1, budget.moves_to_go);
             int excess  = std::max(0, time_left - overhead - std::max(100, 3 * overhead));
             int target  = int(excess / value_horizon(move_no, move_no + mtg - 1)) + time_inc * 9 / 10;
             int hard    = (mtg > 1 ? excess * 2 / 3 : excess) + time_inc * 9 / 10;
             ideal_time  = std::min(target * 116 / 100, hard);
             max_time    = std::min(hard, std::max(ideal_time * 2, time_inc + 50));
-        } else if (limits.movestogo > 0) {
-            int mtg = std::max(1, limits.movestogo);
+        } else if (budget.moves_to_go > 0) {
+            int mtg = std::max(1, budget.moves_to_go);
             ideal_time = time_left / mtg + time_inc - overhead;
             max_time = time_left / std::max(1, mtg / 2) + time_inc - overhead;
         } else if (time_inc == 0 && params.time_zero_inc > 0) {
@@ -2642,7 +2639,7 @@ Move search(Position& pos, Limits& lim) {
     // When depth=0, search until time runs out (tournament time control)
     // When depth>0, search to that specific depth
     // Always start from depth 1 for proper iterative deepening
-    int effective_depth = (limits.depth == 0) ? MAX_PLY : limits.depth;
+    int effective_depth = budget.max_depth == 0 ? MAX_PLY : budget.max_depth;
     int start_depth = 1;
     int last_aspiration_attempts = 1;  // root sharpness signal for time mgmt
     // Node-effort signals from the PREVIOUS depth iteration: the values are
@@ -2672,7 +2669,7 @@ Move search(Position& pos, Limits& lim) {
         // thinking time (elapsed, pondering included); the hard limit is on the
         // own clock (own, from the ponderhit). Without pondering both are the
         // same time.
-        if (limits.use_time_management() && root_depth > 1) {
+        if (budget.on_clock() && root_depth > 1) {
             const auto now = std::chrono::steady_clock::now();
             const int elapsed = ms_between(search_start, now);
             const int own = ms_between(clock_start, now);
@@ -2721,8 +2718,8 @@ Move search(Position& pos, Limits& lim) {
                 break;
             }
         }
-        if (limits.movetime && !ponder_mode.load(std::memory_order_relaxed)) {
-            if (ms_since(clock_start) >= (limits.movetime * 7) / 10) {
+        if (budget.move_time_ms && !ponder_mode.load(std::memory_order_relaxed)) {
+            if (ms_since(clock_start) >= (budget.move_time_ms * 7) / 10) {
                 break;
             }
         }
