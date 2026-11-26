@@ -16,8 +16,6 @@ namespace luminex {
 // ============================================================
 static_assert(feat::NPHASE == 632);
 
-EvalParams g_eval_params;
-
 // ============================================================
 // Handcrafted evaluation (HCE fallback — NNUE is used when a net is
 // loaded). The feature set follows Stash's evaluation (Morgan Houppin,
@@ -1678,31 +1676,6 @@ static void init_fitted_eval() {
             CandMG[sup][r] = FE_MG[PAWN_CAND + sup * 7 + r - 1];
             CandEG[sup][r] = FE_EG[PAWN_CAND + sup * 7 + r - 1];
         }
-
-    g_eval_params.outpost_knight_mg = FE_MG[OUTPOST_N];
-    g_eval_params.outpost_knight_eg = FE_EG[OUTPOST_N];
-    g_eval_params.outpost_bishop_mg = FE_MG[OUTPOST_B];
-    g_eval_params.outpost_bishop_eg = FE_EG[OUTPOST_B];
-    g_eval_params.far_knight_mg = -FE_MG[FAR_N];
-    g_eval_params.far_knight_eg = -FE_EG[FAR_N];
-    g_eval_params.far_bishop_mg = -FE_MG[FAR_B];
-    g_eval_params.far_bishop_eg = -FE_EG[FAR_B];
-    g_eval_params.rook_open_mg = FE_MG[ROOK_OPEN];
-    g_eval_params.rook_open_eg = FE_EG[ROOK_OPEN];
-    g_eval_params.rook_semi_open_mg = FE_MG[ROOK_SEMI];
-    g_eval_params.rook_semi_open_eg = FE_EG[ROOK_SEMI];
-    g_eval_params.rook_7th_mg = FE_MG[ROOK_7TH];
-    g_eval_params.rook_7th_eg = FE_EG[ROOK_7TH];
-    g_eval_params.pawn_shield_knight = FE_MG[SHIELD_R1];
-    g_eval_params.pawn_shield_center = FE_MG[SHIELD_R2];
-    g_eval_params.pawn_shield_rook = FE_MG[SHIELD_R3];
-    g_eval_params.open_file_penalty_mg = -FE_MG[OPEN_KFILE];
-    g_eval_params.open_file_penalty_eg = -FE_MG[OPEN_ADJ];
-    g_eval_params.pawn_storm = -FE_MG[STORM];
-    g_eval_params.hanging_pawn_mg = FE_MG[HANG_PAWN];
-    g_eval_params.hanging_pawn_eg = FE_EG[HANG_PAWN];
-    g_eval_params.bishop_pair_mg = FE_MG[BISHOP_PAIR];
-    g_eval_params.bishop_pair_eg = FE_EG[BISHOP_PAIR];
 }
 
 void init_evaluation() {
@@ -1747,13 +1720,6 @@ void sync_eval_params() {
     PieceValueEG[ROOK]   = g_params[ROOK_VALUE_EG];
     PieceValueMG[QUEEN]  = g_params[QUEEN_VALUE_MG];
     PieceValueEG[QUEEN]  = g_params[QUEEN_VALUE_EG];
-
-    g_eval_params.bishop_pair_mg    = g_params[BISHOP_PAIR_MG];
-    g_eval_params.bishop_pair_eg    = g_params[BISHOP_PAIR_EG];
-    g_eval_params.rook_open_mg      = g_params[ROOK_OPEN_FILE_MG];
-    g_eval_params.rook_open_eg      = g_params[ROOK_OPEN_FILE_EG];
-    g_eval_params.rook_semi_open_mg = g_params[ROOK_SEMI_OPEN_MG];
-    g_eval_params.rook_semi_open_eg = g_params[ROOK_SEMI_OPEN_EG];
 
     // Mobility lookup tables
     for (int i = 0; i < 9; i++) {
@@ -1861,7 +1827,7 @@ void init_tuner_params() {
         g_params[QUEEN_MOB_EG_0 + i] = -38 + 3 * i;
     }
 
-    // Key EvalParams
+    // Bishop pair, rooks on open and half-open files
     g_params[BISHOP_PAIR_MG]    = 40;
     g_params[BISHOP_PAIR_EG]    = 100;
     g_params[ROOK_OPEN_FILE_MG] = 25;

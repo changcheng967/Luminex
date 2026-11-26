@@ -345,6 +345,18 @@ jobs:
       run: |
         echo "bench: linux $LINUX, windows $WINDOWS, macos-arm64 $MACOS, makefile (OpenBench's build) $MAKEFILE"
         [ -n "$LINUX" ] && [ "$LINUX" = "$WINDOWS" ] && [ "$LINUX" = "$MACOS" ] && [ "$LINUX" = "$MAKEFILE" ]
+    # OpenBench takes a test's bench from the commit's "Bench: N" line, and
+    # its workers refuse a test whose builds count another number: the line
+    # must be the count above (ci.sh bench-line; a commit without one warns)
+    - uses: actions/checkout@v5
+      with:
+        sparse-checkout: .github/scripts
+    - name: Check the commit's Bench line
+      env:
+        GH_TOKEN: ${{ github.token }}
+        SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        BENCH: ${{ needs.linux.outputs.bench }}
+      run: bash .github/scripts/ci.sh bench-line "$SHA" "$BENCH"
 
   # The rolling development build, as Stockfish publishes one: a push to main
   # that passes every job above becomes the pre-release
