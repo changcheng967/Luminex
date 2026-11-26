@@ -1354,6 +1354,56 @@ static void crash_trace(int sig) {
 
 } // namespace luminex
 
+// The bench's positions: the engine's own probe set (openings, middlegames,
+// endgames from its games), each searched to a fixed depth by `bench`
+static const char* const BENCH_FENS[] = {
+    "r1b2rk1/2p1qpp1/2pp1n1p/p7/Pb2PB2/2NB4/1PP2PPP/R2Q1RK1 w - - 0 13",
+    "r1bqkb1r/p1p3pp/2n2p2/2p5/3pP3/BP1P1NP1/P4P1P/RN1QK2R w KQkq - 3 11",
+    "r2qkbr1/1p1n1p2/4pp2/pPp2b1p/N1B5/P3PN2/3P1PPP/R2Q1RK1 w q - 4 13",
+    "2kr1b1r/pppqp1pp/2n2p1n/3p1b2/3P1N2/1PN2PP1/P1P1P1BP/R1BQ1RK1 w - - 0 10",
+    "r1b4r/1pp1k1pp/3b1n2/pP3p2/PnPNp3/4P3/1B1NBPPP/R3K2R w KQ - 1 15",
+    "rnb1kbnr/ppp3p1/8/4ppNp/4P3/2P2P2/PP4PP/RNB1KB1R b KQ - 0 8",
+    "2r1k2r/p1qp1p2/4p2p/1P2P1p1/Pb5P/2p1BR2/2Q2PP1/3R2K1 w k - 1 27",
+    "r1b3k1/3n1p1p/2p1p1p1/P2pP3/3P4/1N4PP/1r2B1P1/1R2R1K1 b - - 3 28",
+    "2r5/5k2/4p2p/p2n2p1/1pBP1b2/1P2BP1P/P4P2/4R1K1 b - - 3 28",
+    "r2qr1k1/3n2bp/4b1p1/2Bn1p2/P1NPp2P/2P3P1/P1Q1BPN1/R3K2R w KQ - 1 20",
+    "4r1rk/1p3p2/p1p3pp/P2p4/1P1PnP1P/3BP2q/4QP1R/6RK b - - 2 33",
+    "2r2rk1/pR3p1p/4b1p1/8/3q4/3B2P1/PP2QP1P/R5K1 b - - 2 24",
+    "r4rk1/pp3pp1/1bp4p/P2pPn2/8/1NP5/1P3PPP/R1B1R1K1 b - - 0 20",
+    "2kr4/2p2pQ1/pp2q3/8/3n4/P1N5/1B3P2/K6R w - - 4 32",
+    "7k/6p1/3b1r1p/8/6K1/3Q2P1/5r1P/8 w - - 22 63",
+    "2r1qk2/4b1pQ/p3pp1p/1pp4P/2P1P1P1/1PB5/P4P2/3R2K1 b - - 0 26",
+    "8/8/8/5R2/5b1p/5k1P/8/5K2 b - - 0 133",
+    "7R/6p1/1p3k2/1PbKp3/7P/3B4/5P1P/r7 b - - 9 45",
+    "8/5p1p/2k5/Pp1p2B1/3P2b1/1KP3P1/8/8 w - - 82 73",
+    "2k5/2p5/4p2p/3rP3/8/7R/KPP5/8 b - - 3 43",
+    "r2n1rk1/ppq1ppbp/6p1/1PP2n2/Q1Pp3P/5B2/PB1NPP2/R3K2R w KQ - 1 15",
+    "r2qkb1r/1pp1pppp/p1n2n2/3p1b2/P2P4/2P2N2/1P2PPPP/RNBQKB1R w KQkq - 1 6",
+    "r3k2r/pp1nqp2/2pbpnpp/3p4/2PP4/N2QP3/PP1N1PPP/R1B2RK1 w kq - 4 12",
+    "r3k1nr/pp1n1pp1/1qp1b3/2b1p2p/2B5/P3PN2/1PQN1PPP/R1B1K2R b KQkq - 3 10",
+    "rnbqkb1r/p4ppp/2p1pn2/1p1p4/2P5/1P3NP1/P2PPPBP/RNBQK2R w KQkq - 0 6",
+    "3r1r2/2qbb2k/1pp1p2p/p1n1Ppp1/2PN1P2/4QBPP/P3P3/B1R2RK1 b - - 0 24",
+    "rnb1k2r/pp2bpp1/2pp1nqp/4p3/4P3/1BNP1Q2/PPP1NPPP/R1B1K2R b KQkq - 4 9",
+    "r1bqkb1r/p3pppp/n1p2n2/3p4/P7/2P2N2/1P1NPPPP/R1BQKB1R w KQkq - 0 8",
+    "8/2b1k3/p1p2p2/n1Pp1p1p/P2P3P/2RNrNP1/r4PK1/1R6 w - - 4 45",
+    "1k1r3r/1p3pp1/p2n4/3pN2p/P2PpP2/1Pq1P2P/6P1/R2Q1RK1 w - - 1 21",
+    "r4rk1/1ppn2bp/p3q1p1/P3pp2/4P3/2P1B3/1PQN1PPP/R4RK1 w - - 0 17",
+    "8/pp4k1/2p2np1/q2p3p/3P1QbP/2P2NP1/PP3P2/6K1 w - - 0 37",
+    "4r1k1/p5p1/7p/1bP1Bp2/5P2/8/6PP/4R1K1 b - - 0 39",
+    "8/1p3k2/4p1p1/3p4/p2B2PP/P4PK1/1P6/3b4 w - - 18 62",
+    "4k2r/2p3pp/p1R5/4P3/4P3/3r3P/P4K2/7R w - - 1 27",
+    "r2r1k2/pp6/4p1Rp/8/3P4/P7/6PP/R5K1 b - - 1 28",
+    "1k3r2/1p6/p1pq1p2/P3n3/3P4/1P6/2P5/1K1R2QB b - - 2 36",
+    "3qkb1r/1p1bnpp1/4p3/pP2P2P/2Bp1BQ1/P5P1/4NP2/3R2K1 b k - 0 34",
+    "8/4b3/4P3/2p1Q1p1/K7/P2R4/5k2/8 w - - 7 66",
+    "8/7k/1p6/p1n3Q1/P6P/8/KPP5/5q2 b - - 1 46",
+    "1k6/R7/2K5/2N5/1P6/2r5/7b/8 w - - 4 71",
+    "2r5/1b6/4k2p/8/3P2PP/R1p1K3/2P5/8 w - - 1 50",
+    "8/5K1k/2R5/8/8/4r3/6R1/8 b - - 16 72",
+    "4r3/8/8/8/2K3k1/6b1/7p/8 b - - 1 94",
+};
+static constexpr int BENCH_DEPTH = 10;
+
 int main(int argc, char* argv[]) {
     using namespace luminex;
 #if defined(LUMINEX_STACKTRACE)
@@ -1433,10 +1483,12 @@ int main(int argc, char* argv[]) {
 
         // OpenBench bench contract, two lines, printed LAST so the client's
         // reverse-order parser picks them over any search info lines:
-        //   "Nodes searched" = the PERFT total — integer-only, identical on
-        //     every ISA, which is what makes it the cross-worker determinism
-        //     check (a search-bench node count would differ between
-        //     AVX2/AVX-512/ARM builds and get workers blacklisted).
+        //   "Nodes searched" = the total of BENCH_FENS searched to BENCH_DEPTH
+        //     (or `bench <depth>`), each from a cleared hash, history and
+        //     correction state, one thread. The bench never loads a network:
+        //     the HCE is integer-only, so every ISA, OS and build counts the
+        //     same nodes (CI compares its four builds), and any change to what
+        //     the search does changes the count: it fingerprints the search.
         //   "NPS" = measured SEARCH speed from a short depth-limited probe.
         //     Bench runs net-less (HCE eval), so this is a speed probe, not a
         //     strength measurement — the client reports it as the machine's
@@ -1455,10 +1507,26 @@ int main(int argc, char* argv[]) {
             auto t0 = high_resolution_clock::now();
             search(probe, lim);
             auto sms = duration_cast<milliseconds>(high_resolution_clock::now() - t0).count();
-            const uint64_t total_nodes = p1 + p2 + p3 + p4;
-            std::cout << "Nodes searched " << total_nodes << std::endl;
+            const uint64_t probe_nps = sms > 0 ? nodes.load() * 1000ULL / (uint64_t)sms : 0;
+
+            const int bench_depth = argc > 2 ? std::max(1, std::atoi(argv[2])) : BENCH_DEPTH;
+            uint64_t bench_nodes = 0;
+            for (const char* fen : BENCH_FENS) {
+                TT.clear();
+                TT.new_search();
+                clear_correction_history();
+                clear_search_history();
+                Position bp;
+                bp.set(fen);
+                Limits bl;
+                bl.depth = bench_depth;
+                stop = false;
+                search(bp, bl);
+                bench_nodes += nodes.load();
+            }
+            std::cout << "Nodes searched " << bench_nodes << std::endl;
             if (sms > 0)
-                std::cout << "NPS " << (nodes.load() * 1000ULL / (uint64_t)sms) << std::endl;
+                std::cout << "NPS " << probe_nps << std::endl;
         }
         return 0;
     }
