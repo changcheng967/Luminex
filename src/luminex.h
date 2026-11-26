@@ -2001,31 +2001,50 @@ struct SPSAParams {
 
     // Under measurement (0 = off): each bit switches one search heuristic off
     // (the self-knockout campaign; the bits are listed at KoMask's uses)
-    int ko_mask = 0;      // derived: ko_mask_opt | the Ko<b> options (refresh_ko)
+    std::uint64_t ko_mask = 0;  // derived: ko_mask_opt | the Ko<b> options (refresh_ko)
     int ko_mask_opt = 0;  // the KoMask option
     // Ko<b> > 0 switches bit b off (the knockout factorial: OpenBench's SPSA flips them all at once)
     int ko0 = 0, ko1 = 0, ko2 = 0, ko3 = 0, ko4 = 0, ko5 = 0, ko6 = 0, ko7 = 0, ko8 = 0, ko9 = 0, ko10 = 0, ko11 = 0, ko12 = 0, ko13 = 0, ko14 = 0, ko15 = 0, ko16 = 0, ko17 = 0, ko18 = 0;
+    // bits 19-35: alternative shapes (round 2), listed at their uses
+    int ko19 = 0, ko20 = 0, ko21 = 0, ko22 = 0, ko23 = 0, ko24 = 0, ko25 = 0, ko26 = 0, ko27 = 0, ko28 = 0, ko29 = 0, ko30 = 0, ko31 = 0, ko32 = 0, ko33 = 0, ko34 = 0, ko35 = 0;
     void refresh_ko() {
-        ko_mask = ko_mask_opt
-            | ((ko0 > 0) << 0)
-            | ((ko1 > 0) << 1)
-            | ((ko2 > 0) << 2)
-            | ((ko3 > 0) << 3)
-            | ((ko4 > 0) << 4)
-            | ((ko5 > 0) << 5)
-            | ((ko6 > 0) << 6)
-            | ((ko7 > 0) << 7)
-            | ((ko8 > 0) << 8)
-            | ((ko9 > 0) << 9)
-            | ((ko10 > 0) << 10)
-            | ((ko11 > 0) << 11)
-            | ((ko12 > 0) << 12)
-            | ((ko13 > 0) << 13)
-            | ((ko14 > 0) << 14)
-            | ((ko15 > 0) << 15)
-            | ((ko16 > 0) << 16)
-            | ((ko17 > 0) << 17)
-            | ((ko18 > 0) << 18);
+        ko_mask = std::uint64_t(ko_mask_opt)
+            | (std::uint64_t(ko0 > 0) << 0)
+            | (std::uint64_t(ko1 > 0) << 1)
+            | (std::uint64_t(ko2 > 0) << 2)
+            | (std::uint64_t(ko3 > 0) << 3)
+            | (std::uint64_t(ko4 > 0) << 4)
+            | (std::uint64_t(ko5 > 0) << 5)
+            | (std::uint64_t(ko6 > 0) << 6)
+            | (std::uint64_t(ko7 > 0) << 7)
+            | (std::uint64_t(ko8 > 0) << 8)
+            | (std::uint64_t(ko9 > 0) << 9)
+            | (std::uint64_t(ko10 > 0) << 10)
+            | (std::uint64_t(ko11 > 0) << 11)
+            | (std::uint64_t(ko12 > 0) << 12)
+            | (std::uint64_t(ko13 > 0) << 13)
+            | (std::uint64_t(ko14 > 0) << 14)
+            | (std::uint64_t(ko15 > 0) << 15)
+            | (std::uint64_t(ko16 > 0) << 16)
+            | (std::uint64_t(ko17 > 0) << 17)
+            | (std::uint64_t(ko18 > 0) << 18)
+            | (std::uint64_t(ko19 > 0) << 19)
+            | (std::uint64_t(ko20 > 0) << 20)
+            | (std::uint64_t(ko21 > 0) << 21)
+            | (std::uint64_t(ko22 > 0) << 22)
+            | (std::uint64_t(ko23 > 0) << 23)
+            | (std::uint64_t(ko24 > 0) << 24)
+            | (std::uint64_t(ko25 > 0) << 25)
+            | (std::uint64_t(ko26 > 0) << 26)
+            | (std::uint64_t(ko27 > 0) << 27)
+            | (std::uint64_t(ko28 > 0) << 28)
+            | (std::uint64_t(ko29 > 0) << 29)
+            | (std::uint64_t(ko30 > 0) << 30)
+            | (std::uint64_t(ko31 > 0) << 31)
+            | (std::uint64_t(ko32 > 0) << 32)
+            | (std::uint64_t(ko33 > 0) << 33)
+            | (std::uint64_t(ko34 > 0) << 34)
+            | (std::uint64_t(ko35 > 0) << 35);
     }
 
     // Load from file (COUNT ints, one per line, in field order). Returns true if loaded.
@@ -2119,6 +2138,23 @@ inline constexpr SPSAOption SPSA_OPTIONS[] = {
     {"Ko16",            &SPSAParams::ko16,                 -10000, 10000},
     {"Ko17",            &SPSAParams::ko17,                 -10000, 10000},
     {"Ko18",            &SPSAParams::ko18,                 -10000, 10000},
+    {"Ko19",             &SPSAParams::ko19,                 -10000, 10000},
+    {"Ko20",             &SPSAParams::ko20,                 -10000, 10000},
+    {"Ko21",             &SPSAParams::ko21,                 -10000, 10000},
+    {"Ko22",             &SPSAParams::ko22,                 -10000, 10000},
+    {"Ko23",             &SPSAParams::ko23,                 -10000, 10000},
+    {"Ko24",             &SPSAParams::ko24,                 -10000, 10000},
+    {"Ko25",             &SPSAParams::ko25,                 -10000, 10000},
+    {"Ko26",             &SPSAParams::ko26,                 -10000, 10000},
+    {"Ko27",             &SPSAParams::ko27,                 -10000, 10000},
+    {"Ko28",             &SPSAParams::ko28,                 -10000, 10000},
+    {"Ko29",             &SPSAParams::ko29,                 -10000, 10000},
+    {"Ko30",             &SPSAParams::ko30,                 -10000, 10000},
+    {"Ko31",             &SPSAParams::ko31,                 -10000, 10000},
+    {"Ko32",             &SPSAParams::ko32,                 -10000, 10000},
+    {"Ko33",             &SPSAParams::ko33,                 -10000, 10000},
+    {"Ko34",             &SPSAParams::ko34,                 -10000, 10000},
+    {"Ko35",             &SPSAParams::ko35,                 -10000, 10000},
 };
 
 inline const SPSAOption* find_spsa_option(const std::string& name) {

@@ -774,6 +774,16 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
             continue;
         }
 
+        // Ko19 QsFut: a capture that cannot lift the eval to alpha even winning
+        // its victim outright is skipped
+        if (!in_check && (SPSAParams::get().ko_mask & (1ull << 19)) && it->move.is_capture()
+            && !it->move.is_promotion()) {
+            static constexpr int qv[] = {100, 320, 330, 500, 900, 0, 0};
+            const PieceType victim = it->move.is_en_passant() ? PAWN : pos.piece_type_on(it->move.to());
+            if (eval + 300 + qv[victim] <= alpha)
+                continue;
+        }
+
         // Skip losing captures with negative SEE (but keep queen promotions).
         // Threshold goes negative as depth drops: deeper in qsearch tolerates
         // increasingly losing captures. Exception: in check, try all evasions.
@@ -1058,6 +1068,16 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
         }
     }
 
+    // The static eval as computed, for the correction history (Ko29 below may
+    // replace `eval` with the TT value)
+    const Value corr_eval = eval;
+    // Ko29 EvalTtAdjust: the TT value as the better estimate for pruning when
+    // its bound says the true score lies beyond the static eval
+    if ((SPSAParams::get().ko_mask & (1ull << 29)) && found && !pos.is_check() && !known_eg
+        && std::abs(tt_value) < VALUE_KNOWN_WIN
+        && (tt_bound_probed & (tt_value > eval ? BOUND_LOWER : BOUND_UPPER)))
+        eval = tt_value;
+
     // Internal Iterative Reduction (IIR): reduce depth by 1 when no TT move available
     // Broader threshold from Stash (depth >= 3 instead of 4)
     if (!pv_node && tt_move == MOVE_NONE && depth >= 3) {
@@ -1077,9 +1097,12 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
     {
         int rev_margin = sp.rev_fut_coeff * depth + ((ss->improving || opponent_worsening) ? 0 : sp.rfp_not_improving);
         rev_margin += std::min(eval_uncertainty / 2, 80);  // Up to 80cp extra margin when uncertain
-        if (!pv_node && !pos.is_check() && depth <= 8 && eval - rev_margin >= beta) {
+        // Ko28 RfpDeep: up to depth 12; Ko27 RfpTtCond: only without a TT move or
+        // with a capture one; Ko35 RfpBlend: return (661 beta + 363 eval) / 1024
+        if (!pv_node && !pos.is_check() && depth <= ((sp.ko_mask & (1ull << 28)) ? 12 : 8) && eval - rev_margin >= beta
+            && !((sp.ko_mask & (1ull << 27)) && tt_move != MOVE_NONE && !tt_move.is_capture())) {
             g_stats.rev_futility_prunes++;
-            return eval;
+            return (sp.ko_mask & (1ull << 35)) ? Value((661 * int(beta) + 363 * int(eval)) / 1024) : eval;
         }
     }
 
@@ -1107,7 +1130,7 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
     int piece_count = popcount(pos.pieces()) - popcount(pos.pieces(PAWN)) - 2;
     const Color stm = pos.side_to_move();
     int own_pieces = popcount(pos.pieces(stm)) - popcount(pos.pieces(stm, PAWN)) - 1;
-    bool null_move_ok = !pv_node && !pos.is_check() && depth >= 2 && own_pieces >= 1 &&
+    bool null_move_ok = !pv_node && (!(sp.ko_mask & (1ull << 23)) || cut_node) && !pos.is_check() && depth >= 2 && own_pieces >= 1 &&   // Ko23 NmpCutOnly
                           eval >= beta + (depth <= sp.nmp_shallow_depth ? sp.nmp_shallow_margin : 0) &&
                           !ss->excluded_move &&
                           (ss - 1)->current_move != MOVE_NULL &&
@@ -1157,7 +1180,10 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
     // ProbCut - if a capture is obviously good enough, verify with shallow search
     // Skipped in excluded nodes: pruning the singular verification would
     // shortcut the very measurement the verification exists to make.
-    if (!pv_node && depth >= 5 && !pos.is_check() && ss->ply >= 1 && !ss->excluded_move && !(SPSAParams::get().ko_mask & 4)) {   // KoMask bit 2
+    if (!pv_node && depth >= 5 && !pos.is_check() && ss->ply >= 1 && !ss->excluded_move && !(SPSAParams::get().ko_mask & 4)   // KoMask bit 2
+        // Ko31 PcTtSkip: not when an upper bound from depth - 3 or deeper lies below ProbCut's beta
+        && !((sp.ko_mask & (1ull << 31)) && found && tt_depth >= depth - 3 && (tt_bound_probed & BOUND_UPPER)
+             && std::abs(tt_value) < VALUE_KNOWN_WIN && tt_value < std::min(beta + sp.probcut_margin, VALUE_INFINITE - 200))) {
         Value rbeta = std::min(beta + sp.probcut_margin, VALUE_INFINITE - 200);
         int rdepth = depth - 3;
 
@@ -1166,6 +1192,16 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
 
         ExtMove probcut_moves[MAX_MOVES];
         ExtMove* probcut_end = generate<GEN_CAPTURE>(pos, probcut_moves);
+        // Ko34 PcSort: captures by victim, then attacker
+        if ((sp.ko_mask & (1ull << 34))) {
+            static constexpr int pcv[] = {100, 320, 330, 500, 900, 20000, 0};
+            for (ExtMove* it = probcut_moves; it != probcut_end; ++it) {
+                const PieceType victim = it->move.is_en_passant() ? PAWN : pos.piece_type_on(it->move.to());
+                it->value = pcv[victim] * 10 - pcv[pos.piece_type_on(it->move.from())];
+            }
+            std::stable_sort(probcut_moves, probcut_end,
+                             [](const ExtMove& a, const ExtMove& b) { return a.value > b.value; });
+        }
 
         for (ExtMove* it = probcut_moves; it != probcut_end; ++it) {
             if (stop.load(std::memory_order_relaxed)) break;
@@ -1185,14 +1221,22 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
             ss->reduction = 0;
             if (!pos.do_move(m)) continue;
 
+            // Ko32 PcQsVerify: the capture must hold in qsearch first
+            Value value = (sp.ko_mask & (1ull << 32)) ? -qsearch(pos, ss + 1, -rbeta, -rbeta + 1, 0) : rbeta;
             // Shallow search with reduced beta
-            Value value = -search_worker(pos, ss + 1, -rbeta, -rbeta + 1, rdepth, !cut_node);
+            if (value >= rbeta)
+                value = -search_worker(pos, ss + 1, -rbeta, -rbeta + 1, rdepth, !cut_node);
 
             pos.undo_move(m);
 
             if (value >= rbeta) {
                 // Shallow search confirms this move is very good - prune
                 g_stats.probcut_prunes++;
+                // Ko33 PcTtStore: the cut as a lower bound at its depth + 1
+                if ((sp.ko_mask & (1ull << 33)) && !stop.load(std::memory_order_relaxed) && std::abs(value) < VALUE_KNOWN_WIN
+                    && TT.should_store(tte, found, rdepth + 1))
+                    tte->save(pos.key(), value_to_tt(value, ss->ply), ttPv, BOUND_LOWER, rdepth + 1, m,
+                              tt_store_eval, TT.generation());
                 return value;
             }
         }
@@ -1221,6 +1265,13 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
     Piece capturesSearched_piece[64];
     PieceType capturesSearched_cap[64];
     int capturesSearched_count = 0;
+
+    // Ko30 SmallPc: a TT lower bound far above beta, from nearly this depth,
+    // returns beta + the margin without a search
+    if ((sp.ko_mask & (1ull << 30)) && !pv_node && found && !ss->excluded_move && (tt_bound_probed & BOUND_LOWER)
+        && tt_depth >= depth - 4 && tt_value >= beta + 382
+        && std::abs(beta) < VALUE_KNOWN_WIN && std::abs(tt_value) < VALUE_KNOWN_WIN)
+        return Value(beta + 382);
 
     // Internal Iterative Deepening: if no TT move at PV nodes, search at reduced depth
     // to populate TT with a good move for ordering
@@ -1262,6 +1313,15 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
             // double extension for strongly singular moves
             if (singular_value < sBeta - depth * sp.dext_margin / 16 && !(sp.ko_mask & 16)) {   // KoMask bit 4
                 singular_extension = 2;
+                // Ko20 SeTriple: a triple extension past depth * 48 / 16
+                if ((sp.ko_mask & (1ull << 20)) && singular_value < sBeta - depth * 48 / 16)
+                    singular_extension = 3;
+            }
+            // Ko21 SeDepthInc: the node's other moves a ply deeper; the TT move's
+            // own total stays its extension
+            if ((sp.ko_mask & (1ull << 21))) {
+                depth++;
+                singular_extension--;
             }
         } else if (singular_value >= beta) {
             // Multi-cut: other moves are also good enough to beat beta
@@ -1270,9 +1330,9 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
         } else if (tt_value >= beta) {
             // TT move is NOT singular but expected to beat beta
             // Negative extension: reduce depth for non-singular expected cutoff
-            singular_extension = (sp.ko_mask & 32) ? 0 : -2;   // KoMask bit 5
+            singular_extension = (sp.ko_mask & 32) ? 0 : ((sp.ko_mask & (1ull << 22)) ? -3 : -2);   // KoMask bit 5; Ko22 NegExt3
         } else if (cut_node) {
-            singular_extension = (sp.ko_mask & 32) ? 0 : -1;
+            singular_extension = (sp.ko_mask & 32) ? 0 : ((sp.ko_mask & (1ull << 22)) ? -3 : -1);
         }
     }
 
@@ -1539,10 +1599,12 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
                 const int r1024 = reductions_quiet[std::min(std::max(depth - 1, 1), 63)]
                                 * reductions_quiet[std::min(std::max(moves_played, 1), 63)]
                                 + LMR_DENOM / 2 + (cut_node ? sp.lmr_cut_node : 0);
-                reduction = std::max(0, r1024 / LMR_DENOM - 1);
+                reduction = std::max((sp.ko_mask & (1ull << 24)) ? 1 : 0, r1024 / LMR_DENOM - 1);   // Ko24 CapFloor1
             } else {
                 reduction = compute_reduction(m, moves_played, gives_chk);
             }
+            // Ko25 AllRedPlus: a ply more for a quiet move from the third at an expected-ALL node
+            if ((sp.ko_mask & (1ull << 25)) && !pv_node && !cut_node && is_quiet && moves_played >= 2) reduction += 1;
             // Reduce less in PV nodes
             if (pv_node) reduction = std::max(1, reduction - 1);
             new_depth = depth - 1 - reduction;
@@ -1574,7 +1636,8 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
         }
         // Depth-explosion guard: a line of checks + singular doubles could
         // otherwise extend faster than depth shrinks
-        if (ext_count > 2) ext_count = 2;
+        const int ext_cap = (sp.ko_mask & (1ull << 20)) ? 3 : 2;   // Ko20 SeTriple
+        if (ext_count > ext_cap) ext_count = ext_cap;
         // No extension once the path is ext_path_cap/4 of the iteration's depth
         if (sp.ext_path_cap && ext_count > 0 && 4 * ss->ply >= sp.ext_path_cap * iter_depth) ext_count = 0;
         new_depth += ext_count;
@@ -1599,7 +1662,8 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
         Value value;
         if (do_lmr && new_depth > 0) {
             // LMR: reduced zero-window search
-            value = -search_worker(pos, ss + 1, -alpha - 1, -alpha, new_depth, !cut_node);
+            // Ko26 LateChildCut: a later move's zero-window child is an expected CUT node
+            value = -search_worker(pos, ss + 1, -alpha - 1, -alpha, new_depth, (sp.ko_mask & (1ull << 26)) || !cut_node);
             if (stop.load(std::memory_order_relaxed)) {
                 pos.undo_move(m);
                 return false;
@@ -1633,8 +1697,8 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
                 }
             }
         } else if (moves_played > 0) {
-            // PVS: zero-window scout search for non-first moves
-            value = -search_worker(pos, ss + 1, -alpha - 1, -alpha, full_depth, !cut_node);
+            // PVS: zero-window scout search for non-first moves (Ko26 LateChildCut as above)
+            value = -search_worker(pos, ss + 1, -alpha - 1, -alpha, full_depth, (sp.ko_mask & (1ull << 26)) || !cut_node);
             if (stop.load(std::memory_order_relaxed)) {
                 pos.undo_move(m);
                 return false;
@@ -1792,10 +1856,10 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
                 // static eval, that says the eval was too low here, so cut nodes
                 // teach the correction history too, not only fail-low ends.
                 if (!stop.load(std::memory_order_relaxed) && !ss->excluded_move && !pv_node
-                    && !pos.is_check() && !m.is_capture() && value > eval && !known_eg
-                    && std::abs(value) < VALUE_KNOWN_WIN && std::abs(eval) < VALUE_KNOWN_WIN
+                    && !pos.is_check() && !m.is_capture() && value > corr_eval && !known_eg
+                    && std::abs(value) < VALUE_KNOWN_WIN && std::abs(corr_eval) < VALUE_KNOWN_WIN
                     && depth >= 2) {
-                    update_all_corrections(pos, depth, value - eval);
+                    update_all_corrections(pos, depth, value - corr_eval);
                 }
                 if (moves_played_before == 0) g_stats.first_move_cutoffs++;
                 return true;  // beta cutoff
@@ -2101,10 +2165,10 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
         // proves the eval too high when it lies below it, and proves nothing
         // when it lies above (the true score may be anywhere beneath it).
         bool best_is_capture = best_move_found.is_capture();
-        if (!pv_node && !pos.is_check() && !best_is_capture && best_value < eval && !known_eg
-            && abs(best_value) < VALUE_KNOWN_WIN && abs(eval) < VALUE_KNOWN_WIN
+        if (!pv_node && !pos.is_check() && !best_is_capture && best_value < corr_eval && !known_eg
+            && abs(best_value) < VALUE_KNOWN_WIN && abs(corr_eval) < VALUE_KNOWN_WIN
             && moves_played > 0 && depth >= 2) {
-            update_all_corrections(pos, depth, best_value - eval);
+            update_all_corrections(pos, depth, best_value - corr_eval);
         }
     }
 
