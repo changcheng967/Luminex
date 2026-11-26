@@ -76,6 +76,7 @@ jobs:
     runs-on: ubuntu-22.04
     outputs:
       digest: ${{ steps.simd.outputs.digest }}
+      bench: ${{ steps.bench.outputs.bench }}
     steps:
     - uses: actions/checkout@v5
     - name: Install dependencies
@@ -91,7 +92,12 @@ jobs:
     - name: Check instruction set
       run: bash .github/scripts/ci.sh isa build/luminex universal
     - name: Run Bench
-      run: ./build/luminex bench
+      id: bench
+      shell: bash
+      run: |
+        out=$(./build/luminex bench) || { printf '%s\n' "$out"; exit 1; }
+        printf '%s\n' "$out" | grep -v '^info ' | tail -n 9
+        echo "bench=$(printf '%s\n' "$out" | sed -n 's/^Nodes searched //p' | tail -n 1)" >> "$GITHUB_OUTPUT"
     - name: Check the built-in network
       run: bash .github/scripts/ci.sh net build/luminex
     - name: Check the engine name
@@ -138,6 +144,7 @@ jobs:
     runs-on: windows-2022  # pin: windows-latest image no longer exposes a VS instance to cmake
     outputs:
       digest: ${{ steps.simd.outputs.digest }}
+      bench: ${{ steps.bench.outputs.bench }}
     # cmd, so CI runs these exact command lines: PowerShell, the default,
     # splits an unquoted argument such as -DLUMINEX_EMBED_NET=net/<file>.nnue
     # at the dot.
@@ -168,7 +175,12 @@ jobs:
       shell: bash
       run: bash .github/scripts/ci.sh isa build/Release/luminex.exe universal
     - name: Run Bench
-      run: build\Release\luminex.exe bench
+      id: bench
+      shell: bash
+      run: |
+        out=$(build/Release/luminex.exe bench) || { printf '%s\n' "$out"; exit 1; }
+        printf '%s\n' "$out" | grep -v '^info ' | tail -n 9
+        echo "bench=$(printf '%s\n' "$out" | sed -n 's/^Nodes searched //p' | tail -n 1)" >> "$GITHUB_OUTPUT"
     - name: Check the built-in network
       shell: bash
       run: bash .github/scripts/ci.sh net build/Release/luminex.exe
@@ -206,6 +218,8 @@ jobs:
   macos-arm64:
     needs: meta
     runs-on: macos-latest
+    outputs:
+      bench: ${{ steps.bench.outputs.bench }}
     steps:
     - uses: actions/checkout@v5
     # Homebrew's LLVM 23 (clang, and lld for its LTO) in place of Apple clang,
@@ -224,7 +238,12 @@ jobs:
     - name: Check instruction set
       run: bash .github/scripts/ci.sh isa build/luminex dotprod
     - name: Run Bench
-      run: ./build/luminex bench
+      id: bench
+      shell: bash
+      run: |
+        out=$(./build/luminex bench) || { printf '%s\n' "$out"; exit 1; }
+        printf '%s\n' "$out" | grep -v '^info ' | tail -n 9
+        echo "bench=$(printf '%s\n' "$out" | sed -n 's/^Nodes searched //p' | tail -n 1)" >> "$GITHUB_OUTPUT"
     - name: Check the built-in network
       run: bash .github/scripts/ci.sh net build/luminex
     - name: Check the engine name
@@ -255,6 +274,7 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       digest: ${{ steps.simd.outputs.digest }}
+      bench: ${{ steps.bench.outputs.bench }}
     steps:
     - uses: actions/checkout@v5
     - name: Install clang 23
@@ -264,7 +284,12 @@ jobs:
     - name: Check the compiler is clang 23
       run: bash .github/scripts/ci.sh clang check build-openbench
     - name: Run Bench
-      run: ./luminex bench
+      id: bench
+      shell: bash
+      run: |
+        out=$(./luminex bench) || { printf '%s\n' "$out"; exit 1; }
+        printf '%s\n' "$out" | grep -v '^info ' | tail -n 9
+        echo "bench=$(printf '%s\n' "$out" | sed -n 's/^Nodes searched //p' | tail -n 1)" >> "$GITHUB_OUTPUT"
     - name: Check the default network name
       run: bash .github/scripts/ci.sh net --no-embed ./luminex
     - name: Fetch the network
@@ -297,7 +322,7 @@ jobs:
   # The universal binaries and OpenBench's build compute the same evaluations:
   # one digest, whatever compiler, OS and instruction-set level.
   simd-digests:
-    needs: [linux, windows, makefile]
+    needs: [linux, windows, macos-arm64, makefile]
     runs-on: ubuntu-latest
     steps:
     - name: Compare the nnuecheck digests
@@ -308,6 +333,18 @@ jobs:
       run: |
         echo "linux $LINUX, windows $WINDOWS, makefile (OpenBench's build) $MAKEFILE"
         [ -n "$LINUX" ] && [ "$LINUX" = "$WINDOWS" ] && [ "$LINUX" = "$MAKEFILE" ]
+    # The bench fingerprints the search (its node count changes with any search
+    # change), and OpenBench's workers must all count the same: one number on
+    # every OS, compiler and CPU
+    - name: Compare the bench node counts
+      env:
+        LINUX: ${{ needs.linux.outputs.bench }}
+        WINDOWS: ${{ needs.windows.outputs.bench }}
+        MACOS: ${{ needs.macos-arm64.outputs.bench }}
+        MAKEFILE: ${{ needs.makefile.outputs.bench }}
+      run: |
+        echo "bench: linux $LINUX, windows $WINDOWS, macos-arm64 $MACOS, makefile (OpenBench's build) $MAKEFILE"
+        [ -n "$LINUX" ] && [ "$LINUX" = "$WINDOWS" ] && [ "$LINUX" = "$MACOS" ] && [ "$LINUX" = "$MAKEFILE" ]
 
   # The rolling development build, as Stockfish publishes one: a push to main
   # that passes every job above becomes the pre-release
