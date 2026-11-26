@@ -1003,6 +1003,12 @@ struct TTEntry {
 };
 
 static_assert(sizeof(TTEntry) == 12, "TTEntry must stay 12 bytes: five to a cache line");
+// The 16-bit value and eval fields must hold every score the search stores:
+// the in-check marker (VALUE_INFINITE) and a mate score after value_to_tt
+// (VALUE_MATE + MAX_PLY). Raising either past 32,767 must fail here, not
+// wrap a stored score at run time.
+static_assert(VALUE_INFINITE <= INT16_MAX && VALUE_MATE + MAX_PLY <= INT16_MAX,
+              "TTEntry's 16-bit scores would wrap");
 
 constexpr int TT_WAYS = 5;
 
