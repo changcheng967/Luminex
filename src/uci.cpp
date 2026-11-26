@@ -1354,6 +1354,128 @@ static void crash_trace(int sig) {
 
 } // namespace luminex
 
+// genfens N seed S book <path|None> [plies K] [dfrc P] [maxscore M] [nodes X]
+// OpenBench's DATAGEN workloads ask the engine for N opening positions and read
+// the lines "info string genfens <fen>"; fastchess then plays the games. Each
+// opening is a random line of the book (or the start position) or, P percent
+// of the time, a Double Fischer Random start with its castling rights cleared
+// (castling here is standard chess only), followed by K random legal plies.
+// An opening with no legal move, or whose X-node search scores beyond M
+// centipawns either way, is drawn again; the bench never loads a network, and
+// neither does this, so that search is the HCE's: a balance filter, not a
+// label. The seed fixes every choice. Exactly N lines are printed: after 200
+// tries per line the filter is dropped rather than stall the client.
+static int run_genfens(const std::string& command) {
+    using namespace luminex;
+    std::istringstream in(command);
+    std::string tok, book = "None";
+    long long n = 0;
+    uint64_t seed = 0;
+    int plies = 8, dfrc = 10, max_score = 300, filter_nodes = 5000;
+    in >> tok >> n;
+    while (in >> tok) {
+        if (tok == "seed") in >> seed;
+        else if (tok == "book") in >> book;
+        else if (tok == "plies") in >> plies;
+        else if (tok == "dfrc") in >> dfrc;
+        else if (tok == "maxscore") in >> max_score;
+        else if (tok == "nodes") in >> filter_nodes;
+    }
+    plies = std::clamp(plies, 0, 40);
+    dfrc = std::clamp(dfrc, 0, 100);
+    filter_nodes = std::clamp(filter_nodes, 100, 10000000);
+    std::vector<std::string> lines;
+    if (book != "None" && book != "none") {
+        std::ifstream f(book);
+        std::string line;
+        while (std::getline(f, line)) {
+            std::istringstream fields(line);
+            std::string board, side, castling, ep;
+            if (fields >> board >> side >> castling >> ep && std::count(board.begin(), board.end(), '/') == 7)
+                lines.push_back(board + " " + side + " " + castling + " " + ep + " 0 1");
+        }
+        if (lines.empty()) {
+            std::cerr << "genfens: no positions in book " << book << std::endl;
+            return 1;
+        }
+    }
+    uint64_t state = seed ^ 0x6a09e667f3bcc909ULL;
+    auto next = [&state]() {   // splitmix64
+        uint64_t z = (state += 0x9e3779b97f4a7c15ULL);
+        z = (z ^ (z >> 30)) * 0xbf58476d1ce4e5b9ULL;
+        z = (z ^ (z >> 27)) * 0x94d049bb133111ebULL;
+        return z ^ (z >> 31);
+    };
+    auto below = [&next](uint64_t k) { return k ? next() % k : 0; };
+    // A Double Fischer Random start: each side's back rank drawn on its own
+    // (bishops on opposite colours, the king between the rooks), no castling
+    auto dfrc_start = [&]() {
+        std::string ranks[2];
+        for (std::string& r : ranks) {
+            r = std::string(8, ' ');
+            r[2 * below(4)] = 'b';
+            r[2 * below(4) + 1] = 'b';
+            auto put = [&r, &below](char piece) {
+                int empty = 0;
+                for (char c : r) empty += c == ' ';
+                int k = int(below(uint64_t(empty)));
+                for (char& c : r)
+                    if (c == ' ' && k-- == 0) { c = piece; return; }
+            };
+            put('q');
+            put('n');
+            put('n');
+            const char rest[3] = {'r', 'k', 'r'};
+            int i = 0;
+            for (char& c : r)
+                if (c == ' ') c = rest[i++];
+        }
+        std::string white = ranks[0];
+        for (char& c : white) c = char(std::toupper(c));
+        return ranks[1] + "/pppppppp/8/8/8/8/PPPPPPPP/" + white + " w - - 0 1";
+    };
+    int status = 0;
+    // Searches run on a SearchThread, as every go does: a Position holds about
+    // 230 KB, and the main thread has 1 MiB on Windows
+    SearchThread job([&] {
+        TT.resize(16);
+        for (long long produced = 0; produced < n; ++produced) {
+            for (int attempt = 0;; ++attempt) {
+                const bool filtered = attempt < 200;
+                Position p;
+                const bool use_dfrc = int(below(100)) < dfrc;
+                p.set(use_dfrc ? dfrc_start()
+                               : lines.empty() ? std::string("rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1")
+                                               : lines[below(lines.size())]);
+                bool dead = false;
+                for (int i = 0; i < plies && !dead; ++i) {
+                    ExtMove moves[MAX_MOVES];
+                    ExtMove* end = generate<GEN_LEGAL>(p, moves);
+                    if (end == moves || !p.do_move(moves[below(uint64_t(end - moves))].move)) dead = true;
+                }
+                ExtMove moves[MAX_MOVES];
+                if (dead || generate<GEN_LEGAL>(p, moves) == moves) continue;
+                if (filtered) {
+                    TT.clear();
+                    TT.new_search();
+                    clear_correction_history();
+                    clear_search_history();
+                    Position s = p;
+                    Limits lim;
+                    lim.nodes = filter_nodes;
+                    stop = false;
+                    search(s, lim);
+                    if (std::abs(int(root_score)) > max_score) continue;
+                }
+                std::cout << "info string genfens " << p.fen() << std::endl;
+                break;
+            }
+        }
+    });
+    job.join();
+    return status;
+}
+
 int main(int argc, char* argv[]) {
     using namespace luminex;
 #if defined(LUMINEX_STACKTRACE)
@@ -1462,6 +1584,10 @@ int main(int argc, char* argv[]) {
         }
         return 0;
     }
+
+    // OpenBench's DATAGEN: "genfens N seed S book <path|None> ..." as one argument
+    if (argc > 1 && std::string(argv[1]).rfind("genfens", 0) == 0)
+        return run_genfens(argv[1]);
 
     // nnuecheck [NETFILE]: every SIMD kernel level must evaluate alike (CI
     // runs it on each release binary, and under Intel SDE for the levels the
