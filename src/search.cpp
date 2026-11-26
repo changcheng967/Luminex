@@ -252,6 +252,17 @@ static inline void corr_sample(int c) {
 // Thread-local node counter to avoid atomic overhead on every node
 static thread_local uint64_t local_nodes = 0;
 static thread_local uint64_t last_reported_nodes = 0;
+#ifdef LUMINEX_WASTE_PROFILE
+struct WasteProfile {
+    uint64_t nodes = 0, waste = 0;
+    uint64_t waste_b[6] = {}, cuts_b[6] = {}, late_b[6] = {};
+    uint64_t idx[8] = {};
+    uint64_t kind_n[5] = {}, kind_w[5] = {}, first_kind[5] = {};
+};
+static thread_local WasteProfile g_wp;
+static int wp_band(int d) { return d <= 2 ? 0 : d <= 4 ? 1 : d <= 6 ? 2 : d <= 9 ? 3 : d <= 13 ? 4 : 5; }
+static int wp_ibin(int i) { return i <= 3 ? i : i <= 5 ? 4 : i <= 9 ? 5 : i <= 15 ? 6 : 7; }
+#endif
 
 // Precomputed LMR reduction table. Only quiet moves take the formula
 // reduction; losing captures use a fixed one (see search_move).
@@ -1442,6 +1453,10 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
     };
 
     // Helper lambda: search a single move, return true if beta cutoff
+#ifdef LUMINEX_WASTE_PROFILE
+    uint64_t wp_n_first = 0, wp_w_first = 0, wp_n_this = 0, wp_w_this = 0;
+    int wp_first_kind = 0;
+#endif
     auto search_move = [&](Move m, bool is_quiet) -> bool {
         if (stop.load(std::memory_order_relaxed)) return false;
 
@@ -1591,6 +1606,13 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
         // hindsight depth adjustment reads (ss-1)->reduction and extension
         // credits were cancelling real reductions out of that signal.
         ss->reduction = lmr_reduction;
+#ifdef LUMINEX_WASTE_PROFILE
+        // kind: 0 TT move, 1 good capture or promotion, 2 killer, 3 other quiet, 4 losing capture
+        const int wp_kind = (m == tt_move) ? 0 : (!is_quiet && !is_losing_capture) ? 1 : (m == worker->killers[ss->ply][0] || m == worker->killers[ss->ply][1]) ? 2 : is_quiet ? 3 : 4;
+        wp_n_this = local_nodes;
+        wp_w_this = g_wp.waste;
+        if (moves_played == 0) { wp_n_first = wp_n_this; wp_w_first = wp_w_this; wp_first_kind = wp_kind; }
+#endif
 
         if (!pos.do_move(m)) {
             return false;
@@ -1798,6 +1820,22 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
                     update_all_corrections(pos, depth, value - eval);
                 }
                 if (moves_played_before == 0) g_stats.first_move_cutoffs++;
+#ifdef LUMINEX_WASTE_PROFILE
+                if (!ss->excluded_move) {
+                    const int b = wp_band(depth);
+                    g_wp.cuts_b[b]++;
+                    g_wp.idx[wp_ibin(moves_played_before)]++;
+                    if (moves_played_before > 0) {
+                        const uint64_t local = (wp_n_this - wp_n_first) - (wp_w_this - wp_w_first);
+                        g_wp.waste += local;
+                        g_wp.waste_b[b] += local;
+                        g_wp.late_b[b]++;
+                        g_wp.kind_n[wp_kind]++;
+                        g_wp.kind_w[wp_kind] += local;
+                        g_wp.first_kind[wp_first_kind]++;
+                    }
+                }
+#endif
                 return true;  // beta cutoff
                 }
             }
@@ -2999,6 +3037,22 @@ Move search(Position& pos, Limits& lim) {
             fclose(sf);
         }
 
+#ifdef LUMINEX_WASTE_PROFILE
+        {
+            g_wp.nodes += local_nodes;
+            const WasteProfile& w = g_wp;
+            std::fprintf(stderr, "WASTE nodes %llu waste %llu | b", (unsigned long long)w.nodes, (unsigned long long)w.waste);
+            for (int i = 0; i < 6; ++i) std::fprintf(stderr, " %llu/%llu/%llu", (unsigned long long)w.waste_b[i], (unsigned long long)w.cuts_b[i], (unsigned long long)w.late_b[i]);
+            std::fprintf(stderr, " | idx");
+            for (int i = 0; i < 8; ++i) std::fprintf(stderr, " %llu", (unsigned long long)w.idx[i]);
+            std::fprintf(stderr, " | kind");
+            for (int i = 0; i < 5; ++i) std::fprintf(stderr, " %llu/%llu", (unsigned long long)w.kind_n[i], (unsigned long long)w.kind_w[i]);
+            std::fprintf(stderr, " | first");
+            for (int i = 0; i < 5; ++i) std::fprintf(stderr, " %llu", (unsigned long long)w.first_kind[i]);
+            std::fprintf(stderr, "\n");
+            std::fflush(stderr);
+        }
+#endif
         // NNUE_CORR_STATS: stand-pat |correction| distribution (see corr_sample)
         if (std::getenv("NNUE_CORR_STATS")) {
             static const char* corr_labels[6] = {"<16", "16-32", "32-64", "64-128", "128-200", ">=200"};
