@@ -1051,6 +1051,9 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
     // From ply 1: the rule reads only the parent's entry, a searched node there
     if (!pv_node && ss->ply >= 1 && !pos.is_check()) {
         int prior_reduction = (ss - 1)->reduction;
+        // Read once: the null-move and singular verification searches run at
+        // this same stack entry and would apply the parent's reduction again
+        (ss - 1)->reduction = 0;
         if (prior_reduction >= 3 && !opponent_worsening) {
             depth++;
         } else if (prior_reduction >= 2 && depth >= 2 && eval + (ss - 1)->static_eval > 195) {
@@ -1077,7 +1080,9 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
     {
         int rev_margin = sp.rev_fut_coeff * depth + ((ss->improving || opponent_worsening) ? 0 : sp.rfp_not_improving);
         rev_margin += std::min(eval_uncertainty / 2, 80);  // Up to 80cp extra margin when uncertain
-        if (!pv_node && !pos.is_check() && depth <= 8 && eval - rev_margin >= beta) {
+        // Not in a singular verification: ProbCut and the null move skip it too,
+        // since pruning there shortcuts the measurement it exists to make
+        if (!pv_node && !pos.is_check() && depth <= 8 && eval - rev_margin >= beta && !ss->excluded_move) {
             g_stats.rev_futility_prunes++;
             return eval;
         }
@@ -1617,8 +1622,11 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
                     r_depth++;
                 else if (value < alpha + 8 && r_depth > 1)
                     r_depth--;
-                // Not at a depth the reduced search already ran: it would repeat it
-                if (r_depth > new_depth)
+                // Not at a depth the reduced search already ran: it would repeat it.
+                // A capture whose reduction came out 0 (the second move always:
+                // reductions_quiet[1] = 0) already searched at full depth: no
+                // deeper re-search either
+                if (r_depth > new_depth && new_depth < full_depth)
                     value = -search_worker(pos, ss + 1, -alpha - 1, -alpha, r_depth, !cut_node);
                 if (stop.load(std::memory_order_relaxed)) {
                     pos.undo_move(m);
