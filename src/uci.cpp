@@ -225,9 +225,9 @@ static void search_worker(Position pos_copy, Limits lim) {
                 case 'n': promo_pt = KNIGHT; break;
             }
         }
-        ExtMove legal_moves[MAX_MOVES];
-        ExtMove* legal_end = generate<GEN_LEGAL>(pos_copy, legal_moves);
-        for (ExtMove* it = legal_moves; it != legal_end; ++it) {
+        ScoredMove legal_moves[MAX_MOVES];
+        ScoredMove* legal_end = generate<MOVES_LEGAL>(pos_copy, legal_moves);
+        for (ScoredMove* it = legal_moves; it != legal_end; ++it) {
             if (it->move.from() == from && it->move.to() == to) {
                 if (promo_pt != PT_NONE) {
                     if (it->move.is_promotion() && it->move.promotion_type() == promo_pt) {
@@ -265,9 +265,9 @@ static void search_worker(Position pos_copy, Limits lim) {
                 // The TT move may come from a colliding position: print it only
                 // if it is a legal reply here.
                 Move pm = tte->move();
-                ExtMove replies[MAX_MOVES];
-                ExtMove* replies_end = generate<GEN_LEGAL>(pos_copy, replies);
-                for (ExtMove* it = replies; it != replies_end; ++it)
+                ScoredMove replies[MAX_MOVES];
+                ScoredMove* replies_end = generate<MOVES_LEGAL>(pos_copy, replies);
+                for (ScoredMove* it = replies; it != replies_end; ++it)
                     if (it->move == pm) { ponder_move = pm; break; }
             }
         }
@@ -526,10 +526,10 @@ void handle_position(Position& pos, const std::string& cmd) {
                 }
             }
 
-            ExtMove legal_moves[MAX_MOVES];
-            ExtMove* legal_end = generate<GEN_LEGAL>(pos, legal_moves);
+            ScoredMove legal_moves[MAX_MOVES];
+            ScoredMove* legal_end = generate<MOVES_LEGAL>(pos, legal_moves);
             Move matched = MOVE_NONE;
-            for (ExtMove* lit = legal_moves; lit != legal_end; ++lit) {
+            for (ScoredMove* lit = legal_moves; lit != legal_end; ++lit) {
                 // Castling may also be written as the king taking its own rook
                 // (e1h1, e8a8): the rook's corner is one file past g, two before c
                 const bool rook_square_castle = lit->move.is_castling()
@@ -1299,11 +1299,11 @@ void init() {
 uint64_t perft(Position& pos, Depth depth) {
     if (depth == 0) return 1;
 
-    ExtMove moves[MAX_MOVES];
-    ExtMove* end = generate<GEN_LEGAL>(pos, moves);
+    ScoredMove moves[MAX_MOVES];
+    ScoredMove* end = generate<MOVES_LEGAL>(pos, moves);
 
     uint64_t count = 0;
-    for (ExtMove* it = moves; it != end; ++it) {
+    for (ScoredMove* it = moves; it != end; ++it) {
         if (!pos.do_move(it->move)) {
             // Should never happen with legal move generation
             // Do NOT call undo_move - do_move guarantees atomic failure
@@ -1318,11 +1318,11 @@ uint64_t perft(Position& pos, Depth depth) {
 
 // Perft divide - shows perft result for each move
 uint64_t perft_divide(Position& pos, Depth depth) {
-    ExtMove moves[MAX_MOVES];
-    ExtMove* end = generate<GEN_LEGAL>(pos, moves);
+    ScoredMove moves[MAX_MOVES];
+    ScoredMove* end = generate<MOVES_LEGAL>(pos, moves);
 
     uint64_t total = 0;
-    for (ExtMove* it = moves; it != end; ++it) {
+    for (ScoredMove* it = moves; it != end; ++it) {
         if (!pos.do_move(it->move)) {
             // Should never happen with legal move generation
             // Do NOT call undo_move - do_move guarantees atomic failure

@@ -36,14 +36,16 @@ class Move;
 constexpr int MAX_PLY = 246;
 constexpr int MAX_MOVES = 512;
 
-// Move generation types
-enum GenType : int {
-    GEN_LEGAL,
-    GEN_CAPTURE,
-    GEN_QUIET,
-    GEN_EVASION,
-    GEN_NON_EVASION,
-    GEN_ALL
+// The move sets the generator produces: legal moves; captures and
+// promotions; quiet moves; evasions of a check; every pseudo-legal move
+// outside check; captures and quiets together
+enum MoveSet : int {
+    MOVES_LEGAL,
+    MOVES_CAPTURES,
+    MOVES_QUIETS,
+    MOVES_EVASIONS,
+    MOVES_PSEUDO,
+    MOVES_ALL
 };
 
 // Piece types
@@ -484,27 +486,32 @@ constexpr bool more_than_one(Bitboard b) {
 // Magic Bitboard tables for sliding piece attacks
 // ============================================================
 
-struct Magic {
-    Bitboard mask;
-    Bitboard magic;
-    Bitboard* attacks;
-    unsigned shift;
+// A slider's attack set is looked up by hashing the occupancy of the
+// squares on its lines (the multiply-shift technique known as magic
+// bitboards). Luminex's layout: each square's entry is 24 bytes, beside its
+// neighbours', and indexes one exact-size table holding every rook attack
+// set, then every bishop one. The multipliers are our own search's.
+struct SliderHash {
+    Bitboard mask;     // the squares whose occupancy changes the attack set
+    Bitboard factor;   // multiplies that occupancy into a perfect index
+    uint32_t offset;   // this square's first slot in SliderAttacks
+    uint32_t shift;    // 64 less the index's bits
 };
 
-extern Magic RookMagics[64];
-extern Magic BishopMagics[64];
-extern Bitboard RookTable[262144];   // Large enough for all rook entries
-extern Bitboard BishopTable[65536];  // Large enough for all bishop entries
+constexpr int ROOK_ATTACK_SLOTS = 102400;    // sum over squares of 2^(mask bits)
+constexpr int BISHOP_ATTACK_SLOTS = 5248;
+extern SliderHash RookHash[64];
+extern SliderHash BishopHash[64];
+extern Bitboard SliderAttacks[ROOK_ATTACK_SLOTS + BISHOP_ATTACK_SLOTS];
 
-// Magic bitboard attack lookups - O(1) table lookup
 inline Bitboard rook_attacks_bb(Square s, Bitboard occupied) {
-    const Magic& m = RookMagics[int(s)];
-    return m.attacks[((occupied & m.mask) * m.magic) >> m.shift];
+    const SliderHash& h = RookHash[int(s)];
+    return SliderAttacks[h.offset + uint32_t(((occupied & h.mask) * h.factor) >> h.shift)];
 }
 
 inline Bitboard bishop_attacks_bb(Square s, Bitboard occupied) {
-    const Magic& m = BishopMagics[int(s)];
-    return m.attacks[((occupied & m.mask) * m.magic) >> m.shift];
+    const SliderHash& h = BishopHash[int(s)];
+    return SliderAttacks[h.offset + uint32_t(((occupied & h.mask) * h.factor) >> h.shift)];
 }
 
 inline Bitboard rook_attacks_bb(Square s) {
@@ -637,6 +644,9 @@ public:
 
     Bitboard checkers() const;
     Bitboard pinned() const;
+    // Pieces of either colour alone between the side to move's king and an
+    // enemy slider aimed at it (set_check_info computes them)
+    Bitboard king_blockers() const;
 
     Square ep_square() const;
     Square king_sq(Color c) const;
@@ -692,7 +702,7 @@ private:
     void set_check_info(StateInfo* st);
     bool validate_move(Move m, Square from, Square to, Piece moved_pc, PieceType captured) const;
 
-    Bitboard slider_blockers(Bitboard sliders, Bitboard& pinners) const;
+    Bitboard xray_blockers(Bitboard& pinners) const;
 
     Bitboard pieces_by_type[ALL_PIECES] = {};
     Bitboard pieces_by_color[NO_COLOR] = {};
@@ -739,6 +749,7 @@ inline Color Position::side_to_move() const { return side_to_move_; }
 
 inline Bitboard Position::checkers() const { return st_->checkers; }
 inline Bitboard Position::pinned() const { return st_->pinned; }
+inline Bitboard Position::king_blockers() const { return st_->block_checkers; }
 
 inline Square Position::ep_square() const { return st_->ep_square; }
 inline Square Position::king_sq(Color c) const { return king_square[c]; }
@@ -792,25 +803,19 @@ enum : Direction {
 
 namespace luminex {
 
-struct ExtMove {
+// A generated move and the score move ordering gives it
+struct ScoredMove {
     Move move;
     Value value;
-
-    constexpr operator Move() const { return move; }
-    void operator=(Move m) { move = m; }
-
-    // For sorting
-    bool operator<(const ExtMove& other) const { return value > other.value; }
-    bool operator>(const ExtMove& other) const { return value < other.value; }
 };
 
 class Position;
 
-template<GenType T>
-ExtMove* generate(const Position& pos, ExtMove* moveList);
+template<MoveSet T>
+ScoredMove* generate(const Position& pos, ScoredMove* moveList);
 
-inline ExtMove* generate_legals(const Position& pos, ExtMove* moveList) {
-    return generate<GEN_LEGAL>(pos, moveList);
+inline ScoredMove* generate_legals(const Position& pos, ScoredMove* moveList) {
+    return generate<MOVES_LEGAL>(pos, moveList);
 }
 
 // Move ordering values (indexed by PieceType: PAWN=0, KNIGHT=1, ...)

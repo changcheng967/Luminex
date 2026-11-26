@@ -1617,8 +1617,8 @@ std::vector<CheckEval> check_games() {
             };
             record(0, 0);
             for (int ply = 1; ply <= CHECK_PLIES; ++ply) {
-                ExtMove moves[MAX_MOVES];
-                const int n = int(generate<GEN_LEGAL>(*pos, moves) - moves);
+                ScoredMove moves[MAX_MOVES];
+                const int n = int(generate<MOVES_LEGAL>(*pos, moves) - moves);
                 if (n == 0) break;
                 const uint64_t r = splitmix64(seed);
                 if (n > 1 && (r & 3) == 0) {
