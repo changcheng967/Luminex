@@ -269,5 +269,7 @@ Makefile           OpenBench's build
 
 Luminex is licensed under the [GNU General Public License v3.0](LICENSE).
 Some of its foundations derive from
-[Stockfish](https://github.com/official-stockfish/Stockfish), also GPL-3.0.
+[Stockfish](https://github.com/official-stockfish/Stockfish), and some
+search and evaluation code from [Stash](https://github.com/mhouppin/stash-bot)
+by Morgan Houppin, both also GPL-3.0.
 The training data comes from [Leela Chess Zero](https://lczero.org/).

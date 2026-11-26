@@ -20,8 +20,10 @@ EvalParams g_eval_params;
 
 // ============================================================
 // Handcrafted evaluation (HCE fallback — NNUE is used when a net is
-// loaded). All values derived from chess principles; nothing is
-// borrowed from PeSTO, Ethereal, Stash or any other engine.
+// loaded). The feature set follows Stash's evaluation (Morgan Houppin,
+// GPL-3.0): far knights, bishop pawns on its colour, long diagonals,
+// rook x-rays to the queen, distant pieces, hanging pawns and more.
+// The values were fitted for Luminex by its own solver.
 //
 //   1. Piece values: classical MG/EG ratios
 //   2. PST tables: square value by piece type and phase
