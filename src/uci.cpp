@@ -8,8 +8,8 @@
 #include <climits>
 #include <cstdlib>
 #include <chrono>
-#include <cstdarg>
 #include <expected>
+#include <optional>
 #include <format>
 #include <iterator>
 #include <iostream>
@@ -96,9 +96,6 @@ int g_nodes_per_move = 0;  // NodesPerMove: >0 = fixed-node search (SPSA tuning,
 static SearchThread search_thread;
 static std::mutex io_mutex;
 
-// Debug logging
-static FILE* dbglog = nullptr;
-
 // NNUE network selection. The net loads lazily at isready/go so that a GUI's
 // NNUEFile setoption (sent between uci and isready) wins over the default.
 static std::string g_net_option;      // NNUEFile value; empty = DEFAULT_NET
@@ -151,7 +148,6 @@ bool check_for_stop_command() {
 // Thread-safe output
 static void safe_output(const std::string& msg) {
     std::lock_guard<std::mutex> lock(io_mutex);
-    if (dbglog) { fprintf(dbglog, "SEND: [%s]\n", msg.c_str()); fflush(dbglog); }
     std::cout << msg << std::flush;
 }
 
@@ -160,19 +156,8 @@ void uci_safe_output(const std::string& msg) {
     safe_output(msg);
 }
 
-// Debug log function for search.cpp
-void uci_debug_log(const char* format, ...) {
-    if (dbglog) {
-        va_list args;
-        va_start(args, format);
-        vfprintf(dbglog, format, args);
-        va_end(args);
-        fflush(dbglog);
-    }
-}
-
 // Forward declaration
-static void search_worker(Position pos_copy, Limits lim);
+static void search_worker(Position pos_copy, SearchBudget request);
 
 // Wait for search thread to finish
 static void wait_for_search_thread() {
@@ -192,21 +177,19 @@ static void end_search() {
 
 // Launch the search on its own thread with a large stack, on every platform: the
 // default for secondary threads (1 MiB on Windows, 512 KiB on macOS) is too small
-static void launch_search_thread(const Position& pos, const Limits& lim) {
+static void launch_search_thread(const Position& pos, const SearchBudget& request) {
     wait_for_search_thread();
     // The copy of the position (~230 KB) is made on the heap, not on this thread's
     // stack: the UCI thread may have as little as the search threads used to
     auto copy = std::make_shared<Position>(pos);
-    search_thread = SearchThread([copy, lim] { search_worker(*copy, lim); });
+    search_thread = SearchThread([copy, request] { search_worker(*copy, request); });
 }
 
 // Worker function that runs search in a separate thread
-static void search_worker(Position pos_copy, Limits lim) {
+static void search_worker(Position pos_copy, SearchBudget request) {
     // The search runs in its own thread → its thread-local NNUE accumulator is empty.
     // Seed it here (the main thread's Position::set refreshed only the main thread's).
     if (nnue::loaded()) nnue::refresh(pos_copy);
-    if (dbglog) { fprintf(dbglog, "SEARCH_START: depth=%d time[W]=%d time[B]=%d movetime=%d ponder=%d\n",
-        lim.depth, lim.time[0], lim.time[1], lim.movetime, lim.ponder); fflush(dbglog); }
 
     // Probe opening book first
     std::string book_move_str = g_book.probe(pos_copy);
@@ -244,16 +227,14 @@ static void search_worker(Position pos_copy, Limits lim) {
 
     const bool from_book = best_move != MOVE_NONE;
     if (!from_book)
-        best_move = search(pos_copy, lim);
+        best_move = search(pos_copy, request);
 
     // A ponder or infinite search replies only on ponderhit or stop, however
     // early its move was ready (a book move, a forced mate, the depth limit)
-    hold_reply(lim);
+    hold_reply(request);
     if (!from_book)
         report_after_hit(pos_copy);
-    finish_clock(lim);
-
-    if (dbglog) { fprintf(dbglog, "SEARCH_DONE: about to send bestmove\n"); fflush(dbglog); }
+    finish_clock(request);
 
     // Extract ponder move from TT (opponent's expected response)
     Move ponder_move = MOVE_NONE;
@@ -367,6 +348,38 @@ bool run_nnuecheck(const std::string& net_file) {
     return ok;
 }
 
+// The engine's spin options: name, default, range, and what setting one does.
+// This table is the one place they are declared: "uci" prints it, and
+// "setoption" clamps a value into the declared range before applying it, so
+// the range a GUI is shown is the range that takes effect. (The search
+// constants exposed for SPSA tuning have their own table, SPSA_OPTIONS.)
+struct SpinOption {
+    const char* name;
+    int def, min, max;
+    void (*apply)(int value);
+};
+
+static const SpinOption SPIN_OPTIONS[] = {
+    {"Hash",          int(TranspositionTable::DEFAULT_MB), 1, 1048576, [](int v) { TT.resize(size_t(v)); }},
+    {"Threads",       1, 1, 64,                               [](int v) { num_threads = v; }},
+    {"MultiPV",       SearchParams{}.multi_pv, 1, 256,        [](int v) { params.multi_pv = v; }},
+    {"Contempt",      SearchParams{}.contempt, -1000, 1000,   [](int v) { params.contempt = v; }},
+    {"Move Overhead", SearchParams{}.move_overhead_ms, 0, 5000, [](int v) { params.move_overhead_ms = v; }},
+    {"TimeSchedule",  SearchParams{}.time_schedule, 0, 2,     [](int v) { params.time_schedule = v; }},
+    {"TimeStability", SearchParams{}.time_stability, 0, 1,    [](int v) { params.time_stability = v; }},
+    {"TimeZeroInc",   SearchParams{}.time_zero_inc, 0, 1,     [](int v) { params.time_zero_inc = v; }},
+    {"TimeMovesToGo", SearchParams{}.time_moves_to_go, 0, 1,  [](int v) { params.time_moves_to_go = v; }},
+    {"TimeLag",       SearchParams{}.time_lag, 0, 1,          [](int v) { params.time_lag = v; }},
+    {"SearchDepth",   0, 0, 30,                               [](int v) { g_search_depth = v; }},
+    {"NodesPerMove",  0, 0, 100000000,                        [](int v) { g_nodes_per_move = v; }},
+};
+
+static const SpinOption* find_spin_option(const std::string& name) {
+    for (const SpinOption& o : SPIN_OPTIONS)
+        if (name == o.name) return &o;
+    return nullptr;
+}
+
 void handle_uci() {
     init_evaluation();
     // Development builds report their build id (CMake's LUMINEX_BUILD_ID,
@@ -377,24 +390,12 @@ void handle_uci() {
     safe_output("id name " + std::string(ENGINE_NAME) + " " + ENGINE_VERSION + "\n");
 #endif
     safe_output("id author " + std::string(ENGINE_AUTHOR) + "\n");
-    safe_output("option name Hash type spin default 256 min 1 max 1048576\n");
-    safe_output("option name Threads type spin default 1 min 1 max 64\n");
-    safe_output("option name MultiPV type spin default 1 min 1 max 256\n");
+    for (const SpinOption& o : SPIN_OPTIONS)
+        safe_output(std::format("option name {} type spin default {} min {} max {}\n", o.name, o.def, o.min, o.max));
     safe_output("option name Ponder type check default false\n");
-    safe_output("option name Contempt type spin default 0 min -1000 max 1000\n");
+    safe_output("option name UCI_ShowWDL type check default false\n");
     safe_output("option name Clear Hash type button\n");
     safe_output("option name BookFile type string default <empty>\n");
-    safe_output("option name Move Overhead type spin default 30 min 0 max 5000\n");
-    safe_output("option name TimeSchedule type spin default 2 min 0 max 2\n");
-    safe_output("option name TimeStability type spin default 1 min 0 max 1\n");
-    safe_output("option name TimeZeroInc type spin default 1 min 0 max 1\n");
-    safe_output("option name TimeMovesToGo type spin default 1 min 0 max 1\n");
-    safe_output("option name TimeLag type spin default 1 min 0 max 1\n");
-    safe_output("option name SyzygyPath type string default <empty>\n");
-    safe_output("option name Skill Level type spin default 20 min 0 max 20\n");
-    safe_output("option name UCI_ShowWDL type check default false\n");
-    safe_output("option name SearchDepth type spin default 0 min 0 max 30\n");
-    safe_output("option name NodesPerMove type spin default 0 min 0 max 100000000\n");
     // Search constants (SPSAParams, luminex.h), exposed for OpenBench SPSA tuning
     {
         const SPSAParams& sp = SPSAParams::get();
@@ -402,8 +403,6 @@ void handle_uci() {
             safe_output(std::format("option name {} type spin default {} min {} max {}\n",
                                     o.name, sp.*o.field, o.min, o.max));
     }
-    safe_output("option name UCI_Elo type spin default 1320 min 1320 max 3190\n");
-    safe_output("option name UCI_LimitStrength type check default false\n");
     // UCI_Chess960 is deliberately not advertised: castling is implemented
     // for standard chess only.
     // NNUE evaluation; without a loadable net the engine uses the HCE and says so.
@@ -416,36 +415,7 @@ void handle_uci() {
         for (const std::string& level : nnue::simd_levels()) opt += " var " + level;
         safe_output(opt + "\n");
     }
-    // Eval parameters (self-engineered defaults)
-    safe_output("option name BishopPairMG type spin default 40 min -100 max 200\n");
-    safe_output("option name BishopPairEG type spin default 100 min -100 max 300\n");
-    safe_output("option name RookOpenMG type spin default 25 min -50 max 150\n");
-    safe_output("option name RookOpenEG type spin default 40 min -50 max 150\n");
-    safe_output("option name RookSemiOpenMG type spin default 15 min -50 max 100\n");
-    safe_output("option name RookSemiOpenEG type spin default 20 min -50 max 100\n");
-    safe_output("option name Rook7thMG type spin default 30 min -50 max 100\n");
-    safe_output("option name Rook7thEG type spin default 25 min -50 max 150\n");
-    safe_output("option name PawnShieldCenter type spin default 12 min -20 max 40\n");
-    safe_output("option name PawnShieldKnight type spin default 15 min -20 max 40\n");
-    safe_output("option name PawnShieldRook type spin default 8 min -20 max 30\n");
-    safe_output("option name PawnStorm type spin default 10 min 0 max 30\n");
-    safe_output("option name OpenFilePenaltyMG type spin default 20 min -50 max 100\n");
-    safe_output("option name OpenFilePenaltyEG type spin default 15 min -50 max 100\n");
-    safe_output("option name OutpostKnightMG type spin default 30 min -20 max 60\n");
-    safe_output("option name OutpostKnightEG type spin default 15 min -20 max 40\n");
-    safe_output("option name OutpostBishopMG type spin default 40 min -20 max 100\n");
-    safe_output("option name OutpostBishopEG type spin default 25 min -20 max 60\n");
-    safe_output("option name HangingPawnMG type spin default 10 min -20 max 50\n");
-    safe_output("option name HangingPawnEG type spin default 35 min -20 max 100\n");
-    safe_output("option name FarKnightMG type spin default 15 min -50 max 60\n");
-    safe_output("option name FarKnightEG type spin default 5 min -50 max 60\n");
-    safe_output("option name FarBishopMG type spin default 10 min -50 max 40\n");
-    safe_output("option name FarBishopEG type spin default 5 min -50 max 40\n");
     safe_output("uciok\n");
-}
-
-void handle_isready() {
-    safe_output("readyok\n");
 }
 
 void handle_ucinewgame() {
@@ -558,6 +528,21 @@ void handle_position(Position& pos, const std::string& cmd) {
     }
 }
 
+// The number after a "go" token. It is read as text, so a malformed value
+// (taken as 0) cannot stop the tokens after it from being read, and one out of
+// range saturates instead of failing the stream.
+static long long go_number(std::istringstream& ss) {
+    std::string text;
+    ss >> text;
+    char* end = nullptr;
+    const long long v = std::strtoll(text.c_str(), &end, 10);
+    return end == text.c_str() ? 0 : v;
+}
+
+static int go_int(std::istringstream& ss) {
+    return int(std::clamp<long long>(go_number(ss), INT_MIN, INT_MAX));
+}
+
 void handle_go(Position& pos, const std::string& cmd) {
     // A "go" while a search runs (outside the protocol, but tools send it) ends
     // that search first: waiting for it to end by itself would block this reader
@@ -596,55 +581,52 @@ void handle_go(Position& pos, const std::string& cmd) {
 
     TT.new_search();
 
+    // The go tokens. Only the side to move's clock is kept: the search never
+    // needs the opponent's.
     std::istringstream ss(cmd);
     std::string token;
-    limits = Limits();
-
+    SearchBudget request;
+    int wtime = 0, btime = 0, winc = 0, binc = 0;
     while (ss >> token) {
-        if (token == "depth") ss >> limits.depth;
-        else if (token == "nodes") ss >> limits.nodes;
-        else if (token == "movetime") ss >> limits.movetime;
-        else if (token == "infinite") limits.infinite = true;
-        else if (token == "ponder") limits.ponder = true;
-        else if (token == "wtime") ss >> limits.time[WHITE];
-        else if (token == "btime") ss >> limits.time[BLACK];
-        else if (token == "winc") ss >> limits.inc[WHITE];
-        else if (token == "binc") ss >> limits.inc[BLACK];
-        else if (token == "movestogo") ss >> limits.movestogo;
+        if (token == "depth") request.max_depth = go_int(ss);
+        else if (token == "nodes") request.max_nodes = uint64_t(std::max(0LL, go_number(ss)));
+        else if (token == "movetime") request.move_time_ms = go_int(ss);
+        else if (token == "infinite") request.infinite = true;
+        else if (token == "ponder") request.ponder = true;
+        else if (token == "wtime") wtime = go_int(ss);
+        else if (token == "btime") btime = go_int(ss);
+        else if (token == "winc") winc = go_int(ss);
+        else if (token == "binc") binc = go_int(ss);
+        else if (token == "movestogo") request.moves_to_go = go_int(ss);
+    }
+    const bool white = pos.side_to_move() == WHITE;
+    request.clock_ms = white ? wtime : btime;
+    request.increment_ms = white ? winc : binc;
+
+    // SearchDepth / NodesPerMove (options): a fixed depth or node count in
+    // place of the clock, move time and "infinite" the GUI sent. A fixed depth
+    // gives truly equal-depth matches (no speed advantage); a fixed node count
+    // tunes without clock forfeits under CPU contention.
+    if (g_search_depth > 0 || g_nodes_per_move > 0) {
+        if (g_search_depth > 0) request.max_depth = g_search_depth;
+        if (g_nodes_per_move > 0) request.max_nodes = uint64_t(g_nodes_per_move);
+        request.clock_ms = request.increment_ms = 0;
+        request.move_time_ms = 0;
+        request.infinite = false;
     }
 
-    // SearchDepth UCI option: if set (>0), ignore ALL time controls and search to that
-    // exact depth. This enables truly equal-depth matches (both engines same depth,
-    // pure eval-quality comparison — no NPS advantage).
-    if (g_search_depth > 0) {
-        limits.depth = g_search_depth;
-        limits.time[WHITE] = 0; limits.time[BLACK] = 0;
-        limits.inc[WHITE] = 0; limits.inc[BLACK] = 0;
-        limits.movetime = 0; limits.infinite = false;
-    }
-
-    // NodesPerMove: if set (>0), ignore ALL time controls and search exactly N nodes.
-    // Eliminates clock-forfeiture from CPU contention during SPSA tuning.
-    if (g_nodes_per_move > 0) {
-        limits.nodes = g_nodes_per_move;
-        limits.time[WHITE] = 0; limits.time[BLACK] = 0;
-        limits.inc[WHITE] = 0; limits.inc[BLACK] = 0;
-        limits.movetime = 0; limits.infinite = false;
-    }
-
-    // "go" without any time controls or depth: search indefinitely until "stop"
-    if (limits.depth == 0 && !limits.infinite && limits.movetime == 0 &&
-        limits.time[WHITE] == 0 && limits.time[BLACK] == 0 && limits.nodes == 0) {
-        limits.infinite = true;
-    }
+    // A go with no limit and neither side's clock searches until "stop"
+    if (!request.max_depth && !request.max_nodes && !request.move_time_ms && !request.infinite &&
+        wtime == 0 && btime == 0)
+        request.infinite = true;
 
     // Set ponder mode if go ponder. A ponderhit read while no search ran (one
     // that crossed an early reply) must not count for this search.
     ponderhit_received.store(false, std::memory_order_relaxed);
-    ponder_mode.store(limits.ponder, std::memory_order_relaxed);
+    ponder_mode.store(request.ponder, std::memory_order_relaxed);
 
-    // Launch search thread with large stack to prevent stack overflow
-    launch_search_thread(pos, limits);
+    // The search runs on its own thread (SearchThread: a large stack)
+    launch_search_thread(pos, request);
 }
 
 // A spin option's value as std::stoi reads it (leading blanks, a sign, digits;
@@ -658,6 +640,10 @@ static std::expected<int, std::string> parse_spin(const std::string& value) {
     return int(parsed);
 }
 
+// "setoption name <name> [value <value>]". A spin option's value is clamped
+// into its declared range; one that is not an integer is reported and the
+// option left as it was. A name the engine does not declare is reported and
+// ignored.
 void handle_setoption(const std::string& cmd) {
     std::istringstream ss(cmd);
     std::string token;
@@ -677,116 +663,29 @@ void handle_setoption(const std::string& cmd) {
         value += token;
     }
 
-    // Every option but these is a spin, parsed once here: a value that is not an
-    // int is reported and the option left as it was (release builds have no
-    // exceptions, so std::stoi on such a value used to end the engine).
-    const bool text_option = name == "Ponder" || name == "Clear Hash" || name == "BookFile" ||
-        name == "SyzygyPath" || name == "UCI_ShowWDL" || name == "UCI_LimitStrength" ||
-        name == "UseNNUE" || name == "NNUEFile" || name == "SimdLevel" ||
-        name == "UCI_Chess960" || name == "Analysis" || name == "UCI_AnalyseMode";
-    int v = 0;
-    if (!text_option) {
+    // A spin option's value clamped into [min, max], or none (reported)
+    const auto spin_value = [&](int min, int max) -> std::optional<int> {
         const std::expected<int, std::string> spin = parse_spin(value);
         if (!spin) {
             safe_output("info string option " + name + ": " + spin.error() + "; left unchanged\n");
-            return;
+            return std::nullopt;
         }
-        v = *spin;
-    }
+        return std::clamp(*spin, min, max);
+    };
 
-    if (name == "SyzygyPath" || name == "Skill Level" ||
-        name == "UCI_Elo" || name == "UCI_LimitStrength" ||
-        name == "UCI_Chess960" || name == "Analysis") { /* accepted — UCI GUI/bot compatibility */ }
-    else if (name == "MultiPV") {
-        int n = v;
-        if (n < 1) n = 1;
-        if (n > 256) n = 256;
-        params.multi_pv = n;
-    }
-    else if (name == "UCI_ShowWDL") {
-        params.show_wdl = (value == "true");
-    }
-    else if (name == "Move Overhead") {
-        int ov = v;
-        if (ov < 0) ov = 0;
-        if (ov > 5000) ov = 5000;
-        params.move_overhead_ms = ov;
-    }
-    else if (name == "TimeSchedule") {
-        params.time_schedule = std::clamp(v, 0, 2);
-    }
-    else if (name == "TimeStability") {
-        params.time_stability = std::clamp(v, 0, 1);
-    }
-    else if (name == "TimeZeroInc") {
-        params.time_zero_inc = std::clamp(v, 0, 1);
-    }
-    else if (name == "TimeMovesToGo") {
-        params.time_moves_to_go = std::clamp(v, 0, 1);
-    }
-    else if (name == "TimeLag") {
-        params.time_lag = std::clamp(v, 0, 1);
-    }
-    else if (name == "UseNNUE") {
-        g_use_nnue = (value == "true");
-        nnue::set_enabled(g_use_nnue);
-    }
-    else if (name == "NNUEFile") {
-        // Every value loads now, the empty one too: it selects the default
-        // network, which must replace a file loaded under an earlier value.
-        g_net_option = (value == "<empty>") ? std::string() : value;
-        g_net_attempted = false;
-        ensure_net_loaded(true);
-    }
-    else if (name == "SimdLevel") {
-        // The network's dense layers are rearranged for the new kernels, so
-        // no search may be reading them.
-        end_search();
-        std::string level = value;
-        std::transform(level.begin(), level.end(), level.begin(),
-                       [](unsigned char ch) { return char(std::tolower(ch)); });
-        safe_output("info string " + nnue::set_simd_level(level) + "\n");
-    }
-    else if (name == "SearchDepth") { g_search_depth = v; }
-    else if (name == "NodesPerMove") { g_nodes_per_move = v; }
-    else if (const SPSAOption* o = find_spsa_option(name)) {
-        SPSAParams::get().*o->field = std::clamp(v, o->min, o->max);
-        if (o->field == &SPSAParams::lmr_scale_quiet)
-            init_search_params();  // the reduction table is derived from it
-    }
-    else if (name == "Contempt" || name == "UCI_AnalyseMode") {
-        if (name == "Contempt") {
-            params.contempt = v;
+    if (const SpinOption* o = find_spin_option(name)) {
+        if (const std::optional<int> v = spin_value(o->min, o->max))
+            o->apply(*v);
+    } else if (const SPSAOption* o = find_spsa_option(name)) {
+        if (const std::optional<int> v = spin_value(o->min, o->max)) {
+            SPSAParams::get().*o->field = *v;
+            if (o->field == &SPSAParams::lmr_scale_quiet)
+                init_search_params();  // the reduction table is derived from it
         }
-    } else if (name == "BishopPairMG") { g_eval_params.bishop_pair_mg = v;
-    } else if (name == "BishopPairEG") { g_eval_params.bishop_pair_eg = v;
-    } else if (name == "RookOpenMG") { g_eval_params.rook_open_mg = v;
-    } else if (name == "RookOpenEG") { g_eval_params.rook_open_eg = v;
-    } else if (name == "RookSemiOpenMG") { g_eval_params.rook_semi_open_mg = v;
-    } else if (name == "RookSemiOpenEG") { g_eval_params.rook_semi_open_eg = v;
-    } else if (name == "Rook7thMG") { g_eval_params.rook_7th_mg = v;
-    } else if (name == "Rook7thEG") { g_eval_params.rook_7th_eg = v;
-    } else if (name == "PawnShieldCenter") { g_eval_params.pawn_shield_center = v;
-    } else if (name == "PawnShieldKnight") { g_eval_params.pawn_shield_knight = v;
-    } else if (name == "PawnShieldRook") { g_eval_params.pawn_shield_rook = v;
-    } else if (name == "PawnStorm") { g_eval_params.pawn_storm = v;
-    } else if (name == "OpenFilePenaltyMG") { g_eval_params.open_file_penalty_mg = v;
-    } else if (name == "OpenFilePenaltyEG") { g_eval_params.open_file_penalty_eg = v;
-    } else if (name == "OutpostKnightMG") { g_eval_params.outpost_knight_mg = v;
-    } else if (name == "OutpostKnightEG") { g_eval_params.outpost_knight_eg = v;
-    } else if (name == "OutpostBishopMG") { g_eval_params.outpost_bishop_mg = v;
-    } else if (name == "OutpostBishopEG") { g_eval_params.outpost_bishop_eg = v;
-    } else if (name == "HangingPawnMG") { g_eval_params.hanging_pawn_mg = v;
-    } else if (name == "HangingPawnEG") { g_eval_params.hanging_pawn_eg = v;
-    } else if (name == "FarKnightMG") { g_eval_params.far_knight_mg = v;
-    } else if (name == "FarKnightEG") { g_eval_params.far_knight_eg = v;
-    } else if (name == "FarBishopMG") { g_eval_params.far_bishop_mg = v;
-    } else if (name == "FarBishopEG") { g_eval_params.far_bishop_eg = v;
-    } else if (name == "Threads") {
-        int t = v;
-        if (t < 1) t = 1;
-        if (t > 64) t = 64;
-        num_threads = t;
+    } else if (name == "Ponder") {
+        // The GUI's permission to ponder: it starts each ponder search (go ponder)
+    } else if (name == "UCI_ShowWDL") {
+        params.show_wdl = (value == "true");
     } else if (name == "Clear Hash") {
         TT.clear();
     } else if (name == "BookFile") {
@@ -798,27 +697,32 @@ void handle_setoption(const std::string& cmd) {
         } else {
             g_book.close();
         }
-    } else if (name == "Hash") {
-        // The declared bounds: a negative value used to wrap to an enormous size.
-        TT.resize(size_t(std::clamp(v, 1, 1048576)));
+    } else if (name == "UseNNUE") {
+        g_use_nnue = (value == "true");
+        nnue::set_enabled(g_use_nnue);
+    } else if (name == "NNUEFile") {
+        // Every value loads now, the empty one too: it selects the default
+        // network, which must replace a file loaded under an earlier value.
+        g_net_option = (value == "<empty>") ? std::string() : value;
+        g_net_attempted = false;
+        ensure_net_loaded(true);
+    } else if (name == "SimdLevel") {
+        // The network's dense layers are rearranged for the new kernels, so
+        // no search may be reading them.
+        end_search();
+        std::string level = value;
+        std::transform(level.begin(), level.end(), level.begin(),
+                       [](unsigned char ch) { return char(std::tolower(ch)); });
+        safe_output("info string " + nnue::set_simd_level(level) + "\n");
+    } else {
+        safe_output("info string no option named " + name + "; ignored\n");
     }
 }
 
-void handle_quit() {
-    g_stop_requested = true;
-    stop.store(true, std::memory_order_seq_cst);
-}
-
 void uci_loop() {
-    // Debug logging disabled
-    // dbglog = fopen("C:\\Users\\chang\\Downloads\\Luminex\\luminex_debug.log", "w");
-
     std::string line;
 
     while (std::getline(std::cin, line)) {
-        // Log received command
-        if (dbglog) { fprintf(dbglog, "RECV: [%s]\n", line.c_str()); fflush(dbglog); }
-
         if (!line.empty() && line.back() == '\r') {
             line.pop_back();
         }
@@ -845,7 +749,6 @@ void uci_loop() {
         } else if (cmd == "setoption") {
             handle_setoption(line);
         } else if (cmd == "stop") {
-            if (dbglog) { fprintf(dbglog, "STOP_HANDLER: setting stop=true\n"); fflush(dbglog); }
             g_stop_requested = true;  // Set volatile flag first for immediate visibility
             stop.store(true, std::memory_order_seq_cst);
             std::atomic_thread_fence(std::memory_order_seq_cst);  // Ensure visibility
@@ -913,16 +816,6 @@ void uci_loop() {
     stop.store(true, std::memory_order_seq_cst);
     g_stop_requested = true;
     wait_for_search_thread();
-
-    if (dbglog) { fclose(dbglog); }
-}
-
-void uci_send(const char* msg, ...) {
-    va_list args;
-    va_start(args, msg);
-    std::vprintf(msg, args);
-    va_end(args);
-    std::cout.flush();
 }
 
 } // namespace luminex
@@ -1505,8 +1398,8 @@ int main(int argc, char* argv[]) {
             SearchThread bench_thread([&] {
                 Position probe;
                 probe.set("rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1");
-                Limits lim;
-                lim.depth = 11;
+                SearchBudget probe_budget;
+                probe_budget.max_depth = 11;
                 // Allocate the hash table before the clock starts: the first search
                 // would otherwise allocate it inside the timed probe and report a
                 // speed that includes zeroing 256 MB, which OpenBench then scales
@@ -1514,7 +1407,7 @@ int main(int argc, char* argv[]) {
                 TT.ensure_allocated();
                 stop = false;   // search() leaves the stop flags to its caller
                 auto t0 = high_resolution_clock::now();
-                search(probe, lim);
+                search(probe, probe_budget);
                 sms = duration_cast<milliseconds>(high_resolution_clock::now() - t0).count();
                 probe_nps = sms > 0 ? nodes.load() * 1000ULL / (uint64_t)sms : 0;
 
@@ -1525,8 +1418,8 @@ int main(int argc, char* argv[]) {
                     clear_search_history();
                     Position bp;
                     bp.set(fen);
-                    Limits bl;
-                    bl.depth = bench_depth;
+                    SearchBudget bl;
+                    bl.max_depth = bench_depth;
                     stop = false;
                     search(bp, bl);
                     bench_nodes += nodes.load();
