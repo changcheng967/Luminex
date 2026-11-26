@@ -5,9 +5,15 @@ Some foundational code in this project derives from Stockfish
 (https://github.com/official-stockfish/Stockfish), which is
 copyright (C) 2004-2026 the Stockfish developers.
 
-Both Luminex's original contributions and the Stockfish-derived
-code are licensed under the GNU General Public License v3.0 as
-published by the Free Software Foundation.
+Some search and evaluation code derives from Stash
+(https://github.com/mhouppin/stash-bot), which is copyright (C)
+2019-2025 Morgan Houppin: the correction history, the history
+pruning rule and several search constants, and the hand-crafted
+evaluation's feature set (its values were fitted for Luminex).
+
+Luminex's original contributions and the Stockfish- and
+Stash-derived code are licensed under the GNU General Public License
+v3.0 as published by the Free Software Foundation.
 
 ========================================================================
 
