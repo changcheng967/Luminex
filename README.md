@@ -104,10 +104,11 @@ the speed. It is the bench OpenBench runs.
 | `Clear Hash` | button | Empty the hash table |
 
 For tuning, the search constants SPSA tunes (`SPSAParams` in
-[`src/luminex.h`](src/luminex.h)) and 24 weights of the hand-crafted
-evaluation are options too. `Skill Level`, `UCI_LimitStrength`, `UCI_Elo`
-and `SyzygyPath` are accepted for GUI compatibility and ignored: there is no
-strength limit and no tablebase probing.
+[`src/luminex.h`](src/luminex.h)) are options too. A spin option's value is
+clamped into its declared range. There is no strength limit and no tablebase
+probing, so the engine declares no `UCI_LimitStrength`, `UCI_Elo`,
+`Skill Level` or `SyzygyPath`. An option it does not declare gets an
+`info string` reply and is ignored.
 
 ## How it works
 
@@ -269,5 +270,7 @@ Makefile           OpenBench's build
 
 Luminex is licensed under the [GNU General Public License v3.0](LICENSE).
 Some of its foundations derive from
-[Stockfish](https://github.com/official-stockfish/Stockfish), also GPL-3.0.
+[Stockfish](https://github.com/official-stockfish/Stockfish), and some
+search and evaluation code from [Stash](https://github.com/mhouppin/stash-bot)
+by Morgan Houppin, both also GPL-3.0.
 The training data comes from [Leela Chess Zero](https://lczero.org/).

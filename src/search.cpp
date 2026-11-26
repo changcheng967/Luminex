@@ -53,7 +53,6 @@ void SearchThread::start(Job job) {
 
 // Forward declaration - defined in uci.cpp
 extern bool check_for_stop_command();
-extern void uci_debug_log(const char* format, ...);
 
 // Global volatile stop flag for immediate response
 // This is set by the main thread when "stop" is received
@@ -67,7 +66,7 @@ volatile bool g_stop_requested = false;
 thread_local SearchStats g_stats;
 
 // Search globals
-Limits limits;
+static SearchBudget budget;   // this search's "go" (search() takes a copy)
 SearchParams params;
 std::atomic<uint64_t> nodes;
 std::atomic<bool> stop;
@@ -464,15 +463,14 @@ static void add_lag_sample(int sample) {
 
 // At the start of a search: the previous own move's sample when there is one
 // (a ponder search takes it at the ponderhit), and this search's clock.
-static void note_clock(const Position& pos, const Limits& lim) {
-    const bool timed = lim.use_time_management();
-    const Color us = pos.side_to_move();
-    const int time_left = std::max(0, lim.time[int(us)]);
-    const int inc = std::max(0, lim.inc[int(us)]);
+static void note_clock(const Position& pos, const SearchBudget& request) {
+    const bool timed = request.on_clock();
+    const int time_left = std::max(0, request.clock_ms);
+    const int inc = std::max(0, request.increment_ms);
     const bool has_sample = timed && prev_clock.timed && pos.game_ply() == prev_clock.ply + 2;
     const int sample = has_sample ? prev_clock.time_left + prev_clock.inc - time_left - prev_clock.think_ms : 0;
-    pending_clock = {time_left, inc, pos.game_ply(), sample, timed, true, has_sample && lim.ponder};
-    if (has_sample && !lim.ponder)
+    pending_clock = {time_left, inc, pos.game_ply(), sample, timed, true, has_sample && request.ponder};
+    if (has_sample && !request.ponder)
         add_lag_sample(sample);
 }
 
@@ -512,7 +510,7 @@ bool check_time() {
         return true;
     }
 
-    if (limits.nodes && nodes >= uint64_t(limits.nodes)) {
+    if (budget.max_nodes && nodes >= budget.max_nodes) {
         stop = true;
         return true;
     }
@@ -528,21 +526,21 @@ bool check_time() {
     if (ponder_mode.load(std::memory_order_acquire)) {
         if (worker != main_search_worker || !take_ponderhit())
             return false;
-        if (limits.use_time_management() && depth1_done.load(std::memory_order_relaxed) && past_soft_limit) {
+        if (budget.on_clock() && depth1_done.load(std::memory_order_relaxed) && past_soft_limit) {
             stop = true;
             return true;
         }
     }
 
-    if (limits.movetime) {
+    if (budget.move_time_ms) {
         int elapsed = ms_since(clock_start);
-        if (elapsed >= limits.movetime && depth1_done.load(std::memory_order_relaxed)) {
+        if (elapsed >= budget.move_time_ms && depth1_done.load(std::memory_order_relaxed)) {
             stop = true;
             return true;
         }
     }
 
-    if (limits.use_time_management()) {
+    if (budget.on_clock()) {
         int elapsed = ms_since(clock_start);
         // Hard limit on the own clock: stop immediately when max_time is exceeded
         if (elapsed >= max_time && depth1_done.load(std::memory_order_relaxed)) {
@@ -552,7 +550,7 @@ bool check_time() {
     }
 
     // SAFETY: For depth-only searches (not infinite), add a 30-minute maximum
-    if (!limits.infinite && !limits.movetime && !limits.use_time_management() && limits.nodes == 0) {
+    if (!budget.infinite && !budget.move_time_ms && !budget.on_clock() && budget.max_nodes == 0) {
         auto now = std::chrono::steady_clock::now();
         int elapsed = static_cast<int>(std::chrono::duration_cast<std::chrono::milliseconds>(
             now - search_start).count());
@@ -580,8 +578,8 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
     // normal position.
     if (depth < -12) {
         if (pos.is_check()) {
-            ExtMove cap_moves[MAX_MOVES];
-            ExtMove* cap_end = generate<GEN_LEGAL>(pos, cap_moves);
+            ScoredMove cap_moves[MAX_MOVES];
+            ScoredMove* cap_end = generate<MOVES_LEGAL>(pos, cap_moves);
             if (cap_moves == cap_end) {
                 return -VALUE_MATE + ss->ply;
             }
@@ -708,12 +706,12 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
 
     // Generate moves: captures normally, but ALL evasions when in check
     // CRITICAL: When in check, we must consider king moves and blocking moves, not just captures
-    ExtMove moves[MAX_MOVES];
-    ExtMove* end;
+    ScoredMove moves[MAX_MOVES];
+    ScoredMove* end;
     if (in_check) {
-        end = generate<GEN_LEGAL>(pos, moves);  // All legal moves when in check
+        end = generate<MOVES_LEGAL>(pos, moves);  // All legal moves when in check
     } else {
-        end = generate<GEN_CAPTURE>(pos, moves);  // Only captures when not in check
+        end = generate<MOVES_CAPTURES>(pos, moves);  // Only captures when not in check
     }
 
     int moves_searched = 0;
@@ -721,7 +719,7 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
     // Score captures in qsearch by MVV-LVA for better ordering; the TT move
     // (when a capture/evasion) is searched first
     if (!in_check) {
-        for (ExtMove* it = moves; it != end; ++it) {
+        for (ScoredMove* it = moves; it != end; ++it) {
             static constexpr int pv[] = {100, 320, 330, 500, 900, 20000, 0};
             if (it->move.is_capture()) {
                 PieceType captured = it->move.is_en_passant() ? PAWN : pos.piece_type_on(it->move.to());
@@ -739,7 +737,7 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
         // Evasions: the TT move, then captures by MVV-LVA, then the rest by
         // history (they were searched in generation order, the TT move too)
         static constexpr int pv[] = {100, 320, 330, 500, 900, 20000, 0};
-        for (ExtMove* it = moves; it != end; ++it) {
+        for (ScoredMove* it = moves; it != end; ++it) {
             const Move m = it->move;
             if (m == tt_move)
                 it->value = 4000000;
@@ -753,23 +751,23 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
         }
     }
 
-    for (ExtMove* it = moves; it != end; ++it) {
+    for (ScoredMove* it = moves; it != end; ++it) {
         // FIX: Check for stop at top of move loop for faster response
         if (stop.load(std::memory_order_relaxed)) break;
 
         // Pick-best: swap the highest-scored remaining move to the front
-        ExtMove* best = it;
-        for (ExtMove* jt = it + 1; jt != end; ++jt) {
+        ScoredMove* best = it;
+        for (ScoredMove* jt = it + 1; jt != end; ++jt) {
             if (jt->value > best->value) best = jt;
         }
         if (best != it) {
-            ExtMove tmp = *it;
+            ScoredMove tmp = *it;
             *it = *best;
             *best = tmp;
         }
 
         if (in_check) {
-            // For evasions, legal() check already done by GEN_LEGAL
+            // For evasions, legal() check already done by MOVES_LEGAL
         } else if (!pos.legal(it->move, true)) {
             continue;
         }
@@ -1051,6 +1049,9 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
     // From ply 1: the rule reads only the parent's entry, a searched node there
     if (!pv_node && ss->ply >= 1 && !pos.is_check()) {
         int prior_reduction = (ss - 1)->reduction;
+        // Read once: the null-move and singular verification searches run at
+        // this same stack entry and would apply the parent's reduction again
+        (ss - 1)->reduction = 0;
         if (prior_reduction >= 3 && !opponent_worsening) {
             depth++;
         } else if (prior_reduction >= 2 && depth >= 2 && eval + (ss - 1)->static_eval > 195) {
@@ -1077,7 +1078,9 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
     {
         int rev_margin = sp.rev_fut_coeff * depth + ((ss->improving || opponent_worsening) ? 0 : sp.rfp_not_improving);
         rev_margin += std::min(eval_uncertainty / 2, 80);  // Up to 80cp extra margin when uncertain
-        if (!pv_node && !pos.is_check() && depth <= 8 && eval - rev_margin >= beta) {
+        // Not in a singular verification: ProbCut and the null move skip it too,
+        // since pruning there shortcuts the measurement it exists to make
+        if (!pv_node && !pos.is_check() && depth <= 8 && eval - rev_margin >= beta && !ss->excluded_move) {
             g_stats.rev_futility_prunes++;
             return eval;
         }
@@ -1164,10 +1167,10 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
         // Dynamic SEE threshold: capture must gain enough to reach rbeta from eval
         Value see_threshold = Value(std::max(int(rbeta - eval), 0));
 
-        ExtMove probcut_moves[MAX_MOVES];
-        ExtMove* probcut_end = generate<GEN_CAPTURE>(pos, probcut_moves);
+        ScoredMove probcut_moves[MAX_MOVES];
+        ScoredMove* probcut_end = generate<MOVES_CAPTURES>(pos, probcut_moves);
 
-        for (ExtMove* it = probcut_moves; it != probcut_end; ++it) {
+        for (ScoredMove* it = probcut_moves; it != probcut_end; ++it) {
             if (stop.load(std::memory_order_relaxed)) break;
 
             Move m = it->move;
@@ -1185,8 +1188,12 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
             ss->reduction = 0;
             if (!pos.do_move(m)) continue;
 
+            // The capture must hold in qsearch first: one whose exchange does not
+            // reach ProbCut's beta there is not worth the reduced search
+            Value value = -qsearch(pos, ss + 1, -rbeta, -rbeta + 1, 0);
             // Shallow search with reduced beta
-            Value value = -search_worker(pos, ss + 1, -rbeta, -rbeta + 1, rdepth, !cut_node);
+            if (value >= rbeta)
+                value = -search_worker(pos, ss + 1, -rbeta, -rbeta + 1, rdepth, !cut_node);
 
             pos.undo_move(m);
 
@@ -1202,8 +1209,8 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
     // Staged move generation: moves are searched in strict priority
     // phases and each phase is generated only if no cutoff occurred —
     //   Phase 1: TT move (free - already known)
-    //   Phase 2: Captures + promotions (GEN_CAPTURE)
-    //   Phase 3: Quiet moves (GEN_QUIET) - only if needed
+    //   Phase 2: Captures + promotions (MOVES_CAPTURES)
+    //   Phase 3: Quiet moves (MOVES_QUIETS) - only if needed
     // Most positions cut off on the TT move or a capture, so quiet
     // generation is skipped entirely.
     // ================================================================
@@ -1623,8 +1630,11 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
                     r_depth++;
                 else if (value < alpha + 8 && r_depth > 1)
                     r_depth--;
-                // Not at a depth the reduced search already ran: it would repeat it
-                if (r_depth > new_depth)
+                // Not at a depth the reduced search already ran: it would repeat it.
+                // A capture whose reduction came out 0 (the second move always:
+                // reductions_quiet[1] = 0) already searched at full depth: no
+                // deeper re-search either
+                if (r_depth > new_depth && new_depth < full_depth)
                     value = -search_worker(pos, ss + 1, -alpha - 1, -alpha, r_depth, !cut_node);
                 if (stop.load(std::memory_order_relaxed)) {
                     pos.undo_move(m);
@@ -1829,11 +1839,11 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
     // PHASE 2: Good captures + promotions (SEE >= 0)
     // Bad captures (SEE < 0) deferred to Phase 4 (after quiets)
     // ========================================
-    ExtMove bad_captures[64];
+    ScoredMove bad_captures[64];
     int bad_cap_count = 0;
     {
-        ExtMove captures[MAX_MOVES];
-        ExtMove* cap_end = generate<GEN_CAPTURE>(pos, captures);
+        ScoredMove captures[MAX_MOVES];
+        ScoredMove* cap_end = generate<MOVES_CAPTURES>(pos, captures);
         g_stats.captures_generated += (cap_end - captures);
 
         // Precompute enemy king check rays for capture check bonus
@@ -1842,7 +1852,7 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
         // Score captures: MVV-LVA + SEE classification + check bonus
         // Separate good (SEE >= 0) from bad (SEE < 0)
         static constexpr int piece_value[] = {100, 320, 330, 500, 900, 20000, 0};
-        for (ExtMove* it = captures; it != cap_end; ++it) {
+        for (ScoredMove* it = captures; it != cap_end; ++it) {
             Move m = it->move;
             int score = 0;
 
@@ -1883,17 +1893,17 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
         }
 
         // Pick-best through good captures only
-        for (ExtMove* it = captures; it != cap_end; ++it) {
+        for (ScoredMove* it = captures; it != cap_end; ++it) {
             if (stop.load(std::memory_order_relaxed)) break;
 
             // Pick best remaining
             {
-                ExtMove* best = it;
-                for (ExtMove* jt = it + 1; jt != cap_end; ++jt) {
+                ScoredMove* best = it;
+                for (ScoredMove* jt = it + 1; jt != cap_end; ++jt) {
                     if (jt->value > best->value) best = jt;
                 }
                 if (best != it) {
-                    ExtMove tmp = *it;
+                    ScoredMove tmp = *it;
                     *it = *best;
                     *best = tmp;
                 }
@@ -1917,14 +1927,14 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
     // ========================================
     {
         g_stats.pmg_quiet_generated++;
-        ExtMove quiets[MAX_MOVES];
-        ExtMove* quiet_end = generate<GEN_QUIET>(pos, quiets);
+        ScoredMove quiets[MAX_MOVES];
+        ScoredMove* quiet_end = generate<MOVES_QUIETS>(pos, quiets);
         g_stats.quiets_generated += (quiet_end - quiets);
 
         // Score quiets: killers + counter-moves + history + escape-aware + danger-aware
         Bitboard enemy_pawn_attacks = pawn_attacks_bb(Color(pos.side_to_move() ^ 1), pos.pieces(Color(pos.side_to_move() ^ 1), PAWN));
         Square opp_ksq = pos.king_sq(Color(pos.side_to_move() ^ 1));
-        for (ExtMove* it = quiets; it != quiet_end; ++it) {
+        for (ScoredMove* it = quiets; it != quiet_end; ++it) {
             Move m = it->move;
             int score = 0;
 
@@ -2010,17 +2020,17 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
         }
 
         // Pick-best through quiets
-        for (ExtMove* it = quiets; it != quiet_end; ++it) {
+        for (ScoredMove* it = quiets; it != quiet_end; ++it) {
             if (stop.load(std::memory_order_relaxed)) break;
 
             // Pick best remaining
             {
-                ExtMove* best = it;
-                for (ExtMove* jt = it + 1; jt != quiet_end; ++jt) {
+                ScoredMove* best = it;
+                for (ScoredMove* jt = it + 1; jt != quiet_end; ++jt) {
                     if (jt->value > best->value) best = jt;
                 }
                 if (best != it) {
-                    ExtMove tmp = *it;
+                    ScoredMove tmp = *it;
                     *it = *best;
                     *best = tmp;
                 }
@@ -2052,7 +2062,7 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
                 if (bad_captures[j].value > bad_captures[best_idx].value) best_idx = j;
             }
             if (best_idx != i) {
-                ExtMove tmp = bad_captures[i];
+                ScoredMove tmp = bad_captures[i];
                 bad_captures[i] = bad_captures[best_idx];
                 bad_captures[best_idx] = tmp;
             }
@@ -2123,14 +2133,14 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
 // the search in ponder mode, even if it's mate"). A reply ready early (the
 // depth limit, a forced mate, a book move) waits here for ponderhit or stop;
 // after a ponderhit an infinite search still waits for stop.
-void hold_reply(const Limits& lim) {
+void hold_reply(const SearchBudget& request) {
     for (;;) {
         if (g_stop_requested)
             return;
         if (ponder_mode.load(std::memory_order_acquire)) {
-            if (take_ponderhit() && !lim.infinite)
+            if (take_ponderhit() && !request.infinite)
                 return;
-        } else if (!lim.infinite) {
+        } else if (!request.infinite) {
             return;
         }
         std::this_thread::sleep_for(std::chrono::milliseconds(1));
@@ -2153,10 +2163,10 @@ void report_after_hit(const Position& root) {
 // After the reply is released: a played move's clock becomes the record the
 // next own move samples its lag from. A search not on the clock records
 // untimed, so the next one takes no sample.
-void finish_clock(const Limits& lim) {
+void finish_clock(const SearchBudget& request) {
     if (!pending_clock.valid)
         return;
-    if (!lim.ponder || hit_taken) {
+    if (!request.ponder || hit_taken) {
         const int own = ms_since(clock_start);
         prev_clock = {pending_clock.time_left, pending_clock.inc, pending_clock.ply, own, pending_clock.timed};
     }
@@ -2168,9 +2178,9 @@ void finish_clock(const Limits& lim) {
 // then captures by MVV-LVA, promotions, and quiet moves by history with the
 // root killers on top. The main thread and every helper order their roots this
 // way.
-static void order_root_moves(const Position& pos, ExtMove* moves, ExtMove* end, int depth,
+static void order_root_moves(const Position& pos, ScoredMove* moves, ScoredMove* end, int depth,
                              Move pv_move, const SearchWorker* w) {
-    for (ExtMove* it = moves; it != end; ++it) {
+    for (ScoredMove* it = moves; it != end; ++it) {
         Move m = it->move;
         int score = 0;
 
@@ -2202,8 +2212,11 @@ static void order_root_moves(const Position& pos, ExtMove* moves, ExtMove* end, 
         it->value = score;
     }
 
-    // Sort moves by score (only need to sort once per depth)
-    std::sort(moves, end, [](const ExtMove& a, const ExtMove& b) {
+    // Sort moves by score (only need to sort once per depth). Stable: equal
+    // scores (most quiet moves at a fresh history) keep the generation order,
+    // where std::sort left their order to the standard library, so libc++ and
+    // libstdc++ builds searched different trees from the same position
+    std::stable_sort(moves, end, [](const ScoredMove& a, const ScoredMove& b) {
         return a.value > b.value;
     });
 }
@@ -2228,7 +2241,7 @@ struct RootIteration {
 // fail low or high. The main thread and every helper run it, so a helper builds
 // the same tree the main thread builds and its hash entries are the ones the
 // main thread probes for.
-static RootIteration root_iteration(Position& pos, ExtMove* moves, ExtMove* end, int depth,
+static RootIteration root_iteration(Position& pos, ScoredMove* moves, ScoredMove* end, int depth,
                                     Value alpha, Value beta, int aspiration_delta) {
     RootIteration r;
     int fail_high_streak = 0;
@@ -2256,7 +2269,7 @@ static RootIteration root_iteration(Position& pos, ExtMove* moves, ExtMove* end,
         int root_moves_searched = 0;
         Value running_alpha = alpha;  // PVS window only, NOT the aspiration bound
 
-        for (ExtMove* it = moves; it != end; ++it) {
+        for (ScoredMove* it = moves; it != end; ++it) {
             if (g_stop_requested || stop.load(std::memory_order_relaxed)) break;
             if (check_time()) break;
 
@@ -2344,7 +2357,7 @@ static RootIteration root_iteration(Position& pos, ExtMove* moves, ExtMove* end,
             fail_high_streak++;
             // The move that failed high leads the re-search (the old first
             // move went first again and took the full window)
-            for (ExtMove* it = moves + 1; it != end; ++it)
+            for (ScoredMove* it = moves + 1; it != end; ++it)
                 if (it->move == r.best_move) { std::rotate(moves, it, it + 1); break; }
             beta = std::min(Value(VALUE_INFINITE),
                             Value(r.best_value + aspiration_delta));
@@ -2407,7 +2420,7 @@ static void helper_thread_func(Position pos_copy, int thread_id) {
 
     Move prev_best = MOVE_NONE;
     Value prev_value = -VALUE_INFINITE;
-    const int effective_depth = (limits.depth == 0) ? MAX_PLY : limits.depth;
+    const int effective_depth = budget.max_depth == 0 ? MAX_PLY : budget.max_depth;
 
     for (int d = 1; d <= effective_depth; ) {
         if (stop.load(std::memory_order_relaxed) || g_stop_requested) break;
@@ -2421,8 +2434,8 @@ static void helper_thread_func(Position pos_copy, int thread_id) {
             beta = std::min(Value(VALUE_INFINITE), Value(prev_value + aspiration_delta));
         }
 
-        ExtMove moves[MAX_MOVES];
-        ExtMove* end = generate<GEN_LEGAL>(pos_copy, moves);
+        ScoredMove moves[MAX_MOVES];
+        ScoredMove* end = generate<MOVES_LEGAL>(pos_copy, moves);
         order_root_moves(pos_copy, moves, end, d, prev_best, w);
         const RootIteration r = root_iteration(pos_copy, moves, end, d, alpha, beta, aspiration_delta);
         if (stop.load(std::memory_order_relaxed)) break;
@@ -2445,8 +2458,8 @@ static void helper_thread_func(Position pos_copy, int thread_id) {
 }
 
 // Root search with iterative deepening
-Move search(Position& pos, Limits& lim) {
-    limits = lim;
+Move search(Position& pos, const SearchBudget& request) {
+    budget = request;
     pos.mark_root();
     root_side.store(int(pos.side_to_move()), std::memory_order_relaxed);
     // The stop flags are the caller's to clear (handle_go, bench) before the
@@ -2471,8 +2484,8 @@ Move search(Position& pos, Limits& lim) {
     bool score_dropped_sharply = false;  // Score drop extension flag
 
     // Check if we have any legal moves at all
-    ExtMove initial_moves[MAX_MOVES];
-    ExtMove* initial_end = generate<GEN_LEGAL>(pos, initial_moves);
+    ScoredMove initial_moves[MAX_MOVES];
+    ScoredMove* initial_end = generate<MOVES_LEGAL>(pos, initial_moves);
 
     if (initial_moves == initial_end) {
         // No legal moves for us - we are checkmated or stalemated
@@ -2518,11 +2531,10 @@ Move search(Position& pos, Limits& lim) {
     // spawning first left the helpers reading the previous search's values for
     // the first instant of each search (same shape as the correction-history
     // bug: shared state written after the readers have already started).
-    note_clock(pos, limits);
-    if (limits.use_time_management()) {
-        Color us = pos.side_to_move();
-        int time_left = limits.time[int(us)];
-        int time_inc = limits.inc[int(us)];
+    note_clock(pos, budget);
+    if (budget.on_clock()) {
+        int time_left = budget.clock_ms;
+        int time_inc = budget.increment_ms;
 
         if (time_left < 0) time_left = 0;
         if (time_inc < 0) time_inc = 0;
@@ -2530,20 +2542,20 @@ Move search(Position& pos, Limits& lim) {
         int overhead = std::max(0, params.move_overhead_ms);
         int move_no  = pos.game_ply() / 2 + 1;
 
-        if (limits.movestogo > 0 && params.time_moves_to_go > 0) {
+        if (budget.moves_to_go > 0 && params.time_moves_to_go > 0) {
             // Moves to go: the clock above a small reserve (it refills after
             // this block; 0.1 s at the default overhead) spread over the
             // value-weighted horizon to the block's last move, plus 90% of
             // any increment. Before the last move of the block, one move takes
             // at most 2/3 of the excess.
-            int mtg     = std::max(1, limits.movestogo);
+            int mtg     = std::max(1, budget.moves_to_go);
             int excess  = std::max(0, time_left - overhead - std::max(100, 3 * overhead));
             int target  = int(excess / value_horizon(move_no, move_no + mtg - 1)) + time_inc * 9 / 10;
             int hard    = (mtg > 1 ? excess * 2 / 3 : excess) + time_inc * 9 / 10;
             ideal_time  = std::min(target * 116 / 100, hard);
             max_time    = std::min(hard, std::max(ideal_time * 2, time_inc + 50));
-        } else if (limits.movestogo > 0) {
-            int mtg = std::max(1, limits.movestogo);
+        } else if (budget.moves_to_go > 0) {
+            int mtg = std::max(1, budget.moves_to_go);
             ideal_time = time_left / mtg + time_inc - overhead;
             max_time = time_left / std::max(1, mtg / 2) + time_inc - overhead;
         } else if (time_inc == 0 && params.time_zero_inc > 0) {
@@ -2633,7 +2645,7 @@ Move search(Position& pos, Limits& lim) {
     // When depth=0, search until time runs out (tournament time control)
     // When depth>0, search to that specific depth
     // Always start from depth 1 for proper iterative deepening
-    int effective_depth = (limits.depth == 0) ? MAX_PLY : limits.depth;
+    int effective_depth = budget.max_depth == 0 ? MAX_PLY : budget.max_depth;
     int start_depth = 1;
     int last_aspiration_attempts = 1;  // root sharpness signal for time mgmt
     // Node-effort signals from the PREVIOUS depth iteration: the values are
@@ -2663,7 +2675,7 @@ Move search(Position& pos, Limits& lim) {
         // thinking time (elapsed, pondering included); the hard limit is on the
         // own clock (own, from the ponderhit). Without pondering both are the
         // same time.
-        if (limits.use_time_management() && root_depth > 1) {
+        if (budget.on_clock() && root_depth > 1) {
             const auto now = std::chrono::steady_clock::now();
             const int elapsed = ms_between(search_start, now);
             const int own = ms_between(clock_start, now);
@@ -2712,8 +2724,8 @@ Move search(Position& pos, Limits& lim) {
                 break;
             }
         }
-        if (limits.movetime && !ponder_mode.load(std::memory_order_relaxed)) {
-            if (ms_since(clock_start) >= (limits.movetime * 7) / 10) {
+        if (budget.move_time_ms && !ponder_mode.load(std::memory_order_relaxed)) {
+            if (ms_since(clock_start) >= (budget.move_time_ms * 7) / 10) {
                 break;
             }
         }
@@ -2739,8 +2751,8 @@ Move search(Position& pos, Limits& lim) {
         main_depth.store(root_depth, std::memory_order_relaxed);
 
         // Generate moves and order them for the root
-        ExtMove moves[MAX_MOVES];
-        ExtMove* end = generate<GEN_LEGAL>(pos, moves);
+        ScoredMove moves[MAX_MOVES];
+        ScoredMove* end = generate<MOVES_LEGAL>(pos, moves);
         order_root_moves(pos, moves, end, root_depth, best_move, worker);
 
         // MultiPV mode: every root move gets a full-window search and the
@@ -2754,7 +2766,7 @@ Move search(Position& pos, Limits& lim) {
             // the other path)
             iter_depth = root_depth;
 
-            for (ExtMove* it = moves; it != end; ++it) {
+            for (ScoredMove* it = moves; it != end; ++it) {
                 if (g_stop_requested || stop.load(std::memory_order_relaxed)) break;
                 if (check_time()) break;
                 if (!pos.do_move(it->move)) { mv_scores[it - moves] = -VALUE_INFINITE; continue; }
@@ -2777,7 +2789,7 @@ Move search(Position& pos, Limits& lim) {
 
                 // Rewrite the move list in ranked order so the next (and
                 // final) iteration orders by strength
-                ExtMove ranked[MAX_MOVES];
+                ScoredMove ranked[MAX_MOVES];
                 for (int i = 0; i < n_moves; ++i) {
                     ranked[i] = moves[idx[i]];
                     ranked[i].value = 2000000 - i;  // carry rank into next sort
@@ -2907,18 +2919,18 @@ Move search(Position& pos, Limits& lim) {
         Piece pc = pos.piece_on(best_move.from());
         if (pc == NO_PIECE || color_of_piece(pc) != pos.side_to_move()) {
             // Move references wrong-color piece - fall back
-            ExtMove fallback_moves[MAX_MOVES];
-            ExtMove* fallback_end = generate<GEN_LEGAL>(pos, fallback_moves);
+            ScoredMove fallback_moves[MAX_MOVES];
+            ScoredMove* fallback_end = generate<MOVES_LEGAL>(pos, fallback_moves);
             best_move = (fallback_end > fallback_moves) ? fallback_moves[0].move : MOVE_NONE;
         }
     }
 
     // Final safety: verify best_move is actually in the legal move list
     if (best_move != MOVE_NONE) {
-        ExtMove verify_moves[MAX_MOVES];
-        ExtMove* verify_end = generate<GEN_LEGAL>(pos, verify_moves);
+        ScoredMove verify_moves[MAX_MOVES];
+        ScoredMove* verify_end = generate<MOVES_LEGAL>(pos, verify_moves);
         bool found_in_legal = false;
-        for (ExtMove* vit = verify_moves; vit != verify_end; ++vit) {
+        for (ScoredMove* vit = verify_moves; vit != verify_end; ++vit) {
             if (vit->move.raw() == best_move.raw()) {
                 found_in_legal = true;
                 break;

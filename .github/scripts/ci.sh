@@ -10,6 +10,7 @@
 #   sde                               fetch Intel SDE, print the launcher's path
 #   dev-release DIST                  publish the rolling luminex-dev pre-release
 #   deps BINARY ASSET                 the binary needs no more from the system than its notes say
+#   bench-line SHA BENCH              the commit's last Bench: line is the node count the builds measured
 # Below them: the network pin, which CMake reads too; and, before deps, the
 # format of a release's notes.
 
@@ -566,7 +567,8 @@ done
 #
 # One bold line per area (network, time management, search, speed, ...) with
 # its PR links, then short plain bullets: what changed, a sentence each. No
-# figures here; they go in Measured gains.
+# figures: the release's own Elo is in Strength, and each change's is on its
+# PR and test page.
 #
 # ## Strength
 #
@@ -577,17 +579,13 @@ done
 #
 # One line of conditions (threads, hash, time control, openings), then any
 # caveat. The results against each opponent go in a collapsed `<details>` table.
+# Quote each Elo as its OpenBench test page shows it, with the 95% interval,
+# and link the page: commit messages keep the figure of their day, which drifts
+# when OpenBench's error model changes (v6.6.0's first notes quoted several
+# that had).
 #
-# ## Measured gains
-#
-# | Change | Elo | PR | Test |
-# |---|---:|:---:|:---:|
-#
-# One row per SPRT, grouped under bold rows by area. Quote each Elo as its
-# OpenBench test page shows it, with the 95% interval, and link the page:
-# commit messages keep the figure of their day, which drifts when OpenBench's
-# error model changes (v6.6.0's first notes quoted several that had). Mark a
-# non-regression test, and a test stopped undecided.
+# No table of each change's SPRT: it was the longest part of the notes and
+# few read it (v6.6.0's was removed); the PRs and their test pages keep them.
 #
 # ## Downloads
 #
@@ -633,6 +631,30 @@ done
 # ## Credits
 #
 # Training data, testing, attribution; the license line.
+
+# ----- bench-line
+# The commit's last "Bench: N" line must be BENCH, the node count every build
+# measured: OpenBench takes a test's bench from that line, and a worker whose
+# build counts another number refuses the test. A commit without the line (a
+# merge of main into a branch) gets a warning. The message is read through the
+# API, so the job needs only this script.
+cmd_bench_line() {
+    local sha=${1:-} bench=${2:-} msg line n
+    [ -n "$sha" ] && [ -n "$bench" ] || { echo "usage: ci.sh bench-line SHA BENCH" >&2; exit 2; }
+    msg=$(gh api "repos/$GITHUB_REPOSITORY/commits/$sha" --jq .commit.message) || { echo "cannot read commit $sha" >&2; exit 1; }
+    line=$(printf '%s\n' "$msg" | tr -d '\r' | grep -E '^Bench: [0-9]+ *$' | tail -n 1 || true)
+    if [ -z "$line" ]; then
+        echo "::warning::commit ${sha:0:8} has no 'Bench: N' line; the builds count $bench"
+        return 0
+    fi
+    n=${line#Bench: }
+    n=${n%% *}
+    echo "commit ${sha:0:8}: Bench: $n; the builds count $bench"
+    if [ "$n" != "$bench" ]; then
+        echo "::error::commit ${sha:0:8} says Bench: $n, but the builds count $bench (the last Bench line is the one read)"
+        exit 1
+    fi
+}
 
 # ----- deps (Python: reads the ELF, PE or Mach-O headers)
 cmd_deps() {
@@ -866,6 +888,6 @@ PY
 cmd=${1:-}
 shift || true
 case "$cmd" in
-    clang|fetch-net|isa|name|net|simd|sde|dev-release|deps) "cmd_${cmd//-/_}" "$@" ;;
-    *) sed -n '2,14p' "$0" >&2; exit 2 ;;
+    clang|fetch-net|isa|name|net|simd|sde|dev-release|deps|bench-line) "cmd_${cmd//-/_}" "$@" ;;
+    *) sed -n '2,15p' "$0" >&2; exit 2 ;;
 esac

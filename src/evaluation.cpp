@@ -16,12 +16,12 @@ namespace luminex {
 // ============================================================
 static_assert(feat::NPHASE == 632);
 
-EvalParams g_eval_params;
-
 // ============================================================
 // Handcrafted evaluation (HCE fallback — NNUE is used when a net is
-// loaded). All values derived from chess principles; nothing is
-// borrowed from PeSTO, Ethereal, Stash or any other engine.
+// loaded). The feature set follows Stash's evaluation (Morgan Houppin,
+// GPL-3.0): far knights, bishop pawns on its colour, long diagonals,
+// rook x-rays to the queen, distant pieces, hanging pawns and more.
+// The values were fitted for Luminex by its own solver.
 //
 //   1. Piece values: classical MG/EG ratios
 //   2. PST tables: square value by piece type and phase
@@ -403,7 +403,12 @@ static void evaluate_pawns(const Position& pos, int32_t& mg_out, int32_t& eg_out
 
             // Pawn phalanx: side-by-side pawns on same rank
             {
-                Bitboard neighbors = our_pawns & (file_bb(File(f - 1)) | file_bb(File(f + 1)));
+                // The adjacent files on the board only: file_bb(File(-1)) and
+                // file_bb(File(8)) read past BB_FILES, whatever the build put there
+                Bitboard adjacent = 0;
+                if (f > FILE_A) adjacent |= file_bb(File(f - 1));
+                if (f < FILE_H) adjacent |= file_bb(File(f + 1));
+                Bitboard neighbors = our_pawns & adjacent;
                 Bitboard same_rank = neighbors & rank_bb(rank_of(sq));
                 if (same_rank) {
                     if (r >= RANK_2 && r <= RANK_7) {
@@ -587,8 +592,8 @@ bool known_endgame(const Position& pos, Value& value) {
     if (mating) {
         // A stalemated bare king draws; the search sees that only at nodes that generate moves
         if (pos.side_to_move() != strong && !pos.is_check()) {
-            ExtMove moves[MAX_MOVES];
-            if (generate<GEN_LEGAL>(pos, moves) == moves) { value = VALUE_DRAW; return true; }
+            ScoredMove moves[MAX_MOVES];
+            if (generate<MOVES_LEGAL>(pos, moves) == moves) { value = VALUE_DRAW; return true; }
         }
         const Value v = mating_value(pos, strong);
         value = pos.side_to_move() == strong ? v : -v;
@@ -1671,31 +1676,6 @@ static void init_fitted_eval() {
             CandMG[sup][r] = FE_MG[PAWN_CAND + sup * 7 + r - 1];
             CandEG[sup][r] = FE_EG[PAWN_CAND + sup * 7 + r - 1];
         }
-
-    g_eval_params.outpost_knight_mg = FE_MG[OUTPOST_N];
-    g_eval_params.outpost_knight_eg = FE_EG[OUTPOST_N];
-    g_eval_params.outpost_bishop_mg = FE_MG[OUTPOST_B];
-    g_eval_params.outpost_bishop_eg = FE_EG[OUTPOST_B];
-    g_eval_params.far_knight_mg = -FE_MG[FAR_N];
-    g_eval_params.far_knight_eg = -FE_EG[FAR_N];
-    g_eval_params.far_bishop_mg = -FE_MG[FAR_B];
-    g_eval_params.far_bishop_eg = -FE_EG[FAR_B];
-    g_eval_params.rook_open_mg = FE_MG[ROOK_OPEN];
-    g_eval_params.rook_open_eg = FE_EG[ROOK_OPEN];
-    g_eval_params.rook_semi_open_mg = FE_MG[ROOK_SEMI];
-    g_eval_params.rook_semi_open_eg = FE_EG[ROOK_SEMI];
-    g_eval_params.rook_7th_mg = FE_MG[ROOK_7TH];
-    g_eval_params.rook_7th_eg = FE_EG[ROOK_7TH];
-    g_eval_params.pawn_shield_knight = FE_MG[SHIELD_R1];
-    g_eval_params.pawn_shield_center = FE_MG[SHIELD_R2];
-    g_eval_params.pawn_shield_rook = FE_MG[SHIELD_R3];
-    g_eval_params.open_file_penalty_mg = -FE_MG[OPEN_KFILE];
-    g_eval_params.open_file_penalty_eg = -FE_MG[OPEN_ADJ];
-    g_eval_params.pawn_storm = -FE_MG[STORM];
-    g_eval_params.hanging_pawn_mg = FE_MG[HANG_PAWN];
-    g_eval_params.hanging_pawn_eg = FE_EG[HANG_PAWN];
-    g_eval_params.bishop_pair_mg = FE_MG[BISHOP_PAIR];
-    g_eval_params.bishop_pair_eg = FE_EG[BISHOP_PAIR];
 }
 
 void init_evaluation() {
@@ -1740,13 +1720,6 @@ void sync_eval_params() {
     PieceValueEG[ROOK]   = g_params[ROOK_VALUE_EG];
     PieceValueMG[QUEEN]  = g_params[QUEEN_VALUE_MG];
     PieceValueEG[QUEEN]  = g_params[QUEEN_VALUE_EG];
-
-    g_eval_params.bishop_pair_mg    = g_params[BISHOP_PAIR_MG];
-    g_eval_params.bishop_pair_eg    = g_params[BISHOP_PAIR_EG];
-    g_eval_params.rook_open_mg      = g_params[ROOK_OPEN_FILE_MG];
-    g_eval_params.rook_open_eg      = g_params[ROOK_OPEN_FILE_EG];
-    g_eval_params.rook_semi_open_mg = g_params[ROOK_SEMI_OPEN_MG];
-    g_eval_params.rook_semi_open_eg = g_params[ROOK_SEMI_OPEN_EG];
 
     // Mobility lookup tables
     for (int i = 0; i < 9; i++) {
@@ -1854,7 +1827,7 @@ void init_tuner_params() {
         g_params[QUEEN_MOB_EG_0 + i] = -38 + 3 * i;
     }
 
-    // Key EvalParams
+    // Bishop pair, rooks on open and half-open files
     g_params[BISHOP_PAIR_MG]    = 40;
     g_params[BISHOP_PAIR_EG]    = 100;
     g_params[ROOK_OPEN_FILE_MG] = 25;

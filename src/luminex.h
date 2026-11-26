@@ -36,14 +36,16 @@ class Move;
 constexpr int MAX_PLY = 246;
 constexpr int MAX_MOVES = 512;
 
-// Move generation types
-enum GenType : int {
-    GEN_LEGAL,
-    GEN_CAPTURE,
-    GEN_QUIET,
-    GEN_EVASION,
-    GEN_NON_EVASION,
-    GEN_ALL
+// The move sets the generator produces: legal moves; captures and
+// promotions; quiet moves; evasions of a check; every pseudo-legal move
+// outside check; captures and quiets together
+enum MoveSet : int {
+    MOVES_LEGAL,
+    MOVES_CAPTURES,
+    MOVES_QUIETS,
+    MOVES_EVASIONS,
+    MOVES_PSEUDO,
+    MOVES_ALL
 };
 
 // Piece types
@@ -484,27 +486,32 @@ constexpr bool more_than_one(Bitboard b) {
 // Magic Bitboard tables for sliding piece attacks
 // ============================================================
 
-struct Magic {
-    Bitboard mask;
-    Bitboard magic;
-    Bitboard* attacks;
-    unsigned shift;
+// A slider's attack set is looked up by hashing the occupancy of the
+// squares on its lines (the multiply-shift technique known as magic
+// bitboards). Luminex's layout: each square's entry is 24 bytes, beside its
+// neighbours', and indexes one exact-size table holding every rook attack
+// set, then every bishop one. The multipliers are our own search's.
+struct SliderHash {
+    Bitboard mask;     // the squares whose occupancy changes the attack set
+    Bitboard factor;   // multiplies that occupancy into a perfect index
+    uint32_t offset;   // this square's first slot in SliderAttacks
+    uint32_t shift;    // 64 less the index's bits
 };
 
-extern Magic RookMagics[64];
-extern Magic BishopMagics[64];
-extern Bitboard RookTable[262144];   // Large enough for all rook entries
-extern Bitboard BishopTable[65536];  // Large enough for all bishop entries
+constexpr int ROOK_ATTACK_SLOTS = 102400;    // sum over squares of 2^(mask bits)
+constexpr int BISHOP_ATTACK_SLOTS = 5248;
+extern SliderHash RookHash[64];
+extern SliderHash BishopHash[64];
+extern Bitboard SliderAttacks[ROOK_ATTACK_SLOTS + BISHOP_ATTACK_SLOTS];
 
-// Magic bitboard attack lookups - O(1) table lookup
 inline Bitboard rook_attacks_bb(Square s, Bitboard occupied) {
-    const Magic& m = RookMagics[int(s)];
-    return m.attacks[((occupied & m.mask) * m.magic) >> m.shift];
+    const SliderHash& h = RookHash[int(s)];
+    return SliderAttacks[h.offset + uint32_t(((occupied & h.mask) * h.factor) >> h.shift)];
 }
 
 inline Bitboard bishop_attacks_bb(Square s, Bitboard occupied) {
-    const Magic& m = BishopMagics[int(s)];
-    return m.attacks[((occupied & m.mask) * m.magic) >> m.shift];
+    const SliderHash& h = BishopHash[int(s)];
+    return SliderAttacks[h.offset + uint32_t(((occupied & h.mask) * h.factor) >> h.shift)];
 }
 
 inline Bitboard rook_attacks_bb(Square s) {
@@ -637,6 +644,9 @@ public:
 
     Bitboard checkers() const;
     Bitboard pinned() const;
+    // Pieces of either colour alone between the side to move's king and an
+    // enemy slider aimed at it (set_check_info computes them)
+    Bitboard king_blockers() const;
 
     Square ep_square() const;
     Square king_sq(Color c) const;
@@ -692,7 +702,7 @@ private:
     void set_check_info(StateInfo* st);
     bool validate_move(Move m, Square from, Square to, Piece moved_pc, PieceType captured) const;
 
-    Bitboard slider_blockers(Bitboard sliders, Bitboard& pinners) const;
+    Bitboard xray_blockers(Bitboard& pinners) const;
 
     Bitboard pieces_by_type[ALL_PIECES] = {};
     Bitboard pieces_by_color[NO_COLOR] = {};
@@ -739,6 +749,7 @@ inline Color Position::side_to_move() const { return side_to_move_; }
 
 inline Bitboard Position::checkers() const { return st_->checkers; }
 inline Bitboard Position::pinned() const { return st_->pinned; }
+inline Bitboard Position::king_blockers() const { return st_->block_checkers; }
 
 inline Square Position::ep_square() const { return st_->ep_square; }
 inline Square Position::king_sq(Color c) const { return king_square[c]; }
@@ -792,25 +803,19 @@ enum : Direction {
 
 namespace luminex {
 
-struct ExtMove {
+// A generated move and the score move ordering gives it
+struct ScoredMove {
     Move move;
     Value value;
-
-    constexpr operator Move() const { return move; }
-    void operator=(Move m) { move = m; }
-
-    // For sorting
-    bool operator<(const ExtMove& other) const { return value > other.value; }
-    bool operator>(const ExtMove& other) const { return value < other.value; }
 };
 
 class Position;
 
-template<GenType T>
-ExtMove* generate(const Position& pos, ExtMove* moveList);
+template<MoveSet T>
+ScoredMove* generate(const Position& pos, ScoredMove* moveList);
 
-inline ExtMove* generate_legals(const Position& pos, ExtMove* moveList) {
-    return generate<GEN_LEGAL>(pos, moveList);
+inline ScoredMove* generate_legals(const Position& pos, ScoredMove* moveList) {
+    return generate<MOVES_LEGAL>(pos, moveList);
 }
 
 // Move ordering values (indexed by PieceType: PAWN=0, KNIGHT=1, ...)
@@ -1077,36 +1082,6 @@ extern Score PST_EG_TABLE[2][8][64];
 // PSQ_MG[c][pt][sq] = PieceValueMG[pt] + PST_MG_TABLE[c][pt][sq] (white-positive)
 extern int PSQ_MG[2][8][64];
 extern int PSQ_EG[2][8][64];
-
-// Evaluation parameters (self-engineered from chess first principles)
-struct EvalParams {
-    int bishop_pair_mg = 40;
-    int bishop_pair_eg = 100;
-    int rook_open_mg = 25;
-    int rook_open_eg = 40;
-    int rook_semi_open_mg = 15;
-    int rook_semi_open_eg = 20;
-    int rook_7th_mg = 30;
-    int rook_7th_eg = 25;
-    int pawn_shield_center = 12;
-    int pawn_shield_knight = 15;
-    int pawn_shield_rook = 8;
-    int pawn_storm = 10;
-    int open_file_penalty_mg = 20;
-    int open_file_penalty_eg = 15;
-    int outpost_knight_mg = 30;
-    int outpost_knight_eg = 15;
-    int outpost_bishop_mg = 40;
-    int outpost_bishop_eg = 25;
-    int hanging_pawn_mg = 10;
-    int hanging_pawn_eg = 35;
-    int far_knight_mg = 15;
-    int far_knight_eg = 5;
-    int far_bishop_mg = 10;
-    int far_bishop_eg = 5;
-};
-
-extern EvalParams g_eval_params;
 
 // Main evaluation function
 Value evaluate(const Position& pos, bool tactical_only = false);
@@ -1590,7 +1565,7 @@ enum ParamIdx : size_t {
     QUEEN_MOB_EG_26,
     QUEEN_MOB_EG_27,
 
-    // Key EvalParams (6)
+    // Bishop pair, rooks on open and half-open files (6)
     BISHOP_PAIR_MG,
     BISHOP_PAIR_EG,
     ROOK_OPEN_FILE_MG,
@@ -1754,20 +1729,22 @@ public:
     Stack* previous = nullptr;
 };
 
-// Search limits
-struct Limits {
-    int time[2] = {};
-    int inc[2] = {};
-    int npmsec = 0;
-    int movetime = 0;
-    int depth = 0;  // Default 0 to allow time management
-    int nodes = 0;
-    int movestogo = 0;  // UCI movestogo parameter for time management
-    uint64_t mate = 0;
-    bool infinite = false;
-    bool ponder = false;
+// What one "go" asks of the search. The clock is the side to move's own (the
+// UCI reader takes wtime/winc or btime/binc for it; the search never needs the
+// opponent's). Every limit that is set can end the search, the first reached
+// winning; with none, the time manager spends the clock.
+struct SearchBudget {
+    int clock_ms = 0;        // our remaining time ("wtime" or "btime")
+    int increment_ms = 0;    // our increment ("winc" or "binc")
+    int moves_to_go = 0;     // moves to the next time control; 0 = none
+    int move_time_ms = 0;    // "movetime": think this long
+    int max_depth = 0;       // "depth": stop after this iteration
+    uint64_t max_nodes = 0;  // "nodes": stop after this many nodes
+    bool infinite = false;   // "infinite": only "stop" ends the search
+    bool ponder = false;     // "ponder": on the opponent's time until ponderhit
 
-    bool use_time_management() const { return !movetime && !depth && !nodes && !mate && !infinite; }
+    // No fixed limit: the time manager decides when to stop
+    bool on_clock() const { return !move_time_ms && !max_depth && !max_nodes && !infinite; }
 };
 
 // Search parameters
@@ -1874,7 +1851,7 @@ class Position;
 class TranspositionTable;
 
 // Root search
-Move search(Position& pos, Limits& limits);
+Move search(Position& pos, const SearchBudget& request);
 
 // Rebuild the tables derived from SPSAParams (call after changing a param)
 void init_search_params();
@@ -1893,7 +1870,6 @@ void uci_info(const Position& pos, int depth, Value score, uint64_t nodes, int t
               int multipv = 1, Move seed_move = MOVE_NONE, bool lower_bound = false);
 
 // Search globals
-extern Limits limits;
 extern SearchParams params;
 extern std::atomic<uint64_t> nodes;
 extern std::atomic<bool> stop;
@@ -1906,8 +1882,8 @@ extern std::atomic<bool> ponderhit_received;
 // Called by the search thread once the reply (bestmove) is ready, in this
 // order: a ponder or infinite search's reply waits for ponderhit or stop; then
 // a played move's clock is recorded for the next own move's lag sample.
-void hold_reply(const Limits& lim);
-void finish_clock(const Limits& lim);
+void hold_reply(const SearchBudget& request);
+void finish_clock(const SearchBudget& request);
 // After hold_reply, for a search's reply (not a book move's): the line a
 // reply after a ponderhit needs when none was printed since the hit.
 void report_after_hit(const Position& root);
@@ -2169,22 +2145,13 @@ bool run_nnuecheck(const std::string& net_file);
 
 // UCI command handlers
 void handle_uci();
-void handle_isready();
 void handle_ucinewgame();
 void handle_position(Position& pos, const std::string& cmd);
 void handle_go(Position& pos, const std::string& cmd);
 void handle_setoption(const std::string& cmd);
-void handle_stop();
-void handle_quit();
-
-// UCI output
-void uci_send(const char* msg, ...);
 
 // Thread-safe output for use by search thread
 void uci_safe_output(const std::string& msg);
-
-// Debug logging for search thread
-void uci_debug_log(const char* format, ...);
 
 } // namespace luminex
 
