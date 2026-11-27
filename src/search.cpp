@@ -563,6 +563,18 @@ bool check_time() {
     return false;
 }
 
+// LUMINEX_ORDER_LOG (a measurement build, off in every normal build): at a sampled non-PV node of depth >= 3 that
+// fails high, one stderr line "ORD depth cut_node ttPv n" and, for every move searched there in order (the last is the
+// one that cut), "stage,score,hist,cont1,cont2,lowply,caphist,flags,piece,victim,from,to": the move picker's stage
+// (1 TT move, 2 good captures, 3 quiets, 4 bad captures) and its score there, the history terms as they were when the
+// move was picked, and flags (1 killer 1, 2 killer 2, 4 counter move, 8 gives check, 16 quiet, 32 capture,
+// 64 promotion, 128 from-square attacked by an enemy pawn, 256 to-square attacked by one, 512 to next to the enemy king)
+#ifdef LUMINEX_ORDER_LOG
+#define ORD_SET(st, sc) (ord_stage = (st), ord_score = int(sc))
+#else
+#define ORD_SET(st, sc) ((void)0)
+#endif
+
 // Quiescence search
 Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
     // Check for max ply to prevent stack overflow
@@ -1453,6 +1465,15 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
         return bishop_snipers != 0 || rook_snipers != 0;
     };
 
+#ifdef LUMINEX_ORDER_LOG
+    struct OrdRec { int stage, score, hist, c1, c2, lp, caph; unsigned flags; int piece, victim, from, to; };
+    OrdRec ord_recs[48];
+    int ord_n = 0, ord_stage = 0, ord_score = 0;
+    const bool ord_on = !pv_node && !ss->excluded_move && depth >= 3 && (pos.key() & 63) == 0;
+    const Color ord_them = Color(pos.side_to_move() ^ 1);
+    const Bitboard ord_epa = ord_on ? pawn_attacks_bb(ord_them, pos.pieces(ord_them, PAWN)) : 0;
+#endif
+
     // Helper lambda: search a single move, return true if beta cutoff
     auto search_move = [&](Move m, bool is_quiet) -> bool {
         if (stop.load(std::memory_order_relaxed)) return false;
@@ -1597,6 +1618,30 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
         //
         const int full_depth = depth - 1 + ext_count;
 
+#ifdef LUMINEX_ORDER_LOG
+        if (ord_on && ord_n < 48) {   // this move is searched: record what the picker knew of it
+            OrdRec& r = ord_recs[ord_n++];
+            const Piece pc = pos.piece_on(m.from());
+            r.stage = ord_stage; r.score = ord_score;
+            r.hist = pc != NO_PIECE ? worker->history[int(pc)][int(m.to())] : 0;
+            r.c1 = pc != NO_PIECE && ss->ply >= 1 && (ss - 1)->current_move != MOVE_NONE && (ss - 1)->moved_piece != NO_PIECE
+                 ? worker->counter_moves[int((ss - 1)->moved_piece)][int((ss - 1)->current_move.to())][int(pc)][int(m.to())] : 0;
+            r.c2 = pc != NO_PIECE && ss->ply >= 2 && (ss - 2)->current_move != MOVE_NONE && (ss - 2)->moved_piece != NO_PIECE
+                 ? worker->continuation_history[int((ss - 2)->moved_piece)][int((ss - 2)->current_move.to())][int(pc)][int(m.to())] : 0;
+            r.lp = pc != NO_PIECE && ss->ply >= 1 && ss->ply <= 3 ? worker->low_ply_history[ss->ply][int(pc)][int(m.to())] : 0;
+            r.caph = pc != NO_PIECE && captured_pt != PT_NONE ? worker->capture_history[int(pc)][int(m.to())][int(captured_pt)] : 0;
+            const bool counter = ss->ply >= 1 && (ss - 1)->current_move != MOVE_NONE && (ss - 1)->moved_piece != NO_PIECE
+                && m == worker->counter_move_table[int((ss - 1)->moved_piece)][int((ss - 1)->current_move.to())];
+            const int kd = std::max(abs(int(m.to() % 8) - int(enemy_ksq % 8)), abs(int(m.to() / 8) - int(enemy_ksq / 8)));
+            r.flags = unsigned(ss->ply < MAX_PLY && m == worker->killers[ss->ply][0]) | unsigned(ss->ply < MAX_PLY && m == worker->killers[ss->ply][1]) << 1
+                    | unsigned(counter) << 2 | unsigned(gives_chk) << 3 | unsigned(is_quiet) << 4 | unsigned(m.is_capture()) << 5
+                    | unsigned(m.is_promotion()) << 6 | unsigned((ord_epa & square_bb(m.from())) != 0) << 7
+                    | unsigned((ord_epa & square_bb(m.to())) != 0) << 8 | unsigned(kd <= 1) << 9;
+            r.piece = pc != NO_PIECE ? int(piece_type_of(pc)) : 0;
+            r.victim = int(captured_pt == PT_NONE ? 0 : int(captured_pt));
+            r.from = int(m.from()); r.to = int(m.to());
+        }
+#endif
         // Store current move and moved piece for counter-move history
         ss->current_move = m;
         ss->moved_piece = pos.piece_on(m.from());
@@ -1711,6 +1756,17 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
                 }
 
                 if (value >= beta) {
+#ifdef LUMINEX_ORDER_LOG
+                if (ord_on && ord_n > 0) {   // the last record is this move, the one that cut
+                    std::fprintf(stderr, "ORD %d %d %d %d", int(depth), int(cut_node), int(ttPv), ord_n);
+                    for (int i = 0; i < ord_n; ++i) {
+                        const OrdRec& r = ord_recs[i];
+                        std::fprintf(stderr, " %d,%d,%d,%d,%d,%d,%d,%u,%d,%d,%d,%d", r.stage, r.score, r.hist, r.c1, r.c2,
+                                     r.lp, r.caph, r.flags, r.piece, r.victim, r.from, r.to);
+                    }
+                    std::fputc('\n', stderr);
+                }
+#endif
                 // Beta cutoff - update killers, history and counter-move history
                 if (is_quiet && ss->ply < MAX_PLY) {
                     if (m != worker->killers[ss->ply][0]) {
@@ -1826,6 +1882,7 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
     // ========================================
     if (tt_move != MOVE_NONE) {
         bool tt_is_quiet = !tt_move.is_capture() && !tt_move.is_promotion();
+        ORD_SET(1, 0);
         if (search_move(tt_move, tt_is_quiet)) {
             // TT move caused cutoff - early return
             if (!stop.load(std::memory_order_relaxed)) {
@@ -1912,6 +1969,7 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
             // Skip TT move and deferred bad captures
             if (it->value == -1 || it->value == -2) continue;
 
+            ORD_SET(2, it->value);
             if (search_move(it->move, false)) {
                 if (!stop.load(std::memory_order_relaxed)) {
                     g_stats.pmg_capture_cutoffs++;
@@ -2039,6 +2097,7 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
             // Skip TT move (already searched in Phase 1)
             if (it->move == tt_move) continue;   // not by its -1 mark: a quiet's history can be -1 too
 
+            ORD_SET(3, it->value);
             if (search_move(it->move, true)) {
                 if (!stop.load(std::memory_order_relaxed)) {
                     g_stats.pmg_quiet_cutoffs++;
@@ -2068,6 +2127,7 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
             }
         }
 
+        ORD_SET(4, bad_captures[i].value);
         if (search_move(bad_captures[i].move, false)) {
             if (!stop.load(std::memory_order_relaxed)) {
                 return best_value;
