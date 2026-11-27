@@ -66,7 +66,7 @@ EmbeddedNet embedded_net();
 // below; the network code sums the rows into the relation lanes.
 // These are threat inputs, which other engines had first: Stockfish's Full_Threats (crediting Monty, Yukari and
 // PlentyChess), PlentyChess, Viridithas, Stormphrax, Berserk, Caissa, Integral and Triumviratus, and Stockfish's
-// PP_3Wide for the pawn pairs. This relation set and its encoding into the lanes are our own.
+// PP_3Wide (from Pawnocchio) for the pawn pairs. This relation set and its encoding into the lanes are our own.
 //
 // Frame. Squares are a1 = 0 ... h8 = 63. For perspective P with its own king on k:
 // - o(s) = s XOR (56 if P is Black) XOR (7 if k is on files a-d), group 1's orientation;

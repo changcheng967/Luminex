@@ -126,8 +126,8 @@ The network is V6, gen768u ([spec](docs/NNUE.md#v6-gen768u)):
   threat inputs, which other engines had first: Stockfish's Full_Threats
   (crediting Monty, Yukari and PlentyChess), PlentyChess, Viridithas,
   Stormphrax, Berserk, Caissa, Integral and Triumviratus, and Stockfish's
-  PP_3Wide for the pawn pairs. The relation set, its encoding into 256 lanes
-  and the measurements are ours.
+  PP_3Wide (from Pawnocchio) for the pawn pairs. The relation set, its
+  encoding into 256 lanes and the measurements are ours.
 - **Tail.** SCReLU, then one of eight int8 tails, chosen by the number of
   men on the board: 1,536 → 16 → 32 → 1, with one scale per row.
 - **Updates.** A move only records what it changes, and the accumulator
