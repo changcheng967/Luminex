@@ -1885,12 +1885,13 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
     // check, every legal move's own null-window search at the node's child depth, BEFORE the real move loop, each
     // with the key the move picker would give it (computed first, from the tables as the node found them); no
     // sampling inside those searches. One stderr line "SHD depth cut_node n" and per move "stage,key,cut,nodes,hist,
-    // cont1,cont2,lowply,caphist,flags,piece,victim,from,to" (stage 1 TT move, 2 promotions and SEE >= 0 captures,
-    // 3 quiets, 4 SEE < 0 captures; flags as ORD's plus 1024 SEE >= 0; piece and victim 0 pawn .. 5 king, 6 none).
+    // cont1,cont2,lowply,caphist,flags,piece,victim,from,to,delta,flags2" (stage 1 TT move, 2 promotions and SEE >= 0
+    // captures, 3 quiets, 4 SEE < 0 captures; flags as ORD's plus 1024 SEE >= 0; piece and victim 0 pawn .. 5 king,
+    // 255 none; delta the static eval change the move makes for the mover; flags2 the board facts listed below).
     if (!pv_node && !ss->excluded_move && !pos.is_check() && depth >= 3 && depth <= 5 && !g_shadow
         && (pos.key() & 511) == 0) {
         struct SRec { Move m; int stage; long long key; int cut; unsigned long long nodes; int hist, c1, c2, lp, caph;
-                      unsigned flags; int piece, victim; };
+                      unsigned flags; int piece, victim; int delta; unsigned flags2; };
         static thread_local SRec srec[MAX_MOVES];
         static constexpr int sv[] = {100, 320, 330, 500, 900, 20000, 0};
         static constexpr int scenter[64] = {
@@ -1902,6 +1903,34 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
         const Color them = Color(pos.side_to_move() ^ 1);
         const Bitboard epa = pawn_attacks_bb(them, pos.pieces(them, PAWN));
         const Bitboard enemy_pcs = pos.pieces(them);
+        // Board context the move picker does not use. A side's attacks by value class on an occupancy, the pieces on
+        // skip left out: [0] pawns, [1] knights and bishops, [2] rooks, [3] queens, [4] the king.
+        const Color us_c = pos.side_to_move();
+        const Bitboard occ_all = pos.pieces();
+        auto class_attacks = [&](Color c, Bitboard occ, Bitboard skip, Bitboard (&a)[5]) {
+            a[0] = pawn_attacks_bb(c, pos.pieces(c, PAWN) & ~skip);
+            a[1] = 0;
+            for (Bitboard b = pos.pieces(c, KNIGHT) & ~skip; b; ) a[1] |= knight_attacks_bb(pop_lsb(b));
+            for (Bitboard b = pos.pieces(c, BISHOP) & ~skip; b; ) a[1] |= bishop_attacks_bb(pop_lsb(b), occ);
+            a[2] = 0;
+            for (Bitboard b = pos.pieces(c, ROOK) & ~skip; b; ) a[2] |= rook_attacks_bb(pop_lsb(b), occ);
+            a[3] = 0;
+            for (Bitboard b = pos.pieces(c, QUEEN) & ~skip; b; ) a[3] |= queen_attacks_bb(pop_lsb(b), occ);
+            a[4] = (skip & square_bb(pos.king_sq(c))) ? 0 : king_attacks_bb(pos.king_sq(c));
+        };
+        auto cheaper = [](const Bitboard (&a)[5], PieceType t) -> Bitboard {   // attacks by pieces worth less than a t
+            return t == KNIGHT || t == BISHOP ? a[0] : t == ROOK ? a[0] | a[1] : t == QUEEN ? a[0] | a[1] | a[2] : 0;
+        };
+        Bitboard th[5], ou[5];
+        class_attacks(them, occ_all, 0, th);
+        class_attacks(us_c, occ_all, 0, ou);
+        const Bitboard their_all = th[0] | th[1] | th[2] | th[3] | th[4], our_all = ou[0] | ou[1] | ou[2] | ou[3] | ou[4];
+        const Bitboard their_men = enemy_pcs & ~pos.pieces(them, KING);
+        // the node's own trouble: our pieces attacked by a cheaper enemy piece, or attacked and undefended
+        Bitboard our_threatened = 0;
+        for (PieceType t : {KNIGHT, BISHOP, ROOK, QUEEN}) our_threatened |= pos.pieces(us_c, t) & cheaper(th, t);
+        our_threatened |= pos.pieces(us_c) & ~pos.pieces(us_c, KING) & their_all & ~our_all;
+        const Value v_node = evaluate(pos);
         int ns = 0;
         for (ScoredMove* it = cand; it != cend && ns < MAX_MOVES; ++it) {
             const Move m = it->move;
@@ -1963,6 +1992,48 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
                     | unsigned(m.is_promotion()) << 6 | unsigned((epa & square_bb(m.from())) != 0) << 7
                     | unsigned((epa & square_bb(m.to())) != 0) << 8 | unsigned(kd <= 1) << 9 | unsigned(see_ok) << 10;
             r.piece = int(pt); r.victim = int(cap);
+            // flags2: 1 the mover stands attacked by a cheaper piece, 2 it stands attacked and undefended, 4 it lands
+            // attacked by a cheaper piece, 8 it lands attacked and defended by no other piece, 16 from there it attacks
+            // a more valuable enemy man, 32 or an undefended one, 64 a quiet move that loses SEE, 128 the move takes a
+            // piece that attacks one of our threatened pieces, 256 the node has a threatened piece of ours
+            const Bitboard fb = square_bb(m.from()), tb = square_bb(m.to());
+            const Bitboard cap_bb = m.is_en_passant() ? square_bb(Square(int(m.from()) / 8 * 8 + int(m.to()) % 8))
+                                  : m.is_capture() ? tb : 0;
+            const Bitboard occ2 = ((occ_all & ~fb) & ~cap_bb) | tb;
+            Bitboard th2[5], ou2[5];
+            class_attacks(them, occ2, cap_bb, th2);
+            class_attacks(us_c, occ2, fb, ou2);
+            const Bitboard their2 = th2[0] | th2[1] | th2[2] | th2[3] | th2[4], our2 = ou2[0] | ou2[1] | ou2[2] | ou2[3] | ou2[4];
+            const bool thr_from = pt != PT_NONE && (cheaper(th, pt) & fb);
+            const bool hang_from = pt != KING && (their_all & fb) && !(our_all & fb);
+            const bool thr_to = pt != PT_NONE && (cheaper(th2, pt) & tb);
+            const bool hang_to = pt != KING && (their2 & tb) && !(our2 & tb);
+            Bitboard natt = 0, richer = 0;
+            if (pt == PAWN) { natt = pawn_attacks_bb(us_c, m.to()); richer = their_men & ~pos.pieces(them, PAWN); }
+            else if (pt == KNIGHT) { natt = knight_attacks_bb(m.to()); richer = pos.pieces(them, ROOK) | pos.pieces(them, QUEEN); }
+            else if (pt == BISHOP) { natt = bishop_attacks_bb(m.to(), occ2); richer = pos.pieces(them, ROOK) | pos.pieces(them, QUEEN); }
+            else if (pt == ROOK) { natt = rook_attacks_bb(m.to(), occ2); richer = pos.pieces(them, QUEEN); }
+            else if (pt == QUEEN) natt = queen_attacks_bb(m.to(), occ2);
+            else if (pt == KING) natt = king_attacks_bb(m.to());
+            const bool new_threat = (natt & richer & ~cap_bb) != 0;
+            const bool new_hang = (natt & their_men & ~cap_bb & ~their2) != 0;
+            const bool quiet_see_loss = !m.is_capture() && !m.is_promotion() && !pos.see_ge(m, VALUE_ZERO);
+            bool takes_attacker = false;   // the captured piece attacks one of our threatened pieces
+            if (cap_bb && our_threatened && cap != PT_NONE) {
+                const Square cs = lsb(cap_bb);
+                Bitboard catt = cap == PAWN ? pawn_attacks_bb(them, cs) : cap == KNIGHT ? knight_attacks_bb(cs)
+                              : cap == BISHOP ? bishop_attacks_bb(cs, occ_all) : cap == ROOK ? rook_attacks_bb(cs, occ_all)
+                              : cap == QUEEN ? queen_attacks_bb(cs, occ_all) : 0;
+                takes_attacker = (catt & our_threatened) != 0;
+            }
+            r.flags2 = unsigned(thr_from) | unsigned(hang_from) << 1 | unsigned(thr_to) << 2 | unsigned(hang_to) << 3
+                     | unsigned(new_threat) << 4 | unsigned(new_hang) << 5 | unsigned(quiet_see_loss) << 6
+                     | unsigned(takes_attacker) << 7 | unsigned(our_threatened != 0) << 8;
+            r.delta = 0;
+            if (pos.do_move(m)) {   // the eval change the move makes, from the mover's side
+                r.delta = std::clamp(int(-evaluate(pos) - v_node), -3000, 3000);
+                pos.undo_move(m);
+            }
         }
         g_shadow = true;
         bool ok = ns >= 2;
@@ -1985,8 +2056,9 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
             std::fprintf(stderr, "SHD %d %d %d", int(depth), int(cut_node), ns);
             for (int i = 0; i < ns; ++i) {
                 const SRec& r = srec[i];
-                std::fprintf(stderr, " %d,%lld,%d,%llu,%d,%d,%d,%d,%d,%u,%d,%d,%d,%d", r.stage, r.key, r.cut, r.nodes, r.hist,
-                             r.c1, r.c2, r.lp, r.caph, r.flags, r.piece, r.victim, int(r.m.from()), int(r.m.to()));
+                std::fprintf(stderr, " %d,%lld,%d,%llu,%d,%d,%d,%d,%d,%u,%d,%d,%d,%d,%d,%u", r.stage, r.key, r.cut, r.nodes, r.hist,
+                             r.c1, r.c2, r.lp, r.caph, r.flags, r.piece, r.victim, int(r.m.from()), int(r.m.to()),
+                             r.delta, r.flags2);
             }
             std::fputc('\n', stderr);
         }
