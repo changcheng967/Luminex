@@ -17,7 +17,7 @@
 # ----- the network pin
 # The network the release binaries carry. fetch-net downloads it and checks
 # its sha256, so every build embeds exactly the shipped file. The pin is
-# gen768t_05q (luminex_gen768t_05q_i8.nnue on the engine-archives
+# gen768u_01q (luminex_gen768u_01q_i8.nnue on the engine-archives
 # pre-release). Shipping a new network means attaching it to a release and
 # moving pin_url, pin_sha256 and pin_about here. The url's file name is the
 # network's real name and its only source: fetch-net saves the file under it,
@@ -26,9 +26,9 @@
 # the file under it (net fails a build that names another network).
 # pin_about, the network's name and a line on how it was made, goes into the
 # development build's notes (dev-release).
-pin_url=https://github.com/changcheng967/Luminex/releases/download/engine-archives/luminex_gen768t_05q_i8.nnue
-pin_sha256=1d9f44604e289cda055e246166b7f9a5fe419bf351d4b25142e9a2c35eb75544
-pin_about="gen768t_05q: V5 (gen768t, docs/NNUE.md), gen768s's feature layer with 55,960 int8 relation rows (attacks, and pawn pairs in contact) summed into 256 of its 768 lanes (the LNT8 format); gen768t_04's float network trained on for 2,693,718 more steps (353.1B positions, a fresh optimizer, lr 5e-5) on Leela data relabelled by BT4: eleven months of test91 games and six corpus files (leela96 splits 2-4, test80 games of April, May and July 2023), then 30K steps of QAT with int8 relation rows and one int8 scale per tail row"
+pin_url=https://github.com/changcheng967/Luminex/releases/download/engine-archives/luminex_gen768u_01q_i8.nnue
+pin_sha256=842bc7d242fe470bdae7d47bbad938594321160ae061880210a7c12bc17825c4
+pin_about="gen768u_01q: V6 (gen768u, docs/NNUE.md), gen768t with its piece-square table once per phase block (PB3: three blocks chosen by the men on the board, an idea published by the Triumviratus engine; LNT8 with 73,728 piece-square rows); gen768t_06's float network trained on for 1,900,000 more steps with its table in three blocks, on Leela data relabelled by BT4: eleven months of test91 games, test91's Chess960 games and six corpus files (test80 games of October 2022, November 2023 and February, March, May and June 2024), then 30K steps of QAT with int8 relation rows and one int8 scale per tail row"
 
 # ----- fetch-net
 # Download the pinned network and check its sha256. Prints the file's path and

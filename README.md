@@ -89,7 +89,7 @@ the speed. It is the bench OpenBench runs.
 | `Ponder` | false | Allow `go ponder` and `ponderhit` |
 | `UCI_ShowWDL` | false | Add `wdl` (win, draw and loss per mille) to the info lines |
 | `UseNNUE` | true | Evaluate with the network; false uses the hand-crafted evaluation |
-| `NNUEFile` | `luminex_gen768t_05q_i8.nnue` | The network. The default name selects the built-in network; any other file is looked for as given, then next to the binary |
+| `NNUEFile` | `luminex_gen768u_01q_i8.nnue` | The network. The default name selects the built-in network; any other file is looked for as given, then next to the binary |
 | `SimdLevel` | auto | x86-64 release binaries: the kernels' level (`avx512vnni`, `avx512`, `avxvnni`, `avx2`, `base`), for testing |
 | `Contempt` | 0 | Draw avoidance, in centipawns |
 | `Move Overhead` | 30 | Milliseconds kept back on each move for the GUI and the connection |
@@ -114,17 +114,20 @@ probing, so the engine declares no `UCI_LimitStrength`, `UCI_Elo`,
 
 ### Evaluation
 
-The network is V5, gen768t ([spec](docs/NNUE.md#v5-gen768t)):
+The network is V6, gen768u ([spec](docs/NNUE.md#v6-gen768u)):
 
 - **Feature layer.** HalfKAv2_hm (32 king buckets, mirrored horizontally,
-  times 768 piece-squares) feeds 768 int16 lanes for each side. Beside it,
-  55,960 relation features add int8 rows to 256 of those lanes: which piece
-  attacks which, and pawn pairs in contact.
+  times 768 piece-squares) feeds 768 int16 lanes for each side, from one of
+  three tables chosen by the men on the board: 26 or more, 13 to 25, or 12 or
+  fewer. Splitting the table by piece count is an idea the Triumviratus
+  engine published. Beside it, 55,960 relation features add int8 rows to 256
+  of those lanes: which piece attacks which, and pawn pairs in contact.
 - **Tail.** SCReLU, then one of eight int8 tails, chosen by the number of
   men on the board: 1,536 → 16 → 32 → 1, with one scale per row.
 - **Updates.** A move only records what it changes, and the accumulator
   catches up when a position is evaluated, since many nodes end at the hash
-  table first. King moves rebuild from a per-square refresh cache.
+  table first. King moves, and captures that move the men into another
+  table, rebuild from a refresh cache.
 - **Kernels.** The kernels are written once for AVX-512 VNNI, AVX-512,
   AVX-VNNI, AVX2, SSE and NEON. Every level gives the same evaluation.
 - **Bare kings.** Endings against a bare king are scored before the
@@ -188,11 +191,11 @@ GPU trainer, quantization-aware training, the data converters and network
 forensics, and its
 [development log](https://github.com/changcheng967/Luminex-NNUE/blob/main/docs/DEVLOG.md)
 records every run. The current network learned only from Leela Chess Zero
-data: its test91 games relabelled by BT4, and BT4's own games. [`docs/NNUE.md`](docs/NNUE.md)
-specifies every architecture, V1 to V5.
+data: its test91 games (standard and Chess960) relabelled by BT4, and BT4's own games. [`docs/NNUE.md`](docs/NNUE.md)
+specifies every architecture, V1 to V6.
 
 A network's name gives its architecture and run. For example,
-`luminex_gen768t_05q_i8.nnue` is gen768t's fifth run, finished with
+`luminex_gen768u_01q_i8.nnue` is gen768u's first run, finished with
 quantization-aware training (`q`) and quantized to int8 (`_i8`). The built-in
 network is pinned in [`.github/scripts/ci.sh`](.github/scripts/ci.sh)
 (`pin_url`, `pin_sha256`), and CMake reads its name there.
@@ -215,8 +218,8 @@ that fails is closed with them.
 
 ## Build
 
-You need C++23, CMake 3.20 or newer, and clang 23. Clang 23 is the compiler
-every release and OpenBench worker uses, and CI checks it. With lld and
+You need C++23, CMake 3.20 or newer, and clang 23. Clang 23 builds main,
+every release from v6.7.0 and every OpenBench worker, and CI checks it. With lld and
 without PIE it is the fastest build measured; CMakeLists.txt sets both for
 clang on Linux.
 
@@ -225,7 +228,7 @@ cmake -B build -DCMAKE_BUILD_TYPE=Release -DCMAKE_CXX_COMPILER=clang++-23
 cmake --build build --config Release -j
 ```
 
-That binary has no network inside. It loads `luminex_gen768t_05q_i8.nnue`
+That binary has no network inside. It loads `luminex_gen768u_01q_i8.nnue`
 from the working directory or its own. To build the network in, as the
 releases do:
 
@@ -261,7 +264,7 @@ src/
   search.cpp       search, time management, the threads
   uci.cpp          the UCI protocol and options, the opening book, bench, main
   tools.cpp        data tools for training, one optional CMake target each
-docs/NNUE.md       the network specs, V1 to V5
+docs/NNUE.md       the network specs, V1 to V6
 .github/           CI and releases: workflows/build.yml, scripts/ci.sh
 Makefile           OpenBench's build
 ```
