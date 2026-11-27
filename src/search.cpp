@@ -574,6 +574,9 @@ bool check_time() {
 #else
 #define ORD_SET(st, sc) ((void)0)
 #endif
+#ifdef LUMINEX_ORDER_SHADOW
+static thread_local bool g_shadow = false;   // inside an ORDER SHADOW search: no sampling there
+#endif
 
 // Quiescence search
 Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
@@ -1876,6 +1879,119 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
         }
         return false;  // no cutoff
     };
+
+#ifdef LUMINEX_ORDER_SHADOW
+    // ORDER SHADOW (a measurement build, off in every normal build): at a sampled non-PV node of depth 3-5 not in
+    // check, every legal move's own null-window search at the node's child depth, BEFORE the real move loop, each
+    // with the key the move picker would give it (computed first, from the tables as the node found them); no
+    // sampling inside those searches. One stderr line "SHD depth cut_node n" and per move "stage,key,cut,nodes,hist,
+    // cont1,cont2,lowply,caphist,flags,piece,victim,from,to" (stage 1 TT move, 2 promotions and SEE >= 0 captures,
+    // 3 quiets, 4 SEE < 0 captures; flags as ORD's plus 1024 SEE >= 0; piece and victim 0 pawn .. 5 king, 6 none).
+    if (!pv_node && !ss->excluded_move && !pos.is_check() && depth >= 3 && depth <= 5 && !g_shadow
+        && (pos.key() & 511) == 0) {
+        struct SRec { Move m; int stage; long long key; int cut; unsigned long long nodes; int hist, c1, c2, lp, caph;
+                      unsigned flags; int piece, victim; };
+        static thread_local SRec srec[MAX_MOVES];
+        static constexpr int sv[] = {100, 320, 330, 500, 900, 20000, 0};
+        static constexpr int scenter[64] = {
+            0, 0, 0, 0, 0, 0, 0, 0,  0, 0, 0, 0, 0, 0, 0, 0,  0, 0, 200, 300, 300, 200, 0, 0,
+            0, 200, 400, 500, 500, 400, 200, 0,  0, 200, 400, 500, 500, 400, 200, 0,
+            0, 0, 200, 300, 300, 200, 0, 0,  0, 0, 0, 0, 0, 0, 0, 0,  0, 0, 0, 0, 0, 0, 0, 0};
+        ScoredMove cand[MAX_MOVES];
+        ScoredMove* cend = generate<MOVES_LEGAL>(pos, cand);
+        const Color them = Color(pos.side_to_move() ^ 1);
+        const Bitboard epa = pawn_attacks_bb(them, pos.pieces(them, PAWN));
+        const Bitboard enemy_pcs = pos.pieces(them);
+        int ns = 0;
+        for (ScoredMove* it = cand; it != cend && ns < MAX_MOVES; ++it) {
+            const Move m = it->move;
+            SRec& r = srec[ns++];
+            r.m = m;
+            const Piece pc = pos.piece_on(m.from());
+            const PieceType pt = pc != NO_PIECE ? piece_type_of(pc) : PT_NONE;
+            const PieceType cap = m.is_en_passant() ? PAWN : (m.is_capture() ? pos.piece_type_on(m.to()) : PT_NONE);
+            const bool prev1 = ss->ply >= 1 && (ss - 1)->current_move != MOVE_NONE && (ss - 1)->moved_piece != NO_PIECE;
+            const bool prev2 = ss->ply >= 2 && (ss - 2)->current_move != MOVE_NONE && (ss - 2)->moved_piece != NO_PIECE;
+            r.hist = pc != NO_PIECE ? worker->history[int(pc)][int(m.to())] : 0;
+            r.c1 = pc != NO_PIECE && prev1 ? worker->counter_moves[int((ss - 1)->moved_piece)][int((ss - 1)->current_move.to())][int(pc)][int(m.to())] : 0;
+            r.c2 = pc != NO_PIECE && prev2 ? worker->continuation_history[int((ss - 2)->moved_piece)][int((ss - 2)->current_move.to())][int(pc)][int(m.to())] : 0;
+            r.lp = pc != NO_PIECE && ss->ply >= 1 && ss->ply <= 3 ? worker->low_ply_history[ss->ply][int(pc)][int(m.to())] : 0;
+            r.caph = pc != NO_PIECE && cap != PT_NONE ? worker->capture_history[int(pc)][int(m.to())][int(cap)] : 0;
+            const bool k1 = ss->ply < MAX_PLY && m == worker->killers[ss->ply][0];
+            const bool k2 = ss->ply < MAX_PLY && m == worker->killers[ss->ply][1];
+            const bool counter = prev1 && m == worker->counter_move_table[int((ss - 1)->moved_piece)][int((ss - 1)->current_move.to())];
+            const bool see_ok = m.is_capture() ? pos.see_ge(m, VALUE_ZERO) : true;
+            const int kd = std::max(abs(int(m.to() % 8) - int(enemy_ksq % 8)), abs(int(m.to() / 8) - int(enemy_ksq / 8)));
+            if (m == tt_move) {
+                r.stage = 1; r.key = 0;
+            } else if (m.is_capture() || (m.is_promotion() && m.promotion_type() == QUEEN)) {   // MOVES_CAPTURES' set
+                if (m.is_promotion()) {
+                    r.stage = 2; r.key = 1800000 + m.promotion_type() * 10000;
+                } else {
+                    const int mvv_lva = sv[cap] * 10 - sv[pt];
+                    if (see_ok) {
+                        r.stage = 2; r.key = 1500000 + mvv_lva + r.caph;
+                        bool chk = false;
+                        if (pt == PAWN) chk = (pawn_attacks_bb(pos.side_to_move(), m.to()) & square_bb(enemy_ksq)) != 0;
+                        else if (pt == KNIGHT) chk = (knight_attacks_bb(m.to()) & square_bb(enemy_ksq)) != 0;
+                        if (chk) r.key += 200000;
+                    } else {
+                        r.stage = 4; r.key = mvv_lva + r.caph / 2;
+                    }
+                }
+            } else {   // the quiet phase's score
+                r.stage = 3;
+                long long s = pc != NO_PIECE ? combined_history(worker, ss, pc, m.to()) : 0;
+                if (pc != NO_PIECE && ss->ply >= 1 && ss->ply <= 3) s += worker->low_ply_history[ss->ply][int(pc)][int(m.to())];
+                if (k1) s += 60000; else if (k2) s += 50000; else if (counter) s += 40000;
+                if (pt != PAWN) {
+                    if (epa & square_bb(m.from())) s += 15000;
+                    if (kd <= 1) s += 3000;
+                    int cbo = scenter[m.to()];
+                    if (pt == KNIGHT) cbo = cbo * 2; else if (pt == BISHOP) cbo = cbo * 3 / 2; else if (pt == QUEEN) cbo = cbo / 2;
+                    s += cbo;
+                } else {
+                    const Bitboard patt = pawn_attacks_bb(pos.side_to_move(), square_bb(m.to()));
+                    if (patt & enemy_pcs) s += 8000;
+                    if (patt & square_bb(enemy_ksq)) s += 5000;
+                }
+                if (pt == KNIGHT && (knight_attacks_bb(m.to()) & square_bb(enemy_ksq))) s += 5000;
+                r.key = s;
+            }
+            r.flags = unsigned(k1) | unsigned(k2) << 1 | unsigned(counter) << 2 | unsigned(gives_check(m)) << 3
+                    | unsigned(!m.is_capture() && !m.is_promotion()) << 4 | unsigned(m.is_capture()) << 5
+                    | unsigned(m.is_promotion()) << 6 | unsigned((epa & square_bb(m.from())) != 0) << 7
+                    | unsigned((epa & square_bb(m.to())) != 0) << 8 | unsigned(kd <= 1) << 9 | unsigned(see_ok) << 10;
+            r.piece = int(pt); r.victim = int(cap);
+        }
+        g_shadow = true;
+        bool ok = ns >= 2;
+        for (int i = 0; i < ns && ok; ++i) {
+            SRec& r = srec[i];
+            const uint64_t n0 = local_nodes;
+            ss->current_move = r.m;
+            ss->moved_piece = pos.piece_on(r.m.from());
+            ss->reduction = 0;
+            if (!pos.do_move(r.m)) { r.cut = -1; r.nodes = 0; continue; }
+            const Value v = -search_worker(pos, ss + 1, -beta, -beta + 1, depth - 1, !cut_node);
+            pos.undo_move(r.m);
+            r.cut = v >= beta;
+            r.nodes = local_nodes - n0;
+            if (stop.load(std::memory_order_relaxed)) ok = false;
+        }
+        g_shadow = false;
+        ss->current_move = MOVE_NONE;
+        if (ok) {
+            std::fprintf(stderr, "SHD %d %d %d", int(depth), int(cut_node), ns);
+            for (int i = 0; i < ns; ++i) {
+                const SRec& r = srec[i];
+                std::fprintf(stderr, " %d,%lld,%d,%llu,%d,%d,%d,%d,%d,%u,%d,%d,%d,%d", r.stage, r.key, r.cut, r.nodes, r.hist,
+                             r.c1, r.c2, r.lp, r.caph, r.flags, r.piece, r.victim, int(r.m.from()), int(r.m.to()));
+            }
+            std::fputc('\n', stderr);
+        }
+    }
+#endif
 
     // ========================================
     // PHASE 1: TT move (already known, free)
