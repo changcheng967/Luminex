@@ -1971,6 +1971,16 @@ struct SPSAParams {
     // could otherwise keep the depth from falling
     int ext_path_cap = 8;
 
+    // MEASUREMENT BRANCH (hp-measure, never merged): history pruning's
+    // per-depth thresholds as options. The defaults are own-histprune's table;
+    // -1000000000 switches a depth off (no combined history is that low).
+    int hp_below1 = -68736;
+    int hp_below2 = -45081;
+    int hp_below3 = -27657;
+    int hp_below4 = -11687;
+    int hp_below5 = -7921;
+    int hp_below6 = -1924;
+
     // Load from file (COUNT ints, one per line, in field order). Returns true if loaded.
     bool load(const std::string& path) {
         FILE* f = std::fopen(path.c_str(), "r");
@@ -2040,6 +2050,12 @@ inline constexpr SPSAOption SPSA_OPTIONS[] = {
     {"NmpShallowDepth", &SPSAParams::nmp_shallow_depth,   0,   12},
     {"TtStoreSlack",    &SPSAParams::tt_store_slack,      0,     8},
     {"ExtPathCap",      &SPSAParams::ext_path_cap,        0,    16},
+    {"HpBelow1",        &SPSAParams::hp_below1, -1000000000, 1000000},
+    {"HpBelow2",        &SPSAParams::hp_below2, -1000000000, 1000000},
+    {"HpBelow3",        &SPSAParams::hp_below3, -1000000000, 1000000},
+    {"HpBelow4",        &SPSAParams::hp_below4, -1000000000, 1000000},
+    {"HpBelow5",        &SPSAParams::hp_below5, -1000000000, 1000000},
+    {"HpBelow6",        &SPSAParams::hp_below6, -1000000000, 1000000},
 };
 
 inline const SPSAOption* find_spsa_option(const std::string& name) {

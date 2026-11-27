@@ -1495,7 +1495,8 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
         // almost never raise alpha.
         // Not while every searched move is mated: the node's bound would not
         // cover the moves this skips, and it would claim a mate it has not proven
-        static constexpr int HISTORY_PRUNE_BELOW[7] = {0, -68736, -45081, -27657, -11687, -7921, -1924};
+        const int HISTORY_PRUNE_BELOW[7] = {0, sp.hp_below1, sp.hp_below2, sp.hp_below3,
+                                            sp.hp_below4, sp.hp_below5, sp.hp_below6};
         if (is_quiet && !pv_node && depth <= 6 && moves_played > 0
             && best_value > -VALUE_MATE_IN_MAX_PLY) {
             Piece pc = pos.piece_on(m.from());
