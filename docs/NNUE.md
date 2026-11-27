@@ -426,7 +426,7 @@ Error head (per bucket, computed only where the search reads it):
 ---
 
 ### 2. Input Features & Transformer Layer
-- **Feature Set Name**: HalfKAv2_hm + attack relations + pawn pairs
+- **Feature Set Name**: HalfKAv2_hm + attack relations + pawn pairs (threat inputs: prior art in Stockfish's Full_Threats and PP_3Wide and in other engines, listed in the README)
 - **Input Feature Dimension**: `[24576]` + `[55960]` per perspective (Sparse boolean vector)
 - **Feature Breakdown**:
   1. **Feature Group 1**: King bucket (32, horizontally mirrored) x piece-square (12 piece types x 64 squares = 768), kings included; at most 32 active rows
@@ -536,7 +536,7 @@ Heads (per bucket, stored after the tails; not computed by the engine):
 ---
 
 ### 2. Input Features & Transformer Layer
-- **Feature Set Name**: HalfKAv2_hm by phase block + attack relations + pawn pairs
+- **Feature Set Name**: HalfKAv2_hm by phase block + attack relations + pawn pairs (phase blocks: Triumviratus's input buckets by piece count, related to Stockfish's K32H3; threat inputs: prior art in Stockfish's Full_Threats and PP_3Wide and in other engines, listed in the README)
 - **Input Feature Dimension**: `[73728]` + `[55960]` per perspective (Sparse boolean vector)
 - **Feature Breakdown**:
   1. **Feature Group 1**: Phase block (3, by the men on the board, kings and pawns included: block 0 for 26 or more, 1 for 13 to 25, 2 for 12 or fewer) x king bucket (32, horizontally mirrored) x piece-square (12 piece types x 64 squares = 768), kings included: feature = block x 24,576 + the HalfKAv2_hm index, the same block for both perspectives; at most 32 active rows

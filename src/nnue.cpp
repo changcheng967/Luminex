@@ -64,6 +64,9 @@ EmbeddedNet embedded_net();
 // Attack relations and pawn pairs (docs/NNUE.md, V5-GEN768T section 2). Which rows a position has, and which
 // rows a move adds and removes, for one perspective or both. The rules and the index layout (LAYOUT = 1) are
 // below; the network code sums the rows into the relation lanes.
+// These are threat inputs, which other engines had first: Stockfish's Full_Threats (crediting Monty, Yukari and
+// PlentyChess), PlentyChess, Viridithas, Stormphrax, Berserk, Caissa, Integral and Triumviratus, and Stockfish's
+// PP_3Wide for the pawn pairs. This relation set and its encoding into the lanes are our own.
 //
 // Frame. Squares are a1 = 0 ... h8 = 63. For perspective P with its own king on k:
 // - o(s) = s XOR (56 if P is Black) XOR (7 if k is on files a-d), group 1's orientation;
@@ -268,7 +271,9 @@ constexpr int NNUE_MAX_PLY = 2048;           // MUST match Position::MAX_STATES 
 // NI = 3 x NUM_INPUTS, and feature = block x NUM_INPUTS + the HalfKAv2_hm
 // index, the same block for both sides: block 0 at 26 or more men (every
 // piece, kings and pawns included), 1 at 13 to 25, 2 at 12 or fewer, the
-// trainer's count. Every other net has one block.
+// trainer's count. Every other net has one block. Input buckets by piece
+// count are an idea the Triumviratus engine published; Stockfish's K32H3 and
+// nettest #531's K32Q2P4 are related work.
 constexpr int PHASE_BLOCKS_MAX = 3;
 static int g_blocks = 1;
 static inline int phase_block(int men) {
