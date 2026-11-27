@@ -1975,6 +1975,15 @@ struct SPSAParams {
     // could otherwise keep the depth from falling
     int ext_path_cap = 8;
 
+    // Round-4 alternatives (the 2026-11-27 code audit's search defects), for a knockout-style factorial: each is on
+    // when its value is above 0, so an SPSA with theta 0 and c 100 flips it in every game pair; all at 0 = main.
+    int r4_forcing_fix = 0;  // the forcing-line count runs over the checked side's nodes (ss - 2), not both sides'
+    int r4_tt_parity   = 0;  // a TT cutoff updates as the move loop's cutoff does: killers, low-ply history,
+                             // en passant's pawn victim, promotions not quiet
+    int r4_corr_cap    = 0;  // correction history learns at a fail-low node whatever the least-bad move was
+    int r4_cap_ttpv    = 0;  // capture LMR takes the quiet formula's ttPv term (and its floor division)
+    int r4_qs_corr     = 0;  // qsearch's early leaf returns take the stand-pat eval's correction and damping
+
     // Load from file (COUNT ints, one per line, in field order). Returns true if loaded.
     bool load(const std::string& path) {
         FILE* f = std::fopen(path.c_str(), "r");
@@ -2046,6 +2055,11 @@ inline constexpr SPSAOption SPSA_OPTIONS[] = {
     {"NmpShallowDepth", &SPSAParams::nmp_shallow_depth,   0,   12},
     {"TtStoreSlack",    &SPSAParams::tt_store_slack,      0,     8},
     {"ExtPathCap",      &SPSAParams::ext_path_cap,        0,    16},
+    {"R4ForcingFix",    &SPSAParams::r4_forcing_fix, -10000, 10000},
+    {"R4TtParity",      &SPSAParams::r4_tt_parity,   -10000, 10000},
+    {"R4CorrCap",       &SPSAParams::r4_corr_cap,    -10000, 10000},
+    {"R4CapTtpv",       &SPSAParams::r4_cap_ttpv,    -10000, 10000},
+    {"R4QsCorr",        &SPSAParams::r4_qs_corr,     -10000, 10000},
 };
 
 inline const SPSAOption* find_spsa_option(const std::string& name) {

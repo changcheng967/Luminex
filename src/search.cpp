@@ -563,11 +563,22 @@ bool check_time() {
     return false;
 }
 
+// R4QsCorr: qsearch's early leaf returns scored as its stand-pat eval is: a known endgame as it is, else the
+// evaluation plus the clamped correction, damped by the 50-move clock
+static Value qs_leaf_eval(Position& pos) {
+    if (SPSAParams::get().r4_qs_corr <= 0) return evaluate(pos, true);
+    Value known;
+    if (known_endgame(pos, known)) return known;
+    Value v = evaluate(pos, true);
+    v = Value(v + std::max(-200, std::min(200, get_total_correction(pos))));
+    return pos.halfmove_clock() > 0 ? Value(v * (200 - pos.halfmove_clock()) / 200) : v;
+}
+
 // Quiescence search
 Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
     // Check for max ply to prevent stack overflow
     if (ss->ply >= MAX_PLY) {
-        return evaluate(pos, true);
+        return qs_leaf_eval(pos);
     }
 
     // Search captures to depth -4 to avoid horizon effect. A side still in
@@ -584,10 +595,10 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
                 return -VALUE_MATE + ss->ply;
             }
         }
-        return evaluate(pos, true);
+        return qs_leaf_eval(pos);
     }
     if (depth < -4 && !pos.is_check()) {
-        return evaluate(pos, true);
+        return qs_leaf_eval(pos);
     }
 
     // Memory barrier for ensure we see the latest stop flag
@@ -945,10 +956,23 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
         // TT cutoff stat updates: reinforce heuristics even on TT hits
         if (tt_value >= beta && tt_move) {
             Piece moved = pos.piece_on(tt_move.from());
-            if (moved != NO_PIECE && !tt_move.is_capture()) {
+            // R4TtParity: quiet as the move loop has it (neither a capture nor a promotion), and the updates it makes
+            const bool tt_parity = SPSAParams::get().r4_tt_parity > 0;
+            const bool tt_quiet = tt_parity ? !tt_move.is_capture() && !tt_move.is_promotion() : !tt_move.is_capture();
+            if (moved != NO_PIECE && tt_quiet) {
                 int bonus = hist_bonus(depth);
                 int& h = worker->history[int(moved)][int(tt_move.to())];
                 h += bonus - h * std::abs(bonus) / 16368;
+                if (tt_parity && ss->ply < MAX_PLY) {
+                    if (tt_move != worker->killers[ss->ply][0]) {
+                        worker->killers[ss->ply][1] = worker->killers[ss->ply][0];
+                        worker->killers[ss->ply][0] = tt_move;
+                    }
+                    if (ss->ply >= 1 && ss->ply <= 3) {
+                        int& lh = worker->low_ply_history[ss->ply][int(moved)][int(tt_move.to())];
+                        lh += bonus - lh * std::abs(bonus) / 16368;
+                    }
+                }
 
                 // Counter-move history (1-ply)
                 if (ss->ply >= 1 && (ss - 1)->current_move != MOVE_NONE && (ss - 1)->moved_piece != NO_PIECE) {
@@ -967,9 +991,10 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
                     ch += bonus - ch * std::abs(bonus) / 16368;
                 }
             } else if (moved != NO_PIECE && tt_move.is_capture()) {
-                // Capture history bonus for TT cutoff captures
+                // Capture history bonus for TT cutoff captures (R4TtParity: en passant's victim is a pawn, as in
+                // the move loop; its target square is empty)
                 int bonus = hist_bonus(depth);
-                PieceType captured = pos.piece_type_on(tt_move.to());
+                PieceType captured = tt_parity && tt_move.is_en_passant() ? PAWN : pos.piece_type_on(tt_move.to());
                 if (captured != PT_NONE) {
                     int& ch = worker->capture_history[int(moved)][int(tt_move.to())][int(captured)];
                     ch += bonus - ch * std::abs(bonus) / 16368;
@@ -1038,7 +1063,12 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
     ss->forced_ply_count = 0;
 
     if (pos.is_check()) {
-        ss->forced_ply_count = ((ss - 1)->forced_ply_count + 1);
+        // R4ForcingFix: (ss - 1) is the other side's node, rarely in check in a run of checks by one side, so the
+        // count never passed 1 there; the checked side's previous node is two plies back
+        if (SPSAParams::get().r4_forcing_fix > 0)
+            ss->forced_ply_count = ss->ply >= 2 ? (ss - 2)->forced_ply_count + 1 : 1;
+        else
+            ss->forced_ply_count = ((ss - 1)->forced_ply_count + 1);
     }
 
     // Hindsight depth adjustment: if the previous ply was heavily reduced by LMR,
@@ -1548,10 +1578,13 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
             } else if (cap_lmr) {
                 // the table's reduction and the cut-node term, a ply less than
                 // a quiet move: a capture is more forcing
+                // (R4CapTtpv: also the quiet formula's ttPv term, and its floor division, which the copy dropped)
                 const int r1024 = reductions_quiet[std::min(std::max(depth - 1, 1), 63)]
                                 * reductions_quiet[std::min(std::max(moves_played, 1), 63)]
-                                + LMR_DENOM / 2 + (cut_node ? sp.lmr_cut_node : 0);
-                reduction = std::max(0, r1024 / LMR_DENOM - 1);
+                                + LMR_DENOM / 2 + (cut_node ? sp.lmr_cut_node : 0)
+                                - (sp.r4_cap_ttpv > 0 && ttPv ? sp.lmr_ttpv : 0);
+                const int r_plies = r1024 >= 0 ? r1024 / LMR_DENOM : -((-r1024 + LMR_DENOM - 1) / LMR_DENOM);
+                reduction = std::max(0, r_plies - 1);
             } else {
                 reduction = compute_reduction(m, moves_played, gives_chk);
             }
@@ -2116,7 +2149,9 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
         // Every move failed low here, so best_value is only an upper bound: it
         // proves the eval too high when it lies below it, and proves nothing
         // when it lies above (the true score may be anywhere beneath it).
-        bool best_is_capture = best_move_found.is_capture();
+        // R4CorrCap: at a fail-low node the "best" move is the least-bad failing one, noise as the comment above
+        // says, so its being a capture says nothing about the node
+        bool best_is_capture = sp.r4_corr_cap > 0 ? false : best_move_found.is_capture();
         if (!pv_node && !pos.is_check() && !best_is_capture && best_value < eval && !known_eg
             && abs(best_value) < VALUE_KNOWN_WIN && abs(eval) < VALUE_KNOWN_WIN
             && moves_played > 0 && depth >= 2) {
