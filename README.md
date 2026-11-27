@@ -27,14 +27,15 @@ time management is solved from measured data.
 
 | Build | Measured | Result |
 |---|---|---|
-| `main` | against v6.6.0, 10,024 games ([test 178](https://bench.luminexchess.com/test/178/)) | **+212.07 ± 5.22** Elo |
-| `main` | against eleven CCRL-rated engines, 8,846 games ([gauntlet 5](https://bench.luminexchess.com/gauntlet/5/)) | **3590 ± 11** CCRL Blitz, 3490 ± 15 CCRL 40/15 |
+| v6.7.0 | against v6.6.0, 2,010 games ([test 321](https://bench.luminexchess.com/test/321/)) | **+314.92 ± 14.52** Elo |
+| v6.7.0 | against eleven CCRL-rated engines, 8,876 games ([gauntlet 8](https://bench.luminexchess.com/gauntlet/8/)) | **3662 ± 8** CCRL Blitz, 3544 ± 11 CCRL 40/15 |
 | v6.6.0 | against v6.5.1, 2,010 games ([test 131](https://bench.luminexchess.com/test/131/)) | **+246.55 ± 13.37** Elo |
 | v6.6.0 | against twelve CCRL-rated engines ([gauntlet 3](https://bench.luminexchess.com/gauntlet/3/)) | **3471 ± 16** CCRL Blitz, 3402 ± 21 CCRL 40/15 |
 | v6.6.0 | [CCI](https://github.com/computer-chess-index/cci/blob/main/engines/Luminex.md), E1 list (Core Ultra 7 265T E-cores), page of 2026-11-20 | 2863 ± 37 STC, 3220 ± 32 LTC, 3336 ± 39 VLTC |
 
 The OpenBench games are played on one thread with 16 MB of hash, at 10+0.1
-scaled to each worker's speed, from the 2moves_v1 openings. Gauntlet 3
+scaled to each worker's speed, from the 2moves_v1 openings. Test 321 and
+gauntlet 8 played v6.7.0's search and network. Gauntlet 3
 played v6.6.0's development build with the network before v6.6.0's own;
 gen768r_06q adds +3.09 ± 2.46 to it
 ([test 128](https://bench.luminexchess.com/test/128/)), less than a gauntlet
@@ -44,13 +45,14 @@ resolves.
 
 Both kinds of build are on [Releases](https://github.com/changcheng967/Luminex/releases):
 
-- **v6.6.0** is the latest release.
+- **v6.7.0** is the latest release.
 - **The development build** is `main` as it stands: the pre-release named
   `dev-<date>-<commit>`, rebuilt on every push to `main`. Only the newest is kept.
 
 Every binary has its network built in, so the binary alone plays at full
 strength. The network is also attached as a file, for builds without one
-inside. The development build has one binary per platform:
+inside. Releases from v6.7.0 and the development build have one binary per
+platform:
 
 | Platform | Binary | CPU | Needs |
 |---|---|---|---|
