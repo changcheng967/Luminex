@@ -141,6 +141,7 @@ struct SearchWorker {
     // the correct lazy-SMP semantics (main worker keeps them across searches).
     int counter_moves[12][64][12][64] = {};
     int continuation_history[12][64][12][64] = {};
+    int continuation_history4[12][64][12][64] = {};  // keyed by our move four plies back (R3Cont4 only)
     int low_ply_history[4][12][64] = {};  // Plies 1-3 history (index 0 unused)
     // Correction history lives per-worker: as shared globals these 192 KiB were
     // written six times per node from every thread — the third instance of the
@@ -966,6 +967,13 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
                     int& ch = worker->continuation_history[int(prev2_pc)][int(prev2_move.to())][int(moved)][int(tt_move.to())];
                     ch += bonus - ch * std::abs(bonus) / 16368;
                 }
+
+                // Continuation history (4-ply: our move before last; R3Cont4 only)
+                if (SPSAParams::get().r3_cont4 > 0 && ss->ply >= 4
+                    && (ss - 4)->current_move != MOVE_NONE && (ss - 4)->moved_piece != NO_PIECE) {
+                    int& c4 = worker->continuation_history4[int((ss - 4)->moved_piece)][int((ss - 4)->current_move.to())][int(moved)][int(tt_move.to())];
+                    c4 += bonus - c4 * std::abs(bonus) / 16368;
+                }
             } else if (moved != NO_PIECE && tt_move.is_capture()) {
                 // Capture history bonus for TT cutoff captures
                 int bonus = hist_bonus(depth);
@@ -1304,7 +1312,7 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
         // product before the rounding division. The sum can go negative, so
         // the division floors.
         int reduction_1024 = red_table[d_idx] * red_table[m_idx] + LMR_DENOM / 2;
-        if (cut_node) reduction_1024 += sp.lmr_cut_node;
+        if (cut_node) reduction_1024 += sp.lmr_cut_node + (sp.r3_cut_ply > 0 ? LMR_DENOM : 0);
         if (ttPv) reduction_1024 -= sp.lmr_ttpv;
         int reduction = reduction_1024 >= 0 ? reduction_1024 / LMR_DENOM
                                             : -((-reduction_1024 + LMR_DENOM - 1) / LMR_DENOM);
@@ -1495,8 +1503,10 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
         // improving, or whose opponent is worsening, keep one more move.
         // Quiets arrive ordered by history, so the skipped moves are the
         // ones it rates lowest. The count is tunable in hundredths of a move.
-        int lmp_threshold = (sp.lmp_base + ((ss->improving || opponent_worsening) ? 100 : 0)
-                             + depth * depth * sp.lmp_coeff) / 100;
+        const int lmp_b = sp.r3_lmp_tight > 0 ? 120 : sp.lmp_base;   // R3LmpTight: about half the moves
+        const int lmp_c = sp.r3_lmp_tight > 0 ? 50 : sp.lmp_coeff;
+        int lmp_threshold = (lmp_b + ((ss->improving || opponent_worsening) ? 100 : 0)
+                             + depth * depth * lmp_c) / 100;
         if (is_quiet && !pv_node && depth <= 8 && moves_played >= lmp_threshold
             && m != worker->killers[ss->ply][0] && m != worker->killers[ss->ply][1]
             && best_value > -VALUE_MATE_IN_MAX_PLY) {   // not while every searched move is mated
@@ -1550,7 +1560,7 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
                 // a quiet move: a capture is more forcing
                 const int r1024 = reductions_quiet[std::min(std::max(depth - 1, 1), 63)]
                                 * reductions_quiet[std::min(std::max(moves_played, 1), 63)]
-                                + LMR_DENOM / 2 + (cut_node ? sp.lmr_cut_node : 0);
+                                + LMR_DENOM / 2 + (cut_node ? sp.lmr_cut_node + (sp.r3_cut_ply > 0 ? LMR_DENOM : 0) : 0);
                 reduction = std::max(0, r1024 / LMR_DENOM - 1);
             } else {
                 reduction = compute_reduction(m, moves_played, gives_chk);
@@ -1742,6 +1752,13 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
                             ch += bonus - ch * abs(bonus) / 16368;
                         }
 
+                        // Continuation history (4-ply; R3Cont4 only)
+                        if (sp.r3_cont4 > 0 && ss->ply >= 4
+                            && (ss - 4)->current_move != MOVE_NONE && (ss - 4)->moved_piece != NO_PIECE) {
+                            int& c4 = worker->continuation_history4[int((ss - 4)->moved_piece)][int((ss - 4)->current_move.to())][int(pc)][int(m.to())];
+                            c4 += bonus - c4 * abs(bonus) / 16368;
+                        }
+
                         // Low-ply history bonus (plies 1-3)
                         if (ss->ply >= 1 && ss->ply <= 3) {
                             int& lh = worker->low_ply_history[ss->ply][int(pc)][int(m.to())];
@@ -1789,6 +1806,11 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
                             Piece prev2_pc = (ss - 2)->moved_piece;
                             int& ch = worker->continuation_history[int(prev2_pc)][int(prev2_move.to())][int(qpc)][int(qm.to())];
                             ch += malus - ch * abs(malus) / 16368;
+                        }
+                        if (sp.r3_cont4 > 0 && ss->ply >= 4
+                            && (ss - 4)->current_move != MOVE_NONE && (ss - 4)->moved_piece != NO_PIECE) {
+                            int& c4 = worker->continuation_history4[int((ss - 4)->moved_piece)][int((ss - 4)->current_move.to())][int(qpc)][int(qm.to())];
+                            c4 += malus - c4 * abs(malus) / 16368;
                         }
                         // Low-ply history malus (plies 1-3)
                         if (ss->ply >= 1 && ss->ply <= 3) {
@@ -1934,6 +1956,15 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
         // Score quiets: killers + counter-moves + history + escape-aware + danger-aware
         Bitboard enemy_pawn_attacks = pawn_attacks_bb(Color(pos.side_to_move() ^ 1), pos.pieces(Color(pos.side_to_move() ^ 1), PAWN));
         Square opp_ksq = pos.king_sq(Color(pos.side_to_move() ^ 1));
+        // R3ThreatEsc: the squares the enemy minors attack (a rook or queen there should move) and the enemy rooks'
+        Bitboard minor_attacks = 0, rook_attacks = 0;
+        if (sp.r3_threat_esc > 0) {
+            const Color them = Color(pos.side_to_move() ^ 1);
+            const Bitboard occ = pos.pieces();
+            for (Bitboard b = pos.pieces(them, KNIGHT); b; ) minor_attacks |= knight_attacks_bb(pop_lsb(b));
+            for (Bitboard b = pos.pieces(them, BISHOP); b; ) minor_attacks |= bishop_attacks_bb(pop_lsb(b), occ);
+            for (Bitboard b = pos.pieces(them, ROOK); b; ) rook_attacks |= rook_attacks_bb(pop_lsb(b), occ);
+        }
         for (ScoredMove* it = quiets; it != quiet_end; ++it) {
             Move m = it->move;
             int score = 0;
@@ -1944,6 +1975,9 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
                 Piece pc = pos.piece_on(m.from());
                 if (pc != NO_PIECE) {
                     score = combined_history(worker, ss, pc, m.to());
+                    if (sp.r3_cont4 > 0 && ss->ply >= 4
+                        && (ss - 4)->current_move != MOVE_NONE && (ss - 4)->moved_piece != NO_PIECE)
+                        score += worker->continuation_history4[int((ss - 4)->moved_piece)][int((ss - 4)->current_move.to())][int(pc)][int(m.to())];
                     // Low-ply history: extra history for plies 1-3 (better opening ordering)
                     if (ss->ply >= 1 && ss->ply <= 3) {
                         score += worker->low_ply_history[ss->ply][int(pc)][int(m.to())];
@@ -1967,8 +2001,13 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
                     PieceType pt = piece_type_of(moved_piece);
 
                     if (pt != PAWN) {
-                        // Escape-aware: pieces under pawn attack should move first
-                        if (enemy_pawn_attacks & square_bb(m.from())) {
+                        // Escape-aware: pieces under pawn attack should move first (R3ThreatEsc: also a rook
+                        // or queen a minor attacks, and a queen a rook attacks)
+                        bool escape = enemy_pawn_attacks & square_bb(m.from());
+                        if (!escape && sp.r3_threat_esc > 0)
+                            escape = ((pt == ROOK || pt == QUEEN) && (minor_attacks & square_bb(m.from())))
+                                  || (pt == QUEEN && (rook_attacks & square_bb(m.from())));
+                        if (escape) {
                             score += 15000;
                         }
 
@@ -1977,7 +2016,7 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
                         // as king-zone LMR, applied to move ordering
                         int kdist = std::max(abs(int(m.to() % 8) - int(enemy_ksq % 8)),
                                              abs(int(m.to() / 8) - int(enemy_ksq / 8)));
-                        if (kdist <= 1) score += 3000;
+                        if (kdist <= 1 && sp.r3_no_kzone <= 0) score += 3000;
 
                         // Centralization bonus: pieces moving to central squares searched earlier
                         // Principle: centralized pieces are disproportionately strong (Nimzowitsch)
@@ -2000,7 +2039,7 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
                         if (pt == KNIGHT) cbo = cbo * 2;
                         else if (pt == BISHOP) cbo = cbo * 3 / 2;
                         else if (pt == QUEEN) cbo = cbo / 2;
-                        score += cbo;
+                        if (sp.r3_no_center <= 0) score += cbo;
                     } else {
                         // Pawn threat ordering: pawn advances that threaten enemy pieces
                         // are forcing and should be searched earlier (Philidor)
@@ -3279,6 +3318,7 @@ void clear_search_history() {
         std::memset(w->killers, 0, sizeof(w->killers));
         std::memset(w->counter_moves, 0, sizeof(w->counter_moves));
         std::memset(w->continuation_history, 0, sizeof(w->continuation_history));
+        std::memset(w->continuation_history4, 0, sizeof(w->continuation_history4));
     };
     if (main_search_worker) clear(main_search_worker);
     for (SearchWorker* w : helper_workers)

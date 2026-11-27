@@ -1975,6 +1975,15 @@ struct SPSAParams {
     // could otherwise keep the depth from falling
     int ext_path_cap = 8;
 
+    // Round-3 alternatives, for a knockout-style factorial: each is on when its value is above 0, so an SPSA with
+    // theta 0 and c 100 flips it in every game pair; all at 0 = main's search.
+    int r3_cont4      = 0;  // quiet ordering adds a continuation history keyed by our move four plies back
+    int r3_no_center  = 0;  // quiet ordering drops the centralization table
+    int r3_no_kzone   = 0;  // quiet ordering drops the bonus for a move next to the enemy king
+    int r3_threat_esc = 0;  // the escape bonus also for a rook or queen a minor attacks, or a queen a rook attacks
+    int r3_cut_ply    = 0;  // LMR: one more ply at expected cut nodes (lmr_cut_node + 1024)
+    int r3_lmp_tight  = 0;  // LMP after about half the moves: (120 + 100 if improving + depth^2 * 50) / 100
+
     // Load from file (COUNT ints, one per line, in field order). Returns true if loaded.
     bool load(const std::string& path) {
         FILE* f = std::fopen(path.c_str(), "r");
@@ -2046,6 +2055,12 @@ inline constexpr SPSAOption SPSA_OPTIONS[] = {
     {"NmpShallowDepth", &SPSAParams::nmp_shallow_depth,   0,   12},
     {"TtStoreSlack",    &SPSAParams::tt_store_slack,      0,     8},
     {"ExtPathCap",      &SPSAParams::ext_path_cap,        0,    16},
+    {"R3Cont4",         &SPSAParams::r3_cont4,       -10000, 10000},
+    {"R3NoCenter",      &SPSAParams::r3_no_center,   -10000, 10000},
+    {"R3NoKzone",       &SPSAParams::r3_no_kzone,    -10000, 10000},
+    {"R3ThreatEsc",     &SPSAParams::r3_threat_esc,  -10000, 10000},
+    {"R3CutPly",        &SPSAParams::r3_cut_ply,     -10000, 10000},
+    {"R3LmpTight",      &SPSAParams::r3_lmp_tight,   -10000, 10000},
 };
 
 inline const SPSAOption* find_spsa_option(const std::string& name) {
