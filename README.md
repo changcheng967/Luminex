@@ -120,8 +120,14 @@ The network is V6, gen768u ([spec](docs/NNUE.md#v6-gen768u)):
   times 768 piece-squares) feeds 768 int16 lanes for each side, from one of
   three tables chosen by the men on the board: 26 or more, 13 to 25, or 12 or
   fewer. Splitting the table by piece count is an idea the Triumviratus
-  engine published. Beside it, 55,960 relation features add int8 rows to 256
-  of those lanes: which piece attacks which, and pawn pairs in contact.
+  engine published; Stockfish's K32H3 and nettest #531's K32Q2P4 are related
+  work. Beside it, 55,960 relation features add int8 rows to 256 of those
+  lanes: which piece attacks which, and pawn pairs in contact. These are
+  threat inputs, which other engines had first: Stockfish's Full_Threats
+  (crediting Monty, Yukari and PlentyChess), PlentyChess, Viridithas,
+  Stormphrax, Berserk, Caissa, Integral and Triumviratus, and Stockfish's
+  PP_3Wide (from Pawnocchio) for the pawn pairs. The relation set, its
+  encoding into 256 lanes and the measurements are ours.
 - **Tail.** SCReLU, then one of eight int8 tails, chosen by the number of
   men on the board: 1,536 → 16 → 32 → 1, with one scale per row.
 - **Updates.** A move only records what it changes, and the accumulator

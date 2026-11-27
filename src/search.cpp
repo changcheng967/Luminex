@@ -1030,7 +1030,7 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
     // Skip when parent was in check (static_eval is 0, not meaningful)
     bool opponent_worsening = (ss->ply >= 1 && (ss - 1)->static_eval != VALUE_ZERO && eval > -(ss - 1)->static_eval);
 
-    // Novel: forcing line tracking. Count consecutive plies that are "forced"
+    // Forcing line tracking. Count consecutive plies that are "forced"
     // (in-check positions have 0 or 1 legal responses). When the forcing count
     // reaches 3+, we're in a tactical sequence and should extend depth to avoid
     // missing the conclusion. Individual check extensions don't catch this because
@@ -1576,7 +1576,7 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
             ext_count++;
             g_stats.check_extensions++;
         }
-        // Novel: forcing line extension. If we're 3+ plies deep in a sequence
+        // Forcing line extension. If we're 3+ plies deep in a sequence
         // of checks, this is a forcing tactical line — extend to see the conclusion.
         // Individual check extensions handle single checks, but long forcing sequences
         // need extra depth because LMR aggressively reduces them as "late moves".
