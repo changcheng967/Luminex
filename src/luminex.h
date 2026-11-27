@@ -976,32 +976,46 @@ inline uint64_t mul_hi64(uint64_t a, uint64_t b) {
 }
 
 // Transposition table entry
+// A transposition-table entry: 12 bytes, five to a 64-byte cluster, so a probe
+// reads one cache line and a MB holds 81,920 entries. The value and the static
+// eval fit 16 bits (|v| <= VALUE_INFINITE = 30,000). The depth byte keeps the
+// PV flag in its top bit; the last byte packs the bound (2 bits) and the age
+// stamp (6 bits): the table's generation when the entry was written or last
+// read, which ages it (TranspositionTable::probe).
 struct TTEntry {
-    uint32_t key32;
+    uint32_t key32;    // the key's high 32 bits
     uint16_t move16;
-    int32_t value_;  // Changed from int16_t to prevent truncation (Value is int32_t)
-    int32_t eval_;   // Changed from int16_t to prevent truncation
-    uint8_t depth_;
-    uint8_t gen_bound;
-    uint8_t pv_flag;    // 1 if this was a PV node, 0 if not
-    uint8_t search_id_; // which search wrote this entry (cross-search aging)
+    int16_t value16;
+    int16_t eval16;
+    uint8_t depth8;    // bit 7: written at a PV node; bits 0-6: depth + 1, 0 = an empty slot
+    uint8_t meta8;     // bits 0-1: the bound; bits 2-7: the age stamp
 
     Move move() const { return Move(move16); }
-    Depth depth() const { return Depth(depth_ - 127); }
-    Bound bound() const { return Bound(gen_bound & 0x3); }
-    bool is_pv() const { return pv_flag != 0; }
-    Value value() const { return Value(value_); }
-    Value eval() const { return Value(eval_); }
-    uint8_t search_age(uint8_t now) const { return uint8_t(now - search_id_); }
+    Depth depth() const { return Depth(int(depth8 & 0x7F) - 1); }
+    Bound bound() const { return Bound(meta8 & 0x3); }
+    bool is_pv() const { return (depth8 & 0x80) != 0; }
+    Value value() const { return Value(value16); }
+    Value eval() const { return Value(eval16); }
+    bool empty() const { return (depth8 & 0x7F) == 0; }
+    uint8_t stamp() const { return uint8_t(meta8 & 0xFC); }
 
     void save(uint64_t k, Value v, bool pv, Bound b, Depth d, Move m, Value ev, uint8_t g);
 };
 
-// Transposition table cluster (cache line size = 64 bytes)
-// Entry size is 20 bytes (3 * 20 = 60), padding = 4 bytes
+static_assert(sizeof(TTEntry) == 12, "TTEntry must stay 12 bytes: five to a cache line");
+// The 16-bit value and eval fields must hold every score the search stores:
+// the in-check marker (VALUE_INFINITE) and a mate score after value_to_tt
+// (VALUE_MATE + MAX_PLY). Raising either past 32,767 must fail here, not
+// wrap a stored score at run time.
+static_assert(VALUE_INFINITE <= INT16_MAX && VALUE_MATE + MAX_PLY <= INT16_MAX,
+              "TTEntry's 16-bit scores would wrap");
+
+constexpr int TT_WAYS = 5;
+
+// One cache line: five entries and 4 bytes of padding
 struct TTCluster {
-    TTEntry entry[3];
-    char padding[4];
+    TTEntry entry[TT_WAYS];
+    char padding[64 - TT_WAYS * sizeof(TTEntry)];
 };
 
 static_assert(sizeof(TTCluster) == 64, "TTCluster size must be 64 bytes");
@@ -1030,12 +1044,12 @@ public:
     // the old entry unless this search is at least as deep or the entry is
     // from an older search.
     bool should_store(const TTEntry* tte, bool found, Depth d) const {
-        return !found || d >= tte->depth() || (tte->gen_bound & 0xFC) != generation8;
+        return !found || d >= tte->depth() || tte->stamp() != generation8;
     }
 
+    // The current age stamp, in the stamp's bits (2-7) of TTEntry::meta8;
+    // new_search() advances it, once a go
     uint8_t generation() const { return generation8; }
-    uint8_t search_id() const { return search_id8; }
-    void begin_search() { ++search_id8; }  // once per "go": entry ages by 1/search
     size_t hashfull() const;
 
 private:
@@ -1059,7 +1073,13 @@ private:
     int rot_ = 0;                  // 64 - k
     bool pow2_ = true;             // N is a power of two
     uint8_t generation8 = 0;
-    uint8_t search_id8 = 0;
+
+    // A slot's claim to stay: none for an empty slot; an entry of an earlier
+    // search ranks below every entry of this one; depth orders within each
+    static int worth(const TTEntry& e, uint8_t now) {
+        if (e.empty()) return -1;
+        return int(e.depth8 & 0x7F) + (e.stamp() == now ? 128 : 0);
+    }
 };
 
 inline TranspositionTable TT;

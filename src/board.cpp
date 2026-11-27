@@ -2036,22 +2036,18 @@ void TTEntry::save(uint64_t k, Value v, bool pv, Bound b, Depth d, Move m, Value
     // A store without a move (a fail-low node, a qsearch node with no capture
     // worth recording) keeps the move already saved for this position: that
     // move is still the best ordering hint the position has.
-    const bool same_position = depth_ != 0 && key32 == uint32_t(k >> 32);
+    const bool same_position = !empty() && key32 == uint32_t(k >> 32);
     if (m != MOVE_NONE || !same_position)
         move16 = uint16_t(m.raw());
     key32 = uint32_t(k >> 32);
-    value_ = int32_t(v);
-    eval_ = int32_t(ev);
-    // Stored as d + 127 for d in [0, 128]: qsearch entries keep depth 0, so a
-    // main-search node (depth >= 1) never takes a cutoff from a qsearch bound.
-    // depth_ == 0 is the empty slot left by clear(); 128 caps the uint8 range.
-    depth_ = uint8_t(std::clamp<Depth>(d, 0, 128) + 127);
-    // g arrives pre-shifted (generation8 advances in steps of 4, keeping the
-    // low 2 bits free for the bound); shifting again here would desynchronize
-    // save and probe encodings.
-    gen_bound = uint8_t(g | b);
-    pv_flag = pv ? 1 : 0;
-    search_id_ = TT.search_id();
+    value16 = int16_t(v);
+    eval16 = int16_t(ev);
+    // Depth + 1 in 7 bits for d in [0, 126]: qsearch entries keep depth 0, so
+    // a main-search node (depth >= 1) never takes a cutoff from a qsearch
+    // bound, and 0 stays the empty slot clear() leaves
+    depth8 = uint8_t((pv ? 0x80 : 0) | (std::clamp<Depth>(d, 0, 126) + 1));
+    // g is the table's generation, already in the stamp's bits
+    meta8 = uint8_t(g | b);
 }
 
 void TranspositionTable::resize(size_t mb) {
@@ -2061,7 +2057,7 @@ void TranspositionTable::resize(size_t mb) {
     const size_t clusters = mb * 1024 * 1024 / sizeof(TTCluster);
     pow2_ = std::has_single_bit(clusters);
     rot_ = clusters > 1 ? 64 - int(std::bit_width(clusters - 1)) : 0;
-    entries = clusters * 3;
+    entries = clusters * TT_WAYS;
     table.reset(clusters);   // frees the old table first; zeroed
 }
 
@@ -2082,60 +2078,52 @@ TTEntry* TranspositionTable::probe(uint64_t key, bool& found) {
         return &dummy;
     }
 
-    const size_t idx = cluster_of(key);
-    TTEntry* entry = &table[idx].entry[0];
-
-    // depth_ == 0 marks an empty slot (clear() zeroes the table); stored
-    // entries are depth + 127 >= 127.
-    for (int i = 0; i < 3; ++i, ++entry) {
-        if (entry->depth_ != 0 && entry->key32 == uint32_t(key >> 32)) {
-            if ((entry->gen_bound & 0xFC) != generation8) {
-                entry->gen_bound = uint8_t(generation8 | (entry->gen_bound & 0x3));
+    TTEntry* const cluster = table[cluster_of(key)].entry;
+    const uint32_t key32 = uint32_t(key >> 32);
+    for (int i = 0; i < TT_WAYS; ++i) {
+        TTEntry* const e = &cluster[i];
+        if (!e->empty() && e->key32 == key32) {
+            // Self-cleaning cross-search aging: an entry of an earlier search
+            // loses 2 plies of stored depth for each search since its stamp,
+            // down to depth 0 (never to an empty slot), and takes the current
+            // stamp. Aging the stored byte, not a read-time discount, drops a
+            // stale deep entry out of the cutoff test and the replacement
+            // ranking at once.
+            if (e->stamp() != generation8) {
+                const int age = uint8_t(generation8 - e->stamp()) >> 2;
+                const int depth1 = std::max(1, int(e->depth8 & 0x7F) - 2 * age);
+                e->depth8 = uint8_t((e->depth8 & 0x80) | depth1);
+                e->meta8 = uint8_t(generation8 | (e->meta8 & 0x3));
             }
             found = true;
-            // Self-cleaning cross-search aging: age the STORED depth byte so the
-            // entry drops out of both the cutoff check and the depth-preferred
-            // replacement ranking (a read-time-only discount leaves stale deep
-            // entries squatting in slots they can never be trusted for). Clamp at
-            // 127 (depth 0) so an aged entry never reads as an empty slot.
-            if (entry->search_id_ != search_id8) {
-                int age = int(uint8_t(search_id8 - entry->search_id_));
-                entry->depth_ = uint8_t(std::max(127, int(entry->depth_) - 2 * age));
-                entry->search_id_ = search_id8;
-            }
-            return entry;
+            return e;
         }
     }
 
-    // Find the least valuable entry to replace. Old-generation entries are
-    // discounted first (they lose authority to anything current); within the
-    // same generation the shallowest depth goes.
-    TTEntry* replace = &table[idx].entry[0];
-    for (int i = 1; i < 3; ++i) {
-        TTEntry* e = &table[idx].entry[i];
-        if (e->depth_ - ((e->gen_bound & 0xFC) == generation8 ? 0 : 127) <
-            replace->depth_ - ((replace->gen_bound & 0xFC) == generation8 ? 0 : 127)) {
-            replace = e;
+    // The slot to overwrite: the one with the least claim to stay (worth)
+    TTEntry* replace = &cluster[0];
+    int least = worth(*replace, generation8);
+    for (int i = 1; i < TT_WAYS; ++i) {
+        const int w = worth(cluster[i], generation8);
+        if (w < least) {
+            least = w;
+            replace = &cluster[i];
         }
     }
-
     found = false;
     return replace;
 }
 
+// Per mille of a sample's slots that hold an entry of this search: the first
+// 200 clusters, 1,000 slots
 size_t TranspositionTable::hashfull() const {
     if (entries == 0) return 0;
-
-    int cnt = 0;
-    for (size_t i = 0; i < std::min<size_t>(1000, table.size()); ++i) {
-        for (int j = 0; j < 3; ++j) {
-            if ((table[i].entry[j].gen_bound & 0xFC) == generation8) {
-                ++cnt;
-            }
-        }
-    }
-
-    return cnt * 1000 / (std::min(size_t(1000), table.size()) * 3);
+    const size_t clusters = std::min<size_t>(200, table.size());
+    size_t fresh = 0;
+    for (size_t i = 0; i < clusters; ++i)
+        for (const TTEntry& e : table[i].entry)
+            fresh += !e.empty() && e.stamp() == generation8;
+    return fresh * 1000 / (clusters * TT_WAYS);
 }
 
 void TranspositionTable::prefetch(uint64_t key) const {
