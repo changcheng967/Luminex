@@ -1933,10 +1933,6 @@ struct SPSAParams {
     // (lmp_base + 100 if improving + depth^2 * lmp_coeff) / 100
     int lmp_base         = 233;
     int lmp_coeff        = 94;
-    // History pruning (quiets, depth <= 4): prune if combined history
-    // < hist_prune_base - hist_prune_coeff * (depth - 1)
-    int hist_prune_base  = 896;
-    int hist_prune_coeff = 5050;
     // ProbCut: rbeta = beta + probcut_margin
     int probcut_margin   = 132;
     // Null-move R: the depth term is depth * 100 / nmp_depth_div, the eval
@@ -2028,8 +2024,6 @@ inline constexpr SPSAOption SPSA_OPTIONS[] = {
     {"FutImproving",    &SPSAParams::fut_improving,       0,   200},
     {"LmpBase",         &SPSAParams::lmp_base,           50,   600},
     {"LmpCoeff",        &SPSAParams::lmp_coeff,          25,   300},
-    {"HistPruneBase",   &SPSAParams::hist_prune_base, -4000,  4000},
-    {"HistPruneCoeff",  &SPSAParams::hist_prune_coeff, 1000, 12000},
     {"ProbcutMargin",   &SPSAParams::probcut_margin,     50,   400},
     {"NmpDepthDiv",     &SPSAParams::nmp_depth_div,     150,   800},
     {"NmpEvalDiv",      &SPSAParams::nmp_eval_div,       50,   600},
