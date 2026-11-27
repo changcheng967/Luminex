@@ -216,11 +216,18 @@ inline int get_total_correction(const Position& pos) {
 // table moves by its share of the miss, weight/256 of it: stochastic least
 // squares on the sum, whose fixed point leaves no error the tables can see.
 // (Moving each entry toward the miss instead, a moving average, settles with
-// part of a shared error uncorrected.) Six tables at most 15/256 each keep a
-// step below the whole miss.
+// part of a shared error uncorrected.)
+// The six tables share one weight, so together they move 6 x weight/256 of the
+// miss a step, and that must stay below the whole miss: CorrWeightMax (the
+// weight's cap, SPSA range 1-128) overshoots past about 42 and oscillates
+// without settling from about 85, under this rule and the moving average
+// alike. The default 15 moves the sum 35% of the miss a step.
+// Each table is clamped to 32 cp, so the six correct at most 192 cp.
+static_assert(CORRHIST_GRAIN == CORRHIST_WEIGHT_SCALE,
+              "the step below is error x weight in grain units only when the two scales are equal");
 inline void corrhist_update(CorrHistTable& table, Color stm, uint64_t key, int16_t weight, int32_t error) {
     int16_t& entry = table.data[stm][uint32_t(key) & (CORRHIST_SIZE - 1)];
-    const int32_t step = error * (CORRHIST_GRAIN / CORRHIST_WEIGHT_SCALE) * (int32_t)weight;   // grain units
+    const int32_t step = error * (int32_t)weight;   // error x GRAIN x weight / WEIGHT_SCALE, in grain units
     entry = (int16_t)std::clamp((int32_t)entry + step, -CORRHIST_MAX, CORRHIST_MAX);
 }
 
