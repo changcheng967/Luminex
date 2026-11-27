@@ -1346,28 +1346,37 @@ int main(int argc, char* argv[]) {
     // Check for bench mode
     if (argc > 1 && std::string(argv[1]) == "bench") {
         Position pos;
-        pos.set("rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1");
 
         using namespace std::chrono;
         auto start = high_resolution_clock::now();
 
-        uint64_t p1 = perft(pos, 1);
-        std::cout << "Perft 1: " << p1 << " (expected 20)" << std::endl;
-
-        uint64_t p2 = perft(pos, 2);
-        std::cout << "Perft 2: " << p2 << " (expected 400)" << std::endl;
-
-        uint64_t p3 = perft(pos, 3);
-        std::cout << "Perft 3: " << p3 << " (expected 8902)" << std::endl;
-
-        uint64_t p4 = perft(pos, 4);
-        std::cout << "Perft 4: " << p4 << " (expected 197281)" << std::endl;
+        // Move generation first. The start position's tree has no castling, en
+        // passant or promotion before depth 5, so five more positions whose
+        // counts are standard (Kiwipete and positions 3 to 6 of the published
+        // perft results) put those moves, pins and checks into every build that
+        // benches: CI's four, and every OpenBench worker.
+        struct PerftCase { const char* fen; int depth; uint64_t nodes; };
+        static constexpr PerftCase PERFT_CASES[] = {
+            {"rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1", 4, 197281},
+            {"r3k2r/p1ppqpb1/bn2pnp1/3PN3/1p2P3/2N2Q1p/PPPBBPPP/R3K2R w KQkq - 0 1", 4, 4085603},
+            {"8/2p5/3p4/KP5r/1R3p1k/8/4P1P1/8 w - - 0 1", 5, 674624},
+            {"r3k2r/Pppp1ppp/1b3nbN/nP6/BBP1P3/q4N2/Pp1P2PP/R2Q1RK1 w kq - 0 1", 4, 422333},
+            {"rnbq1k1r/pp1Pbppp/2p5/8/2B5/8/PPP1NnPP/RNBQK2R w KQ - 1 8", 4, 2103487},
+            {"r4rk1/1pp1qppp/p1np1n2/2b1p1B1/2B1P1b1/P1NP1N2/1PP1QPPP/R4RK1 w - - 0 10", 4, 3894594},
+        };
+        bool perft_ok = true;
+        for (const PerftCase& c : PERFT_CASES) {
+            pos.set(c.fen);
+            const uint64_t n = perft(pos, Depth(c.depth));
+            std::cout << "Perft " << c.depth << ": " << n << " (expected " << c.nodes << ") " << c.fen << std::endl;
+            perft_ok = perft_ok && n == c.nodes;
+        }
 
         auto end = high_resolution_clock::now();
         auto ms = duration_cast<milliseconds>(end - start).count();
         std::cout << "Time: " << ms << "ms" << std::endl;
 
-        if (p1 == 20 && p2 == 400 && p3 == 8902 && p4 == 197281) {
+        if (perft_ok) {
             std::cout << "ALL PERFT TESTS PASSED" << std::endl;
         } else {
             std::cout << "PERFT TESTS FAILED!" << std::endl;
