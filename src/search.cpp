@@ -257,10 +257,11 @@ static thread_local uint64_t last_reported_nodes = 0;
 // verification, past the depth-0 handoff, by expected node type (0 cut, 1 all), entry depth band (1-2, 3-4, 5-6,
 // 7-9, 10+) and how the node was reached (0 a quiet move, 1 a capture or promotion, 2 the null move): how it ends
 // before its first searched move. At exit, to stderr, one line a cell:
-// "EXIT t b e M TT RAZOR RFP NMP PROBCUT SMALLPC MULTICUT N RFPX NMPX" (M entered, N searched a move; the rest left by
-// that rule; RFPX and NMPX the reverse-futility and null-move exits made against a TT upper bound below beta).
+// "EXIT t b e M TT RAZOR RFP NMP PROBCUT SMALLPC MULTICUT N RFPX NMPX NMPA" (M entered, N searched a move; the rest left
+// by that rule; RFPX and NMPX the reverse-futility and null-move exits made against a TT upper bound below beta; NMPA
+// the null-move searches tried).
 namespace luxexit {
-enum Kind { M, TT, RAZOR, RFP, NMP, PROBCUT, SMALLPC, MULTICUT, N, RFPX, NMPX, KINDS };
+enum Kind { M, TT, RAZOR, RFP, NMP, PROBCUT, SMALLPC, MULTICUT, N, RFPX, NMPX, NMPA, KINDS };
 inline int band(int d) { return d <= 2 ? 0 : d <= 4 ? 1 : d <= 6 ? 2 : d <= 9 ? 3 : 4; }
 struct Counters {
     unsigned long long c[2][5][3][KINDS] = {};
@@ -1157,6 +1158,7 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
                           ss->ply >= worker->nmp_disabled_ply;
 
     if (null_move_ok) {
+        LUX_EXIT(NMPA);
         // The child reads this ply as its (ss-1): MOVE_NULL bans a second null,
         // NO_PIECE keeps it out of the continuation histories, and no LMR
         // reduction was applied to reach it.
