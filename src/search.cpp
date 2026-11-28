@@ -257,9 +257,10 @@ static thread_local uint64_t last_reported_nodes = 0;
 // verification, past the depth-0 handoff, by expected node type (0 cut, 1 all), entry depth band (1-2, 3-4, 5-6,
 // 7-9, 10+) and how the node was reached (0 a quiet move, 1 a capture or promotion, 2 the null move): how it ends
 // before its first searched move. At exit, to stderr, one line a cell:
-// "EXIT t b e M TT RAZOR RFP NMP PROBCUT SMALLPC MULTICUT N" (M entered, N searched a move; the rest left by that rule).
+// "EXIT t b e M TT RAZOR RFP NMP PROBCUT SMALLPC MULTICUT N RFPX NMPX" (M entered, N searched a move; the rest left by
+// that rule; RFPX and NMPX the reverse-futility and null-move exits made against a TT upper bound below beta).
 namespace luxexit {
-enum Kind { M, TT, RAZOR, RFP, NMP, PROBCUT, SMALLPC, MULTICUT, N, KINDS };
+enum Kind { M, TT, RAZOR, RFP, NMP, PROBCUT, SMALLPC, MULTICUT, N, RFPX, NMPX, KINDS };
 inline int band(int d) { return d <= 2 ? 0 : d <= 4 ? 1 : d <= 6 ? 2 : d <= 9 ? 3 : 4; }
 struct Counters {
     unsigned long long c[2][5][3][KINDS] = {};
@@ -1119,6 +1120,7 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
         if (!pv_node && !pos.is_check() && depth <= 8 && eval - rev_margin >= beta && !ss->excluded_move) {
             g_stats.rev_futility_prunes++;
             LUX_EXIT(RFP);
+            if (found && tt_value < beta && (tt_bound_probed & BOUND_UPPER)) LUX_EXIT(RFPX);
             return eval;
         }
     }
@@ -1187,11 +1189,13 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
                 if (verify >= beta) {
                     g_stats.null_move_prunes++;
                     LUX_EXIT(NMP);
+                    if (found && tt_value < beta && (tt_bound_probed & BOUND_UPPER)) LUX_EXIT(NMPX);
                     return null_value;
                 }
             } else {
                 g_stats.null_move_prunes++;
                 LUX_EXIT(NMP);
+                if (found && tt_value < beta && (tt_bound_probed & BOUND_UPPER)) LUX_EXIT(NMPX);
                 return null_value;
             }
         }
