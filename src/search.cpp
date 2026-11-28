@@ -869,8 +869,11 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
         return draw_value;
     }
 
-    ++local_nodes;
-    g_stats.main_nodes++;
+    // A horizon node (depth <= 0) is counted by qsearch, which it calls below: count it once
+    if (depth > 0) {
+        ++local_nodes;
+        g_stats.main_nodes++;
+    }
 
     // Check time every 1024 nodes for better time control
     // Use local_nodes for cheap counting, flush to atomic periodically
