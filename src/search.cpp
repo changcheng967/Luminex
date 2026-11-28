@@ -254,26 +254,28 @@ static thread_local uint64_t last_reported_nodes = 0;
 
 #ifdef LUMINEX_TREE_EXITS
 // EXIT PROFILE (a measurement build, off in every normal build; one thread): per non-PV node outside singular
-// verification, past the depth-0 handoff, by expected node type (0 cut, 1 all) and entry depth band (1-2, 3-4, 5-6,
-// 7-9, 10+): how it ends before its first searched move. At exit, to stderr, one line a cell:
-// "EXIT t b M TT RAZOR RFP NMP PROBCUT SMALLPC MULTICUT N" (M entered, N searched a move; the rest left by that rule).
+// verification, past the depth-0 handoff, by expected node type (0 cut, 1 all), entry depth band (1-2, 3-4, 5-6,
+// 7-9, 10+) and how the node was reached (0 a quiet move, 1 a capture or promotion, 2 the null move): how it ends
+// before its first searched move. At exit, to stderr, one line a cell:
+// "EXIT t b e M TT RAZOR RFP NMP PROBCUT SMALLPC MULTICUT N" (M entered, N searched a move; the rest left by that rule).
 namespace luxexit {
 enum Kind { M, TT, RAZOR, RFP, NMP, PROBCUT, SMALLPC, MULTICUT, N, KINDS };
 inline int band(int d) { return d <= 2 ? 0 : d <= 4 ? 1 : d <= 6 ? 2 : d <= 9 ? 3 : 4; }
 struct Counters {
-    unsigned long long c[2][5][KINDS] = {};
+    unsigned long long c[2][5][3][KINDS] = {};
     ~Counters() {
         for (int t = 0; t < 2; ++t)
-            for (int b = 0; b < 5; ++b) {
-                std::fprintf(stderr, "EXIT %d %d", t, b);
-                for (int k = 0; k < KINDS; ++k) std::fprintf(stderr, " %llu", c[t][b][k]);
-                std::fputc('\n', stderr);
-            }
+            for (int b = 0; b < 5; ++b)
+                for (int e = 0; e < 3; ++e) {
+                    std::fprintf(stderr, "EXIT %d %d %d", t, b, e);
+                    for (int k = 0; k < KINDS; ++k) std::fprintf(stderr, " %llu", c[t][b][e][k]);
+                    std::fputc('\n', stderr);
+                }
     }
 };
 inline Counters g;
 }  // namespace luxexit
-#define LUX_EXIT(kind) do { if (prof_on) luxexit::g.c[prof_t][prof_b][luxexit::kind]++; } while (0)
+#define LUX_EXIT(kind) do { if (prof_on) luxexit::g.c[prof_t][prof_b][prof_e][luxexit::kind]++; } while (0)
 #else
 #define LUX_EXIT(kind) do {} while (0)
 #endif
@@ -931,8 +933,10 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
         return qsearch(pos, ss, alpha, beta, 0);
     }
 #ifdef LUMINEX_TREE_EXITS
-    const bool prof_on = !pv_node && !ss->excluded_move;
+    const bool prof_on = !pv_node && !ss->excluded_move && ss->ply >= 1;
     const int prof_t = cut_node ? 0 : 1, prof_b = luxexit::band(depth);
+    const Move prof_m = ss->ply >= 1 ? (ss - 1)->current_move : MOVE_NONE;
+    const int prof_e = prof_m == MOVE_NULL ? 2 : (prof_m.is_capture() || prof_m.is_promotion()) ? 1 : 0;
     LUX_EXIT(M);
 #endif
 
