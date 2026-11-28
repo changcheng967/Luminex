@@ -2098,7 +2098,8 @@ TTEntry* TranspositionTable::probe(uint64_t key, bool& found) {
             // replacement ranking (a read-time-only discount leaves stale deep
             // entries squatting in slots they can never be trusted for). Clamp at
             // 127 (depth 0) so an aged entry never reads as an empty slot.
-            if (entry->search_id_ != search_id8) {
+            // R5NoTtAge (> 0) switches the aging off: the entry keeps its depth.
+            if (entry->search_id_ != search_id8 && SPSAParams::get().r5_no_tt_age <= 0) {
                 int age = int(uint8_t(search_id8 - entry->search_id_));
                 entry->depth_ = uint8_t(std::max(127, int(entry->depth_) - 2 * age));
                 entry->search_id_ = search_id8;

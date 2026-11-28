@@ -1975,6 +1975,14 @@ struct SPSAParams {
     // could otherwise keep the depth from falling
     int ext_path_cap = 8;
 
+    // Round-5 alternatives (the 2026-11-28 exit profile: a sixth of our tree is expected-ALL nodes refuted on
+    // entry by reverse futility, ten times Stockfish 19's share on the same eval), for a knockout-style factorial:
+    // each is on when its value is above 0; all at 0 = main.
+    int r5_tt_eval  = 0;  // the pruning rules read the TT score where its bound says it is nearer the truth than the
+                          // static eval (a lower bound above it, an upper bound below it); Stockfish's idea
+    int r5_tt_veto  = 0;  // no reverse futility or null move while the TT holds an upper bound below beta
+    int r5_no_tt_age = 0; // TT entries keep their depth across searches (no cross-search aging)
+
     // Load from file (COUNT ints, one per line, in field order). Returns true if loaded.
     bool load(const std::string& path) {
         FILE* f = std::fopen(path.c_str(), "r");
@@ -2046,6 +2054,9 @@ inline constexpr SPSAOption SPSA_OPTIONS[] = {
     {"NmpShallowDepth", &SPSAParams::nmp_shallow_depth,   0,   12},
     {"TtStoreSlack",    &SPSAParams::tt_store_slack,      0,     8},
     {"ExtPathCap",      &SPSAParams::ext_path_cap,        0,    16},
+    {"R5TtEval",        &SPSAParams::r5_tt_eval,     -10000, 10000},
+    {"R5TtVeto",        &SPSAParams::r5_tt_veto,     -10000, 10000},
+    {"R5NoTtAge",       &SPSAParams::r5_no_tt_age,   -10000, 10000},
 };
 
 inline const SPSAOption* find_spsa_option(const std::string& name) {

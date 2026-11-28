@@ -1073,6 +1073,14 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
     // Tunable search constants (SPSAParams, luminex.h); the move lambdas below use them too
     const SPSAParams& sp = SPSAParams::get();
 
+    // R5TtEval: the TT score replaces the eval the pruning rules read where its bound says it is nearer the truth
+    // (a lower bound above the static eval, an upper bound below it); ss->static_eval keeps the static eval. The
+    // idea is Stockfish's. R5TtVeto: no reverse futility or null move while the TT holds an upper bound below beta.
+    if (sp.r5_tt_eval > 0 && found && !pos.is_check() && !ss->excluded_move && std::abs(tt_value) < VALUE_KNOWN_WIN
+        && (tt_bound_probed & (tt_value > eval ? BOUND_LOWER : BOUND_UPPER)))
+        eval = tt_value;
+    const bool tt_veto = sp.r5_tt_veto > 0 && found && tt_value < beta && (tt_bound_probed & BOUND_UPPER);
+
     // Reverse futility pruning (static null move): if eval is far above beta, prune immediately
     // Also less aggressive when eval is uncertain
     {
@@ -1080,7 +1088,7 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
         rev_margin += std::min(eval_uncertainty / 2, 80);  // Up to 80cp extra margin when uncertain
         // Not in a singular verification: ProbCut and the null move skip it too,
         // since pruning there shortcuts the measurement it exists to make
-        if (!pv_node && !pos.is_check() && depth <= 8 && eval - rev_margin >= beta && !ss->excluded_move) {
+        if (!pv_node && !pos.is_check() && depth <= 8 && eval - rev_margin >= beta && !ss->excluded_move && !tt_veto) {
             g_stats.rev_futility_prunes++;
             return eval;
         }
@@ -1112,7 +1120,7 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
     int own_pieces = popcount(pos.pieces(stm)) - popcount(pos.pieces(stm, PAWN)) - 1;
     bool null_move_ok = !pv_node && !pos.is_check() && depth >= 2 && own_pieces >= 1 &&
                           eval >= beta + (depth <= sp.nmp_shallow_depth ? sp.nmp_shallow_margin : 0) &&
-                          !ss->excluded_move &&
+                          !ss->excluded_move && !tt_veto &&
                           (ss - 1)->current_move != MOVE_NULL &&
                           ss->ply >= worker->nmp_disabled_ply;
 
