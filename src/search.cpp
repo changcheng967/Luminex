@@ -252,6 +252,29 @@ static inline void corr_sample(int c) {
 static thread_local uint64_t local_nodes = 0;
 static thread_local uint64_t last_reported_nodes = 0;
 
+#ifdef LUMINEX_FUT_PROBE
+// FUTILITY PROBE (a measurement build, off in every normal build; one thread): every quiet move that a non-PV node
+// not in check searches after its first move (not the TT move, a killer or a check; no extension; child depth 1-8),
+// binned by its child depth and by g = alpha - (eval + the child's reverse-futility margin when not improving), in
+// 25 cp steps: the moves, the nodes their searches cost, and how many raised alpha (cuts the parent would miss if it
+// pruned them). At exit, to stderr, one line a bin: "FUTP dband gbin n nodes raised".
+namespace luxfutp {
+inline int dband(int d) { return d <= 1 ? 0 : d == 2 ? 1 : d == 3 ? 2 : 3; }
+constexpr int GBINS = 48;   // g from -400 to +800 in 25 cp steps; the end bins collect the rest
+inline int gbin(int g) { int b = (g + 400) / 25; return b < 0 ? 0 : b >= GBINS ? GBINS - 1 : b; }
+struct Counters {
+    unsigned long long n[4][GBINS] = {}, nodes[4][GBINS] = {}, raised[4][GBINS] = {};
+    ~Counters() {
+        for (int d = 0; d < 4; ++d)
+            for (int b = 0; b < GBINS; ++b)
+                if (n[d][b])
+                    std::fprintf(stderr, "FUTP %d %d %llu %llu %llu\n", d, b, n[d][b], nodes[d][b], raised[d][b]);
+    }
+};
+inline Counters g;
+}  // namespace luxfutp
+#endif
+
 // Precomputed LMR reduction table. Only quiet moves take the formula
 // reduction; losing captures use a fixed one (see search_move).
 static int reductions_quiet[64];
@@ -1605,6 +1628,15 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
         // credits were cancelling real reductions out of that signal.
         ss->reduction = lmr_reduction;
 
+#ifdef LUMINEX_FUT_PROBE
+        const bool fp_on = is_quiet && !pv_node && !pos.is_check() && !gives_chk && m != tt_move && ext_count == 0
+                        && moves_played > 0 && ss->ply < MAX_PLY && m != worker->killers[ss->ply][0]
+                        && m != worker->killers[ss->ply][1] && new_depth >= 1 && new_depth <= 8
+                        && std::abs(int(eval)) < VALUE_KNOWN_WIN;
+        const int fp_d = luxfutp::dband(new_depth);
+        const int fp_b = luxfutp::gbin(int(alpha) - (int(eval) + sp.rev_fut_coeff * new_depth + sp.rfp_not_improving));
+        const uint64_t fp_n0 = local_nodes;
+#endif
         if (!pos.do_move(m)) {
             return false;
         }
@@ -1674,6 +1706,13 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
         }
 
         pos.undo_move(m);
+#ifdef LUMINEX_FUT_PROBE
+        if (fp_on) {
+            luxfutp::g.n[fp_d][fp_b]++;
+            luxfutp::g.nodes[fp_d][fp_b] += local_nodes - fp_n0;
+            if (value > alpha) luxfutp::g.raised[fp_d][fp_b]++;
+        }
+#endif
 
         int moves_played_before = moves_played;
         moves_played++;
