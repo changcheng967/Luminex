@@ -25,21 +25,17 @@ time management is solved from measured data.
 
 ## Strength
 
-| Build | Measured | Result |
-|---|---|---|
-| v6.7.0 | against v6.6.0, 2,010 games ([test 321](https://bench.luminexchess.com/test/321/)) | **+314.92 ± 14.52** Elo |
-| v6.7.0 | against eleven CCRL-rated engines, 8,876 games ([gauntlet 8](https://bench.luminexchess.com/gauntlet/8/)) | **3662 ± 8** CCRL Blitz, 3544 ± 11 CCRL 40/15 |
-| v6.6.0 | against v6.5.1, 2,010 games ([test 131](https://bench.luminexchess.com/test/131/)) | **+246.55 ± 13.37** Elo |
-| v6.6.0 | against twelve CCRL-rated engines ([gauntlet 3](https://bench.luminexchess.com/gauntlet/3/)) | **3471 ± 16** CCRL Blitz, 3402 ± 21 CCRL 40/15 |
-| v6.6.0 | [CCI](https://github.com/computer-chess-index/cci/blob/main/engines/Luminex.md), E1 list (Core Ultra 7 265T E-cores), page of 2026-11-20 | 2863 ± 37 STC, 3220 ± 32 LTC, 3336 ± 39 VLTC |
+v6.7.0, the latest release:
 
-The OpenBench games are played on one thread with 16 MB of hash, at 10+0.1
-scaled to each worker's speed, from the 2moves_v1 openings. Test 321 and
-gauntlet 8 played v6.7.0's search and network. Gauntlet 3
-played v6.6.0's development build with the network before v6.6.0's own;
-gen768r_06q adds +3.09 ± 2.46 to it
-([test 128](https://bench.luminexchess.com/test/128/)), less than a gauntlet
-resolves.
+| Measured | Result |
+|---|---|
+| Against v6.6.0, 2,010 games ([test 321](https://bench.luminexchess.com/test/321/)) | **+314.92 ± 14.52** Elo |
+| Against eleven CCRL-rated engines, 8,876 games ([gauntlet 8](https://bench.luminexchess.com/gauntlet/8/)) | **3662 ± 8** CCRL Blitz, 3544 ± 11 CCRL 40/15 |
+
+The games are played on OpenBench on one thread with 16 MB of hash, at
+10+0.1 scaled to each worker's speed, from the 2moves_v1 openings. Earlier
+releases' results are in their
+[release notes](https://github.com/changcheng967/Luminex/releases).
 
 ## Download
 
@@ -51,8 +47,7 @@ Both kinds of build are on [Releases](https://github.com/changcheng967/Luminex/r
 
 Every binary has its network built in, so the binary alone plays at full
 strength. The network is also attached as a file, for builds without one
-inside. Releases from v6.7.0 and the development build have one binary per
-platform:
+inside. There is one binary per platform:
 
 | Platform | Binary | CPU | Needs |
 |---|---|---|---|
@@ -63,10 +58,7 @@ platform:
 The x86-64 binaries carry the network kernels for every instruction-set
 level and use the best the CPU supports: AVX-512 VNNI, AVX-512, AVX-VNNI,
 AVX2 or a baseline. Every level evaluates alike, bit for bit. The `info
-string` that names the network ends with the level in use. v6.6.0 still has
-a build per CPU level and glibc version; its
-[release notes](https://github.com/changcheng967/Luminex/releases/tag/v6.6.0)
-say which to take.
+string` that names the network ends with the level in use.
 
 ## Usage
 
@@ -88,7 +80,7 @@ the speed. It is the bench OpenBench runs.
 | `Hash` | 256 | Hash table in MB, allocated at the first `isready` or search |
 | `Threads` | 1 | Search threads, 1 to 64 |
 | `MultiPV` | 1 | Principal variations reported |
-| `Ponder` | false | Allow `go ponder` and `ponderhit` |
+| `Ponder` | false | Declared so GUIs offer pondering; `go ponder` and `ponderhit` work whatever its value |
 | `UCI_ShowWDL` | false | Add `wdl` (win, draw and loss per mille) to the info lines |
 | `UseNNUE` | true | Evaluate with the network; false uses the hand-crafted evaluation |
 | `NNUEFile` | `luminex_gen768u_01q_i8.nnue` | The network. The default name selects the built-in network; any other file is looked for as given, then next to the binary |
@@ -151,7 +143,7 @@ passed-pawn paths, king safety and known endgames.
   aspiration windows and a hash table. A move prefetches its child's hash
   entry.
 - **Pruning.** Reverse futility, razoring, null move, ProbCut, futility,
-  late-move, history and SEE pruning. A null move needs a margin over beta at
+  late-move and history pruning. A null move needs a margin over beta at
   shallow depth and a piece besides pawns.
 - **Reductions and extensions.** Late-move reductions driven by history and
   node type. Singular extensions, with double and negative extensions and
@@ -199,8 +191,9 @@ GPU trainer, quantization-aware training, the data converters and network
 forensics, and its
 [development log](https://github.com/changcheng967/Luminex-NNUE/blob/main/docs/DEVLOG.md)
 records every run. The current network learned only from Leela Chess Zero
-data: its test91 games (standard and Chess960) relabelled by BT4, and BT4's own games. [`docs/NNUE.md`](docs/NNUE.md)
-specifies every architecture, V1 to V6.
+data, every position relabelled by its BT4 network: test91's games
+(standard and Chess960) and test80 games from the BT4 training corpus.
+[`docs/NNUE.md`](docs/NNUE.md) specifies every architecture, V1 to V6.
 
 A network's name gives its architecture and run. For example,
 `luminex_gen768u_01q_i8.nnue` is gen768u's first run, finished with
@@ -227,9 +220,9 @@ that fails is closed with them.
 ## Build
 
 You need C++23, CMake 3.20 or newer, and clang 23. Clang 23 builds main,
-every release from v6.7.0 and every OpenBench worker, and CI checks it. With lld and
-without PIE it is the fastest build measured; CMakeLists.txt sets both for
-clang on Linux.
+every release from v6.7.0 and every OpenBench worker, and CI checks it. With
+lld and without PIE it is the fastest build measured; CMakeLists.txt sets
+both for clang on Linux.
 
 ```bash
 cmake -B build -DCMAKE_BUILD_TYPE=Release -DCMAKE_CXX_COMPILER=clang++-23
