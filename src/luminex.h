@@ -1975,6 +1975,13 @@ struct SPSAParams {
     // could otherwise keep the depth from falling
     int ext_path_cap = 8;
 
+    // Round 6: futility at the child's depth. A late quiet move whose child would leave on entry by reverse futility
+    // (judged with the parent's eval at the child's reduced depth, g = alpha - (eval + the child's margin) >= the
+    // threshold) is not made. On when r6_child_fut is above 0; r6_cf_margin is the threshold G in centipawns (the
+    // 2026-11-28 probe: G 200 skips 3.8% of all nodes at 0.25 missed cuts per 1000 skipped moves, G 0 8.1% at 1.55).
+    int r6_child_fut = 0;
+    int r6_cf_margin = 200;
+
     // Load from file (COUNT ints, one per line, in field order). Returns true if loaded.
     bool load(const std::string& path) {
         FILE* f = std::fopen(path.c_str(), "r");
@@ -2046,6 +2053,8 @@ inline constexpr SPSAOption SPSA_OPTIONS[] = {
     {"NmpShallowDepth", &SPSAParams::nmp_shallow_depth,   0,   12},
     {"TtStoreSlack",    &SPSAParams::tt_store_slack,      0,     8},
     {"ExtPathCap",      &SPSAParams::ext_path_cap,        0,    16},
+    {"R6ChildFut",      &SPSAParams::r6_child_fut,   -10000, 10000},
+    {"R6CfMargin",      &SPSAParams::r6_cf_margin,     -400,  1000},
 };
 
 inline const SPSAOption* find_spsa_option(const std::string& name) {

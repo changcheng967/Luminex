@@ -1597,6 +1597,23 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
         //
         const int full_depth = depth - 1 + ext_count;
 
+        // R6ChildFut: futility at the child's depth. A late quiet move whose child would leave on entry by reverse
+        // futility, judged with this node's eval at the child's reduced depth, is not made: the child's own test
+        // applied here, the shape of Stockfish's futility on the LMR depth. g = alpha - (eval + the child's margin
+        // when not improving) must reach R6CfMargin. Fail-soft like the futility rule above: the skipped move is
+        // worth at most eval plus the child's margin.
+        if (sp.r6_child_fut > 0 && is_quiet && !pv_node && !pos.is_check() && !gives_chk && m != tt_move
+            && ext_count == 0 && moves_played > 0 && ss->ply < MAX_PLY && m != worker->killers[ss->ply][0]
+            && m != worker->killers[ss->ply][1] && new_depth >= 1 && new_depth <= 8
+            && std::abs(int(eval)) < VALUE_KNOWN_WIN && best_value > -VALUE_MATE_IN_MAX_PLY) {
+            const int child_margin = sp.rev_fut_coeff * new_depth + sp.rfp_not_improving;
+            if (int(alpha) - (int(eval) + child_margin) >= sp.r6_cf_margin) {
+                g_stats.futility_prunes++;
+                if (eval + child_margin > best_value) best_value = Value(eval + child_margin);
+                return false;
+            }
+        }
+
         // Store current move and moved piece for counter-move history
         ss->current_move = m;
         ss->moved_piece = pos.piece_on(m.from());
