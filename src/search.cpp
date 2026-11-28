@@ -252,6 +252,32 @@ static inline void corr_sample(int c) {
 static thread_local uint64_t local_nodes = 0;
 static thread_local uint64_t last_reported_nodes = 0;
 
+#ifdef LUMINEX_TREE_EXITS
+// EXIT PROFILE (a measurement build, off in every normal build; one thread): per non-PV node outside singular
+// verification, past the depth-0 handoff, by expected node type (0 cut, 1 all) and entry depth band (1-2, 3-4, 5-6,
+// 7-9, 10+): how it ends before its first searched move. At exit, to stderr, one line a cell:
+// "EXIT t b M TT RAZOR RFP NMP PROBCUT SMALLPC MULTICUT N" (M entered, N searched a move; the rest left by that rule).
+namespace luxexit {
+enum Kind { M, TT, RAZOR, RFP, NMP, PROBCUT, SMALLPC, MULTICUT, N, KINDS };
+inline int band(int d) { return d <= 2 ? 0 : d <= 4 ? 1 : d <= 6 ? 2 : d <= 9 ? 3 : 4; }
+struct Counters {
+    unsigned long long c[2][5][KINDS] = {};
+    ~Counters() {
+        for (int t = 0; t < 2; ++t)
+            for (int b = 0; b < 5; ++b) {
+                std::fprintf(stderr, "EXIT %d %d", t, b);
+                for (int k = 0; k < KINDS; ++k) std::fprintf(stderr, " %llu", c[t][b][k]);
+                std::fputc('\n', stderr);
+            }
+    }
+};
+inline Counters g;
+}  // namespace luxexit
+#define LUX_EXIT(kind) do { if (prof_on) luxexit::g.c[prof_t][prof_b][luxexit::kind]++; } while (0)
+#else
+#define LUX_EXIT(kind) do {} while (0)
+#endif
+
 // Precomputed LMR reduction table. Only quiet moves take the formula
 // reduction; losing captures use a fixed one (see search_move).
 static int reductions_quiet[64];
@@ -904,6 +930,11 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
     if (depth <= 0) {
         return qsearch(pos, ss, alpha, beta, 0);
     }
+#ifdef LUMINEX_TREE_EXITS
+    const bool prof_on = !pv_node && !ss->excluded_move;
+    const int prof_t = cut_node ? 0 : 1, prof_b = luxexit::band(depth);
+    LUX_EXIT(M);
+#endif
 
     // Transposition table lookup. do_move and do_null_move already prefetched
     // this entry when they finished the key.
@@ -976,6 +1007,7 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
                 }
             }
         }
+        LUX_EXIT(TT);
         return tt_value;
     }
 
@@ -1082,6 +1114,7 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
         // since pruning there shortcuts the measurement it exists to make
         if (!pv_node && !pos.is_check() && depth <= 8 && eval - rev_margin >= beta && !ss->excluded_move) {
             g_stats.rev_futility_prunes++;
+            LUX_EXIT(RFP);
             return eval;
         }
     }
@@ -1095,6 +1128,7 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
             Value qsearch_value = qsearch(pos, ss, alpha - 1, alpha, 0);
             if (qsearch_value < alpha) {
                 g_stats.razoring_prunes++;
+                LUX_EXIT(RAZOR);
                 return qsearch_value;  // Confirmed losing, prune
             }
         }
@@ -1148,10 +1182,12 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
                 worker->nmp_disabled_ply = saved_disable_ply;
                 if (verify >= beta) {
                     g_stats.null_move_prunes++;
+                    LUX_EXIT(NMP);
                     return null_value;
                 }
             } else {
                 g_stats.null_move_prunes++;
+                LUX_EXIT(NMP);
                 return null_value;
             }
         }
@@ -1200,6 +1236,7 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
             if (value >= rbeta) {
                 // Shallow search confirms this move is very good - prune
                 g_stats.probcut_prunes++;
+                LUX_EXIT(PROBCUT);
                 return value;
             }
         }
@@ -1278,6 +1315,7 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
         } else if (singular_value >= beta) {
             // Multi-cut: other moves are also good enough to beat beta
             // Return immediately without searching further
+            LUX_EXIT(MULTICUT);
             return singular_value;
         } else if (tt_value >= beta) {
             // TT move is NOT singular but expected to beat beta
@@ -1608,6 +1646,9 @@ Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth) {
         if (!pos.do_move(m)) {
             return false;
         }
+#ifdef LUMINEX_TREE_EXITS
+        if (moves_played == 0) LUX_EXIT(N);
+#endif
 
         Value value;
         if (do_lmr && new_depth > 0) {
